@@ -1,5 +1,9 @@
 # Native encrypted-chat provider
 
+The latest fully accepted baseline is the imported V34 snapshot. Current ordinary-channel
+response changes are in progress; see [current development](CURRENT_DEVELOPMENT.md)
+for the checks and unresolved observations on this branch.
+
 [NativeChatCrypto](../packages/native/src/native-chat-crypto.h) implements the
 binary operations from the existing
 [real client provider](../packages/web/src/entities/messenger/chat-real-crypto-provider.lib.ts).

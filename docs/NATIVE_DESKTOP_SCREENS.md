@@ -1,5 +1,9 @@
 # Native desktop screens
 
+The latest fully accepted baseline is the imported V34 snapshot. Current ordinary-channel
+response changes are in progress; see [current development](CURRENT_DEVELOPMENT.md)
+for the checks and unresolved observations on this branch.
+
 This is the implementation and acceptance plan for native screens beyond the
 initial chat window. It does not mark these screens implemented or accepted.
 The required result remains complete desktop functionality, an almost pixel-perfect

@@ -1,5 +1,9 @@
 # Native desktop parity
 
+The latest fully accepted baseline is the imported V34 snapshot. Current ordinary-channel
+response changes are in progress; see [current development](CURRENT_DEVELOPMENT.md)
+for the checks and unresolved observations on this branch.
+
 The native desktop client is **IN PROGRESS**. It targets Windows, macOS, and Linux.
 The required result is an almost pixel-perfect reproduction of the current desktop
 design, complete functional parity, and full testing of the new application on

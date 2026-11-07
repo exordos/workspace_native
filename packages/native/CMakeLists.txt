@@ -277,7 +277,8 @@ if(BUILD_TESTING)
         uiMissingRequestOwnerReplacementCannotPopulateTheNewOwnersBody
         uiMissingRequestOnlyANewSemanticDisclosureCanRetryFailure
         uiMissingRequestSelectionReducerRemountGetsANewDisclosure
-        uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount)
+        uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount
+        uiOrdinaryManagerRejectsFromTheActualMainAction)
     # Original108 cases plus13 mounted resolver/disclosure data. Measured old108
     # 216.090s +new15 focused65.412s, with25% headroom rounded up to30s:360s.
     # Individual assertion waits stay unchanged.

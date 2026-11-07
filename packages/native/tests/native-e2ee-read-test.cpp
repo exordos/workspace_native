@@ -204,20 +204,32 @@ public:
         };
     }
     bool start(bool archived = false) {
+        const auto failedStage = [this](const char *stage) {
+            QJsonArray pending;
+            for (auto *reply : api.findChildren<QNetworkReply *>())
+                pending.append(QJsonObject{{"path", reply->url().path()}, {"finished", reply->isFinished()},
+                    {"method", QString::fromLatin1(reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray())}});
+            qInfo().noquote() << "FIXTURE_START_DIAGNOSTIC" << stage
+                << QJsonDocument(QJsonObject{{"projects", controller.projects().size()}, {"streams", controller.streams().size()},
+                    {"topics", controller.topics().size()}, {"messages", controller.messages().size()}, {"busy", controller.busy()},
+                    {"streamGets", streamGets}, {"bindingGets", bindingGets}, {"topicGets", topicGets},
+                    {"catalogGets", catalogGets}, {"pending", pending}}).toJson(QJsonDocument::Compact);
+            return false;
+        };
         controller.login(tls.origin().toString(), "Synthetic", "synthetic-password", "");
-        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return false;
+        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return failedStage("projects");
         controller.openProject(projectId);
         if (!QTest::qWaitFor([this, archived] { return archived ? controller.archivedChats().size() == 1
-            : controller.streams().size() == 1; }, 2000)) return false;
+            : controller.streams().size() == 1; }, 2000)) return failedStage("streams");
         if (archived) controller.openArchivedChat(streamId);
         else controller.selectStream(streamId);
-        if (!QTest::qWaitFor([this] { return controller.topics().size() == 2; }, 2000)) return false;
+        if (!QTest::qWaitFor([this] { return controller.topics().size() == 2; }, 2000)) return failedStage("topics");
         if (!archived) controller.selectTopic(topicId);
-        if (!QTest::qWaitFor([this] { return !controller.busy() && controller.messages().size() == 1; }, 2000)) return false;
+        if (!QTest::qWaitFor([this] { return !controller.busy() && controller.messages().size() == 1; }, 2000)) return failedStage("history");
         bool opened = false;
         vault.open(tls.origin(), projectId, userId, deviceName,
             [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
-        if (!QTest::qWaitFor([&opened] { return opened; }, 2000)) return false;
+        if (!QTest::qWaitFor([&opened] { return opened; }, 2000)) return failedStage("vault");
         controller.useChatKeys(&vault);
         return true;
     }
@@ -622,6 +634,55 @@ public:
     QVariantMap row() const { return incomingKeyRequestRow(f.controller, peer.requestId); }
     QVariantMap response() const { return f.controller.encryption().value("keyResponse").toMap(); }
     QJsonObject finishActual() { return peer.finish(f.savedRequest, f.requestBody.value("uuid").toString()); }
+};
+
+// Add after the existing IssuerCase helper. Source-only, not built/run.
+class OrdinaryRejectCase final {
+public:
+    std::shared_ptr<bool> requesterMember = std::make_shared<bool>(true);
+    std::shared_ptr<QHash<QString, QString>> servedRoles = std::make_shared<QHash<QString, QString>>();
+    Fixture f;
+    SourceRecipientPeer peer;
+    OrdinaryRejectCase() {
+        f.stream = fullEncryptedStream(); f.stream["role"] = "administrator";
+        f.stream["encryption"] = false; f.stream["current_encryption_key_uuid"] = QJsonValue::Null;
+        f.cipher["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Synthetic ordinary history"}};
+        addSourceRecipientBinding(f); useCompleteSendEcho(f);
+        const auto previous = f.http.handler;
+        f.http.handler = [previous, present = requesterMember, roles = servedRoles](const Request &request) {
+            auto response = previous(request);
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/stream_bindings/") {
+                QJsonArray rows; roles->clear();
+                for (const auto &value : response.data.toArray()) {
+                    const auto row = value.toObject();
+                    if (!*present && row.value("user_uuid").toString() == SourceRecipient) continue;
+                    rows.append(row); roles->insert(row.value("user_uuid").toString(), row.value("role").toString());
+                }
+                response.data = rows;
+            }
+            return response;
+        };
+    }
+    bool start() {
+        if (!f.start() || !peer.prepare(f, false, OtherGeneration)) return false;
+        f.savedRequests.insert(peer.requestId, peer.requestDto);
+        return f.controller.applyRealtimeEvent(cryptoEvent(peer.requestDto))
+            && QTest::qWaitFor([this] { return f.streamGets == 1 && f.bindingGets == 1
+                && f.api.findChildren<QNetworkReply *>().isEmpty() && !row().isEmpty(); }, 2000);
+    }
+    QVariantMap row() const { return incomingKeyRequestRow(f.controller, peer.requestId); }
+    QVariantMap response() const { return f.controller.encryption().value("keyResponse").toMap(); }
+    bool pending(const QByteArray &method, const QString &path) const {
+        for (auto *reply : f.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path() == path
+                && reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray() == method) return true;
+        return false;
+    }
+    bool streamUpdated() {
+        auto event = cryptoEvent(f.stream); auto payload = event.value("payload").toObject();
+        payload["kind"] = "stream.updated"; event["payload"] = payload;
+        return f.controller.applyRealtimeEvent(event);
+    }
 };
 
 // Passive outcome comparison: actual Source produces both public envelopes,
@@ -1121,12 +1182,22 @@ public:
     }
     ~MissingRequestCase() { f.http.handler = previous; gateRelease.release(); } // no dangling state during Fixture/Vault teardown
     bool start() {
-        return f.start() && QTest::qWaitFor([this] {
+        const bool started = f.start();
+        const bool complete = started && QTest::qWaitFor([this] {
             // useChatKeys queues the loaded G/J control work on a zero timer.
             // Wait for its real authority cycle, not a moment before dispatch.
             return cache.available() && f.streamGets == 1 && f.bindingGets == 1
                 && f.api.findChildren<QNetworkReply *>().isEmpty();
         }, 2000);
+        if (!complete) {
+            QJsonArray pending;
+            for (auto *reply : f.api.findChildren<QNetworkReply *>())
+                pending.append(QJsonObject{{"path", reply->url().path()}, {"finished", reply->isFinished()}});
+            qInfo().noquote() << "MISSING_START_DIAGNOSTIC"
+                << QJsonDocument(QJsonObject{{"fixtureStarted", started}, {"cacheAvailable", cache.available()},
+                    {"streamGets", f.streamGets}, {"bindingGets", f.bindingGets}, {"pending", pending}}).toJson(QJsonDocument::Compact);
+        }
+        return complete;
     }
     bool hasApi() const { return f.controller.metaObject()->indexOfMethod("resolveKeyServiceRequest(QString)") >= 0; }
     bool demand(const QString &response = messageId) {
@@ -1842,9 +1913,14 @@ private slots:
             QTRY_COMPARE(incomingKeyRequestRow(c.f.controller, c.requestId).value("status").toString(), QString("rejected"));
             QVERIFY(incomingKeyRequestRow(c.f.controller, c.requestId).value("canManageKeys").toBool());
         }
-        // This proposal adds relevance, not ordinary issuance/import/bootstrap.
-        QVERIFY(!row.value("canGrant").toBool()); QVERIFY(!row.value("canReject").toBool());
-        c.f.controller.grantChatKey(c.requestId); c.f.controller.rejectChatKey(c.requestId); c.f.controller.requestChatKey(returnedId);
+        // Ordinary manager Reject is now a supported action; Grant/request remain
+        // outside this slice. The Source-created R capability and actual Main
+        // click tests verify the manager write. Retain every nonmanager no-write control.
+        const bool managerReject = mode == "admin-without-A";
+        QVERIFY(!row.value("canGrant").toBool()); QCOMPARE(row.value("canReject").toBool(), managerReject);
+        c.f.controller.grantChatKey(c.requestId);
+        if (!managerReject) c.f.controller.rejectChatKey(c.requestId);
+        c.f.controller.requestChatKey(returnedId);
         QVERIFY(missingRequestTransportBarrier(c)); QCOMPARE(c.f.posts, 0); QCOMPARE(c.lookupCount, 0);
     }
 
@@ -3377,6 +3453,198 @@ private slots:
         QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(f.posts, 1);
     }
 
+// Additive slots proposal only; append inside NativeE2eeReadTest. NOT BUILT/RUN.
+// Uses the unchanged actual TLS fixture and pinned SourceRecipientPeer mode.
+// No requestChatKey(), put(), import(), initialize(), or native group-key seed.
+// Additive slots only; old capability assertions are not changed.
+    void ordinaryNonManagersWithoutACannotReject_data() {
+        QTest::addColumn<QString>("role");
+        QTest::newRow("member-no-A") << QString("member");
+        QTest::newRow("moderator-no-A") << QString("moderator");
+    }
+    void ordinaryNonManagersWithoutACannotReject() {
+        QFETCH(QString, role); OrdinaryRejectCase c; c.f.stream["role"] = role; QVERIFY(c.start());
+        QCOMPARE(c.servedRoles->value(userId), role); QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QCOMPARE(c.row().value("status").toString(), QString("pending"));
+        QVERIFY(!c.row().value("hasRequestedKey").toBool()); QVERIFY(!c.row().value("canManageKeys").toBool());
+        QVERIFY(!c.row().value("offerGrant").toBool()); QVERIFY(!c.row().value("offerReject").toBool());
+        c.f.controller.grantChatKey(c.peer.requestId); c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 0);
+        const auto result = c.peer.finish(); QVERIFY(result.value("ok").toBool());
+        QVERIFY(result.value("recipientStillPending").toBool()); QVERIFY(!result.value("recipientHasKey").toBool());
+    }
+
+    void ordinaryRejectNeedsFreshManagerAuthorityAfterDemotionAndRestore() {
+        OrdinaryRejectCase c; QVERIFY(c.start()); QVERIFY(c.row().value("canReject").toBool());
+        c.f.streamDelay = 1200;
+        for (const auto &role : {QString("member"), QString("administrator")}) {
+            const auto details = c.f.streamGets, bindings = c.f.bindingGets;
+            c.f.stream["role"] = role; QVERIFY(c.streamUpdated());
+            QTRY_COMPARE(c.f.streamGets, details + 1); // real TLS handler acknowledgment first
+            QTRY_VERIFY(c.pending("GET", "/api/workspace/v1/messenger/streams/" + streamId));
+            QVERIFY(!c.row().value("canReject").toBool());
+            c.f.controller.rejectChatKey(c.peer.requestId); QCOMPARE(c.f.posts, 0);
+            QTRY_COMPARE(c.f.bindingGets, bindings + 1);
+            QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+            QTRY_VERIFY(!c.row().isEmpty()); QCOMPARE(c.servedRoles->value(userId), role);
+            QCOMPARE(c.row().value("canReject").toBool(), role == "administrator");
+            QVERIFY(!c.row().value("offerGrant").toBool()); QCOMPARE(c.f.posts, 0);
+        }
+        QVERIFY(c.peer.finish().value("recipientStillPending").toBool());
+    }
+
+    void ordinaryRequesterRemovalRevokesRejectBeforeDelayedAuthorityReturns() {
+        OrdinaryRejectCase c; QVERIFY(c.start()); QVERIFY(c.row().value("canReject").toBool());
+        const auto details = c.f.streamGets, bindings = c.f.bindingGets;
+        *c.requesterMember = false; c.f.streamDelay = 1200;
+        auto event = selfBindingEvent("stream_binding.deleted"); auto row = event.value("payload").toObject();
+        row["uuid"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        row["user_uuid"] = SourceRecipient; row["who_uuid"] = userId; event["payload"] = row;
+        QVERIFY(c.f.controller.applyRealtimeEvent(event));
+        QTRY_COMPARE(c.f.streamGets, details + 1);
+        QTRY_VERIFY(c.pending("GET", "/api/workspace/v1/messenger/streams/" + streamId));
+        QVERIFY(!c.row().value("canReject").toBool()); c.f.controller.rejectChatKey(c.peer.requestId); QCOMPARE(c.f.posts, 0);
+        QTRY_COMPARE(c.f.bindingGets, bindings + 1); QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!c.servedRoles->contains(SourceRecipient));
+        QTRY_VERIFY(!c.row().isEmpty()); QVERIFY(!c.row().value("canManageKeys").toBool());
+        QVERIFY(!c.row().value("canReject").toBool()); c.f.controller.rejectChatKey(c.peer.requestId); QCOMPARE(c.f.posts, 0);
+        QVERIFY(c.peer.finish().value("recipientStillPending").toBool());
+    }
+
+    void ordinaryRejectCheckAndRetryKeepTheExactFrozenResponse_data() {
+        QTest::addColumn<QString>("mode");
+        for (const auto *mode : {"applied-503-GET-only", "absent-Check-then-identical-Retry", "new-default-retains-original-T"})
+            QTest::newRow(mode) << QString(mode);
+    }
+    void ordinaryRejectCheckAndRetryKeepTheExactFrozenResponse() {
+        QFETCH(QString, mode); OrdinaryRejectCase c; QVERIFY(c.start()); QVERIFY(c.row().value("canReject").toBool());
+        const bool applied = mode.startsWith("applied"); UncertainIssuerPost uncertain(c.f, applied);
+        c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(uncertain.failed); QTRY_COMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        const auto frozen = uncertain.frozen, canonical = uncertain.canonical;
+        const auto path = "/api/workspace/v1/messenger/messages/" + canonical.value("uuid").toString();
+        const auto gets = exactRequests(c.f, "GET", path); QCOMPARE(c.f.posts, 1);
+        QVERIFY(c.response().value("canCheck").toBool()); c.f.controller.checkChatKeyResponse(c.peer.requestId);
+        QTRY_COMPARE(exactRequests(c.f, "GET", path), gets + 1); QTRY_VERIFY(!c.response().value("busy").toBool());
+        QCOMPARE(c.f.posts, 1);
+        if (applied) QCOMPARE(c.response().value("phase").toString(), QString("ready"));
+        else {
+            QCOMPARE(c.response().value("phase").toString(), QString("uncertain"));
+            if (mode.startsWith("new-default")) {
+                c.f.stream["default_topic_uuid"] = topicId; QVERIFY(c.streamUpdated());
+                QVERIFY(c.f.controller.applyRealtimeEvent(updatedControl(c.peer.requestDto)));
+                QTRY_VERIFY(c.response().value("canRetry").toBool());
+            }
+            const auto details = c.f.streamGets, bindings = c.f.bindingGets;
+            c.f.controller.retryChatKeyResponse(c.peer.requestId);
+            QTRY_COMPARE(c.response().value("phase").toString(), QString("ready"));
+            QCOMPARE(c.f.posts, 2); QCOMPARE(c.f.requestBody, frozen);
+            QCOMPARE(c.f.streamGets, details + 1); QCOMPARE(c.f.bindingGets, bindings + 1);
+            QCOMPARE(exactRequests(c.f, "GET", "/api/workspace/v1/messenger/messages/" + c.peer.requestId), 1);
+        }
+        QCOMPARE(c.f.requestBody.value("topic_uuid").toString(), secondTopicId);
+        QCOMPARE(c.f.requestBody.value("payload").toObject().value("kind").toString(), QString("key_reject"));
+        const auto result = c.peer.finish(c.f.savedRequest, frozen.value("uuid").toString());
+        QVERIFY(result.value("ok").toBool()); QCOMPARE(result.value("completionOutcome").toString(), QString("rejected"));
+        QVERIFY(!result.value("recipientHasKey").toBool()); QCOMPARE(result.value("recipientPending").toInt(), 0);
+    }
+
+    void ordinaryRejectLatePostCannotPublishIntoAnotherLifetime_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("selected-topic") << QString("selected-topic");
+        QTest::newRow("owner") << QString("owner");
+    }
+    void ordinaryRejectLatePostCannotPublishIntoAnotherLifetime() {
+        QFETCH(QString, mode); OrdinaryRejectCase c; QVERIFY(c.start()); QVERIFY(c.row().value("canReject").toBool());
+        c.f.postDelay = 1200; c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_COMPARE(c.f.posts, 1);
+        QTRY_VERIFY(c.pending("POST", "/api/workspace/v1/messenger/messages/"));
+        const auto publicId = c.f.savedRequest.value("uuid").toString(); QVERIFY(isUuid(publicId));
+        if (mode == "owner") c.f.controller.logout(); else c.f.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(c.response().value("phase").toString() != "ready");
+        QCOMPARE(c.f.posts, 1); QVERIFY(displayed(c.f.controller, publicId).isEmpty());
+        QVERIFY(c.peer.finish().value("recipientStillPending").toBool());
+    }
+
+    void ordinaryManagerRejectsSourceRequestWithoutA_data() {
+        QTest::addColumn<QString>("role");
+        QTest::addColumn<bool>("actualOwner");
+        QTest::newRow("actual-owner/member/no-A/current-null/default-different") << QString("member") << true;
+        QTest::newRow("administrator/no-A/current-null/default-different") << QString("administrator") << false;
+    }
+    void ordinaryManagerRejectsSourceRequestWithoutA() {
+        QFETCH(QString, role); QFETCH(bool, actualOwner);
+        Fixture f; f.stream = fullEncryptedStream();
+        f.stream["encryption"] = false;
+        f.stream["current_encryption_key_uuid"] = QJsonValue::Null;
+        f.stream["role"] = role;
+        if (actualOwner) f.stream["owner"] = userId;
+        f.cipher["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Synthetic ordinary history"}};
+        const auto roles = addSourceRecipientBinding(f);
+        useCompleteSendEcho(f); QVERIFY(f.start());
+        SourceRecipientPeer peer; QVERIFY(peer.prepare(f, false, OtherGeneration));
+        // This is the actual Source-created public request, not a fabricated key pair.
+        f.savedRequests.insert(peer.requestId, peer.requestDto);
+        QCOMPARE(peer.requestDto.value("author_uuid").toString(), SourceRecipient);
+        QCOMPARE(peer.requestDto.value("topic_uuid").toString(), topicId);
+        QVERIFY(parseMessage(peer.requestDto, projectId));
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(peer.requestDto)));
+        QTRY_VERIFY(!incomingKeyRequestRow(f.controller, peer.requestId).isEmpty());
+        QTRY_VERIFY(incomingKeyRequestRow(f.controller, peer.requestId).value("canManageKeys").toBool());
+        // Positive admission witness BEFORE the planned missing-action RED.
+        QCOMPARE(roles->value(userId), role);
+        QCOMPARE(roles->value(SourceRecipient), QString("member"));
+        QCOMPARE(f.streamGets, 1); QCOMPARE(f.bindingGets, 1);
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!f.stream.value("encryption").toBool());
+        QVERIFY(f.stream.value("current_encryption_key_uuid").isNull());
+        const auto row = incomingKeyRequestRow(f.controller, peer.requestId);
+        QCOMPARE(row.value("status").toString(), QString("pending"));
+        QCOMPARE(row.value("keyUuid").toString(), OtherGeneration);
+        QVERIFY(!row.value("ownCurrentDevice").toBool());
+        QVERIFY(!row.value("hasRequestedKey").toBool());
+        QVERIFY(!row.value("offerGrant").toBool());
+        auto missing = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        const auto scrub = qScopeGuard([&] { missing.value.bytes.fill(0); });
+        QCOMPARE(missing.failure, NativeChatKeyVault::Failure::None);
+        QVERIFY(missing.value.bytes.isEmpty());
+        QCOMPARE(f.posts, 0);
+        QVERIFY2(row.value("offerReject").toBool(), "Planned ordinary manager Reject capability is unavailable");
+        QVERIFY(row.value("canReject").toBool());
+        const int details = f.streamGets, bindings = f.bindingGets, topics = f.topicGets;
+        f.controller.rejectChatKey(peer.requestId);
+        QTRY_COMPARE(f.posts, 1);
+        QTRY_COMPARE(f.controller.encryption().value("keyResponse").toMap().value("phase").toString(), QString("ready"));
+        QTRY_COMPARE(incomingKeyRequestRow(f.controller, peer.requestId).value("status").toString(), QString("rejected"));
+        const auto body = f.requestBody, payload = body.value("payload").toObject();
+        QCOMPARE(body.value("stream_uuid").toString(), streamId);
+        QCOMPARE(body.value("topic_uuid").toString(), secondTopicId); // actual default, not R's topic
+        QCOMPARE(payload, (QJsonObject{{"kind", "key_reject"}, {"key_uuid", OtherGeneration},
+            {"request_message_uuid", peer.requestId}, {"sender_device_id", f.vault.device().id},
+            {"recipient_device_id", SourceRecipientDevice}}));
+        const auto canonical = body.value("uuid").toString(); QVERIFY(isUuid(canonical));
+        const auto publicId = QUuid::createUuidV5(QUuid(secondTopicId), canonical.toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(f.savedRequest.value("uuid").toString(), publicId);
+        QCOMPARE(f.savedRequest.value("user_uuid").toString(), userId);
+        QCOMPARE(f.savedRequest.value("author_uuid").toString(), userId);
+        QCOMPARE(f.savedRequest.value("payload").toObject(), payload);
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/" + publicId), 1);
+        QCOMPARE(f.streamGets, details); QCOMPARE(f.bindingGets, bindings); QCOMPARE(f.topicGets, topics);
+        const auto result = peer.finish(f.savedRequest, canonical);
+        QVERIFY(result.value("ok").toBool());
+        QCOMPARE(result.value("completionOutcome").toString(), QString("rejected"));
+        QCOMPARE(result.value("completionRequest").toString(), peer.requestId);
+        QCOMPARE(result.value("completionResponse").toString(), publicId);
+        QCOMPARE(result.value("recipientPending").toInt(), 0);
+        QVERIFY(!result.value("recipientHasKey").toBool());
+        QVERIFY(!result.value("matchesExpected").toBool());
+        // A completed R cannot create another response; duplicate click is not retry authority.
+        f.controller.rejectChatKey(peer.requestId);
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(f.posts, 1);
+        QVERIFY(f.vault.read(f.vault.lease(), {streamId, OtherGeneration}).value.bytes.isEmpty());
+    }
+
     void nativeIssuerGrantsExactGenerationToIndependentSourceRecipient_data() {
         QTest::addColumn<QString>("role"); QTest::addColumn<QString>("current"); QTest::addColumn<bool>("actualOwner");
         QTest::newRow("actual-owner-role-member/current-A/default-different") << QString("member") << QString("A") << true;
@@ -3454,10 +3722,48 @@ private slots:
         QCOMPARE(f.posts, before + 1);
     }
 
+// Separate scope transition: encrypted moderator data + old function body stay
+// byte-exact. Remove ONLY the ordinary data row from the old two-row _data().
+// Add this named ordinary successor; the encryption flag RT transition here is
+// explicitly a legacy synthetic setup, NOT a supported backend mutation/userflow.
+    void ordinaryGrantExclusionSurvivesRenewedAuthorityWhileRejectBecomesAvailable() {
+        Fixture f; f.stream = fullEncryptedStream(); f.stream["role"] = "administrator";
+        const auto roles = addSourceRecipientBinding(f); useCompleteSendEcho(f); QVERIFY(f.start());
+        SourceRecipientPeer peer; QVERIFY(peer.prepare(f, true)); // existing actual encrypted grant seed only
+        auto held = f.vault.read(f.vault.lease(), {streamId, returnedId});
+        const auto scrub = qScopeGuard([&] { held.value.bytes.fill(0); });
+        QCOMPARE(held.failure, NativeChatKeyVault::Failure::None); QCOMPARE(held.value.bytes.size(), 32);
+        const auto posts = f.posts, details = f.streamGets, bindings = f.bindingGets;
+        f.streamDelay = 1200; f.stream["encryption"] = false; f.stream["current_encryption_key_uuid"] = QJsonValue::Null;
+        auto event = cryptoEvent(f.stream); auto payload = event.value("payload").toObject();
+        payload["kind"] = "stream.updated"; event["payload"] = payload; QVERIFY(f.controller.applyRealtimeEvent(event));
+        f.savedRequests.insert(peer.requestId, peer.requestDto);
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(peer.requestDto)));
+        QTRY_COMPARE(f.streamGets, details + 1);
+        const auto pendingDetail = [&] {
+            for (auto *reply : f.api.findChildren<QNetworkReply *>())
+                if (!reply->isFinished() && reply->url().path() == "/api/workspace/v1/messenger/streams/" + streamId
+                    && reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray() == "GET") return true;
+            return false;
+        };
+        QTRY_VERIFY(pendingDetail());
+        QVERIFY(!incomingKeyRequestRow(f.controller, peer.requestId).value("canGrant").toBool());
+        QVERIFY(!incomingKeyRequestRow(f.controller, peer.requestId).value("canReject").toBool());
+        f.controller.grantChatKey(peer.requestId); f.controller.rejectChatKey(peer.requestId); QCOMPARE(f.posts, posts);
+        QTRY_COMPARE(f.bindingGets, bindings + 1); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_VERIFY(incomingKeyRequestRow(f.controller, peer.requestId).value("canReject").toBool());
+        QCOMPARE(roles->value(userId), QString("administrator")); QCOMPARE(roles->value(SourceRecipient), QString("member"));
+        QVERIFY(incomingKeyRequestRow(f.controller, peer.requestId).value("hasRequestedKey").toBool());
+        QVERIFY(!incomingKeyRequestRow(f.controller, peer.requestId).value("offerGrant").toBool());
+        QVERIFY(!incomingKeyRequestRow(f.controller, peer.requestId).value("canGrant").toBool());
+        f.controller.grantChatKey(peer.requestId); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.posts, posts); // no metadata-driven auto reply and no ordinary Grant even with A
+        QVERIFY(peer.finish().value("recipientStillPending").toBool());
+    }
+
     void excludedIssuerPathsDoNotReplyMerelyBecauseTheyPossessA_data() {
         QTest::addColumn<bool>("ordinary");
         QTest::newRow("encrypted-moderator-with-A") << false;
-        QTest::newRow("ordinary-native-route-outside-first-issuer-slice") << true;
     }
     void excludedIssuerPathsDoNotReplyMerelyBecauseTheyPossessA() {
         QFETCH(bool, ordinary);
@@ -5964,6 +6270,223 @@ private slots:
         captureEncryptedUi(window,locale+'-'+mode,"incoming-request-wrapped",peer.requestId);
         QVERIFY2(centered && titleCentered,metrics.constData());
         const bool closed=closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
+    }
+
+// Append inside the existing WORKSPACE_NATIVE_E2EE_UI slots only.
+// Requires the reviewed OrdinaryRejectCase helper from the Core GREEN overlay.
+    void uiOrdinaryManagerRejectsFromTheActualMainAction_data() {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner");
+        QTest::newRow("ordinary-owner-no-A-en-light") << QString("en") << QString("light") << true;
+        QTest::newRow("ordinary-admin-no-A-ru-dark") << QString("ru") << QString("dark") << false;
+    }
+    void uiOrdinaryManagerRejectsFromTheActualMainAction() {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, actualOwner);
+        OrdinaryRejectCase c; auto &f = c.f;
+        if (actualOwner) { f.stream["owner"] = userId; f.stream["role"] = "member"; }
+        // Canonical metadata exists BEFORE this UI2's actual HTTP/history/apply.
+        // Common OrdinaryRejectCase/Fixture/Core helpers are untouched.
+        const auto canonicalUiRow=[](QJsonObject row) {
+            if(row.value("author_uuid").toString().isEmpty()||row.value("created_at").toString().isEmpty()
+                ||(row.contains("user_uuid")&&row.value("user_uuid").toString()!=userId))return QJsonObject{};
+            const bool own=row.value("author_uuid").toString()==userId;
+            if(row.contains("is_own")&&(!row.value("is_own").isBool()||row.value("is_own").toBool()!=own))return QJsonObject{};
+            row["user_uuid"]=userId;row["is_own"]=own;
+            if(!row.contains("updated_at"))row["updated_at"]=row.value("created_at");
+            if(!row.contains("pinned"))row["pinned"]=false;
+            for(const auto *field:{"reactions","reaction_users"})if(!row.contains(field))row[field]=QJsonObject{};
+            return row;
+        };
+        f.cipher=canonicalUiRow(f.cipher);QVERIFY(!f.cipher.isEmpty());
+        const bool publicCapture=!qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY").isEmpty();
+        QHash<QString,QJsonValue> publicSnapshots;QJsonArray publicObservations;
+        QJsonObject actualPublicPost,actualCanonicalGet;bool publicObservationOverflow=false;
+        const auto previousPublicHandler=f.http.handler;
+        const auto restorePublicHandler=qScopeGuard([&f,previousPublicHandler]{f.http.handler=previousPublicHandler;});
+        f.http.handler=[&](const Request &wire) {
+            auto response=previousPublicHandler(wire);const auto path=wire.target.path();
+            const bool post=wire.method=="POST"&&path=="/api/workspace/v1/messenger/messages/";
+            const bool detail=wire.method=="GET"&&path.startsWith("/api/workspace/v1/messenger/messages/")&&!path.endsWith('/');
+            if((post||detail)&&response.status>=200&&response.status<300&&response.data.isObject()) {
+                const auto row=canonicalUiRow(response.data.toObject());response.data=row;
+                f.savedRequests.insert(row.value("uuid").toString(),row);if(post)f.savedRequest=row;
+            }
+            if(publicCapture) {
+                QJsonArray query;for(const auto &item:QUrlQuery(wire.target).queryItems())query.append(QJsonArray{item.first,item.second});
+                QJsonObject observed{{"method",QString::fromLatin1(wire.method)},{"path",path},{"query",query},{"status",response.status},{"body",response.data}};
+                bool record=false;
+                if(wire.method=="GET"&&response.status==200) {
+                    if(QStringList{"/api/workspace/v1/messenger/streams/","/api/workspace/v1/messenger/streams/"+streamId,
+                        "/api/workspace/v1/messenger/stream_topics/","/api/workspace/v1/messenger/stream_bindings/","/api/workspace/v1/users/"}.contains(path)) {
+                        publicSnapshots.insert(path,response.data);record=true;
+                    } else if(path=="/api/workspace/v1/messenger/messages/"){publicSnapshots.insert("history",response.data);record=true;}
+                }
+                if(post){observed["requestBody"]=wire.body;actualPublicPost=observed;record=true;}
+                if(detail&&response.status==200){actualCanonicalGet=observed;record=true;}
+                if(record){if(publicObservations.size()<64)publicObservations.append(observed);else publicObservationOverflow=true;}
+            }
+            return response;
+        };
+        // Same three real start steps as c.start(), with R enrichment before RT.
+        QVERIFY(f.start());QVERIFY(c.peer.prepare(f,false,OtherGeneration));
+        c.peer.requestDto=canonicalUiRow(c.peer.requestDto);QVERIFY(!c.peer.requestDto.isEmpty());
+        f.savedRequests.insert(c.peer.requestId,c.peer.requestDto);
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(c.peer.requestDto)));
+        QTRY_COMPARE(f.streamGets,1);QTRY_COMPARE(f.bindingGets,1);
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()&&!c.row().isEmpty());
+        QTRY_VERIFY(c.row().value("canReject").toBool());
+        QCOMPARE(c.servedRoles->value(userId), actualOwner ? QString("member") : QString("administrator"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QVERIFY(!f.stream.value("encryption").toBool()); QVERIFY(f.stream.value("current_encryption_key_uuid").isNull());
+        QVERIFY(!c.row().value("hasRequestedKey").toBool()); QVERIFY(!c.row().value("offerGrant").toBool());
+        auto key = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        const auto scrub = qScopeGuard([&] { key.value.bytes.fill(0); });
+        QCOMPARE(key.failure, NativeChatKeyVault::Failure::None); QVERIFY(key.value.bytes.isEmpty());
+        const auto posts = f.posts, details = f.streamGets, bindings = f.bindingGets, topics = f.topicGets;
+        const auto oldDraft = f.controller.draft(); QCOMPARE(posts, 0);
+        NativePreferences preferences(f.directory.filePath("ordinary-reject-happy-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data())) QTest::qFail("Ordinary Reject window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!rendered.isEmpty());
+        QCOMPARE(preferences.locale(), locale); QCOMPARE(preferences.mode(), mode);
+        QVERIFY(!window->property("encryptedConversation").toBool());
+        expandInitialServiceGroup(window, c.peer.requestId); QVERIFY(!QTest::currentTestFailed());
+        auto *service = encryptedUiItem(window, "keyRequestService-" + c.peer.requestId); QVERIFY(service);
+        auto *button = encryptedUiItem(window, "rejectChatKeyButton-" + c.peer.requestId); QVERIFY(button); QVERIFY(button->isEnabled());
+        QCOMPARE(button->property("text").toString(), locale == "ru" ? QString("Отклонить") : QString("Reject"));
+        QVERIFY(!encryptedUiItem(window, "grantChatKeyButton-" + c.peer.requestId));
+        auto *list = encryptedUiItem(window, "messageList"); QVERIFY(list);
+        const auto actionInsideViewport = [&] {
+            auto *action = encryptedUiItem(window, "rejectChatKeyButton-" + c.peer.requestId);
+            return action && action->window() == window && action->width() > 0 && action->height() > 0
+                && QRectF(list->mapToScene(QPointF{}), list->size()).contains(QRectF(action->mapToScene(QPointF{}), action->size()));
+        };
+        QTRY_VERIFY(actionInsideViewport());
+        const auto previousActionPoint = button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint();
+        QJsonObject publicPresentation,publicRoute;QJsonArray publicVisibleRows;
+        const QString publicScenario="ordinary-reject-"+QString(actualOwner?"owner":"admin")+'-'+locale+'-'+mode;
+        const QString publicPreStem="native-encrypted-"+publicScenario+"-pre-click-expanded";
+        const auto publicFacts=[](const QVariantMap &row) {
+            QJsonObject safe;
+            for(const auto *field:{"id","authorId","keyUuid","name","deviceName","status"})safe[field]=row.value(field).toString();
+            for(const auto *field:{"ownCurrentDevice","canManageKeys","hasRequestedKey","offerGrant","offerReject","canGrant","canReject","pending"})safe[field]=row.value(field).toBool();
+            return safe;
+        };
+        if(publicCapture) {
+            QCOMPARE(window->size(),QSize(1440,900));QCOMPARE(window->devicePixelRatio(),qreal(1));
+            QCOMPARE(f.controller.selectedStream(),streamId);QCOMPARE(f.controller.selectedTopic(),topicId);
+            QCOMPARE(f.controller.conversationKind(),QString("topic"));QVERIFY(f.controller.hasConversation());
+            QVERIFY(f.controller.messageHistoryReady());
+            publicPresentation=publicFacts(c.row());QCOMPARE(publicPresentation.value("status").toString(),QString("pending"));
+            QVERIFY(publicPresentation.value("canManageKeys").toBool()&&publicPresentation.value("canReject").toBool());
+            for(const auto &entry:f.controller.messages()) {
+                const auto id=entry.toMap().value("id").toString();
+                if(id==f.cipher.value("uuid").toString())publicVisibleRows.append(f.cipher);
+                else if(id==c.peer.requestId)publicVisibleRows.append(c.peer.requestDto);
+                else QFAIL("Unexpected ordinary capture row");
+            }
+            QCOMPARE(publicVisibleRows.size(),2);
+            publicRoute={{"selectedStream",f.controller.selectedStream()},{"selectedTopic",f.controller.selectedTopic()},
+                {"conversationKind",f.controller.conversationKind()},{"hasConversation",f.controller.hasConversation()},{"title",f.controller.title()}};
+            captureEncryptedUi(window,publicScenario,"pre-click-expanded",c.peer.requestId);
+        }
+        QSignalSpy clicked(button, SIGNAL(clicked())); QVERIFY(clicked.isValid());
+        encryptedUiClick(button); QTRY_COMPARE(clicked.size(), 1);
+        QTRY_COMPARE(f.posts, posts + 1);
+        QTRY_COMPARE(c.response().value("phase").toString(), QString("ready"));
+        QTRY_COMPARE(c.row().value("status").toString(), QString("rejected"));
+        const auto body = f.requestBody, payload = body.value("payload").toObject();
+        const auto canonical = body.value("uuid").toString(); QVERIFY(isUuid(canonical));
+        const auto publicId = QUuid::createUuidV5(QUuid(secondTopicId), canonical.toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(body.value("stream_uuid").toString(), streamId); QCOMPARE(body.value("topic_uuid").toString(), secondTopicId);
+        QVERIFY(body.value("topic_uuid") != c.peer.requestDto.value("topic_uuid"));
+        QCOMPARE(payload, (QJsonObject{{"kind", "key_reject"}, {"key_uuid", OtherGeneration},
+            {"request_message_uuid", c.peer.requestId}, {"sender_device_id", f.vault.device().id}, {"recipient_device_id", SourceRecipientDevice}}));
+        QCOMPARE(f.savedRequest.value("uuid").toString(), publicId);
+        QCOMPARE(f.savedRequest.value("user_uuid").toString(), userId); QCOMPARE(f.savedRequest.value("author_uuid").toString(), userId);
+        QCOMPARE(f.savedRequest.value("payload").toObject(), payload);
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/" + publicId), 1);
+        QCOMPARE(f.streamGets, details); QCOMPARE(f.bindingGets, bindings); QCOMPARE(f.topicGets, topics);
+        const auto result = c.peer.finish(f.savedRequest, canonical); QVERIFY(result.value("ok").toBool());
+        QCOMPARE(result.value("completionOutcome").toString(), QString("rejected"));
+        QCOMPARE(result.value("completionRequest").toString(), c.peer.requestId); QCOMPARE(result.value("completionResponse").toString(), publicId);
+        QCOMPARE(result.value("recipientPending").toInt(), 0); QVERIFY(!result.value("recipientHasKey").toBool());
+        const auto terminal = locale == "ru" ? QString("Запрос отклонён.") : QString("Request rejected.");
+        const auto terminalReady = [&] { auto *holder = encryptedUiItem(window, "keyRequestService-" + c.peer.requestId); return holder && encryptedUiText(holder, terminal); };
+        QTRY_VERIFY(terminalReady());
+        QVERIFY(!encryptedUiItem(window, "grantChatKeyButton-" + c.peer.requestId));
+        QVERIFY(!encryptedUiItem(window, "rejectChatKeyButton-" + c.peer.requestId));
+        if(publicCapture) {
+            const auto completeUiRow=[](const QJsonObject &raw) {
+                for(const auto *field:{"uuid","project_id","stream_uuid","topic_uuid","author_uuid","user_uuid","created_at","updated_at"})
+                    if(!raw.value(field).isString()||raw.value(field).toString().isEmpty())return false;
+                for(const auto *field:{"read","pinned","starred","is_own"})if(!raw.value(field).isBool())return false;
+                return raw.value("payload").isObject()&&raw.value("reactions").isObject()&&raw.value("reaction_users").isObject();
+            };
+            QVERIFY(completeUiRow(f.cipher)&&completeUiRow(c.peer.requestDto)&&completeUiRow(f.savedRequest));
+            QVERIFY(parseMessage(c.peer.requestDto,projectId));QVERIFY(parseMessage(f.cipher,projectId));
+            QCOMPARE(actualPublicPost.value("requestBody").toObject(),f.requestBody);
+            QCOMPARE(actualPublicPost.value("body").toObject(),f.savedRequest);QCOMPARE(actualCanonicalGet.value("body").toObject(),f.savedRequest);
+            QCOMPARE(actualPublicPost.value("status").toInt(),201);QCOMPARE(actualCanonicalGet.value("status").toInt(),200);
+            QVERIFY(!publicObservationOverflow);QCOMPARE(f.posts,1);
+            const auto terminalFacts=publicFacts(c.row());QCOMPARE(terminalFacts.value("status").toString(),QString("rejected"));
+            for(const auto *field:{"offerGrant","offerReject","canGrant","canReject","pending"})QVERIFY(!terminalFacts.value(field).toBool());
+            QCOMPARE(f.controller.selectedStream(),publicRoute.value("selectedStream").toString());
+            QCOMPARE(f.controller.selectedTopic(),publicRoute.value("selectedTopic").toString());
+            const auto now=f.controller.messages();QCOMPARE(now.size(),publicVisibleRows.size());
+            for(qsizetype i=0;i<now.size();++i)QCOMPARE(now[i].toMap().value("id").toString(),publicVisibleRows[i].toObject().value("uuid").toString());
+            const auto snapshot=[&](const QString &path){const bool found=publicSnapshots.contains(path);return QJsonObject{{"observed",found},{"body",found?publicSnapshots.value(path):QJsonValue(QJsonValue::Null)}};};
+            QJsonObject catalog;for(const auto &entry:publicSnapshots.value("/api/workspace/v1/messenger/streams/").toArray())
+                if(entry.toObject().value("uuid").toString()==streamId)catalog=entry.toObject();
+            QCOMPARE(catalog,f.stream);QCOMPARE(publicSnapshots.value("/api/workspace/v1/messenger/streams/"+streamId).toObject(),f.stream);
+            const auto capturedTopics=publicSnapshots.value("/api/workspace/v1/messenger/stream_topics/");
+            const auto capturedBindings=publicSnapshots.value("/api/workspace/v1/messenger/stream_bindings/");
+            const auto capturedUsers=publicSnapshots.value("/api/workspace/v1/users/");
+            QVERIFY(capturedTopics.isArray()&&capturedBindings.isArray()&&capturedUsers.isArray());
+            QCOMPARE(publicSnapshots.value("history").toArray(),QJsonArray{f.cipher});
+            QJsonArray visibleIds;QJsonObject labels{{c.peer.requestDto.value("author_uuid").toString(),publicPresentation.value("name")}};
+            for(const auto &entry:publicVisibleRows){const auto raw=entry.toObject();visibleIds.append(raw.value("uuid"));labels[raw.value("author_uuid").toString()]=displayed(f.controller,raw.value("uuid").toString()).value("author").toString();}
+            const auto device=c.peer.requestDto.value("payload").toObject().value("device_name").toString().trimmed();QVERIFY(!device.isEmpty());
+            QJsonObject completion;for(const auto *field:{"ok","completionOutcome","completionRequest","completionResponse","recipientPending","recipientHasKey"})completion[field]=result.value(field);
+            const QString publicTerminalStem="native-encrypted-"+publicScenario+"-post-canonical-terminal";
+            captureEncryptedUi(window,publicScenario,"post-canonical-terminal",c.peer.requestId);
+            QJsonObject pack{{"schema","native-ordinary-reject-public-v1"},{"synthetic",true},
+                {"sourceProvenance",QJsonObject{{"actualNativeCase",QString::fromLatin1(QTest::currentTestFunction())+':'+QString::fromLatin1(QTest::currentDataTag())},
+                    {"state","Actual public transport/presentation; external Root source/binary receipt; Source adapter is presentation-only"}}},
+                {"ids",QJsonObject{{"project",projectId},{"user",userId},{"stream",streamId},{"topic",topicId},{"defaultTopic",secondTopicId},
+                    {"key",OtherGeneration},{"request",c.peer.requestId},{"response",publicId},{"canonical",canonical}}},
+                {"route",publicRoute},{"viewerName",f.controller.viewerDisplayName()},{"authorLabels",labels},
+                {"request",c.peer.requestDto},{"response",f.savedRequest},{"messages",publicVisibleRows},{"catalog",catalog},
+                {"topics",capturedTopics},{"bindings",capturedBindings},{"users",capturedUsers},
+                {"presentation",publicPresentation},{"terminalPresentation",terminalFacts},
+                {"publicState",QJsonObject{{"ordinaryNative",!f.stream.value("encryption").toBool()&&f.stream.value("source_name").toString()=="native"},
+                    {"vaultAvailable",f.vault.available()},{"currentKeyNull",f.stream.value("current_encryption_key_uuid").isNull()},
+                    {"requestedKeyReadOkay",key.failure==NativeChatKeyVault::Failure::None},{"requestedKeyReadEmpty",key.value.bytes.isEmpty()}}},
+                {"capture",QJsonObject{{"locale",locale},{"mode",mode},{"phase","pre-click-expanded"},{"terminalPhase","post-canonical-terminal"},
+                    {"viewport",QJsonObject{{"width",window->width()},{"height",window->height()},{"dpr",window->devicePixelRatio()}}},
+                    {"frame",publicPreStem+".png"},{"metrics",publicPreStem+".json"},{"terminalFrame",publicTerminalStem+".png"},{"terminalMetrics",publicTerminalStem+".json"}}},
+                {"transport",QJsonObject{{"snapshots",QJsonObject{{"catalog",snapshot("/api/workspace/v1/messenger/streams/")},{"detail",snapshot("/api/workspace/v1/messenger/streams/"+streamId)},
+                    {"topics",snapshot("/api/workspace/v1/messenger/stream_topics/")},{"bindings",snapshot("/api/workspace/v1/messenger/stream_bindings/")},
+                    {"users",snapshot("/api/workspace/v1/users/")},{"history",snapshot("history")}}},{"observations",publicObservations},{"messagePost",actualPublicPost},{"canonicalGet",actualCanonicalGet},
+                    {"exactMessagePostCount",f.posts},{"canonicalGetCount",exactRequests(f,"GET","/api/workspace/v1/messenger/messages/"+publicId)}}},
+                {"workerProjection",QJsonValue::Null},{"sourceRecipientCompletion",completion},
+                {"expected",QJsonObject{{"actor",publicPresentation.value("name")},{"title",QJsonObject{{"en",QString("requested a security key for device “%1”").arg(device)},{"ru",QString("запросил(а) ключ безопасности для устройства «%1»").arg(device)}}},
+                    {"description",QJsonObject{{"en","This device does not have the requested key"},{"ru","На этом устройстве нет запрошенного ключа"}}},
+                    {"rejectLabel",QJsonObject{{"en","Reject"},{"ru","Отклонить"}}},{"terminalStatus",QJsonObject{{"en","Request rejected."},{"ru","Запрос отклонён."}}},
+                    {"visibleIds",visibleIds},{"postCount",1},{"canonicalGetCount",1}}}};
+            const auto directory=qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY");
+            QFile output(QDir(directory).filePath("native-"+publicScenario+".public-inputs.json"));QVERIFY(output.open(QIODevice::WriteOnly));
+            const auto bytes=QJsonDocument(pack).toJson(QJsonDocument::Indented);QCOMPARE(output.write(bytes),qint64(bytes.size()));
+        }
+        // Real second input at the old action location cannot write a second response.
+        QTest::mouseClick(window, Qt::LeftButton, {}, previousActionPoint);
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(f.posts, posts + 1);
+        QCOMPARE(f.controller.draft(), oldDraft);
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
     }
 
     void uiIncomingKeyRequestUsesActualNativeResponseButtons_data() {

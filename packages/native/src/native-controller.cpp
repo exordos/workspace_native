@@ -1453,6 +1453,25 @@ bool NativeController::chatIssuerAllowed() const
     return m_chatAuthority.issuerOwner == m_session->user() || role == "owner" || role == "administrator";
 }
 
+bool NativeController::chatRejectAllowed(const ChatRequestFact &fact) const
+{
+    const auto *stream = currentStream();
+    if (!stream) return false;
+    if (stream->encrypted) return chatIssuerAllowed();
+    // Ordinary managers may reject a current participant without possessing A.
+    // Grant and exact-generation holder relay retain their existing scope.
+    if (!stream->security || stream->security->viewer != m_session->user()
+        || stream->security->source != "native" || !stream->security->provider.isEmpty()
+        || !stream->security->providerIdentity.isEmpty() || !chatContext(m_chatEpoch, m_selection)
+        || !m_chatAuthority.ready || m_chatAuthority.epoch != m_chatEpoch
+        || m_chatAuthority.owner != ownerKey() || m_chatAuthority.stream != m_stream
+        || fact.deleted || fact.stream != m_stream) return false;
+    const auto role = m_chatAuthority.roles.value(m_session->user());
+    const bool manager = m_chatAuthority.issuerOwner == m_session->user()
+        || role == "owner" || role == "administrator";
+    return manager && (m_chatAuthority.issuerOwner == fact.author || m_chatAuthority.roles.contains(fact.author));
+}
+
 bool NativeController::chatRequestMatches(const ChatRequestFact &fact, const ChatKeyResponse &intent) const
 {
     return !fact.deleted && fact.stream == intent.stream && fact.key == intent.key && fact.author == intent.requester
@@ -1488,6 +1507,7 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
         const bool ordinaryEligible = ordinary && participant
             && (m_chatAuthority.issuerOwner == m_session->user() || selfRole == "owner" || selfRole == "administrator"
                 || key.state == ChatKeyAvailability::Present);
+        const bool rejectAllowed = chatRejectAllowed(fact);
         const bool pending = m_chatKeyResponse && m_chatKeyResponse->request == id && m_chatKeyResponse->busy;
         const auto status = fact.outcome.isEmpty() ? QStringLiteral("pending") : fact.outcome;
         rows.append(QVariantMap{{"id", id}, {"authorId", fact.author},
@@ -1496,9 +1516,9 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
             {"ownCurrentDevice", fact.author == m_session->user() && fact.device == localDevice},
             {"canManageKeys", ordinary ? ordinaryEligible : manager}, {"hasRequestedKey", key.state == ChatKeyAvailability::Present},
             {"offerGrant", manager && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"offerReject", manager && valid && status == "pending"},
+            {"offerReject", rejectAllowed && valid && status == "pending"},
             {"canGrant", allowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"canReject", allowed && valid && status == "pending"},
+            {"canReject", rejectAllowed && !busy && !retained && valid && status == "pending"},
             {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : QString{}}});
     }
     return rows;
@@ -1614,20 +1634,21 @@ bool NativeController::chatKeyResponseOwned(bool writing) const
         || intent.user != m_session->user() || intent.stream != m_stream || intent.deleted
         || (m_chatAccessKnown && !m_chatReadableStreams.contains(intent.stream))
         || !m_catalogVerified || m_snapshotActive || m_syncBlocked || stream == m_streams.cend()
-        || !stream->encrypted || !stream->security || stream->security->viewer != intent.user
+        || (!stream->encrypted && intent.action != "reject") || !stream->security || stream->security->viewer != intent.user
         || stream->security->source != "native" || !stream->security->provider.isEmpty()
         || !stream->security->providerIdentity.isEmpty()
         || !QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(stream->role)) return false;
     // GET status does not read or restore the group key, device or request pair.
     if (!writing) return true;
-    if (!chatIssuerAllowed() || intent.materialLost || !intent.vault || intent.vault != m_chatKeys
+    if (intent.materialLost || !intent.vault || intent.vault != m_chatKeys
         || !sameChatLease(intent.vaultLease, m_chatKeys->lease()) || m_chatRequestFactsLimited
         || !m_chatAuthority.topics.contains(intent.topic)) return false;
     if (m_topicsVerified && std::none_of(m_topics.cbegin(), m_topics.cend(),
         [&](const Topic &topic) { return topic.uuid == intent.topic; })) return false;
     const auto fact = m_chatRequestFacts.constFind(intent.request);
     if (fact == m_chatRequestFacts.cend() || !chatRequestMatches(*fact, intent)
-        || (!fact->outcome.isEmpty() && fact->response != intent.publicId)) return false;
+        || (!fact->outcome.isEmpty() && fact->response != intent.publicId)
+        || (intent.action == "reject" ? !chatRejectAllowed(*fact) : !chatIssuerAllowed())) return false;
     if (intent.action == "grant") {
         const auto key = m_chatIssueKeys.constFind(intent.key);
         if (key == m_chatIssueKeys.cend() || key->state != ChatKeyAvailability::Present || key->deletion != intent.deletion) return false;
@@ -1687,11 +1708,12 @@ void NativeController::startChatKeyResponse(const QString &request, bool grant)
     const QPointer<NativeController> lookupGuard(this);
     checkChatLifetime();
     if (!lookupGuard) return;
-    if (!chatIssuerAllowed() || m_chatBusy || (m_chatKeyResponse && m_chatKeyResponse->phase != "ready")
+    if (m_chatBusy || (m_chatKeyResponse && m_chatKeyResponse->phase != "ready")
         || m_chatRequestFactsLimited) return;
     const auto found = m_chatRequestFacts.constFind(request);
     if (found == m_chatRequestFacts.cend() || found->deleted || found->stream != m_stream || !found->outcome.isEmpty()
-        || !isUuid(found->key) || found->device.isEmpty() || !isUuid(found->author)) return;
+        || !isUuid(found->key) || found->device.isEmpty() || !isUuid(found->author)
+        || (grant ? !chatIssuerAllowed() : !chatRejectAllowed(*found))) return;
     const auto publicKey = strictChatBase64(found->publicKey, 2048);
     if (publicKey.isEmpty() || (grant && publicKey.size() != 32) || !isUuid(m_chatAuthority.defaultTopic)) return;
     const auto fact = *found;

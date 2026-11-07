@@ -379,6 +379,7 @@ private:
         bool busy = false, dispatched = false, materialLost = false, statusOnly = false, deleted = false, holdsField = false;
     };
     bool chatIssuerAllowed() const;
+    bool chatRejectAllowed(const ChatRequestFact &fact) const;
     bool chatRequestMatches(const ChatRequestFact &fact, const ChatKeyResponse &intent) const;
     QVariantList chatKeyRequestsMetadata() const;
     QVariantMap chatKeyResponseMetadata() const;

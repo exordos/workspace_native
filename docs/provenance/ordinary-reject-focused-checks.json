@@ -1,0 +1,16 @@
+{
+  "schema": "workspace-native-ordinary-reject-focus-v1",
+  "nativeCaptureSourceSha256": "3bab9800e667c5232c72397231cdd4e3a65e6d98d2295bd7ee3f0146fafc7f98",
+  "freshStandaloneBuild": true,
+  "coreQtCount": 14,
+  "mainQtCount": 4,
+  "actualMainCases": [
+    "ordinary-owner-no-A-en-light",
+    "ordinary-admin-no-A-ru-dark"
+  ],
+  "allSelectedChecksPassed": true,
+  "temporaryDirectoriesRemoved": true,
+  "remainingOwnedProcesses": 0,
+  "wholeCoreStatus": "OPEN - historical cache-fixture startup failure and later no-control authority read observation preserved; no fullsuite acceptance implied",
+  "fullLinuxParity": false
+}
