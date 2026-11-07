@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Workspace Native Preview
+Comment=Native Exordos Workspace development preview
+Exec=workspace-native
+Icon=com.exordos.workspace.native.preview
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupNotify=true
+StartupWMClass=com.exordos.workspace.native.preview

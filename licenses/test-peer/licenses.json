@@ -1,0 +1,44 @@
+[
+  {
+    "package": "@hpke/core",
+    "version": "1.9.0",
+    "license": "licenses/test-peer/hpke-core.LICENSE",
+    "sha256": "ab49bdfb96b9c0117f908b82eb1f690be42028658f5a52fba5553b95fa90cd35"
+  },
+  {
+    "package": "@hpke/dhkem-x25519",
+    "version": "1.8.0",
+    "license": "licenses/test-peer/hpke-dhkem-x25519.LICENSE",
+    "sha256": "ab49bdfb96b9c0117f908b82eb1f690be42028658f5a52fba5553b95fa90cd35"
+  },
+  {
+    "package": "@hpke/chacha20poly1305",
+    "version": "1.8.0",
+    "license": "licenses/test-peer/hpke-chacha20poly1305.LICENSE",
+    "sha256": "ab49bdfb96b9c0117f908b82eb1f690be42028658f5a52fba5553b95fa90cd35"
+  },
+  {
+    "package": "@hpke/common",
+    "version": "1.10.1",
+    "license": "licenses/test-peer/hpke-common.LICENSE",
+    "sha256": "95e193aa2d18b52a542e5ad897ffff83d0d68a1bb045b5a9c370e853ca6d0e4d"
+  },
+  {
+    "package": "@noble/ciphers",
+    "version": "2.4.0",
+    "license": "licenses/test-peer/noble-ciphers.LICENSE",
+    "sha256": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d"
+  },
+  {
+    "package": "@noble/hashes",
+    "version": "2.2.0",
+    "license": "licenses/test-peer/noble-hashes.LICENSE",
+    "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+  },
+  {
+    "package": "esbuild",
+    "version": "0.28.2",
+    "license": "licenses/test-peer/esbuild.LICENSE",
+    "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+  }
+]

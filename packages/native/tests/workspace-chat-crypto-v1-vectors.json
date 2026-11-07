@@ -1,0 +1,116 @@
+{
+  "synthetic": true,
+  "provider": "chat-real-crypto-provider.lib.ts",
+  "sourceSha256": "5d97c92c1734d9bfa1f75fa00aadf66b24a4ab998862fc81623294e31454e7ea",
+  "versions": {
+    "@hpke/core": "1.9.0",
+    "@hpke/dhkem-x25519": "1.8.0",
+    "@hpke/chacha20poly1305": "1.8.0",
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.2.0"
+  },
+  "messages": [
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "",
+      "envelope": "Q5Tn+n1kgZ4twcYFYOAUpZbHlFtagqKuQLG0qR/o4vN8ka9brrefn7KCwOSj8l+m"
+    },
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "SGVsbG8=",
+      "envelope": "sN7QgXWW8uqlu4VcSUnzrSRTrz4jo0wW2aqkeGeCmt77a4zy7FXTBegpcEmLoaZVTdHloik="
+    },
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "0J/RgNC40LLQtdGCIPCfkanwn4+94oCN8J+SuyDigJQg5pel5pys6Kqe",
+      "envelope": "Hgu+tk2AGlMauOcly5xBvvRkhC5g29yuHDB3/hga+fLLBBSTW40b4IErBPZhaZHB1t+lIdJmkJyEe1YgKUH8Fk+eupP/rKWjtX1Z1DfXOOIgdciwcq1o0yG2"
+    },
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "envelope": "P8kzPZaSPwZ67/0woK4SkC6OUob5+xvmuvUUYXAkazbPaTl062f+iqJ7Te4uW/q6VCf5syEZCHrqnXlNus5QaVbtndsAU8RDY8qrghUmvOR1ZEQt56tn+MwWU9Z1CcjMzFaQ7abYYoi9B8cxOuwloYfHS3rhnCRl5UpTLPFcqEcnKkh4WsfvYxLwX8BJ94VVEuHydRf54D8Rq0rrtjTJDa3HlBYLHGRcn0ztQymLMNAebo/DpPSZES1HyQCjkYpiLr+sSYX2l++JNS8wUTAK4t7E1C3cZfJu+R2UkYU+GrxXgBE3aDKgtuOnh16Qu5Fz7LM2nI8rdgRwj/RzsjKivDm+yD4V3gkMamENUvzkiMzW2zrP00QxVotHIrBkPFYD0vt8GyWNaF7IX/Gy2v+S5w=="
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "",
+      "envelope": "YPQ0TzJHm9Urt+jgK4YbtKB+COGnHYURq9n6qGiqHNac3slLlBziMx5i6nqITOuu"
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "SGVsbG8=",
+      "envelope": "WCjAALRQzUdesTXIrZLfiQlyfSQnm3XQs8Mpqu+ZzVoicO9XUG79MUUL5ddOHtiRmsBS6nk="
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "0J/RgNC40LLQtdGCIPCfkanwn4+94oCN8J+SuyDigJQg5pel5pys6Kqe",
+      "envelope": "Rle9CcTS0IkG6o/TpDQKNdOwyRnUCJEQ3FrZSJ1ddUwS0WKTLScLyoY/19k7ra+97mO6HiP45Z4m6aSSBKppIy24XKjmNktRHIYyrICE2ZtKAaEyGHtMu5C4"
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "plaintext": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "envelope": "hXvNiYVMImXBVjGXy2gAsxg+bylk87naiwEcSV+lM6JlzDEKS2mZkasmTBBcB0yMglwjOI7DwwE4LGNeUKp4uX4jFCPdZ4tWrxumH+sSjl4yeHdB/ZtzVZU4L+W1CmKaeA3ltVQgg9rxB0gh4fFmX+4KNotggVlc30x+WNqBDqrpcAH4+KLdr/mXeGMiXdg1FoxMyhAVJdGDZrYpicqZL5GHEK2P7iEg0bZ2fqSs2ieYMek67Er0hmAmZpkLgqXvOSEXr2R017uClZirBSOPO9OeytF+HUk5ny2lQsFYUW2jVMqgijHhViLAHxayHwp/78KhjNT3CvMUsyJIQsKC8LO3UNArCCRm2qIK2riUyXirhNm6C6qHPfsjD68tjya43vDkiVVzjAoKCAEh9pyTbw=="
+    }
+  ],
+  "grants": [
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "requestMessageUuid": "30000000-0000-4000-8000-000000000003",
+      "senderDeviceId": "sender-device",
+      "recipientDeviceId": "recipient-device",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "privateKey": "3rhshjmaa8ld8hbkWS0aVy7Chi4qGdKJ/q02RGQ02p8=",
+      "publicKey": "ZDpFHnDlkCelPNNyebhkJ0btZw15Re4jK9cb97WE5wU=",
+      "envelope": "V1NDRwGtURcIQ5rv92x40+817GysGZgZxuxQAndsq+Xx4XaRKMPGmIzucfaoSG/t92JxTYK8F1bBYZEyDZIob14pj0k6Nyd3bQ79EbY9VF0J62oSHQ=="
+    },
+    {
+      "streamUuid": "10000000-0000-4000-8000-000000000001",
+      "keyUuid": "20000000-0000-4000-8000-000000000002",
+      "requestMessageUuid": "30000000-0000-4000-8000-000000000003",
+      "senderDeviceId": "sender-device",
+      "recipientDeviceId": "recipient-device",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "privateKey": "KFX9E9b5wyXUsXBPZg244qSVis0FxdPY/z6M6FveBEw=",
+      "publicKey": "k10XOiBGsd7DLL5P6U9DwoJwHjEhkA/U8iErDmPcywk=",
+      "envelope": "V1NDRwGtnNkSOJ9iTT+7PskppRTMTmQC7UTcYYqXhPn84RXtaLKT3JNWZAL7SfhBfkbiTpB75rIwOGalsNCXmYZ0DtkfLBreZM4h8VFfknW6xT7Arw=="
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "requestMessageUuid": "30000000-0000-4000-8000-000000000003",
+      "senderDeviceId": "sender-device",
+      "recipientDeviceId": "recipient-device",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "privateKey": "3rhshjmaa8ld8hbkWS0aVy7Chi4qGdKJ/q02RGQ02p8=",
+      "publicKey": "ZDpFHnDlkCelPNNyebhkJ0btZw15Re4jK9cb97WE5wU=",
+      "envelope": "V1NDRwHestZrn63Dbpo5HoepjE75jiaHvAm986+TS9OTgoZcKx3u0GB3FIDBrA1uX/30SiKcpqakgVuEdkXz5uo+a/qT0yapE2mwUgOvAo+Ywb5VtA=="
+    },
+    {
+      "streamUuid": "строка\"\n\u0000/👩🏽‍💻",
+      "keyUuid": "key\\日本語 ",
+      "requestMessageUuid": "30000000-0000-4000-8000-000000000003",
+      "senderDeviceId": "sender-device",
+      "recipientDeviceId": "recipient-device",
+      "groupKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "privateKey": "KFX9E9b5wyXUsXBPZg244qSVis0FxdPY/z6M6FveBEw=",
+      "publicKey": "k10XOiBGsd7DLL5P6U9DwoJwHjEhkA/U8iErDmPcywk=",
+      "envelope": "V1NDRwFjlQ53TEY3tHR//2AyzsY+rbaRaat29miwDF/6UTPdBH17LNgcJJUUMb1Y0ap3nLDALxZhaunrSVuzyhDrVNblPJV1vpFfpMKFusI4jOXFnQ=="
+    }
+  ]
+}

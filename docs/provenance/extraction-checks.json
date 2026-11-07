@@ -1,0 +1,36 @@
+{
+  "schema": "workspace-native-extraction-checks-v1",
+  "sourceSnapshot": "V34",
+  "host": "Linux, Qt 6.10.2",
+  "freshStandaloneConfigureAndAllTargetsBuild": true,
+  "native92ExactImportedSnapshot": true,
+  "inputTests": {
+    "groups": 8,
+    "qtCounts": [
+      3,
+      21,
+      19,
+      10,
+      19,
+      14,
+      8,
+      4
+    ]
+  },
+  "cacheTests": {
+    "groups": 2,
+    "qtCounts": [
+      83,
+      53
+    ]
+  },
+  "sourcePeer": {
+    "case": "sourcePeerOptionalModeKeepsGrantAndDecryptInOneProcess",
+    "qtCount": 3
+  },
+  "allSelectedChecksPassed": true,
+  "runtimeUsesExternalUiCheckoutOrNodeModules": false,
+  "temporaryDirectoriesRemoved": true,
+  "remainingOwnedProcesses": 0,
+  "scope": "Fresh extraction checks. Full23-group standalone rerun, clean-machine/package/live/fullLinux and other platform acceptance remain open. Original accepted-snapshot checks are listed separately in docs/PROJECT.md."
+}

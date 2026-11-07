@@ -1,0 +1,37 @@
+# Only the installed copies are changed. Distribution Qt often strips library
+# RPATHs; executable RUNPATH does not resolve transitive ELF dependencies.
+set(runtime_prefix "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+file(REAL_PATH "${runtime_prefix}" runtime_prefix)
+# Qt's generic deployment places merged catalogs under share/qt6/translations,
+# but Qt 6.10's generated qt.conf omits that non-default directory.
+set(runtime_qt_conf "${runtime_prefix}/@CMAKE_INSTALL_BINDIR@/qt.conf")
+file(READ "${runtime_qt_conf}" runtime_qt_conf_content)
+if(NOT runtime_qt_conf_content MATCHES "(^|\n)Translations[ \t]*=")
+    file(APPEND "${runtime_qt_conf}" "Translations = @CMAKE_INSTALL_DATADIR@/qt6/translations\n")
+endif()
+file(GLOB runtime_libraries
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libQt6*.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libqt6keychain.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libmd4c*.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libcrypto.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libssl.so*")
+set(processed_libraries)
+foreach(library IN LISTS runtime_libraries)
+    file(REAL_PATH "${library}" actual_library)
+    cmake_path(IS_PREFIX runtime_prefix "${actual_library}" NORMALIZE within_package)
+    if(NOT within_package)
+        message(FATAL_ERROR "Refusing to adjust a runtime library outside the package")
+    endif()
+    if(actual_library IN_LIST processed_libraries)
+        continue()
+    endif()
+    list(APPEND processed_libraries "${actual_library}")
+    execute_process(
+        COMMAND "@WORKSPACE_NATIVE_PATCHELF_EXECUTABLE@" --set-rpath "$ORIGIN" "${actual_library}"
+        RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+        message(FATAL_ERROR "Cannot set installed library runtime path: ${patch_error}")
+    endif()
+endforeach()
+list(LENGTH processed_libraries library_count)
+message(STATUS "Finalized ${library_count} installed Qt/keychain/MD4C/OpenSSL library runtime paths")
