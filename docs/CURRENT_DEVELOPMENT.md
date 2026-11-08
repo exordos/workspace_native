@@ -117,6 +117,21 @@ now as a normal assertion; its model/readiness cause is under investigation.
 This does not establish the cause or resolution of the earlier full-run crash.
 [Predicate checks](provenance/service-predicate-checks.json) retain both results.
 
+A separate deterministic regression reproduced new live service messages staying
+collapsed while accepted history waited for queued viewport restoration. At the
+actual ready state publication, history was committed and its initial group was
+closed, but semantic readiness was still false. Main now latches readiness from
+the accepted public history and current scope independently of layout. Existing
+seen/history/manual choices and the positioning guard on offscreen collapse are
+unchanged. The new regression passes, followed by 19 unchanged service controls
+and the complete current UI138 run, without QtTest warnings, skips or runtime
+stderr. Counts include setup/cleanup. This is real HTTP history plus actual Main
+and public live admission, not WSS ordering or live-service acceptance. The
+earlier intermittent assertion and original crash retain unknown causes; the
+new reproduction does not establish them.
+[Semantic readiness checks](provenance/service-semantic-readiness-checks.json)
+record the exact RED, candidate and complete current result.
+
 The first full UI run passed 124 cases and failed four obsolete full-UUID author
 lookups in the locked-message geometry test. Its lookup now requires the accepted
 Source `#` plus eight UUID characters and checks that exact controller caption;

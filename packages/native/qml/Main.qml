@@ -2394,7 +2394,7 @@ ApplicationWindow {
                     return projected;
                 }
                 function finishServiceHistoryReady() {
-                    if (!positioning && root.controller.messageHistoryReady && serviceSession.scope === serviceScope() && !serviceSession.ready)
+                    if (root.controller.messageHistoryReady && serviceSession.scope === serviceScope() && !serviceSession.ready)
                         serviceSession = Object.assign({}, serviceSession, { ready: true });
                     scheduleServiceInspection();
                 }

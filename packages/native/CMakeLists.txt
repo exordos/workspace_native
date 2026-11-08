@@ -261,6 +261,7 @@ if(BUILD_TESTING)
         uiRejectedKeyResponseRefreshesAfterFreshIssuerAuthority
         uiServiceInitialHistoryDisclosureUsesRealKeyboardAndUnmountsBodies
         uiServiceHistoryCommitAndRealtimeHaveDifferentExpansion
+        uiServiceAcceptedHistoryIsSemanticallyReadyBeforeQueuedViewport
         uiServiceExpansionPredicateRejectsAnActuallyAbsentDelegate
         uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch
         uiServiceProductionReducerPreservesManualMergeFocusAndContext

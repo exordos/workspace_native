@@ -739,3 +739,11 @@ These captures are test artifacts and are not live-service acceptance. Compare t
 the existing client using the same content, viewport, locale, palette, scale and
 state before evaluating visual fidelity. Keep run screenshots and logs outside
 the product source tree.
+
+The service-readiness UI regression holds an actual HTTPS history response and
+admits live messages through the public controller API during its real ready
+publication. It checks accepted history, its consumed revision, queued viewport
+restoration, closed initial history and the visible new live body separately.
+Semantic initialization does not wait for layout completion. The current full
+UI138 result and its narrower transport boundary are recorded in
+[semantic readiness checks](provenance/service-semantic-readiness-checks.json).

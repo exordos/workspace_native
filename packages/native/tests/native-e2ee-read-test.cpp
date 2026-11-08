@@ -5888,6 +5888,108 @@ private slots:
         QCOMPARE(f.posts, posts); QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/"), gets);
     }
 
+    void uiServiceAcceptedHistoryIsSemanticallyReadyBeforeQueuedViewport() {
+        Fixture f; f.stream = fullEncryptedStream(); QVERIFY(f.start());
+        NativePreferences preferences(f.directory.filePath("service-publication-boundary.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const QPointer<QQuickWindow> liveWindow(window);
+        const auto close = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeIncubatedEncryptedVisualWindow(window.data()))
+                QTest::qFail("Service publication window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const QPointer<QQuickItem> list(encryptedUiItem(window, "messageList")); QVERIFY(list);
+        QTRY_VERIFY(f.controller.messageHistoryReady());
+        QTRY_VERIFY(serviceUiProperty(list.data(), "serviceSession").toMap().value("ready").toBool());
+        const auto initialCommit = f.controller.historyCommitRevision();
+        const int historyGets = exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/");
+        const auto owner = f.controller.ownerKey(); const auto apiGeneration = f.api.generation();
+        const QString historical = "91000000-0000-4000-8000-000000000001";
+        const QString separator = "91000000-0000-4000-8000-000000000002";
+        const QString live = "91000000-0000-4000-8000-000000000003";
+        const QJsonArray history{groupingMessage("Real HTTP history", messageId, 0), groupingAnnouncement(historical, 1)};
+        const auto previous = f.http.handler;
+        std::function<void()> deliverHistory;
+        f.http.handler = [previous, history, &deliverHistory](const Request &request) {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                Response response{history};
+                response.defer = [&deliverHistory](std::function<void()> send) { deliverHistory = std::move(send); };
+                return response;
+            }
+            return previous(request);
+        };
+        const auto restoreHandler = qScopeGuard([&] { f.http.handler = previous; deliverHistory = {}; });
+        bool armed = true, publicationObserved = false, separatorAccepted = false, liveAccepted = false;
+        bool coreReady = false, liveEnabled = false, positioning = false, viewportPending = false;
+        bool historicalClosed = false, semanticReady = false, postLiveReady = false, liveAuto = false;
+        qulonglong publicationCommit = 0, consumedCommit = 0;
+        int messagesAtPublication = -1, wireHistoryGets = -1;
+        // This subscriber is registered AFTER Main's real stateChanged handler.
+        // historyPage has already published its accepted snapshot; no queued
+        // restoreViewport callback can execute while this direct stack runs.
+        const auto connection = connect(&f.controller, &NativeController::stateChanged, window,
+            [&, guardedWindow = QPointer<QQuickWindow>(window), list,
+                controller = QPointer<NativeController>(&f.controller)] {
+                if (!armed || !guardedWindow || !list || !controller
+                    || controller->historyCommitRevision() <= initialCommit || !controller->messageHistoryReady()) return;
+                armed = false; // set BEFORE the first reentrant admission/signal
+                publicationObserved = true;
+                publicationCommit = controller->historyCommitRevision();
+                coreReady = controller->messageHistoryReady();
+                messagesAtPublication = controller->messages().size();
+                wireHistoryGets = exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/");
+                const auto session = serviceUiProperty(list.data(), "serviceSession").toMap();
+                semanticReady = session.value("ready").toBool();
+                liveEnabled = serviceUiProperty(list.data(), "serviceLiveEnabled").toBool();
+                positioning = serviceUiProperty(list.data(), "positioning").toBool();
+                viewportPending = !serviceUiProperty(list.data(), "pendingViewport").toMap().isEmpty();
+                consumedCommit = serviceUiProperty(list.data(), "consumedHistoryCommit").toULongLong();
+                const auto groups = serviceUiProperty(list.data(), "serviceGroups").toList();
+                historicalClosed = groups.size() == 1 && groups.first().toMap().value("id").toString() == historical
+                    && !groups.first().toMap().value("expanded").toBool();
+                // Real public live-admission API, same as the original UI test.
+                // This is NOT claimed as a WSS transport/ordering test.
+                separatorAccepted = controller->applyRealtimeEvent(cryptoEvent(groupingMessage("New live run", separator, 2)));
+                if (!guardedWindow || !list || !controller) return;
+                liveAccepted = controller->applyRealtimeEvent(cryptoEvent(groupingAnnouncement(live, 3)));
+                if (!guardedWindow || !list || !controller) return;
+                const auto after = serviceUiProperty(list.data(), "serviceSession").toMap();
+                const auto preference = after.value("preferences").toMap().value(live).toMap();
+                postLiveReady = after.value("ready").toBool();
+                liveAuto = preference.value("source").toString() == "auto" && preference.value("expanded").toBool();
+            }, Qt::DirectConnection);
+        const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
+        f.controller.selectStream(streamId); // actual selected-topic -> aggregate opening
+        QTRY_COMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/"), historyGets + 1);
+        QTRY_VERIFY(bool(deliverHistory)); // actual server-acknowledged held HTTP response
+        QVERIFY(!f.controller.messageHistoryReady());
+        auto sendHistory = std::move(deliverHistory); sendHistory();
+        QTRY_VERIFY(publicationObserved);
+        // Positive setup assertions precede the one intended user-visible RED.
+        QVERIFY(coreReady); QVERIFY(liveEnabled); QVERIFY(positioning); QVERIFY(viewportPending);
+        QVERIFY(historicalClosed); QCOMPARE(messagesAtPublication, 2);
+        QCOMPARE(wireHistoryGets, historyGets + 1); QCOMPARE(publicationCommit, initialCommit + 1);
+        QCOMPARE(consumedCommit, publicationCommit); QVERIFY(separatorAccepted); QVERIFY(liveAccepted);
+        QCOMPARE(f.controller.ownerKey(), owner); QCOMPARE(f.api.generation(), apiGeneration);
+        QCOMPARE(f.controller.selectedStream(), streamId); QVERIFY(f.controller.selectedTopic().isEmpty());
+        QTRY_COMPARE(f.controller.messages().size(), 4);
+        QTRY_VERIFY(encryptedUiItem(liveWindow.data(), "serviceGroupToggle-" + historical));
+        QVERIFY(serviceUiExpansionMatches(liveWindow.data(), historical, false));
+        QTRY_VERIFY(encryptedUiItem(liveWindow.data(), "serviceGroupToggle-" + live));
+        qInfo().noquote() << "SERVICE_SEMANTIC_PUBLICATION"
+            << QJsonDocument(QJsonObject{{"readyAtPublication", semanticReady}, {"readyAfterLive", postLiveReady},
+                {"positioning", positioning}, {"viewportPending", viewportPending}, {"liveAuto", liveAuto},
+                {"historyCommit", double(publicationCommit)}, {"consumedHistory", double(consumedCommit)}}).toJson(QJsonDocument::Compact);
+        QTRY_VERIFY(serviceUiExpansionMatches(liveWindow.data(), live, true)); // first intended RED, not an early ready assertion
+        QTRY_VERIFY(encryptedUiItem(liveWindow.data(), "keyAnnouncementService-" + live));
+        QVERIFY(semanticReady); QVERIFY(postLiveReady); QVERIFY(liveAuto);
+        QCOMPARE(f.controller.historyCommitRevision(), publicationCommit);
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/"), historyGets + 1);
+        QCOMPARE(f.posts, 0);
+    }
+
     void uiServiceExpansionPredicateRejectsAnActuallyAbsentDelegate() {
         Fixture f; f.stream = fullEncryptedStream(); QVERIFY(f.start());
         const QString a = "90000000-0000-4000-8000-000000000001";

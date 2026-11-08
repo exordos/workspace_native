@@ -1,0 +1,71 @@
+{
+  "schema": "service-semantic-readiness-checks-v1",
+  "scope": "Accepted history and service expansion readiness are semantic; queued viewport restore does not block new unseen live service auto expansion. One existing Main guard loses only !positioning; historical/seen/manual/ownership and offscreen-collapse guards unchanged.",
+  "sourceRef": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceManifestSha256": "df50c457aaea1f81a437d1258749223bdedbe96a414d1d118175df0e62c658d0",
+  "productPatchSha256": "1cb644e74b839725193cb293484623b98def3637aa53bcc84da9695a7aa24b48",
+  "actualRed": [
+    {
+      "label": "semantic-history-ready-publication-red3",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 17719ms"
+      ],
+      "stdoutSha256": "43a469be8f51906e36176a2b560d2af64ad982d8f53c1a56500c8b5daab0091c",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 17.872
+    }
+  ],
+  "redWitness": {
+    "coreHistoryReady": true,
+    "historyCommitConsumed": true,
+    "initialHistoricalCollapsed": true,
+    "positioning": true,
+    "pendingViewport": true,
+    "semanticReady": false,
+    "liveAutoExpanded": false,
+    "firstFailure": "Actual visible live expanded predicate, after positive acknowledged HTTP/publication/setup witnesses."
+  },
+  "focusedGreen": [
+    {
+      "label": "semantic-history-ready-green3",
+      "totals": [
+        "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 2368ms"
+      ],
+      "stdoutSha256": "89f193345571c2b53661ba24f3b38395a5e00e8ec2eb54dafae2e2e0425d580e",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 2.521
+    },
+    {
+      "label": "service-history-controls",
+      "totals": [
+        "Totals: 19 passed, 0 failed, 0 skipped, 0 blacklisted, 46917ms"
+      ],
+      "stdoutSha256": "acb2438f440f6c95733f59e33cac561be450c0da5e468e6894d08f63bbcd7f12",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 47.063
+    }
+  ],
+  "completeCurrentUi": [
+    {
+      "label": "whole-ui138",
+      "totals": [
+        "Totals: 138 passed, 0 failed, 0 skipped, 0 blacklisted, 319743ms"
+      ],
+      "stdoutSha256": "d56d56ecf9b6b935f89405fa04c8150fde51d56446063b114d81e0b3030cf4ed",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 319.937
+    }
+  ],
+  "fullCurrentUiAccepted": true,
+  "transportBoundary": "Real HTTPS held history response + actual Main + public live admission in direct real stateChanged publication stack; not WSS ordering/end-to-end live service.",
+  "historicalFailures": "The original fullUI SIGSEGV and separate intermittent live-expansion failure retain unknown causes. This independent deterministic reproduction/fix and later complete pass do not establish their causes.",
+  "coreCppUnchangedFromAccepted274": true,
+  "oldTestsAssertionsWaitsRendererWarningPolicyUnchanged": true,
+  "all277SourceRawBinaryHashesAndCleanupVerified": true,
+  "reverseCompositionMatchesD10": true,
+  "remaining": "Complete Linux/full shell/live/installed-account acceptance; other parity work and historical warning causes."
+}
