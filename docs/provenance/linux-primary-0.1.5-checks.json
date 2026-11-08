@@ -1,0 +1,64 @@
+{
+  "status": "PRIMARY_NATIVE_LOGIN_HISTORY_SEND_INCOMING_PASS",
+  "version": "0.1.5",
+  "reviewedUtc": "2026-11-08T20:04:50.770321+00:00",
+  "exactPrimaryCassiServerProjectStreamTopicVerified": true,
+  "actualNativeCredentialFormSubmitted": true,
+  "secretTextNotEmitted": true,
+  "normalHomeAndProductionCache": true,
+  "historyRows": 50,
+  "singleNativeSendWithUuidGetReadback": true,
+  "newApiMessageObservedWithoutManualReloadOrNavigation": true,
+  "explicitWebsocketFrameProof": false,
+  "externalProviderDeliveryProof": false,
+  "normalQuitAndOwnedCleanupVerified": true,
+  "realPrimaryCacheIntentionallyRetained": true,
+  "savedSessionAccepted": false,
+  "savedSessionMetadataObservedBytes": 0,
+  "fullPixelParityAccepted": false,
+  "deployedSourceCommitEstablished": false,
+  "evidence": {
+    "NATIVE-LAUNCH.json": "f76670481e42217e09b97a145761b92fd9578ea2dcb856e364aca080f4428a78",
+    "PRIMARY-CREDENTIAL-SUBMISSION.json": "136d449800525e41542112ac8caeeac6b5a2abcda1c01785fea4090e28a79974",
+    "EXACT-NATIVE-CACHE-OWNER.json": "517103efd492878447933bec69b7a81900fae8772a0480ae71ab7befab302f89",
+    "EXACT-NATIVE-TOPIC-HISTORY.json": "8c108f2c913cd9efca5b60926d5cada3fc9072cbfd47fe5b3e8ff06cbbc26665",
+    "NATIVE-SEND-GET-READBACK.json": "6d08341c9e667147480649cbc94d737f543d60d3d986e9bcfe254004b6c02e2c",
+    "NATIVE-INCOMING-OBSERVATION.json": "111075672868ce899fc9eca10fc7cdc4f6035868a533fd3bc7deea80c373bde5",
+    "NATIVE-LIVE-CAPTURE.json": "50d6d874bb81106df522ce134b7d6387603b7fa287c805fb5ed30a61be52c95c",
+    "SOURCE-LIVE-CAPTURE-FINAL.json": "28b168086a37d9e2f1d8b779ac33d13b49fcff88902e426ba5262ef760009ee9",
+    "ROOT-RESOURCE-CLEANUP.json": "c7ba8be9304453dfd6d06d2ed7b5792cf29e013ecb27a5ee0cf87f05a0ab07dd"
+  },
+  "comparisonPreflightSha256": "66808658d6a1b59dc786257d6a88eac18cdb1a467a71f47a811998f5428d6c4b",
+  "comparisonResultSha256": "afbcaa498678f4456ac2ace286ccf011c2d2b1eaf1080c30eae2052b02c8ba83",
+  "rootReviewSha256": "784f5470b599df3201559005ddc11834e70aa822c484c8a0e74eb0105fd13947",
+  "binarySha256": "5422b4a05761eabb2d42bb6ca47ade45a87ed897a477cfd7df0e3d3e201c402b",
+  "comparison": {
+    "number": 53,
+    "apiUuidReadbackVerified": true,
+    "attachmentDownloadsVerified": true,
+    "sourceRawSize": [
+      1440,
+      900
+    ],
+    "nativeRawSize": [
+      1490,
+      987
+    ],
+    "clientSize": [
+      1440,
+      900
+    ],
+    "rawUnedited": true,
+    "remainingObservedDifferences": [
+      "sidebar",
+      "avatars",
+      "presence"
+    ]
+  },
+  "limits": [
+    "One selected ordinary topic under primary cassi; not every account or encrypted live workflow",
+    "Incoming appeared without manual reload; no explicit WebSocket-frame or external-provider proof",
+    "Saved-account metadata was empty; secure remembered-session persistence/restoration is not accepted",
+    "Full feature/pixel parity and other platforms remain open"
+  ]
+}

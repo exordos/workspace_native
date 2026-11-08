@@ -713,3 +713,26 @@ HTTP2 lines are not bound to a version/request, and no warning-free or external
 root-cause claim follows. All owned processes/private XDG state were removed.
 This is anonymous installed acceptance, not live account/history or credential
 preservation. See [published checks](provenance/linux-published-0.1.5-upgrade-checks.json).
+
+## Published 0.1.5 primary-account check
+
+The normally installed public Linux binary passed the real cassi sign-in form,
+OTP and exact project selection. Its production cache owner matched that account,
+server and project; the selected Desktop topic contained 50 history rows. One
+physical native Send produced one matching server message, independently read
+back by its canonical UUID with the expected author, route and exact Markdown.
+A subsequent API message appeared in the native window without manual reload or
+navigation. The visible source client independently displayed both messages.
+
+Comparison53 contains the two unedited live frames, with equal 1440×900 client
+areas; the native capture also includes its decoration and compositor shadow.
+Sidebar, avatar and presence differences remain visible. The deployed source
+commit was not established. The API message and downloaded attachment hashes
+were verified. Neither full pixel parity, explicit WebSocket-frame attribution
+nor external-provider delivery follows from this check.
+
+Remembered-session restoration remains unaccepted: the observed saved-account
+metadata was empty. Normal sign-in, primary cache ownership and send acceptance
+do not establish OS credential persistence. The application quit normally and
+owned browser, KeePass and capture processes were removed; primary account cache
+data was intentionally retained. See [primary-account checks](provenance/linux-primary-0.1.5-checks.json).
