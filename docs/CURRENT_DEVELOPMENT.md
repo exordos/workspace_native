@@ -736,3 +736,29 @@ metadata was empty. Normal sign-in, primary cache ownership and send acceptance
 do not establish OS credential persistence. The application quit normally and
 owned browser, KeePass and capture processes were removed; primary account cache
 data was intentionally retained. See [primary-account checks](provenance/linux-primary-0.1.5-checks.json).
+
+## 0.1.6 candidate: composer formatting defaults
+
+The focused composer now supports Ctrl+B, Ctrl+I, Ctrl+E and Ctrl+Shift+X for
+bold, italic, inline code and strikethrough. Each action wraps the selection;
+an empty selection puts the caret inside the marker pair. Nonempty selection
+collapses after the closing marker. The existing draft binding, owner/API and
+conversation boundaries remain; no transport or cache schema was added.
+Composition, autorepeat, AltGraph and other input targets retain their guards.
+
+Four actual Main rows first reproduced the missing wrappers. Focused Window10
+and independent Source-peer encrypted UI3 then passed, including exact canonical
+send/readback, decrypted wrapped Markdown, UTF-16/multiline text, rendered-frame
+scroll preservation and synchronous navigation/logout. Root physically verified
+Ctrl+B through native CUA in EN and RU using the same observed scan and actual
+unmodified b/и characters. This is representative layout translation, not an
+independent physical test of I/E/Shift+X. An earlier private manual checkpoint
+expired awaiting Root's acknowledgement before Ctrl+B; its failure is retained.
+The completed run kept the same binary, assertions and 90/210 second budgets.
+
+The coherent local 0.1.6 Release package passed installer6, package-version1,
+ten QML modules and image/message/grant/TLS probes. Configure25 and build18
+warning lines remain recorded; a warning-free build is not claimed. Full
+Window293/encrypted UI142, locale14, CI, publication and installed update remain
+pending. Toolbar, shortcut remapping, full composer/pixel parity and other
+platforms remain open. See [formatting checks](provenance/composer-formatting-checks.json).

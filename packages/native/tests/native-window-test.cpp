@@ -13,6 +13,7 @@
 #include <QCryptographicHash>
 #include <QColor>
 #include <QImage>
+#include <QInputMethodEvent>
 #include <QtMath>
 #include <QApplication>
 #include <QAccessible>
@@ -3006,6 +3007,287 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::failOnWarning(QRegularExpression(".*items in the process of being created at engine destruction.*"));
         QTest::failOnWarning(QRegularExpression(".*(?:[Ff]ailed.*shader|shader.*[Ff]ailed|ShaderEffect.*(?:unsupported|not supported)).*"));
         QTest::failOnWarning(QRegularExpression(".*(?:Cannot open|Error decoding|Cannot load).*qrc:/workspace/.*"));
+    }
+
+    void composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::addColumn<int>("modifiers");
+        QTest::addColumn<QString>("marker");
+        QTest::newRow("bold") << int(Qt::Key_B) << int(Qt::ControlModifier) << QString("**");
+        QTest::newRow("italic") << int(Qt::Key_I) << int(Qt::ControlModifier) << QString("*");
+        QTest::newRow("code") << int(Qt::Key_E) << int(Qt::ControlModifier) << QString("`");
+        QTest::newRow("strike") << int(Qt::Key_X) << int(Qt::ControlModifier | Qt::ShiftModifier) << QString("~~");
+    }
+
+    void composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown()
+    {
+        QFETCH(int, key); QFETCH(int, modifiers); QFETCH(QString, marker);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QJsonObject posted, saved; int posts = 0, confirmations = 0;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path == "/api/workspace/v1/messenger/messages/") {
+                ++posts; posted = request.body;
+                const auto id = QUuid::createUuidV5(QUuid(topicId),
+                    posted.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message(posted.value("payload").toObject().value("content").toString(), id);
+                saved["user_uuid"] = userId; saved["updated_at"] = saved.value("created_at");
+                return {saved, 201};
+            }
+            if (request.method == "GET" && !saved.isEmpty()
+                && path == "/api/workspace/v1/messenger/messages/" + saved.value("uuid").toString()) {
+                ++confirmations; return {saved};
+            }
+            if (request.method == "GET" && path == "/api/workspace/v1/messenger/messages/")
+                return {QJsonArray{}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("composer-formatting.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Composer formatting teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled()); QCOMPARE(controller.selectedTopic(), topicId);
+        click(window, composer.data()); QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto character : QByteArray("before word after")) QTest::keyClick(window, character);
+        QTRY_COMPARE(controller.draft(), QString("before word after"));
+        QTest::keyClick(window, Qt::Key_Home);
+        for (int index = 0; index < 7; ++index) QTest::keyClick(window, Qt::Key_Right);
+        for (int index = 0; index < 4; ++index) QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        QCOMPARE(composer->property("selectedText").toString(), QString("word"));
+        QCOMPARE(composer->property("selectionStart").toInt(), 7);
+        QCOMPARE(composer->property("selectionEnd").toInt(), 11); QCOMPARE(posts, 0);
+        QTest::keyClick(window, Qt::Key(key), Qt::KeyboardModifiers(modifiers));
+        const auto selected = "before " + marker + "word" + marker + " after";
+        // First intended RED: the unchanged Main has no formatting action.
+        QTRY_COMPARE(composer->property("text").toString(), selected);
+        QCOMPARE(controller.draft(), selected); QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("selectionStart").toInt(), 11 + 2 * marker.size());
+        QCOMPARE(composer->property("selectionEnd").toInt(), 11 + 2 * marker.size());
+        QCOMPARE(composer->property("cursorPosition").toInt(), 11 + 2 * marker.size());
+        QCOMPARE(posts, 0); QCOMPARE(confirmations, 0);
+
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto character : QByteArray("abcd")) QTest::keyClick(window, character);
+        QTRY_COMPARE(controller.draft(), QString("abcd"));
+        QTest::keyClick(window, Qt::Key_Home); QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key(key), Qt::KeyboardModifiers(modifiers));
+        QTRY_COMPARE(controller.draft(), "ab" + marker + marker + "cd");
+        QCOMPARE(composer->property("cursorPosition").toInt(), 2 + marker.size());
+        QCOMPARE(composer->property("selectionStart").toInt(), composer->property("selectionEnd").toInt());
+        for (const auto character : QByteArray("inside")) QTest::keyClick(window, character);
+        const auto sentText = "ab" + marker + "inside" + marker + "cd";
+        QTRY_COMPARE(controller.draft(), sentText); QCOMPARE(posts, 0);
+        QSignalSpy sent(&controller, &NativeController::messageSent);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(posts, 1); QTRY_COMPARE(confirmations, 1); QTRY_COMPARE(sent.size(), 1);
+        QCOMPARE(posted.value("stream_uuid").toString(), streamId);
+        QCOMPARE(posted.value("topic_uuid").toString(), topicId);
+        QCOMPARE(posted.value("payload").toObject(), (QJsonObject{{"kind", "markdown"}, {"content", sentText}}));
+        const auto canonical = QUuid::createUuidV5(QUuid(topicId),
+            posted.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(sent.first().at(0).toString(), canonical);
+        QCOMPARE(saved.value("uuid").toString(), canonical);
+        QTRY_COMPARE(controller.draft(), QString{});
+        QTRY_VERIFY(item(window->contentItem(), "message-content-" + canonical));
+        QVERIFY(item(window->contentItem(), "message-content-" + canonical)->property("text").toString().contains("inside"));
+        QCOMPARE(posts, 1); QCOMPARE(confirmations, 1); QCOMPARE(fixture.memberPosts, 0);
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void composerFormattingDefaultsRespectCompositionRepeatAndOtherTargets()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("formatting-guards.ini"));
+        preferences.setLocale("ru"); preferences.setMode("dark");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Formatting input guards teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled()); click(window, composer.data());
+        QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto character : QByteArray("safe")) QTest::keyClick(window, character);
+        QTRY_COMPARE(controller.draft(), QString("safe"));
+        // Actual public input-method delivery, not a composing-property override.
+        QInputMethodEvent preedit(QString::fromUtf8("комп"), {});
+        QVERIFY(QCoreApplication::sendEvent(window->focusObject(), &preedit));
+        QTRY_VERIFY(composer->property("inputMethodComposing").toBool());
+        QCOMPARE(composer->property("preeditText").toString(), QString::fromUtf8("комп"));
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(controller.draft(), QString("safe"));
+        QInputMethodEvent commit; commit.setCommitString(" ime");
+        QVERIFY(QCoreApplication::sendEvent(window->focusObject(), &commit));
+        QTRY_VERIFY(!composer->property("inputMethodComposing").toBool());
+        QTRY_COMPARE(controller.draft(), QString("safe ime"));
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        // Same QtTest window-system path as keyClick, including autorepeat.
+        QTest::simulateEvent(window, true, Qt::Key_B, Qt::ControlModifier, "b", true);
+        QTest::simulateEvent(window, false, Qt::Key_B, Qt::ControlModifier, "b", true);
+        QCOMPARE(controller.draft(), QString("safe ime"));
+        const auto altGraph = Qt::ControlModifier | Qt::AltModifier | Qt::GroupSwitchModifier;
+        QTest::simulateEvent(window, true, Qt::Key_B, altGraph, {}, false);
+        QTest::simulateEvent(window, false, Qt::Key_B, altGraph, {}, false);
+        QCOMPARE(controller.draft(), QString("safe ime"));
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(controller.draft(), QString("safe ime"));
+
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        for (const auto character : QByteArray("other")) QTest::keyClick(window, character);
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(search->property("text").toString(), QString("other"));
+        QCOMPARE(controller.draft(), QString("safe ime"));
+        click(window, item(window->contentItem(), "accountMenuButton"));
+        QTRY_VERIFY(visibleItem("ownStatusAction")); click(window, visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusText"));
+        auto *status = visibleItem("ownStatusText"); click(window, status);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto character : QByteArray("modal")) QTest::keyClick(window, character);
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(status->property("text").toString(), QString("modal"));
+        QCOMPARE(controller.draft(), QString("safe ime"));
+        click(window, visibleItem("ownStatusCancel")); QTRY_VERIFY(!visibleItem("ownStatusText"));
+        click(window, composer.data()); QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        // A nonrepeat delivered by the SAME helper must positively format.
+        // This is controlled Qt input, not proof of an OS keyboard layout.
+        QTest::simulateEvent(window, true, Qt::Key_B, Qt::ControlModifier, "b", false);
+        QTest::simulateEvent(window, false, Qt::Key_B, Qt::ControlModifier, "b", false);
+        QTRY_COMPARE(controller.draft(), QString("**safe ime**"));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 12);
+        QCOMPARE(fixture.posts, 0); QCOMPARE(fixture.memberPosts, 0);
+        for (const auto &request : fixture.server.requests)
+            if (request.method != "GET") QVERIFY(!request.target.path().startsWith("/api/workspace/"));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void composerFormattingDefaultsPreserveUtf16MultilineAndScroll()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("formatting-scroll.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Formatting multiline teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled()); click(window, composer.data());
+        QString text;
+        for (int index = 0; index < 30; ++index) text += QString::fromUtf8("Строка 😀 %1\n").arg(index);
+        text += QString::fromUtf8("before 😀\nword");
+        QInputMethodEvent commit; commit.setCommitString(text);
+        QVERIFY(QCoreApplication::sendEvent(window->focusObject(), &commit));
+        QTRY_COMPARE(controller.draft(), text);
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+        QPointer<QQuickItem> flick = composer->parentItem();
+        while (flick && flick->metaObject()->indexOfProperty("contentY") < 0) flick = flick->parentItem();
+        QVERIFY(flick); QTRY_VERIFY(flick->property("contentY").toReal() > 0);
+        // Select across the actual newline and supplementary-plane character.
+        QTest::keyClick(window, Qt::Key_Up, Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_Home, Qt::ShiftModifier);
+        const int start = composer->property("selectionStart").toInt();
+        const int end = composer->property("selectionEnd").toInt();
+        const auto selected = text.mid(start, end - start);
+        QVERIFY(selected.contains(QChar('\n'))); QVERIFY(selected.contains(QString::fromUtf8("😀")));
+        QCOMPARE(composer->property("selectedText").toString().replace(QChar::ParagraphSeparator, QChar('\n')), selected);
+        QSignalSpy selectedFrame(window, &QQuickWindow::frameSwapped); QVERIFY(selectedFrame.isValid());
+        window->update(); QTRY_VERIFY(!selectedFrame.isEmpty());
+        const auto scrollY = flick->property("contentY").toReal();
+        const auto expected = text.left(start) + "*" + text.mid(start, end - start) + "*" + text.mid(end);
+        QTest::keyClick(window, Qt::Key_I, Qt::ControlModifier);
+        QTRY_COMPARE(controller.draft(), expected); QCOMPARE(composer->property("text").toString(), expected);
+        QCOMPARE(composer->property("cursorPosition").toInt(), end + 2);
+        QCOMPARE(composer->property("selectionStart").toInt(), composer->property("selectionEnd").toInt());
+        QTRY_VERIFY(composer->hasActiveFocus());
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid());
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QVERIFY(flick);
+        QVERIFY2(qAbs(flick->property("contentY").toReal() - scrollY) <= 0.5, "Pinned Source preserves the current textarea scroll while restoring the caret");
+        QCOMPARE(fixture.posts, 0); QCOMPARE(fixture.memberPosts, 0);
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement_data()
+    {
+        QTest::addColumn<bool>("logout");
+        QTest::newRow("route") << false;
+        QTest::newRow("logout") << true;
+    }
+
+    void composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement()
+    {
+        QFETCH(bool, logout);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("formatting-lifetime.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Formatting runtime fence teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled()); click(window, composer.data());
+        for (const auto character : QByteArray("retained")) QTest::keyClick(window, character);
+        QTRY_COMPARE(controller.draft(), QString("retained"));
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        bool replaced = false;
+        const auto connection = connect(&controller, &NativeController::draftChanged, &controller, [&] {
+            if (replaced || controller.draft() != "**retained**") return;
+            replaced = true;
+            if (logout) session.logout();
+            else controller.selectTopic(secondTopicId);
+        });
+        auto disconnectDraft = qScopeGuard([&] { disconnect(connection); });
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_VERIFY(replaced); disconnect(connection); disconnectDraft.dismiss();
+        QTRY_COMPARE(controller.draft(), QString{});
+        if (logout) {
+            QTRY_VERIFY(!controller.authenticated()); QTRY_VERIFY(!composer || !composer->isVisible());
+        } else {
+            QTRY_COMPARE(controller.selectedTopic(), secondTopicId); QTRY_VERIFY(!controller.busy());
+            QTRY_COMPARE(composer->property("text").toString(), QString{});
+            QCOMPARE(composer->property("cursorPosition").toInt(), 0);
+            controller.selectTopic(topicId); QTRY_VERIFY(!controller.busy());
+            QTRY_COMPARE(controller.draft(), QString("**retained**"));
+        }
+        QCOMPARE(fixture.posts, 0); QCOMPARE(fixture.memberPosts, 0);
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
     void composerEmojiAppendsUnicodeAndSendsFromTheActualMain_data()

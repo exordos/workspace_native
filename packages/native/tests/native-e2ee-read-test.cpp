@@ -6513,6 +6513,60 @@ private slots:
         QCOMPARE(clicked.size(),1); QCOMPARE(f.posts,before+1);
     }
 
+    void uiEncryptedComposerFormattingUsesActualSourcePeer()
+    {
+        Fixture f; f.stream = fullEncryptedStream(); useCompleteSendEcho(f); QVERIFY(f.start());
+        const QString plain = "Encrypted formatter", wrapped = "**Encrypted formatter**";
+        SourceSendPeer peer; QVERIFY(peer.prepare(f, topicId, wrapped));
+        NativePreferences preferences(f.directory.filePath("composer-formatting-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedEncryptedVisualWindow(guard.data()))
+                QTest::qFail("Encrypted formatting teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QPointer<QQuickItem> composer = encryptedUiItem(window, "messageComposer");
+        QVERIFY(composer && composer->isEnabled()); QVERIFY(f.controller.canCompose());
+        QVERIFY(!f.controller.canAttach()); QCOMPARE(f.controller.draft(), QString{});
+        const int before = f.posts; encryptedUiClick(composer.data());
+        for (const auto character : plain.toLatin1()) QTest::keyClick(window, character);
+        QTRY_COMPARE(f.controller.draft(), plain);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QCOMPARE(composer->property("selectedText").toString(), plain);
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_COMPARE(f.controller.draft(), wrapped);
+        QCOMPARE(composer->property("text").toString(), wrapped);
+        QCOMPARE(composer->property("cursorPosition").toInt(), wrapped.size());
+        QCOMPARE(composer->property("selectionStart").toInt(), composer->property("selectionEnd").toInt());
+        QTRY_VERIFY(composer->hasActiveFocus()); QCOMPARE(f.posts, before);
+        auto *send = encryptedUiItem(window, "sendButton"); QVERIFY(send && send->isEnabled());
+        QSignalSpy sent(&f.controller, &NativeController::messageSent); encryptedUiClick(send);
+        QTRY_COMPARE(f.posts, before + 1); QTRY_COMPARE(sent.size(), 1);
+        const auto body = f.requestBody, payload = body.value("payload").toObject();
+        QCOMPARE(body.value("stream_uuid").toString(), streamId);
+        QCOMPARE(body.value("topic_uuid").toString(), topicId);
+        QCOMPARE(payload.keys(), QStringList({"content", "key_uuid", "kind"}));
+        QCOMPARE(payload.value("kind").toString(), QString("e2ee"));
+        QCOMPARE(payload.value("key_uuid").toString(), returnedId);
+        const auto localId = body.value("uuid").toString(); QVERIFY(isUuid(localId));
+        const auto publicId = QUuid::createUuidV5(QUuid(topicId), localId.toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(sent.first().at(0).toString(), publicId);
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/" + publicId), 1);
+        QCOMPARE(f.savedRequests.value(publicId).value("payload").toObject(), payload);
+        for (const auto &posted : f.requestBodies)
+            QVERIFY(!QJsonDocument(posted).toJson(QJsonDocument::Compact).contains(plain.toUtf8()));
+        const auto verified = peer.verify(payload, topicId);
+        QVERIFY(verified.value("ok").toBool()); QVERIFY(verified.value("matchesExpected").toBool());
+        QCOMPARE(verified.value("plaintextBytes").toInt(), wrapped.toUtf8().size());
+        QCOMPARE(verified.value("keyUuid").toString(), returnedId);
+        QTRY_COMPARE(f.controller.draft(), QString{}); QCOMPARE(f.posts, before + 1);
+        const bool closed = closeIncubatedEncryptedVisualWindow(window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
     void uiEncryptedComposerEmojiUsesActualSourcePeer()
     {
         Fixture f;f.stream=fullEncryptedStream();useCompleteSendEcho(f);QVERIFY(f.start());

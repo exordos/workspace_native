@@ -4885,6 +4885,7 @@ ApplicationWindow {
                                 Layout.alignment: Qt.AlignBottom
                             }
                             ScrollView {
+                                id: composerScroll
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 contentWidth: availableWidth
@@ -4911,6 +4912,59 @@ ApplicationWindow {
                                     rightPadding: 0
                                     background: null
                                     Accessible.name: qsTr("Message")
+                                    readonly property bool formattingAllowed: enabled && visible && activeFocus
+                                        && root.active && !inputMethodComposing
+                                        && !ownStatusDialog.visible && !editDialog.visible && !deleteDialog.visible
+                                        && !createTopicDialog.visible && !createChatDialog.visible && !referenceNotice.visible
+                                        && !attachmentPicker.visible && !attachmentSaveDialog.visible
+                                    function wrapFormatting(marker) {
+                                        if (!formattingAllowed)
+                                            return;
+                                        const owner = root.controller.ownStatusContextKey;
+                                        const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
+                                        const start = selectionStart, end = selectionEnd;
+                                        const current = text;
+                                        const next = current.slice(0, start) + marker + current.slice(start, end) + marker + current.slice(end);
+                                        const scroll = composerScroll.contentItem;
+                                        const scrollY = scroll ? scroll.contentY : 0;
+                                        root.controller.draft = next;
+                                        // A synchronous draftChanged subscriber can navigate or sign out.
+                                        // Keep the text binding and never restore an old route's caret.
+                                        if (!formattingAllowed || owner !== root.controller.ownStatusContextKey
+                                            || stream !== root.controller.selectedStream || topic !== root.controller.selectedTopic
+                                            || root.controller.draft !== next || text !== next)
+                                            return;
+                                        const caret = start + marker.length + (end > start ? end - start + marker.length : 0);
+                                        select(caret, caret);
+                                        if (scroll === composerScroll.contentItem && isFinite(scrollY))
+                                            scroll.contentY = scrollY;
+                                    }
+                                    Shortcut {
+                                        sequence: "Ctrl+B"; context: Qt.WindowShortcut; autoRepeat: false
+                                        enabled: composerText.formattingAllowed
+                                        onActivated: composerText.wrapFormatting("**")
+                                    }
+                                    Shortcut {
+                                        sequence: "Ctrl+I"; context: Qt.WindowShortcut; autoRepeat: false
+                                        enabled: composerText.formattingAllowed
+                                        onActivated: composerText.wrapFormatting("*")
+                                    }
+                                    Shortcut {
+                                        sequence: "Ctrl+E"; context: Qt.WindowShortcut; autoRepeat: false
+                                        enabled: composerText.formattingAllowed
+                                        onActivated: composerText.wrapFormatting("`")
+                                    }
+                                    Shortcut {
+                                        sequence: "Ctrl+Shift+X"; context: Qt.WindowShortcut; autoRepeat: false
+                                        enabled: composerText.formattingAllowed
+                                        onActivated: composerText.wrapFormatting("~~")
+                                    }
+                                    Keys.onShortcutOverride: event => {
+                                        // AltGraph belongs to text input, including layouts whose
+                                        // platform shortcut translation offers a Latin alternative.
+                                        if (event.modifiers & Qt.GroupSwitchModifier)
+                                            event.accepted = true;
+                                    }
                                     onContentHeightChanged: if (composerEmojiPicker.visible) root.positionComposerEmojiPicker()
                                     Keys.onPressed: event => {
                                         if (event.key === Qt.Key_Escape && composerEmojiPicker.visible) {

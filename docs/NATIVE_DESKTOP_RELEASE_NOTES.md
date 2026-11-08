@@ -1,3 +1,22 @@
+# Workspace Native 0.1.6 — Linux development preview
+
+The message composer adds Ctrl+B for bold, Ctrl+I for italic, Ctrl+E for inline
+code and Ctrl+Shift+X for strikethrough. A selection is wrapped in Markdown;
+with no selection, the caret stays inside the new marker pair. Existing drafts,
+focus and scrolling are preserved. The formatting toolbar and remappable
+shortcut settings remain unfinished.
+
+Focused real-window and independent encrypted-message checks passed, together
+with representative physical Ctrl+B in English and Russian keyboard layouts
+and the local Linux package/runtime checks. Publication and the installed
+update are verified separately after the complete window suites.
+
+This remains a development preview for Ubuntu 26.04 x86_64 / glibc 2.43 or newer.
+The configurable disk cache defaults to 10 GB. Full feature/pixel parity, other
+distributions, Windows and macOS remain open.
+
+---
+
 # Workspace Native 0.1.5 — Linux development preview
 
 New chat now opens existing active encrypted Direct conversations, including

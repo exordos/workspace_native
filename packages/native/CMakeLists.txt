@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.1.5 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.1.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -290,6 +290,7 @@ if(BUILD_TESTING)
         uiEncryptedComposerSendsActualSourceCipher
         uiNewChatEncryptedCanonicalDirectUsesActualSourceGrantReadAndSend
         uiEncryptedComposerEmojiUsesActualSourcePeer
+        uiEncryptedComposerFormattingUsesActualSourcePeer
         uiEncryptedComposerLockedKeyNeverFallsBackToPlaintext
         uiOrdinaryComposerPreservesMarkdownAndAggregatePrompt
         uiEncryptedComposerCheckAndRetryKeepFrozenCipher

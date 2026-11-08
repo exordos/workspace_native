@@ -1,0 +1,95 @@
+{
+  "version": "0.1.6",
+  "status": "CANDIDATE_FOCUSED_PHYSICAL_CTRL_B_LOCAL_PACKAGE_PASS_WHOLE_PENDING",
+  "sourceReferenceCommit": "95495b10b828f853c9e770b47216073eb973fa95",
+  "implementation": "Four window-context composer-only Shortcut defaults, existing draft binding and owner/API/route guards; no transport/cache schema change",
+  "markers": {
+    "Ctrl+B": "**",
+    "Ctrl+I": "*",
+    "Ctrl+E": "`",
+    "Ctrl+Shift+X": "~~"
+  },
+  "selectionSemantics": {
+    "wrapNotToggle": true,
+    "nonemptyCaretAfterClosingMarker": true,
+    "emptyCaretBetweenMarkers": true,
+    "scrollAndFocusPreserved": true
+  },
+  "red": {
+    "qtPass": 2,
+    "qtFail": 4,
+    "actualUnchangedMain": true,
+    "rootReviewSha256": "8aac87ca7abe662f5c95ec93bbc0c030deb54def251a445158a2e5fa5bccec6e"
+  },
+  "focused": {
+    "windowQtCasesPassed": 10,
+    "encryptedUiQtCasesPassed": 3,
+    "canonicalGetAndIndependentSourceDecryption": true,
+    "runtimeFailuresWarningsSkipsStderr": 0,
+    "rootReviewSha256": "b71a2ac10be434a935c1e46e7f63275082f4bbb3f8c0f042236bb5b024e925d6"
+  },
+  "physicalKeyboard": {
+    "representativeCtrlBInEnAndRu": true,
+    "sameObservedNativeScan": true,
+    "unmodifiedBAndCyrillicCharacterObserved": true,
+    "rootActualScreenshotsVisuallyReviewed": true,
+    "independentPhysicalOtherThreeCombosNotClaimed": true,
+    "syntheticActualMainNotLiveAccount": true,
+    "rootReviewSha256": "dff837d830c2f18b546c4c8d817a86ca9ac107d2005fd7549e534da8dc48cac6",
+    "earlierRootAckTimeoutRetained": true,
+    "originalAssertionsAnd90SecondPhaseBudgetUnchanged": true
+  },
+  "localRelease": {
+    "status": "ROOT_LOCAL_RELEASE_016_PACKAGE_RUNTIME_PASS",
+    "version": "0.1.6",
+    "package": {
+      "version": "0.1.6",
+      "system": "linux",
+      "architecture": "x86_64",
+      "buildDistribution": "Ubuntu 26.04.1 LTS",
+      "buildLibc": [
+        "glibc",
+        "2.43"
+      ],
+      "developmentPreview": true,
+      "asset": "Exordos-Workspace-Native-0.1.6-linux-x86_64.tar.gz",
+      "bytes": 71224639,
+      "sha256": "bd048be6c9b0a203db2cbc1ed223872a4e57c703866fec1e9713b59f0cfcf41b"
+    },
+    "archiveVersionReadBack": true,
+    "sha256sumsVerified": true,
+    "qmlModules": 10,
+    "insidePrefixProbeMappings": 28,
+    "imageFormats": [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "svg"
+    ],
+    "cryptoGrantMessageTls": true,
+    "installerTestsPassed": 6,
+    "packageVersionRegressionPassed": 1,
+    "configureWarningsRetained": 25,
+    "buildWarningLinesRetained": 18,
+    "notWarningFreeBuild": true,
+    "noPublicOrInstalledUpgradeAcceptanceClaim": true,
+    "resultSha256": "fcf13bbd9f0ecbc74698d5535cb9f0e6423b679df0cc354669f863655d83b6f6",
+    "allOwnedGroupsEmpty": true,
+    "privateXdgRemoved": true
+  },
+  "whole": {
+    "window": "PENDING",
+    "encryptedUi": "PENDING",
+    "locale": "PENDING"
+  },
+  "ci": "PENDING",
+  "published": "PENDING",
+  "installedUpdate": "PENDING",
+  "limits": [
+    "Formatting toolbar and remappable shortcut settings remain open",
+    "Full composer/feature/pixel parity remains open",
+    "No 0.1.6 live-account or saved-session preservation acceptance yet",
+    "Windows/macOS and other Linux distributions remain open"
+  ]
+}
