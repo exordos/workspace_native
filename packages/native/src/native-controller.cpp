@@ -1461,8 +1461,8 @@ bool NativeController::chatResponseAllowed(const ChatRequestFact &fact) const
     const auto *stream = currentStream();
     if (!stream) return false;
     if (stream->encrypted) return chatIssuerAllowed();
-    // Ordinary manager permission is independent of possessing A.
-    // Grant separately checks exact-generation material at admission/dispatch.
+    // Ordinary current participants may relay an exact locally held generation.
+    // Managers retain Reject without A; Grant separately checks material/deletion.
     if (!stream->security || stream->security->viewer != m_session->user()
         || stream->security->source != "native" || !stream->security->provider.isEmpty()
         || !stream->security->providerIdentity.isEmpty() || !chatContext(m_chatEpoch, m_selection)
@@ -1472,7 +1472,10 @@ bool NativeController::chatResponseAllowed(const ChatRequestFact &fact) const
     const auto role = m_chatAuthority.roles.value(m_session->user());
     const bool manager = m_chatAuthority.issuerOwner == m_session->user()
         || role == "owner" || role == "administrator";
-    return manager && (m_chatAuthority.issuerOwner == fact.author || m_chatAuthority.roles.contains(fact.author));
+    const bool participant = m_chatAuthority.issuerOwner == m_session->user()
+        || m_chatAuthority.roles.contains(m_session->user());
+    const bool holder = participant && m_chatIssueKeys.value(fact.key).state == ChatKeyAvailability::Present;
+    return (manager || holder) && (m_chatAuthority.issuerOwner == fact.author || m_chatAuthority.roles.contains(fact.author));
 }
 
 bool NativeController::chatRequestMatches(const ChatRequestFact &fact, const ChatKeyResponse &intent) const
@@ -1768,7 +1771,11 @@ void NativeController::finishChatKeyResponse(const QString &id, quint64 ticket, 
 
 void NativeController::postChatKeyResponse(const QString &id, quint64 ticket)
 {
-    if (!chatKeyResponseContext(id, ticket) || !chatKeyResponseOwned(true)) return;
+    if (!chatKeyResponseContext(id, ticket)) return;
+    if (!chatKeyResponseOwned(true)) {
+        finishChatKeyResponse(id, ticket, tr("The key response was interrupted. Check its saved status before retrying."));
+        return;
+    }
     const auto intent = *m_chatKeyResponse;
     if (!intent.dispatched && m_topicsVerified) {
         QString target; int defaults = 0;
@@ -1861,7 +1868,7 @@ void NativeController::readChatKeyResponse(const QString &id, quint64 ticket, bo
                     finishChatKeyResponse(id, ticket, tr("The original key request could not be verified.")); return;
                 }
                 observeChatRequest(*message);
-                if (!chatKeyResponseContext(id, ticket) || !chatKeyResponseOwned(true)) return;
+                if (!chatKeyResponseContext(id, ticket)) return;
                 postChatKeyResponse(id, ticket);
             });
         });

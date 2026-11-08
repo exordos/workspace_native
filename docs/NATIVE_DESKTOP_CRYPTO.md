@@ -489,3 +489,27 @@ CI fails on the exact pending-creation warning. The original whole-run warning
 about two private creations did not reproduce in an isolated instrumented scroll
 run; its precise cause remains unknown. This is a test resource-boundary fix, not
 a production rendering or timing change.
+
+
+## Current ordinary participant responses
+
+The current branch extends ordinary native responses from managers to current
+participants already holding the exact requested generation. Fresh self/requester
+membership and current native ownership are required. Manager Reject remains
+independent of local A. Encrypted and global issuer permissions are unchanged;
+ordinary key acquisition/bootstrap and provider issuance remain open.
+
+Actual Source-recipient and Main-click regressions cover Grant/Reject. Two
+separate actual loss-of-A regressions cover retained Reject publication and the
+acknowledged request GET during Retry. The same current intent now settles on
+lost write admission; no extra POST, new target or UUID is introduced. Reject
+still permits public status Check without A and explicit same-wire recovery
+when current eligibility is restored. Grant's deletion/material fence remains.
+
+These retained issuer recovery checks cover the controller, not Main recovery.
+The actual Main surface has the Source Grant/Reject actions and no separate
+issuer Check/Retry controls. Its recovery integration remains open; no unmatched
+controls were added. Current complete groups and preserved failures are recorded
+in [holder checks](provenance/ordinary-holder-checks.json). The configurable disk
+cache still defaults to 10 GB. Full Linux, live service, packaging and other
+platforms are not established by these local synthetic checks.

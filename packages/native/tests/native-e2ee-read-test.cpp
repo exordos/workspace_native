@@ -1969,18 +1969,27 @@ private slots:
         QCOMPARE(row.value("canManageKeys").toBool(), mode == "holder-A" || mode == "completed-holder-A" || mode == "admin-without-A");
         QCOMPARE(row.value("hasRequestedKey").toBool(), mode == "holder-A" || mode == "completed-holder-A" || mode == "departed-requester");
         QCOMPARE(roles->value(userId), c.f.stream.value("role").toString());
+        // The captured row is pending here, including the later-completed case.
+        // V39 now supports both holder responses; manager without A retains Reject.
+        const bool pendingHolder = mode == "holder-A" || mode == "completed-holder-A";
+        const bool managerReject = mode == "admin-without-A";
+        QCOMPARE(row.value("canGrant").toBool(), pendingHolder);
+        QCOMPARE(row.value("canReject").toBool(), pendingHolder || managerReject);
         if (mode == "completed-holder-A") {
             QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(response)));
             QTRY_COMPARE(incomingKeyRequestRow(c.f.controller, c.requestId).value("status").toString(), QString("rejected"));
             QVERIFY(incomingKeyRequestRow(c.f.controller, c.requestId).value("canManageKeys").toBool());
         }
-        // Ordinary manager Reject is now a supported action; Grant/request remain
-        // outside this slice. The Source-created R capability and actual Main
-        // click tests verify the manager write. Retain every nonmanager no-write control.
-        const bool managerReject = mode == "admin-without-A";
-        QVERIFY(!row.value("canGrant").toBool()); QCOMPARE(row.value("canReject").toBool(), managerReject);
-        c.f.controller.grantChatKey(c.requestId);
-        if (!managerReject) c.f.controller.rejectChatKey(c.requestId);
+        // Reacquire after the terminal event; the earlier pending snapshot cannot
+        // express its action guards. The synthetic pending holder R is not sent:
+        // real Source-recipient Core/Main scenarios cover actual holder writes.
+        const auto current = incomingKeyRequestRow(c.f.controller, c.requestId);
+        if (mode == "completed-holder-A") {
+            for (const auto *field : {"offerGrant", "offerReject", "canGrant", "canReject"})
+                QVERIFY(!current.value(field).toBool());
+        }
+        if (!current.value("canGrant").toBool()) c.f.controller.grantChatKey(c.requestId);
+        if (!current.value("canReject").toBool()) c.f.controller.rejectChatKey(c.requestId);
         c.f.controller.requestChatKey(returnedId);
         QVERIFY(missingRequestTransportBarrier(c)); QCOMPARE(c.f.posts, 0); QCOMPARE(c.lookupCount, 0);
     }
@@ -3519,16 +3528,351 @@ private slots:
 // No requestChatKey(), put(), import(), initialize(), or native group-key seed.
 // Additive slots only; old capability assertions are not changed.
 
-    // Scope control, not a permanent Source holder prohibition. Ordinary holder
-    // relay remains a separate slice; this manager delta must not enable it by
-    // equating canManageKeys/hasRequestedKey with manager Grant admission.
-    void ordinaryManagerGrantSliceKeepsExactGenerationAndHolderBoundary_data()
+
+
+
+    void ordinaryHolderRejectLosingADuringPublicationSettlesAndCanRetryTheSamePublicResponse()
+    {
+        OrdinaryRejectCase c; c.f.stream["role"] = "member"; QVERIFY(c.start());
+        QJsonObject initialProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, initialProbe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.row().value("canReject").toBool());
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QVERIFY(!c.f.stream.value("encryption").toBool()); QVERIFY(c.f.stream.value("current_encryption_key_uuid").isNull());
+        const auto originalRequest = c.peer.requestDto;
+        QCOMPARE(originalRequest.value("author_uuid").toString(), SourceRecipient);
+        QCOMPARE(originalRequest.value("payload").toObject().value("key_uuid").toString(), OtherGeneration);
+        QCOMPARE(c.peer.ready.value("recipientPending").toInt(), 1); QVERIFY(!c.peer.ready.value("recipientHasKey").toBool());
+        quint64 originalDeletion = 0;
+        {
+            auto held = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+            const auto scrub = qScopeGuard([&] { held.value.bytes.fill(0); });
+            QCOMPARE(held.failure, NativeChatKeyVault::Failure::None); QCOMPARE(held.value.bytes.size(), 32);
+            originalDeletion = held.value.deletionRevision;
+        }
+        const QJsonObject frozenWire{{"kind", "key_reject"}, {"key_uuid", OtherGeneration},
+            {"request_message_uuid", c.peer.requestId}, {"sender_device_id", c.f.vault.device().id},
+            {"recipient_device_id", SourceRecipientDevice}};
+        bool armed = true, published = false;
+        QString frozenPublicId;
+        auto removed = NativeChatKeyVault::Failure::Unavailable;
+        const auto connection = connect(&c.f.controller, &NativeController::stateChanged, this, [&] {
+            const auto state = c.response();
+            if (!armed || state.value("requestId").toString() != c.peer.requestId
+                || state.value("action").toString() != "reject" || state.value("phase").toString() != "sending"
+                || !state.value("busy").toBool()) return;
+            armed = false; published = true; frozenPublicId = state.value("responseId").toString();
+            removed = c.f.vault.remove(c.f.vault.lease(), {streamId, OtherGeneration});
+        });
+        const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
+        c.f.controller.rejectChatKey(c.peer.requestId);
+        QVERIFY(published); QVERIFY(!armed); QCOMPARE(removed, NativeChatKeyVault::Failure::None);
+        QVERIFY(isUuid(frozenPublicId)); QCOMPARE(c.f.posts, 0);
+        QCOMPARE(c.response().value("requestId").toString(), c.peer.requestId);
+        QCOMPARE(c.response().value("responseId").toString(), frozenPublicId);
+        quint64 removedRevision = 0;
+        {
+            auto missing = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+            const auto scrub = qScopeGuard([&] { missing.value.bytes.fill(0); });
+            QCOMPARE(missing.failure, NativeChatKeyVault::Failure::None); QVERIFY(missing.value.bytes.isEmpty());
+            QCOMPARE(missing.value.deletionRevision, originalDeletion + 1); removedRevision = missing.value.deletionRevision;
+        }
+        QCOMPARE(c.f.savedRequests.value(c.peer.requestId), originalRequest);
+        // First intended actual regression RED: admission lost a holder right,
+        // so zeroPOST must settle rather than keep the response permanently busy.
+        QTRY_VERIFY2(!c.response().value("busy").toBool(), "Losing ordinary holder Reject permission before POST must settle busy");
+        QCOMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QCOMPARE(c.response().value("responseId").toString(), frozenPublicId);
+        QVERIFY(c.response().value("canCheck").toBool()); QVERIFY(!c.response().value("canRetry").toBool());
+        const auto path = "/api/workspace/v1/messenger/messages/" + frozenPublicId;
+        QVERIFY(!c.f.savedRequests.contains(frozenPublicId));
+        const auto gets = exactRequests(c.f, "GET", path);
+        const auto previous = c.f.http.handler;
+        QVector<int> statuses;
+        c.f.http.handler = [previous, path, &statuses](const Request &request) {
+            auto result = previous(request);
+            if (request.method == "GET" && request.target.path() == path) statuses.append(result.status);
+            return result;
+        };
+        const auto restoreHandler = qScopeGuard([&] { c.f.http.handler = previous; });
+        const auto details = c.f.streamGets, bindings = c.f.bindingGets, topics = c.f.topicGets;
+        c.f.controller.checkChatKeyResponse(c.peer.requestId);
+        QTRY_COMPARE(exactRequests(c.f, "GET", path), gets + 1);
+        QTRY_VERIFY(!c.response().value("busy").toBool());
+        QCOMPARE(statuses, QVector<int>{404}); QCOMPARE(c.f.posts, 0);
+        QCOMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QCOMPARE(c.response().value("responseId").toString(), frozenPublicId);
+        QCOMPARE(c.f.streamGets, details); QCOMPARE(c.f.bindingGets, bindings); QCOMPARE(c.f.topicGets, topics);
+        QVERIFY(c.response().value("canCheck").toBool()); QVERIFY(!c.response().value("canRetry").toBool());
+        // A new valid local A revision restores holder permission. J contains no
+        // A-dependent envelope; it must not inherit Grant's permanent materialLost.
+        QJsonObject restoredProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, restoredProbe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.response().value("canRetry").toBool());
+        {
+            auto restored = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+            const auto scrub = qScopeGuard([&] { restored.value.bytes.fill(0); });
+            QCOMPARE(restored.failure, NativeChatKeyVault::Failure::None); QCOMPARE(restored.value.bytes.size(), 32);
+            QCOMPARE(restored.value.deletionRevision, removedRevision);
+        }
+        QCOMPARE(c.response().value("responseId").toString(), frozenPublicId);
+        QCOMPARE(c.f.savedRequests.value(c.peer.requestId), originalRequest);
+        QCOMPARE(c.f.posts, 0); QCOMPARE(exactRequests(c.f, "GET", path), gets + 1);
+        const auto requestGets = exactRequests(c.f, "GET", "/api/workspace/v1/messenger/messages/" + c.peer.requestId);
+        c.f.controller.retryChatKeyResponse(c.peer.requestId);
+        QTRY_COMPARE(c.response().value("phase").toString(), QString("ready"));
+        QCOMPARE(c.f.posts, 1); QCOMPARE(c.f.requestBody.value("payload").toObject(), frozenWire);
+        QCOMPARE(c.f.requestBody.value("stream_uuid").toString(), streamId);
+        QCOMPARE(c.f.requestBody.value("topic_uuid").toString(), secondTopicId);
+        const auto canonical = c.f.requestBody.value("uuid").toString(); QVERIFY(isUuid(canonical));
+        QCOMPARE(QUuid::createUuidV5(QUuid(secondTopicId), canonical.toUtf8()).toString(QUuid::WithoutBraces), frozenPublicId);
+        QCOMPARE(c.f.savedRequest.value("uuid").toString(), frozenPublicId);
+        QCOMPARE(c.f.savedRequest.value("user_uuid").toString(), userId);
+        QCOMPARE(c.f.savedRequest.value("author_uuid").toString(), userId);
+        QCOMPARE(c.f.savedRequest.value("payload").toObject(), frozenWire);
+        QCOMPARE(c.f.streamGets, details + 1); QCOMPARE(c.f.bindingGets, bindings + 1); QCOMPARE(c.f.topicGets, topics + 1);
+        QCOMPARE(exactRequests(c.f, "GET", "/api/workspace/v1/messenger/messages/" + c.peer.requestId), requestGets + 1);
+        QCOMPARE(exactRequests(c.f, "GET", path), gets + 3); QCOMPARE(statuses, (QVector<int>{404, 404, 200}));
+        const auto result = c.peer.finish(c.f.savedRequest, canonical);
+        QVERIFY(result.value("ok").toBool()); QCOMPARE(result.value("completionOutcome").toString(), QString("rejected"));
+        QCOMPARE(result.value("completionRequest").toString(), c.peer.requestId);
+        QCOMPARE(result.value("completionResponse").toString(), frozenPublicId);
+        QCOMPARE(result.value("recipientPending").toInt(), 0); QVERIFY(!result.value("recipientHasKey").toBool());
+        QVERIFY(!result.contains("nativeProbeVerified")); // Neither local probe/key was transferred for J.
+    }
+
+    void ordinaryHolderRejectLosingADuringRetryRequestGetSettlesAndCanCheckTheSamePublicResponse()
+    {
+        OrdinaryRejectCase c; c.f.stream["role"] = "member"; QVERIFY(c.start());
+        QVERIFY(c.f.stream.value("owner").toString() != userId);
+        QJsonObject publicProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, publicProbe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.row().value("canReject").toBool());
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        UncertainIssuerPost uncertain(c.f, false);
+        c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(uncertain.failed);
+        QTRY_COMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QVERIFY(!c.response().value("busy").toBool()); QCOMPARE(c.f.posts, 1);
+        QVERIFY(c.response().value("canRetry").toBool());
+        const auto frozen = uncertain.frozen;
+        const auto publicId = uncertain.canonical.value("uuid").toString(); QVERIFY(isUuid(publicId));
+        const auto publicPath = "/api/workspace/v1/messenger/messages/" + publicId;
+        const auto requestPath = "/api/workspace/v1/messenger/messages/" + c.peer.requestId;
+        const auto originalRequest = c.peer.requestDto;
+        QVERIFY(!c.f.savedRequests.contains(publicId));
+        QCOMPARE(frozen.value("payload").toObject().value("kind").toString(), QString("key_reject"));
+        QCOMPARE(frozen.value("topic_uuid").toString(), secondTopicId);
+        QCOMPARE(QUuid::createUuidV5(QUuid(secondTopicId), frozen.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces), publicId);
+        const auto details = c.f.streamGets, bindings = c.f.bindingGets, topics = c.f.topicGets;
+        const auto publicGets = exactRequests(c.f, "GET", publicPath);
+        const auto requestGets = exactRequests(c.f, "GET", requestPath);
+        std::function<void()> releaseRequest;
+        int requestAcks = 0, requestStatus = 0;
+        QJsonObject observedRequest;
+        QVector<int> publicStatuses;
+        const auto previous = c.f.http.handler;
+        c.f.http.handler = [&, previous](const Request &wire) {
+            auto result = previous(wire);
+            if (wire.method == "GET" && wire.target.path() == publicPath) publicStatuses.append(result.status);
+            if (wire.method == "GET" && wire.target.path() == requestPath) {
+                ++requestAcks; requestStatus = result.status; observedRequest = result.data.toObject();
+                // Existing transport delivery gate; the real TLS request is
+                // acknowledged before deletion, and released only afterward.
+                result.defer = [&](std::function<void()> send) { releaseRequest = std::move(send); };
+            }
+            return result;
+        };
+        const auto restoreHandler = qScopeGuard([&] { c.f.http.handler = previous; releaseRequest = {}; });
+        c.f.controller.retryChatKeyResponse(c.peer.requestId);
+        QTRY_COMPARE(requestAcks, 1);
+        QTRY_VERIFY(bool(releaseRequest)); QVERIFY(c.pending("GET", requestPath));
+        QCOMPARE(requestStatus, 200); QCOMPARE(observedRequest, originalRequest);
+        QCOMPARE(exactRequests(c.f, "GET", publicPath), publicGets + 1); QCOMPARE(publicStatuses, QVector<int>{404});
+        QCOMPARE(exactRequests(c.f, "GET", requestPath), requestGets + 1);
+        QCOMPARE(c.f.streamGets, details + 1); QCOMPARE(c.f.bindingGets, bindings + 1); QCOMPARE(c.f.topicGets, topics + 1);
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QCOMPARE(c.response().value("phase").toString(), QString("checking")); QVERIFY(c.response().value("busy").toBool());
+        QCOMPARE(c.response().value("responseId").toString(), publicId); QCOMPARE(c.f.posts, 1);
+        quint64 deletion = 0;
+        {
+            auto held = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+            const auto scrub = qScopeGuard([&] { held.value.bytes.fill(0); });
+            QCOMPARE(held.failure, NativeChatKeyVault::Failure::None); QCOMPARE(held.value.bytes.size(), 32);
+            deletion = held.value.deletionRevision;
+        }
+        QCOMPARE(c.f.vault.remove(c.f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        {
+            auto missing = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+            const auto scrub = qScopeGuard([&] { missing.value.bytes.fill(0); });
+            QCOMPARE(missing.failure, NativeChatKeyVault::Failure::None); QVERIFY(missing.value.bytes.isEmpty());
+            QCOMPARE(missing.value.deletionRevision, deletion + 1);
+        }
+        QVERIFY(c.pending("GET", requestPath)); QCOMPARE(c.f.posts, 1);
+        auto send = std::move(releaseRequest); send();
+        QTRY_VERIFY(!c.pending("GET", requestPath));
+        // Intended actual RED: the final current-R permission check must settle
+        // the SAME intent through post's existing finish path, not silently return.
+        QTRY_VERIFY2(!c.response().value("busy").toBool(), "Holder Reject retry losing A during current-R GET must settle busy");
+        QCOMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QCOMPARE(c.response().value("responseId").toString(), publicId);
+        QVERIFY(c.response().value("canCheck").toBool()); QVERIFY(!c.response().value("canRetry").toBool());
+        QCOMPARE(c.f.posts, 1); QCOMPARE(c.f.requestBody, frozen);
+        c.f.controller.checkChatKeyResponse(c.peer.requestId);
+        QTRY_COMPARE(exactRequests(c.f, "GET", publicPath), publicGets + 2);
+        QTRY_VERIFY(!c.response().value("busy").toBool());
+        QCOMPARE(publicStatuses, (QVector<int>{404, 404}));
+        QCOMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QCOMPARE(c.response().value("responseId").toString(), publicId);
+        QVERIFY(c.response().value("canCheck").toBool()); QVERIFY(!c.response().value("canRetry").toBool());
+        QCOMPARE(c.f.posts, 1); QCOMPARE(c.f.requestBody, frozen); QVERIFY(!c.f.savedRequests.contains(publicId));
+        QCOMPARE(requestAcks, 1); QCOMPARE(exactRequests(c.f, "GET", requestPath), requestGets + 1);
+        QCOMPARE(c.f.streamGets, details + 1); QCOMPARE(c.f.bindingGets, bindings + 1); QCOMPARE(c.f.topicGets, topics + 1);
+        const auto result = c.peer.finish(); QVERIFY(result.value("ok").toBool());
+        QVERIFY(result.value("recipientStillPending").toBool()); QVERIFY(!result.value("recipientHasKey").toBool());
+        QCOMPARE(result.value("completionCount").toInt(), 0);
+        QVERIFY(!result.contains("nativeProbeVerified"));
+    }
+
+    void ordinaryMemberWithExactACanRespondToIndependentSourceRequest_data()
+    {
+        QTest::addColumn<bool>("grant");
+        QTest::newRow("member-holder/exact-A/Grant") << true;
+        QTest::newRow("member-holder/exact-A/Reject") << false;
+    }
+    void ordinaryMemberWithExactACanRespondToIndependentSourceRequest()
+    {
+        QFETCH(bool, grant); OrdinaryRejectCase c; c.f.stream["role"] = "member";
+        QVERIFY(c.start());
+        QVERIFY(!c.f.stream.value("encryption").toBool());
+        QVERIFY(c.f.stream.value("current_encryption_key_uuid").isNull());
+        QCOMPARE(c.f.stream.value("source_name").toString(), QString("native"));
+        QVERIFY(c.f.stream.value("provider_uuid").isNull()); QVERIFY(c.f.stream.value("provider_identity").isNull());
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QVERIFY(c.f.stream.value("owner").toString() != userId);
+        QCOMPARE(c.peer.requestDto.value("author_uuid").toString(), SourceRecipient);
+        QCOMPARE(c.peer.requestDto.value("payload").toObject().value("key_uuid").toString(), OtherGeneration);
+        QCOMPARE(c.peer.ready.value("recipientPending").toInt(), 1);
+        QVERIFY(!c.peer.ready.value("recipientHasKey").toBool());
+        // A different real local generation must not confer rights over R's A.
+        {
+            auto generated = NativeChatCrypto::createGroupKey();
+            const auto scrubGenerated = qScopeGuard([&] { generated.bytes.fill(0); });
+            QVERIFY(generated); QCOMPARE(generated.bytes.size(), 32); QVERIFY(returnedId != OtherGeneration);
+            const auto lease = c.f.vault.lease();
+            auto before = c.f.vault.read(lease, {streamId, returnedId});
+            const auto scrubBefore = qScopeGuard([&] { before.value.bytes.fill(0); });
+            QCOMPARE(before.failure, NativeChatKeyVault::Failure::None); QVERIFY(before.value.bytes.isEmpty());
+            QCOMPARE(c.f.vault.put(lease, {streamId, returnedId}, generated.bytes, before.value.deletionRevision),
+                     NativeChatKeyVault::Failure::None);
+            auto exact = c.f.vault.read(lease, {streamId, OtherGeneration});
+            auto other = c.f.vault.read(lease, {streamId, returnedId});
+            const auto scrubRead = qScopeGuard([&] { exact.value.bytes.fill(0); other.value.bytes.fill(0); });
+            QCOMPARE(exact.failure, NativeChatKeyVault::Failure::None); QVERIFY(exact.value.bytes.isEmpty());
+            QCOMPARE(other.failure, NativeChatKeyVault::Failure::None); QCOMPARE(other.value.bytes.size(), 32);
+            QVERIFY(other.value.bytes == generated.bytes);
+        }
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!c.row().isEmpty()); QCOMPARE(c.row().value("status").toString(), QString("pending"));
+        QVERIFY(!c.row().value("hasRequestedKey").toBool()); QVERIFY(!c.row().value("canManageKeys").toBool());
+        QVERIFY(!c.row().value("offerGrant").toBool()); QVERIFY(!c.row().value("canGrant").toBool());
+        QVERIFY(!c.row().value("offerReject").toBool()); QVERIFY(!c.row().value("canReject").toBool());
+        c.f.controller.grantChatKey(c.peer.requestId); c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 0);
+        QVERIFY(c.response().isEmpty());
+        // Native generates/stores A; Source receives only public G and a public
+        // probe. The independent Source pair/key is never replaced or imported.
+        QJsonObject probe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, probe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QVERIFY(c.row().value("canManageKeys").toBool());
+        QCOMPARE(c.row().value("status").toString(), QString("pending"));
+        QCOMPARE(c.f.posts, 0);
+        if (grant) QVERIFY2(c.row().value("offerGrant").toBool(), "Planned ordinary exact-A holder Grant is unavailable");
+        else QVERIFY2(c.row().value("offerReject").toBool(), "Planned ordinary exact-A holder Reject is unavailable");
+        QVERIFY(c.row().value("offerGrant").toBool()); QVERIFY(c.row().value("canGrant").toBool());
+        QVERIFY(c.row().value("offerReject").toBool()); QVERIFY(c.row().value("canReject").toBool());
+        const auto details = c.f.streamGets, bindings = c.f.bindingGets, topics = c.f.topicGets;
+        const auto draft = c.f.controller.draft();
+        if (grant) c.f.controller.grantChatKey(c.peer.requestId); else c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_COMPARE(c.f.posts, 1);
+        QTRY_COMPARE(c.response().value("phase").toString(), QString("ready"));
+        const auto expectedOutcome = grant ? QString("granted") : QString("rejected");
+        QCOMPARE(c.row().value("status").toString(), expectedOutcome);
+        const auto body = c.f.requestBody, wire = body.value("payload").toObject();
+        QCOMPARE(body.keys(), (QStringList{"payload", "stream_uuid", "topic_uuid", "uuid"}));
+        QCOMPARE(body.value("stream_uuid").toString(), streamId); QCOMPARE(body.value("topic_uuid").toString(), secondTopicId);
+        QVERIFY(body.value("topic_uuid") != c.peer.requestDto.value("topic_uuid"));
+        const auto canonical = body.value("uuid").toString(); QVERIFY(isUuid(canonical));
+        const auto publicId = QUuid::createUuidV5(QUuid(secondTopicId), canonical.toUtf8()).toString(QUuid::WithoutBraces);
+        QStringList fields{"key_uuid", "kind", "recipient_device_id", "request_message_uuid", "sender_device_id"};
+        if (grant) fields.prepend("content");
+        QCOMPARE(wire.keys(), fields);
+        QCOMPARE(wire.value("kind").toString(), grant ? QString("key_grant") : QString("key_reject"));
+        QCOMPARE(wire.value("key_uuid").toString(), OtherGeneration);
+        QCOMPARE(wire.value("request_message_uuid").toString(), c.peer.requestId);
+        QCOMPARE(wire.value("sender_device_id").toString(), c.f.vault.device().id);
+        QCOMPARE(wire.value("recipient_device_id").toString(), SourceRecipientDevice);
+        if (grant) QVERIFY(!wire.value("content").toString().isEmpty()); else QVERIFY(!wire.contains("content"));
+        const auto saved = c.f.savedRequest;
+        QCOMPARE(saved.value("uuid").toString(), publicId); QCOMPARE(saved.value("project_id").toString(), projectId);
+        QCOMPARE(saved.value("user_uuid").toString(), userId); QCOMPARE(saved.value("author_uuid").toString(), userId);
+        QVERIFY(saved.value("is_own").toBool()); QCOMPARE(saved.value("stream_uuid").toString(), streamId);
+        QCOMPARE(saved.value("topic_uuid").toString(), secondTopicId); QCOMPARE(saved.value("payload").toObject(), wire);
+        QCOMPARE(exactRequests(c.f, "GET", "/api/workspace/v1/messenger/messages/" + publicId), 1);
+        QCOMPARE(c.f.streamGets, details); QCOMPARE(c.f.bindingGets, bindings); QCOMPARE(c.f.topicGets, topics);
+        const auto result = grant ? c.peer.finish(saved, canonical, probe) : c.peer.finish(saved, canonical);
+        QVERIFY(result.value("ok").toBool()); QCOMPARE(result.value("completionOutcome").toString(), expectedOutcome);
+        QCOMPARE(result.value("completionRequest").toString(), c.peer.requestId);
+        QCOMPARE(result.value("completionResponse").toString(), publicId);
+        QCOMPARE(result.value("recipientPending").toInt(), 0); QCOMPARE(result.value("recipientHasKey").toBool(), grant);
+        if (grant) { QVERIFY(result.value("nativeProbeVerified").toBool()); QVERIFY(result.value("matchesNativeProbe").toBool()); }
+        else QVERIFY(!result.contains("nativeProbeVerified"));
+        QVERIFY(!c.row().value("offerGrant").toBool()); QVERIFY(!c.row().value("canGrant").toBool());
+        QVERIFY(!c.row().value("offerReject").toBool()); QVERIFY(!c.row().value("canReject").toBool());
+        c.f.controller.grantChatKey(c.peer.requestId); c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 1);
+        QCOMPARE(c.f.controller.draft(), draft);
+    }
+
+
+    // Optional post-capability control, not part of the two-row capability RED.
+    void ordinaryHeldAResponsesStopAfterActualSelfMembershipDeletion()
+    {
+        OrdinaryRejectCase c; c.f.stream["role"] = "member"; QVERIFY(c.start());
+        QJsonObject probe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, probe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.row().value("canGrant").toBool()); QVERIFY(c.row().value("canReject").toBool());
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member")); QCOMPARE(c.f.posts, 0);
+        QVERIFY(c.f.controller.applyRealtimeEvent(selfBindingEvent("stream_binding.deleted")));
+        QVERIFY(!c.row().value("canGrant").toBool()); QVERIFY(!c.row().value("canReject").toBool());
+        c.f.controller.grantChatKey(c.peer.requestId); c.f.controller.rejectChatKey(c.peer.requestId);
+        QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 0);
+        // Local A is not deleted to simulate permission loss; the actual access
+        // event must block actions while material is still really present.
+        auto retained = c.f.vault.read(c.f.vault.lease(), {streamId, OtherGeneration});
+        const auto scrub = qScopeGuard([&] { retained.value.bytes.fill(0); });
+        QCOMPARE(retained.failure, NativeChatKeyVault::Failure::None); QCOMPARE(retained.value.bytes.size(), 32);
+        const auto result = c.peer.finish(); QVERIFY(result.value("ok").toBool());
+        QVERIFY(result.value("recipientStillPending").toBool()); QVERIFY(!result.value("recipientHasKey").toBool());
+    }
+    // Explicit successor after the separate actual holder capability RED: exact
+    // ordinary A holders may respond; unrelated B never grants rights over A.
+    void ordinaryResponsesUseExactGenerationAcrossManagerAndHolder_data()
     {
         QTest::addColumn<QString>("mode");
-        QTest::newRow("moderator-with-exact-A/holder-deferred") << QString("moderator-with-A");
+        QTest::newRow("moderator-with-exact-A/holder-supported") << QString("moderator-with-A");
         QTest::newRow("administrator-with-only-B/request-A") << QString("administrator-only-B");
     }
-    void ordinaryManagerGrantSliceKeepsExactGenerationAndHolderBoundary()
+    void ordinaryResponsesUseExactGenerationAcrossManagerAndHolder()
     {
         QFETCH(QString, mode); OrdinaryRejectCase c;
         const bool holder = mode == "moderator-with-A";
@@ -3563,23 +3907,23 @@ private slots:
         QTRY_VERIFY(c.row().value("canManageKeys").toBool()); // holder relevance != newly added manager permission
         QCOMPARE(c.row().value("hasRequestedKey").toBool(), holder);
         QCOMPARE(c.row().value("status").toString(), QString("pending"));
-        QVERIFY(!c.row().value("offerGrant").toBool()); QVERIFY(!c.row().value("canGrant").toBool());
-        QCOMPARE(c.row().value("canReject").toBool(), !holder); // manager without A retains ordinary Reject
-        QCOMPARE(c.f.posts, 0);
-        c.f.controller.grantChatKey(c.peer.requestId);
+        QCOMPARE(c.row().value("offerGrant").toBool(), holder); QCOMPARE(c.row().value("canGrant").toBool(), holder);
+        QVERIFY(c.row().value("offerReject").toBool()); QVERIFY(c.row().value("canReject").toBool());
+        QCOMPARE(c.f.posts, 0); // preparation does not answer either request automatically
+        if (!holder) c.f.controller.grantChatKey(c.peer.requestId); // B-only manager still cannot Grant A
         QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 0);
         QVERIFY(c.response().isEmpty());
         const auto result = c.peer.finish(); QVERIFY(result.value("ok").toBool());
         QVERIFY(result.value("recipientStillPending").toBool()); QVERIFY(!result.value("recipientHasKey").toBool());
     }
 
-    void ordinaryHeldAGrantCannotUseAuthorityRevokedBeforeDispatch_data()
+    void ordinaryHeldAResponsesRequireFreshParticipantAuthority_data()
     {
         QTest::addColumn<bool>("removeRequester");
         QTest::newRow("current-requester-removed-with-A-retained") << true;
-        QTest::newRow("manager-demoted-with-A-retained") << false;
+        QTest::newRow("manager-demoted-with-A/current-member-holder") << false;
     }
-    void ordinaryHeldAGrantCannotUseAuthorityRevokedBeforeDispatch()
+    void ordinaryHeldAResponsesRequireFreshParticipantAuthority()
     {
         QFETCH(bool, removeRequester); OrdinaryRejectCase c; QVERIFY(c.start());
         QJsonObject probe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, probe));
@@ -3612,9 +3956,10 @@ private slots:
             QCOMPARE(c.servedRoles->value(userId), QString("member"));
             QVERIFY(c.row().value("canManageKeys").toBool()); // exact-A holder remains account-relevant
         }
-        QVERIFY(!c.row().value("offerGrant").toBool()); QVERIFY(!c.row().value("canGrant").toBool());
-        QVERIFY(!c.row().value("canReject").toBool());
-        c.f.controller.grantChatKey(c.peer.requestId);
+        const bool currentHolder = !removeRequester;
+        QCOMPARE(c.row().value("offerGrant").toBool(), currentHolder); QCOMPARE(c.row().value("canGrant").toBool(), currentHolder);
+        QCOMPARE(c.row().value("offerReject").toBool(), currentHolder); QCOMPARE(c.row().value("canReject").toBool(), currentHolder);
+        if (removeRequester) c.f.controller.grantChatKey(c.peer.requestId); // actual departure remains negative
         QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(c.f.posts, 0);
         QVERIFY(c.response().isEmpty());
         const auto result = c.peer.finish(); QVERIFY(result.value("ok").toBool());
@@ -6869,21 +7214,23 @@ private slots:
 // Requires the reviewed OrdinaryRejectCase helper from the Core GREEN overlay.
     void uiOrdinaryManagerGrantsFromTheActualMainAction_data()
     {
-        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner");
-        QTest::newRow("ordinary-owner-member-held-A-en-light") << QString("en") << QString("light") << true;
-        QTest::newRow("ordinary-administrator-held-A-ru-dark") << QString("ru") << QString("dark") << false;
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner"); QTest::addColumn<bool>("memberHolder");
+        QTest::newRow("ordinary-owner-member-held-A-en-light") << QString("en") << QString("light") << true << false;
+        QTest::newRow("ordinary-administrator-held-A-ru-dark") << QString("ru") << QString("dark") << false << false;
+        QTest::newRow("ordinary-member-holder-held-A-en-light") << QString("en") << QString("light") << false << true;
     }
     void uiOrdinaryManagerGrantsFromTheActualMainAction()
     {
-        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, actualOwner);
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, actualOwner); QFETCH(bool, memberHolder);
         OrdinaryRejectCase c; auto &f = c.f;
-        f.stream["role"] = actualOwner ? "member" : "administrator";
+        f.stream["role"] = actualOwner || memberHolder ? "member" : "administrator";
         if (actualOwner) f.stream["owner"] = userId;
+        if (memberHolder) QVERIFY(f.stream.value("owner").toString() != userId);
         QVERIFY(c.start());
         QVERIFY(!f.stream.value("encryption").toBool()); QVERIFY(f.stream.value("current_encryption_key_uuid").isNull());
         QCOMPARE(f.stream.value("source_name").toString(), QString("native"));
         QVERIFY(f.stream.value("provider_uuid").isNull()); QVERIFY(f.stream.value("provider_identity").isNull());
-        QCOMPARE(c.servedRoles->value(userId), actualOwner ? QString("member") : QString("administrator"));
+        QCOMPARE(c.servedRoles->value(userId), actualOwner || memberHolder ? QString("member") : QString("administrator"));
         QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
         QCOMPARE(c.peer.requestDto.value("author_uuid").toString(), SourceRecipient);
         QCOMPARE(c.peer.requestDto.value("payload").toObject().value("key_uuid").toString(), OtherGeneration);
@@ -6940,7 +7287,7 @@ private slots:
         };
         QTRY_VERIFY(actionInsideViewport());
         const auto oldActionPoint = button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint();
-        const QString scenario = "ordinary-grant-" + QString(actualOwner ? "owner-member" : "administrator") + '-' + locale + '-' + mode;
+        const QString scenario = "ordinary-grant-" + QString(memberHolder ? "member-holder" : actualOwner ? "owner-member" : "administrator") + '-' + locale + '-' + mode;
         captureEncryptedUi(window, scenario, "pre-click-expanded", c.peer.requestId); // Existing optional screenshot gate only.
         QSignalSpy clicked(button, SIGNAL(clicked())); QVERIFY(clicked.isValid());
         encryptedUiClick(button); QTRY_COMPARE(clicked.size(), 1);
@@ -6989,14 +7336,18 @@ private slots:
     }
 
     void uiOrdinaryManagerRejectsFromTheActualMainAction_data() {
-        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner");
-        QTest::newRow("ordinary-owner-no-A-en-light") << QString("en") << QString("light") << true;
-        QTest::newRow("ordinary-admin-no-A-ru-dark") << QString("ru") << QString("dark") << false;
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner"); QTest::addColumn<bool>("memberHolder");
+        QTest::newRow("ordinary-owner-no-A-en-light") << QString("en") << QString("light") << true << false;
+        QTest::newRow("ordinary-admin-no-A-ru-dark") << QString("ru") << QString("dark") << false << false;
+        QTest::newRow("ordinary-member-holder-held-A-ru-dark") << QString("ru") << QString("dark") << false << true;
     }
     void uiOrdinaryManagerRejectsFromTheActualMainAction() {
-        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, actualOwner);
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, actualOwner); QFETCH(bool, memberHolder);
         OrdinaryRejectCase c; auto &f = c.f;
         if (actualOwner) { f.stream["owner"] = userId; f.stream["role"] = "member"; }
+        if (memberHolder) {
+            QVERIFY(f.stream.value("owner").toString() != userId); f.stream["role"] = "member";
+        }
         // Canonical metadata exists BEFORE this UI2's actual HTTP/history/apply.
         // Common OrdinaryRejectCase/Fixture/Core helpers are untouched.
         const auto canonicalUiRow=[](QJsonObject row) {
@@ -7011,7 +7362,8 @@ private slots:
             return row;
         };
         f.cipher=canonicalUiRow(f.cipher);QVERIFY(!f.cipher.isEmpty());
-        const bool publicCapture=!qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY").isEmpty();
+        // Existing Source38 no-A capture schema remains limited to its original manager rows.
+        const bool publicCapture=!memberHolder&&!qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY").isEmpty();
         QHash<QString,QJsonValue> publicSnapshots;QJsonArray publicObservations;
         QJsonObject actualPublicPost,actualCanonicalGet;bool publicObservationOverflow=false;
         const auto previousPublicHandler=f.http.handler;
@@ -7047,14 +7399,25 @@ private slots:
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(c.peer.requestDto)));
         QTRY_COMPARE(f.streamGets,1);QTRY_COMPARE(f.bindingGets,1);
         QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()&&!c.row().isEmpty());
+        if (memberHolder) {
+            QJsonObject publicProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, publicProbe));
+            QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+            QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        }
         QTRY_VERIFY(c.row().value("canReject").toBool());
-        QCOMPARE(c.servedRoles->value(userId), actualOwner ? QString("member") : QString("administrator"));
+        QCOMPARE(c.servedRoles->value(userId), actualOwner || memberHolder ? QString("member") : QString("administrator"));
         QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
         QVERIFY(!f.stream.value("encryption").toBool()); QVERIFY(f.stream.value("current_encryption_key_uuid").isNull());
-        QVERIFY(!c.row().value("hasRequestedKey").toBool()); QVERIFY(!c.row().value("offerGrant").toBool());
+        if (memberHolder) {
+            QVERIFY(c.row().value("hasRequestedKey").toBool()); QVERIFY(c.row().value("offerGrant").toBool());
+        } else {
+            QVERIFY(!c.row().value("hasRequestedKey").toBool()); QVERIFY(!c.row().value("offerGrant").toBool());
+        }
         auto key = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
         const auto scrub = qScopeGuard([&] { key.value.bytes.fill(0); });
-        QCOMPARE(key.failure, NativeChatKeyVault::Failure::None); QVERIFY(key.value.bytes.isEmpty());
+        QCOMPARE(key.failure, NativeChatKeyVault::Failure::None);
+        if (memberHolder) QCOMPARE(key.value.bytes.size(), 32);
+        else QVERIFY(key.value.bytes.isEmpty());
         const auto posts = f.posts, details = f.streamGets, bindings = f.bindingGets, topics = f.topicGets;
         const auto oldDraft = f.controller.draft(); QCOMPARE(posts, 0);
         NativePreferences preferences(f.directory.filePath("ordinary-reject-happy-ui.ini"));
@@ -7072,7 +7435,11 @@ private slots:
         auto *service = encryptedUiItem(window, "keyRequestService-" + c.peer.requestId); QVERIFY(service);
         auto *button = encryptedUiItem(window, "rejectChatKeyButton-" + c.peer.requestId); QVERIFY(button); QVERIFY(button->isEnabled());
         QCOMPARE(button->property("text").toString(), locale == "ru" ? QString("Отклонить") : QString("Reject"));
-        QVERIFY(!encryptedUiItem(window, "grantChatKeyButton-" + c.peer.requestId));
+        if (memberHolder) {
+            auto *grant = encryptedUiItem(window, "grantChatKeyButton-" + c.peer.requestId); QVERIFY(grant); QVERIFY(grant->isEnabled());
+        } else {
+            QVERIFY(!encryptedUiItem(window, "grantChatKeyButton-" + c.peer.requestId));
+        }
         auto *list = encryptedUiItem(window, "messageList"); QVERIFY(list);
         const auto actionInsideViewport = [&] {
             auto *action = encryptedUiItem(window, "rejectChatKeyButton-" + c.peer.requestId);

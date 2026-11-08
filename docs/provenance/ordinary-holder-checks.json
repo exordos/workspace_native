@@ -1,0 +1,223 @@
+{
+  "schema": "ordinary-holder-response-checks-v1",
+  "scope": "Current ordinary native participant already holding exact requested generation can Grant or Reject a current participant request. Managers retain no-key Reject. No acquisition/bootstrap/provider/global-manager expansion.",
+  "sourceRef": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceManifestSha256": "88586734ba810d41e60b1f549c584c4bc6fad5709d572efb7224c6d6a49ca273",
+  "red": [
+    {
+      "label": "member-heldA-response-red4",
+      "totals": [
+        "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 3347ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::ordinaryMemberWithExactACanRespondToIndependentSourceRequest(member-holder/exact-A/Grant) 'c.row().value(\"offerGrant\").toBool()' returned FALSE. (Planned ordinary exact-A holder Grant is unavailable)",
+        "FAIL!  : NativeE2eeReadTest::ordinaryMemberWithExactACanRespondToIndependentSourceRequest(member-holder/exact-A/Reject) 'c.row().value(\"offerReject\").toBool()' returned FALSE. (Planned ordinary exact-A holder Reject is unavailable)"
+      ],
+      "stdoutSha256": "d1d220f9c70ea4bdd57390b0675e391a45e998cd7bab250ba9325f834cc44451",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    },
+    {
+      "label": "member-heldA-main-grant-red3",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 18409ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::uiOrdinaryManagerGrantsFromTheActualMainAction(ordinary-member-holder-held-A-en-light) 'encryptedUiItem(window, \"grantChatKeyButton-\" + c.peer.requestId)' returned FALSE. ()"
+      ],
+      "stdoutSha256": "064035ab7d0f8098d91e5ad0fd703c6742432e7522dfd3a2c9b1ac87a7266a38",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    },
+    {
+      "label": "holder-reject-admission-loss-red3",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 17060ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::ordinaryHolderRejectLosingADuringPublicationSettlesAndCanRetryTheSamePublicResponse() '!c.response().value(\"busy\").toBool()' returned FALSE. (Losing ordinary holder Reject permission before POST must settle busy)"
+      ],
+      "stdoutSha256": "5b3aa263964ab19f0f39188a1044113d160b058d073bf2a8aeceb00b279acdb1",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    },
+    {
+      "label": "holder-retry-currentR-loss-red3",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 17313ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::ordinaryHolderRejectLosingADuringRetryRequestGetSettlesAndCanCheckTheSamePublicResponse() '!c.response().value(\"busy\").toBool()' returned FALSE. (Holder Reject retry losing A during current-R GET must settle busy)"
+      ],
+      "stdoutSha256": "5bf7b8ad645fdf3b4a58f6f8ef4bc0b783eab565fc7a077b3fccfa640c4a58ca",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    }
+  ],
+  "focused": [
+    {
+      "label": "held-request-retry-and-account-boundaries9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 16481ms"
+      ],
+      "wallSeconds": 16.517,
+      "stdoutSha256": "5427faa5c0562643923e1a8cf879f305e89f68642017263bafbdf0123a3b48ff",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "holder-reject-admission-loss-green3",
+      "totals": [
+        "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 2083ms"
+      ],
+      "wallSeconds": 2.121,
+      "stdoutSha256": "4f7e0851b49429a12f205a8a2ed3b2d92eb927a6e9645833e239c33350bb6205",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "holder-current-boundaries9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 14411ms"
+      ],
+      "wallSeconds": 14.46,
+      "stdoutSha256": "fe537c5dbf0994fbaacd16fefb2caaac733934db855a21c3b32666b6c25e8297",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "manager-heldA-and-lost-material5",
+      "totals": [
+        "Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 5346ms"
+      ],
+      "wallSeconds": 5.431,
+      "stdoutSha256": "d1c07575b50eb7d82d87a308ef7c20d88a420ef98dd6b0b6eb0b7a38ec7e2cd4",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "ordinary-reject-and-legacy14",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 27522ms"
+      ],
+      "wallSeconds": 27.606,
+      "stdoutSha256": "6629cd2bca003ba0278864a7a776d5ead8c59ea5b3313ff1dd78bc5a43445c83",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "encrypted-response-controls16",
+      "totals": [
+        "Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 27592ms"
+      ],
+      "wallSeconds": 27.652,
+      "stdoutSha256": "4346936eeb61f9ae2e00b1062d09592bfd8907bdfbc1136f1a6184a80293019a",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "empty-retained-ordinary8",
+      "totals": [
+        "Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 13774ms"
+      ],
+      "wallSeconds": 13.86,
+      "stdoutSha256": "2ebd0f5f38cb43b4a68d7707e4e3ca98c85cc71a06c1e664e6d4dd349d2e321b",
+      "stderrBytes": 0,
+      "warnings": []
+    }
+  ],
+  "focusedCountNote": "Qt totals include setup/cleanup per group and one repeated publication regression; they are not a count of unique scenarios.",
+  "fullCore": {
+    "label": "core-whole274",
+    "totals": [
+      "Totals: 274 passed, 0 failed, 0 skipped, 0 blacklisted, 613764ms"
+    ],
+    "wallSeconds": 613.8,
+    "stdoutSha256": "7b78e015b37d3b61d02db5789eb01e5c30349d95ae2cbb23df4ec1a9e0a1e119",
+    "stderrBytes": 0,
+    "warnings": [],
+    "accepted": true
+  },
+  "mainInitialActions": {
+    "label": "ordinary-main-manager-and-holder8",
+    "totals": [
+      "Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 13073ms"
+    ],
+    "wallSeconds": 13.206,
+    "stdoutSha256": "2fff6dda4b7cdc895f52d1c95ec2d140b3453c79125ea47c8a1124e59ef3f836",
+    "stderrBytes": 0,
+    "warnings": [],
+    "accepted": true
+  },
+  "fullUi": {
+    "label": "ui-whole131",
+    "totals": [],
+    "wallSeconds": 197.572,
+    "stdoutSha256": "7ec29e0ea87028820f0cd48a8c7d8f7bceafe10ea6399c51be3454b32f73f644",
+    "stderrBytes": 228,
+    "warnings": [],
+    "accepted": false,
+    "exitCode": -11,
+    "completedPasses": 93,
+    "failure": "SIGSEGV in uiServiceHistoryCommitAndRealtimeHaveDifferentExpansion; no test totals",
+    "cause": "UNKNOWN. One original first29-function/all-data-tags debugger diagnostic passed96 without a signal; it does not establish a fix.",
+    "stderrSha256": "902407483299ddc2093c773bb84d28ed4dc83247f5d5ded6e4355f7e6a40e31a"
+  },
+  "debuggerDiagnostic": {
+    "scope": "One actual stack diagnostic, exact original first29functions/all data tags through the crashed history function. No source/helper/wait/input/GL changes or acceptance claim. Private debugger loader library path does not change target environment.",
+    "totals": [
+      "Totals: 96 passed, 0 failed, 0 skipped, 0 blacklisted, 184593ms"
+    ],
+    "stdoutSha256": "4c11055e7cc62cb1a34eb37731e6ad2ecc31ce4c067c1ee1ef777ecff5abf0fb",
+    "stackStopCaptured": false,
+    "acceptance": false
+  },
+  "previousSnapshotFullUi": {
+    "sourceManifestSha256": "d8fd16d186fc0cbda019ebde068739f8c45bb6d3d175ae49a2c81e6c3e98ea37",
+    "totals": "131 passed, 0 failed, 0 skipped, 0 blacklisted, 301819ms",
+    "stdoutSha256": "fe7f193c2a87dba6519cf4c0dac8acec2e0ceaf340b7164a93c956201d017298",
+    "scope": "Earlier GREEN4 predates final one-line admission routing guard; cannot replace failed final fullUI."
+  },
+  "failedPredecessorCore": {
+    "totals": "271 passed, 2 failed: old pending holder action prohibitions, including one pending snapshot captured before terminal event",
+    "stdoutSha256": "c2c13329a08cc58357d3afe5304caa626f7da4cfe04e15b604837e860550baf2",
+    "successor": "Explicit positive pending-holder availability and fresh terminal deny-all; all B-only/departed/admin-noA direct no-write controls retained."
+  },
+  "sourcePresentation": {
+    "manifestSha256": "e2d2b0f9eabd1bec67ede33e305b30410633086e3032e11ec13752d7c305f6c2",
+    "rootReviewSha256": "e190c80a4de633101840862c9e08db413235357672084d4dfae9b5bfb829440a",
+    "geometry": [
+      {
+        "action": "Send key",
+        "nativeMinusSource": {
+          "x": -0.21875,
+          "y": 0,
+          "width": -0.0625,
+          "height": 0
+        }
+      },
+      {
+        "action": "Reject",
+        "nativeMinusSource": {
+          "x": -0.28125,
+          "y": 0,
+          "width": -0.0625,
+          "height": 0
+        }
+      }
+    ],
+    "scope": "Same actual public member EN/light request text/actions; Source preframe and same-run Native pre/post. Capture precedes final one-line retry guard; QML presentation unchanged.",
+    "sourceRolesCryptoDispatchOrFullShellAccepted": false,
+    "comparisonMessageUuid": "4d70eae9-e99e-584d-9029-6424ccd522e6",
+    "threeRawFramesRootViewed": true,
+    "browserProfilesAndServerCleaned": true
+  },
+  "retainedResponseRecovery": "Controller-only. Both actual lost-admission hangs settle and preserve owned public GET Check / explicit same-wire Retry. Main initial G/J is accepted; Main retained issuer recovery is NOT accepted and has no separate Check/Retry control. No unmatched Source controls added.",
+  "remaining": "Historical Wayland/QMutex/out-of-window warning causes, complete shell, ordinary acquisition/bootstrap, issuer recovery UI, actual secure-store/package/live/fullLinux/cross-platform acceptance and the final fullUI crash remain open. Exact-project Realm quota remains blocking live acceptance.",
+  "cacheDefaultBytes": 10000000000,
+  "processPrivateXdgAndSourceIntegrityVerified": true
+}

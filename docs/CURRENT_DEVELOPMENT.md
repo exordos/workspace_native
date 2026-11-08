@@ -1,13 +1,15 @@
 # Current native development
 
 The imported baseline remains recorded in `docs/provenance/import-v34.json`.
-This branch adds ordinary native channel owner/administrator responses to a
-current member's foreign key request. Reject does not require the requested local
-key. Grant requires the exact requested generation already held in the native
-vault; the current stream key can be null. Typed payloads, canonical placement,
-the exact default-topic target, request/device binding and retained Check/Retry
-rules reuse the existing protocol. Ordinary key acquisition, bootstrap and
-member/moderator holder relay remain separate parity work.
+This branch adds ordinary native channel responses to a current participant's
+foreign key request. Current participants already holding the exact requested
+generation can Grant or Reject. Owners and administrators retain Reject without
+the requested local key. Grant reads the exact generation already held in the
+native vault; the current stream key can be null. Typed payloads, canonical
+placement, the exact default-topic target, request/device binding and retained
+controller Check/Retry reuse the existing protocol. Ordinary key acquisition,
+bootstrap, provider issuance and the Main issuer-recovery flow remain separate
+parity work.
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
@@ -52,6 +54,40 @@ pre-click Source comparison uses actual public Native inputs and the pinned
 production Source row/actions; all four button rectangles differ horizontally by
 less than 0.3px, with identical y/height. This accepts that row's presentation,
 not Source authority/crypto/dispatch or the complete shell.
+
+Ordinary holder responses reproduced missing Grant/Reject controller capability
+and the missing actual Main Grant button before the change. Current-self and
+requester membership, exact A rather than B, fresh authority and encrypted/global
+manager limits remain enforced. Real Main Grant and Reject clicks pass for the
+new member holder and existing owner/administrator rows. A pending holder can act;
+a fresh terminal row denies all four actions. The earlier full run's two obsolete
+pending-holder prohibitions remain recorded.
+
+Two additional regressions reproduced retained Reject staying busy after local A
+loss: during synchronous sending publication before any POST, and while explicit
+Retry awaits its acknowledged current-request GET after an unapplied failed POST.
+Both now settle the same current intent through the existing post guard. GET-only
+Check and explicit same-wire Retry retain their existing ownership rules; Reject
+does not acquire Grant's permanent material-loss pin. These recovery checks are
+**controller-only**. Main has no separate issuer Check/Retry controls; its recovery
+interaction still requires Source-compatible integration through the existing
+surface. No retained recovery UI acceptance is claimed.
+
+The final holder snapshot passes complete Core274 in 613.800 seconds
+and the eight actual Main initial-action cases in 13.206 seconds,
+without QtTest warnings, skips or runtime stderr in those groups. Its complete UI
+run is **not accepted**: after 93 completed passes it crashed with SIGSEGV in
+`uiServiceHistoryCommitAndRealtimeHaveDifferentExpansion`, before the new member
+Main cases. One original-order prefix under a debugger passed 96 cases without a
+signal; the cause remains unknown and no crash fix is claimed. The earlier
+GREEN4 complete UI131 pass predates the final one-line admission routing guard
+and cannot replace this failed final run. The Source/member comparison uses the
+same actual public inputs;
+the two button rectangles have equal y/height and less than 0.3px x difference.
+The compared text/actions do not establish full shell or Source runtime
+role/crypto/dispatch parity. [Holder checks](provenance/ordinary-holder-checks.json)
+retain the actual REDs, intermediate failed scope run, accepted groups and exact
+presentation boundary. Historical warning causes below remain open.
 
 The first full UI run passed 124 cases and failed four obsolete full-UUID author
 lookups in the locked-message geometry test. Its lookup now requires the accepted
