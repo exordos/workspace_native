@@ -444,3 +444,11 @@ The next actual CI artifact remains a separate acceptance step. A second full
 Window267 run retained one archive-dialog closing failure (266 passes); its
 cause is unknown. The original channel-member failure remains open as well.
 See [SVG package checks](provenance/linux-svg-packaging-checks.json).
+
+Release tags now use plain numeric `X.Y.Z`, starting with `0.1.0`. The existing
+updater already accepted this format; a new metadata/streamed-download case
+confirms it without changing C++ product code. All original 48 cases remain
+byte-for-byte; the complete 49-case updater suite passed in 4.408 s without
+runtime warnings. CI now runs that QCore suite as well as the installed runtime
+probe. The cancelled unpublished prefixed tag was removed. See
+[bare tag checks](provenance/linux-bare-release-tag-checks.json).

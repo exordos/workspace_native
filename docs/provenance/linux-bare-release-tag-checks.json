@@ -1,0 +1,16 @@
+{
+  "schema": "native-linux-bare-release-tag-v1",
+  "tagFormat": "X.Y.Z without prefix",
+  "productionParserAlreadyAcceptedBareTag": true,
+  "cppProductChange": false,
+  "old48CasesByteExact": true,
+  "focusedQt": "3 passed, 0 failed, 154 ms",
+  "wholeQt": "49 passed, 0 failed, 4408 ms",
+  "noRuntimeWarnings": true,
+  "proofSha256": "3f4efe8172f404c45fd429aa95066710e86c8df0be7ed702d8c018510fde7078",
+  "testSourceSha256": "fcd7bd387372f61561c4ca4a505e4a0af0b8cecf29ccec6ae5727984f2638421",
+  "workflow": "Numeric tag trigger and exact tag/project version equality. Includes headless-independent QCore updater CTest and real installed five-codec/TLS probe.",
+  "previousWrongTag": "Task-owned unpublished v0.1.0 run cancelled, tag removed; remote absence confirmed.",
+  "actualInitialCandidate": "Previous actual master29 package installed and displayed sign-in, private runtime maps51, Ctrl+Q exit0. Application C++/QML and package scripts unchanged by this tag/test/workflow change.",
+  "fullParityOrInstalledUpgrade": false
+}

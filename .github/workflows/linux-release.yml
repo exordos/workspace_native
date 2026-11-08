@@ -10,7 +10,7 @@ on:
   push:
     branches: [master]
     tags:
-      - "v*"
+      - "[0-9]*"
 
 permissions:
   contents: write
@@ -59,7 +59,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib
 
       - name: Build
-        run: cmake --build build/linux-release --target workspace-native native-runtime-probe --parallel 3
+        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test --parallel 3
+
+      - name: Check update transport and installer contracts
+        run: ctest --test-dir build/linux-release -R '^native-updater$' --output-on-failure
 
       - name: Package installed runtime
         shell: bash
@@ -69,7 +72,7 @@ jobs:
           set -euo pipefail
           version="${VERSION_INPUT}"
           if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
+            tag_version="${GITHUB_REF_NAME}"
             if [[ -n "${version}" && "${version}" != "${tag_version}" ]]; then
               echo 'Version input does not match tag' >&2
               exit 1

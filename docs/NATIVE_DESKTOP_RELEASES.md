@@ -8,8 +8,8 @@ retain the first whole-window failure and outstanding release acceptance.
 
 ## Build pipeline
 
-`.github/workflows/linux-release.yml` builds on master pushes, `vX.Y.Z` tags
-and manual dispatch. It uses an Ubuntu 26.04 container on an Ubuntu 24.04 runner,
+`.github/workflows/linux-release.yml` builds on master pushes, plain `X.Y.Z` tags
+(for example `0.1.0`, without a prefix) and manual dispatch. It uses an Ubuntu 26.04 container on an Ubuntu 24.04 runner,
 installs the documented Qt kit and Node.js for test-target configuration, checks
 installer/package regressions, builds
 Release, deploys the actual QML runtime, exercises the packaged five-codec

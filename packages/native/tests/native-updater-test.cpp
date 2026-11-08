@@ -165,6 +165,7 @@ class NativeUpdaterTest final : public QObject {
 private slots:
     void init() { QTest::failOnWarning(QRegularExpression(QStringLiteral(".*"))); }
     void explicitCheckAndVerifiedStreamingDownload();
+    void plainNumericReleaseTagAndVerifiedStreamingDownload();
     void nonNewerRelease_data();
     void nonNewerRelease();
     void invalidMetadata_data();
@@ -229,6 +230,49 @@ void NativeUpdaterTest::explicitCheckAndVerifiedStreamingDownload()
         QCOMPARE(server.requests.size(), 2);
     }
     QVERIFY(!QFileInfo::exists(verified));
+}
+
+void NativeUpdaterTest::plainNumericReleaseTagAndVerifiedStreamingDownload()
+{
+    Server server;
+    QVERIFY(server.listening);
+    QTemporaryDir cache;
+    QVERIFY(cache.isValid());
+    const auto release = server.release(QStringLiteral("1.2.4"));
+    QCOMPARE(release.value(QStringLiteral("tag_name")).toString(), QStringLiteral("1.2.4"));
+    QPointer<QTcpSocket> binary;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (request.startsWith("GET /latest ")) Server::reply(socket, json(release));
+        else {
+            binary = socket;
+            socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(Archive.size())
+                + "\r\nConnection: close\r\n\r\n" + Archive.left(5));
+        }
+    };
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), cache.path());
+    updater.check();
+    QTRY_COMPARE(updater.state(), QStringLiteral("available"));
+    QCOMPARE(updater.availableVersion(), QStringLiteral("1.2.4"));
+    QVERIFY(updater.error().isEmpty());
+    QCOMPARE(server.requests.size(), 1);
+    updater.download();
+    QTRY_COMPARE(server.requests.size(), 2);
+    QTRY_VERIFY(updater.progress() > 0);
+    QVERIFY(updater.progress() < 1);
+    QVERIFY(updater.downloadedPath().isEmpty());
+    QVERIFY(binary);
+    binary->write(Archive.mid(5));
+    binary->disconnectFromHost();
+    QTRY_COMPARE(updater.state(), QStringLiteral("downloaded"));
+    QCOMPARE(updater.progress(), qreal(1));
+    QVERIFY(QFileInfo(updater.downloadedPath()).isFile());
+    QCOMPARE(read(updater.downloadedPath()), Archive);
+    QVERIFY(updater.error().isEmpty());
+    QCOMPARE(server.requests.size(), 2);
+    for (const auto &request : server.requests) {
+        QVERIFY(header(request, "Authorization").isEmpty());
+        QVERIFY(header(request, "Cookie").isEmpty());
+    }
 }
 
 void NativeUpdaterTest::nonNewerRelease_data()
