@@ -1,0 +1,39 @@
+{
+  "version": "0.2.0",
+  "status": "CURRENT_ACCOUNT_STARTUP_LOCAL_COMPONENT_AND_MAIN_PASS_FEATURE_RELEASE_IN_PROGRESS",
+  "sourceReferenceCommit": "95495b10b828f853c9e770b47216073eb973fa95",
+  "behavior": {
+    "persistedField": "currentAccountId",
+    "selectedOnlyAfterSuccessfulStillCurrentVerifiedSessionSave": true,
+    "startupUsesExistingCredentialRefreshAndUserProjectVerification": true,
+    "manualLoginAndSignoutWin": true,
+    "noAutomaticFallbackToDifferentStoredIdentity": true,
+    "legacyMetadataWithoutMarkerRetainsManualContinue": true,
+    "refreshCredentialFormatServiceAndFallbackPolicyUnchanged": true
+  },
+  "local": {
+    "applicationAndFocusedTestsBuild": "pass",
+    "qtCasesPassed": {
+      "window": 4,
+      "session": 28,
+      "session-vault": 12
+    },
+    "runtimeFailuresWarningsSkipsStderr": 0,
+    "wholeSessionAndVaultSuites": true,
+    "actualMainFocusedModes": [
+      "manual-continue",
+      "automatic-startup"
+    ],
+    "sourceManifestSha256": "cf7c6ba3be064652dc49c320c73469ae8510a38aa7a8c48371502c6d4cd031c3",
+    "rootReviewSha256": "46b302f38c8886a2c3d9f804d15d6282c41abe1d0cc1541e1a50d2b6fdd75619",
+    "allOwnedProcessesAndPrivateXdgRemoved": true
+  },
+  "limits": [
+    "Synthetic credential backend and HTTPS executor; actual native Main controls",
+    "Executable startup hook compiled but not accepted through a real remembered-account process restart",
+    "Last-conversation restoration and complete0.2.0 acceptance remain pending",
+    "Real desktop OS credential persistence remains unaccepted",
+    "Full window/encrypted UI, public package/update and live0.2.0 checks remain pending",
+    "Full application/pixel parity and other platforms remain open"
+  ]
+}

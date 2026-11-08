@@ -152,8 +152,11 @@ SessionVault::SessionVault(QString metadataFile, SessionSecretStore *backend, QO
         if (!account.id.isEmpty()) m_accounts.insert(account.id, account);
     }
     settings.endArray();
+    const auto current = settings.value("currentAccountId").toString();
+    if (m_accounts.contains(current)) m_currentAccountId = current;
     if (settings.status() != QSettings::NoError) {
         m_accounts.clear();
+        m_currentAccountId.clear();
         m_storageError = tr("Saved-account metadata could not be read.");
     }
 }
@@ -175,7 +178,23 @@ QVector<SavedAccount> SessionVault::accounts() const
     return visible;
 }
 
-QString SessionVault::writeMetadata(const QMap<QString, SavedAccount> &accounts)
+QString SessionVault::currentAccountId() const
+{
+    return m_accounts.contains(m_currentAccountId) && !m_forgetting.contains(m_currentAccountId)
+        ? m_currentAccountId : QString{};
+}
+
+QString SessionVault::setCurrentAccountId(const QString &id)
+{
+    if (!id.isEmpty() && (!m_accounts.contains(id) || m_forgetting.contains(id)))
+        return tr("The saved account is no longer available.");
+    if (id == m_currentAccountId) return {};
+    const auto error = writeMetadata(m_accounts, id);
+    if (error.isEmpty()) m_currentAccountId = id;
+    return error;
+}
+
+QString SessionVault::writeMetadata(const QMap<QString, SavedAccount> &accounts, const QString &current)
 {
     if (!m_storageError.isEmpty()) return m_storageError;
     if (QFileInfo(m_metadataFile).isSymLink()) return tr("Saved-account metadata is not a regular private file.");
@@ -194,6 +213,8 @@ QString SessionVault::writeMetadata(const QMap<QString, SavedAccount> &accounts)
         settings.setValue("projectName", account.projectName);
     }
     settings.endArray();
+    if (accounts.contains(current)) settings.setValue("currentAccountId", current);
+    else settings.remove("currentAccountId");
     settings.sync();
     if (settings.status() != QSettings::NoError
         || !QFile::setPermissions(m_metadataFile, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
@@ -249,7 +270,7 @@ void SessionVault::save(SavedAccount account, QByteArray refreshToken, Completio
             if (error != SessionSecretStore::Error::None) { guard->complete(done, secretErrorText(error)); return; }
             auto updated = guard->m_accounts;
             updated.insert(account.id, account);
-            const auto metadataError = guard->writeMetadata(updated);
+            const auto metadataError = guard->writeMetadata(updated, guard->currentAccountId());
             if (metadataError.isEmpty()) {
                 guard->m_accounts = updated;
                 guard->m_forgetting.remove(account.id);
@@ -291,7 +312,8 @@ void SessionVault::load(const QString &id, Loaded done)
             }
             if (error == SessionSecretStore::Error::NotFound) {
                 guard->m_accounts.remove(id);
-                guard->writeMetadata(guard->m_accounts);
+                if (guard->m_currentAccountId == id) guard->m_currentAccountId.clear();
+                guard->writeMetadata(guard->m_accounts, guard->currentAccountId());
                 emit guard->accountsChanged();
             }
             if (!guard) return;
@@ -313,12 +335,13 @@ void SessionVault::forget(const QString &id, Completion done)
     }
     ++m_revisions[id];
     m_forgetting.insert(id);
+    if (m_currentAccountId == id) m_currentAccountId.clear();
     const QPointer<SessionVault> guard(this);
     emit accountsChanged();
     if (!guard) return;
     enqueue([this, id, done] {
         m_accounts.remove(id);
-        const auto metadataError = writeMetadata(m_accounts);
+        const auto metadataError = writeMetadata(m_accounts, currentAccountId());
         if (!m_backend) { complete(done, metadataError.isEmpty() ? secretErrorText(SessionSecretStore::Error::Unavailable) : metadataError); return; }
         const QPointer<SessionVault> guard(this);
         m_backend->remove(id, [guard, done, metadataError](SessionSecretStore::Error error) {

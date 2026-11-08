@@ -785,6 +785,36 @@ history or credential preservation. Real primary-account sign-in/send/read
 acceptance remains on 0.1.5, and remembered-session restoration remains open.
 See [published 0.1.6 checks](provenance/linux-published-0.1.6-upgrade-checks.json).
 
+## 0.2.0 in progress: saved-account startup
+
+The application now schedules restoration of the last explicitly selected saved
+account after the native UI is loaded. The existing refresh and user/project
+introspection path still decides whether the session is authenticated. Only a
+successful credential save belonging to the still-current verified session can
+select the startup account. Manual login, account selection and sign-out advance
+the existing attempt guard and win over pending automatic work.
+
+The private account metadata gains an optional `currentAccountId`; credentials,
+their OS service and the disabled plaintext fallback remain unchanged. Invalid or
+missing markers do not select another identity. Older saved accounts without the
+marker retain Continue; a successful verified continuation records the choice.
+Forgetting or losing the selected credential clears its marker while preserving
+other saved accounts. Metadata construction does not read credentials or start
+network requests.
+
+The 0.2.0 application build, complete Session28/Vault12 and focused actual Main4
+checks passed. The Main rows retain the existing unavailable-store, busy controls,
+explicit retry, verified refresh, sign-out and Remove oracles, and add automatic
+startup alongside the original Continue path. Inputs remain unchanged across the
+build and runs; no runtime warning, stderr, failure or skip occurred. Owned
+processes and private XDG state were removed.
+
+These checks use synthetic credentials and a memory store. The executable's
+startup hook compiled, but a real saved-account process restart on the desktop is
+not yet accepted. Last-conversation restoration, complete 0.2.0 window/encrypted
+UI checks, packaging, installed update and live-account acceptance remain in
+progress. See [startup checks](provenance/session-startup-checks.json).
+
 ## Version policy check
 
 The next feature release is 0.2.0; corrections to existing behavior increment

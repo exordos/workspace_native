@@ -134,6 +134,7 @@ int main(int argc, char **argv)
     updateUnread();
     QObject::connect(&instance, &workspace::NativeInstance::activationRequested, &app, activate);
     if (instance.activationPending()) activate();
+    QTimer::singleShot(0, &session, &workspace::Session::resumeCurrentAccount);
     const int code = app.exec();
     if (!restartExecutable.isEmpty()) {
         // A successor must acquire the primary lock after cache/key shutdown.

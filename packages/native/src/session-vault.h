@@ -57,6 +57,8 @@ public:
                           QObject *parent = nullptr);
     static QString accountId(const QUrl &server, const QString &project, const QString &user);
     QVector<SavedAccount> accounts() const;
+    QString currentAccountId() const;
+    QString setCurrentAccountId(const QString &id);
     void save(SavedAccount account, QByteArray refreshToken, Completion done = {});
     void load(const QString &id, Loaded done);
     void forget(const QString &id, Completion done = {});
@@ -65,7 +67,7 @@ signals:
     void accountsChanged();
 
 private:
-    QString writeMetadata(const QMap<QString, SavedAccount> &accounts);
+    QString writeMetadata(const QMap<QString, SavedAccount> &accounts, const QString &current);
     void enqueue(std::function<void()> operation);
     void startNext();
     void complete(Completion done, const QString &error);
@@ -74,6 +76,7 @@ private:
     QString m_storageError;
     QPointer<SessionSecretStore> m_backend;
     QMap<QString, SavedAccount> m_accounts;
+    QString m_currentAccountId;
     QMap<QString, quint64> m_revisions;
     QSet<QString> m_forgetting;
     std::deque<std::function<void()>> m_queue;

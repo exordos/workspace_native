@@ -20,6 +20,7 @@ public:
     void setVault(SessionVault *vault);
     QVector<SavedAccount> savedAccounts() const;
     void resumeSavedAccount(const QString &id);
+    void resumeCurrentAccount();
     void forgetSavedAccount(const QString &id);
     void login(const QUrl &server, const QString &login, const QString &password,
                const QString &otp = {});

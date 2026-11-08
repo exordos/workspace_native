@@ -159,7 +159,11 @@ avatar rails and actual avatar images still require acceptance.
   after the selected project and user pass introspection, and saves subsequent
   verified rotations. Saved-account labels expose metadata only. Continue performs
   refresh and checks the expected user/project before showing the authenticated
-  shell. Remove and explicit sign-out forget the selected identity; internal login
+  shell. The 0.2.0 candidate schedules the last explicitly saved choice once at
+  startup through that same verified path; manual actions win and older metadata
+  without a choice retains Continue. Local Session28/Vault12 and actual Main4
+  checks pass; real OS-store/process-restart acceptance remains open. Remove and
+  explicit sign-out forget the selected identity; internal login
   resets and offline restoration failures preserve unrelated saved entries.
   A secure-store warning does not cancel a verified session or an in-flight
   realtime snapshot. The profile trigger exposes only verified public IAM identity

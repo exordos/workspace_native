@@ -69,6 +69,15 @@ QVector<SavedAccount> Session::savedAccounts() const
     return m_vault ? m_vault->accounts() : QVector<SavedAccount>{};
 }
 
+void Session::resumeCurrentAccount()
+{
+    // Startup is the only automatic choice. A manual login, account selection
+    // or sign-out has already advanced the attempt and must win the race.
+    if (!m_vault || m_attempt != 0) return;
+    const auto id = m_vault->currentAccountId();
+    if (!id.isEmpty()) resumeSavedAccount(id);
+}
+
 void Session::resumeSavedAccount(const QString &id)
 {
     clearMemory();
@@ -185,7 +194,12 @@ void Session::rememberVerifiedSession()
     const auto attempt = m_attempt;
     const QPointer<Session> guard(this);
     m_vault->save(account, m_refreshToken, [guard, attempt, id = account.id](QString error) {
-        if (guard && attempt == guard->m_attempt && id == guard->m_savedAccountId && !error.isEmpty())
+        if (!guard || attempt != guard->m_attempt || id != guard->m_savedAccountId) return;
+        // A late save of another account may keep that account available, but
+        // only this still-current, verified session selects the startup identity.
+        if (error.isEmpty() && guard->m_vault)
+            error = guard->m_vault->setCurrentAccountId(id);
+        if (!error.isEmpty())
             emit guard->error(tr("Signed in, but this session could not be remembered. %1").arg(error));
     });
 }

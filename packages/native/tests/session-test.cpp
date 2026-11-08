@@ -11,9 +11,12 @@ using namespace workspace::test;
 class SessionMemorySecrets final : public SessionSecretStore {
 public:
     QMap<QString, QByteArray> values;
+    bool holdWrites = false;
+    std::deque<Completion> pendingWrites;
     void write(const QString &key, const QByteArray &secret, Completion done) override {
         values.insert(key, secret);
-        QTimer::singleShot(0, this, [done] { done(Error::None); });
+        if (holdWrites) pendingWrites.push_back(std::move(done));
+        else QTimer::singleShot(0, this, [done] { done(Error::None); });
     }
     void read(const QString &key, Loaded done) override {
         const auto value = values.value(key);
@@ -264,6 +267,173 @@ private slots:
         session.logout();
         QTRY_VERIFY(vault.accounts().isEmpty());
         QTRY_VERIFY(backend.values.isEmpty());
+    }
+
+    void startupResumesOnlyTheExplicitVerifiedAccountAfterMetadataReopen()
+    {
+        QTemporaryDir directory;
+        SessionMemorySecrets backend;
+        const auto path = directory.filePath("accounts.ini");
+        auto first = savedIdentity();
+        auto last = first;
+        last.server = QUrl("https://last.example");
+        last.id = SessionVault::accountId(last.server, last.project, last.user);
+        {
+            SessionVault vault(path, &backend);
+            int stored = 0;
+            vault.save(first, "synthetic-first-refresh", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+            vault.save(last, "synthetic-last-refresh", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+            QTRY_COMPARE(stored, 2);
+            QVERIFY(vault.setCurrentAccountId(last.id).isEmpty());
+        }
+        SessionVault reopened(path, &backend);
+        HttpsSessionTransport transport;
+        ApiClient api;
+        Session session(&api, nullptr, transport.executor());
+        session.setVault(&reopened);
+        QSignalSpy ready(&session, &Session::authenticated);
+        QVERIFY(transport.requests.isEmpty());
+        session.resumeCurrentAccount();
+        session.resumeCurrentAccount();
+        QTRY_COMPARE(ready.size(), 1);
+        QCOMPARE(api.server(), last.server);
+        QCOMPARE(session.project(), projectId);
+        QCOMPARE(session.user(), userId);
+        QCOMPARE(transport.requests.size(), 2);
+        QCOMPARE(transport.requests.first().body.value("grant_type").toString(), QString("refresh_token"));
+        QCOMPARE(transport.requests.first().body.value("refresh_token").toString(), QString("synthetic-last-refresh"));
+        QVERIFY(transport.requests.last().target.path().endsWith("/introspect"));
+        QTRY_COMPARE(backend.values.value(last.id), QByteArray("synthetic-rotated-refresh"));
+        QCOMPARE(backend.values.value(first.id), QByteArray("synthetic-first-refresh"));
+        QCOMPARE(reopened.currentAccountId(), last.id);
+        session.logout();
+        QTRY_COMPARE(reopened.accounts().size(), 1);
+        SessionVault afterLogout(path, &backend);
+        QVERIFY(afterLogout.currentAccountId().isEmpty());
+    }
+
+    void startupCannotOverrideAnEarlierManualLogin()
+    {
+        QTemporaryDir directory;
+        SessionMemorySecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const auto saved = savedIdentity();
+        bool stored = false;
+        vault.save(saved, "synthetic-saved-refresh", [&](QString error) { QVERIFY(error.isEmpty()); stored = true; });
+        QTRY_VERIFY(stored);
+        QVERIFY(vault.setCurrentAccountId(saved.id).isEmpty());
+        HttpsSessionTransport transport;
+        ApiClient api;
+        Session session(&api, nullptr, transport.executor());
+        session.setVault(&vault);
+        session.login(QUrl("https://manual.example"), "manual-user", "synthetic-password");
+        session.resumeCurrentAccount();
+        QTRY_COMPARE(session.projects().size(), 1);
+        QCOMPARE(api.server(), QUrl("https://manual.example"));
+        QCOMPARE(transport.requests.size(), 2);
+        QCOMPARE(transport.requests.first().body.value("grant_type").toString(), QString("login+password"));
+        QVERIFY(!session.ready());
+    }
+
+    void startupReadCannotAuthenticateAfterAnImmediateSignOut()
+    {
+        QTemporaryDir directory;
+        SessionMemorySecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const auto saved = savedIdentity();
+        bool stored = false;
+        vault.save(saved, "synthetic-saved-refresh", [&](QString error) { QVERIFY(error.isEmpty()); stored = true; });
+        QTRY_VERIFY(stored);
+        QVERIFY(vault.setCurrentAccountId(saved.id).isEmpty());
+        HttpsSessionTransport transport;
+        ApiClient api;
+        Session session(&api, nullptr, transport.executor());
+        session.setVault(&vault);
+        QSignalSpy ready(&session, &Session::authenticated);
+        session.resumeCurrentAccount();
+        session.logout();
+        QTRY_VERIFY(vault.accounts().isEmpty());
+        QVERIFY(!session.ready());
+        QCOMPARE(ready.size(), 0);
+        QVERIFY(transport.requests.isEmpty());
+        session.resumeCurrentAccount();
+        QVERIFY(transport.requests.isEmpty());
+    }
+
+    void startupFailureDoesNotLoopOrSelectAnotherStoredAccount_data()
+    {
+        QTest::addColumn<QString>("mode");
+        for (const auto *mode : {"offline", "invalid-grant", "wrong-user", "wrong-project", "missing-credential"})
+            QTest::newRow(mode) << QString::fromLatin1(mode);
+    }
+
+    void startupFailureDoesNotLoopOrSelectAnotherStoredAccount()
+    {
+        QFETCH(QString, mode);
+        QTemporaryDir directory;
+        SessionMemorySecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const auto saved = savedIdentity();
+        auto other = saved;
+        other.server = QUrl("https://another.example");
+        other.id = SessionVault::accountId(other.server, other.project, other.user);
+        int stored = 0;
+        vault.save(saved, "synthetic-saved-refresh", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        vault.save(other, "synthetic-other-refresh", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        QTRY_COMPARE(stored, 2);
+        QVERIFY(vault.setCurrentAccountId(saved.id).isEmpty());
+        if (mode == "missing-credential") backend.values.remove(saved.id);
+        HttpsSessionTransport transport;
+        transport.offline = mode == "offline";
+        transport.rejectRefresh = mode == "invalid-grant";
+        if (mode == "wrong-user") transport.identityUser = streamId;
+        if (mode == "wrong-project") transport.identityProject = streamId;
+        ApiClient api;
+        Session session(&api, nullptr, transport.executor());
+        session.setVault(&vault);
+        QSignalSpy failures(&session, &Session::error);
+        QSignalSpy ready(&session, &Session::authenticated);
+        session.resumeCurrentAccount();
+        QTRY_VERIFY(!failures.isEmpty());
+        QVERIFY(!session.ready());
+        QCOMPARE(ready.size(), 0);
+        const auto count = transport.requests.size();
+        session.resumeCurrentAccount();
+        QCOMPARE(transport.requests.size(), count);
+        QVERIFY(backend.values.contains(other.id));
+        if (mode == "offline") QCOMPARE(vault.currentAccountId(), saved.id);
+        else QTRY_VERIFY(vault.currentAccountId().isEmpty());
+    }
+
+    void lateVerifiedSaveCannotSelectAnObsoleteLogin()
+    {
+        QTemporaryDir directory;
+        SessionMemorySecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        auto previous = savedIdentity();
+        previous.server = QUrl("https://previous.example");
+        previous.id = SessionVault::accountId(previous.server, previous.project, previous.user);
+        bool stored = false;
+        vault.save(previous, "synthetic-previous-refresh", [&](QString error) { QVERIFY(error.isEmpty()); stored = true; });
+        QTRY_VERIFY(stored);
+        QVERIFY(vault.setCurrentAccountId(previous.id).isEmpty());
+        HttpsSessionTransport transport;
+        ApiClient api;
+        Session session(&api, nullptr, transport.executor());
+        session.setVault(&vault);
+        session.login(QUrl("https://workspace.example"), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        backend.holdWrites = true;
+        session.selectProject(projectId);
+        QTRY_VERIFY(session.ready());
+        QTRY_COMPARE(backend.pendingWrites.size(), size_t(1));
+        session.login(QUrl("https://manual.example"), "manual-user", "synthetic-password");
+        auto complete = std::move(backend.pendingWrites.front());
+        backend.pendingWrites.pop_front();
+        complete(SessionSecretStore::Error::None);
+        QTRY_COMPARE(vault.accounts().size(), 2);
+        QCOMPARE(vault.currentAccountId(), previous.id);
+        QCOMPARE(api.server(), QUrl("https://manual.example"));
     }
 
     void rejectsResumedUserOrProjectMismatch()

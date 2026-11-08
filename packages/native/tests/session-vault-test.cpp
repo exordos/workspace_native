@@ -143,6 +143,94 @@ private slots:
             QVERIFY(!metadata.readAll().contains("synthetic-refresh-never-plaintext"));
     }
 
+    void startupAccountIsExplicitAndSurvivesMetadataReopen() {
+        QTemporaryDir directory;
+        MemorySecrets backend;
+        const auto path = directory.filePath("accounts.ini");
+        SessionVault vault(path, &backend);
+        int stored = 0;
+        const auto first = account();
+        const auto second = account("https://other.example");
+        const auto id = SessionVault::accountId(first.server, first.project, first.user);
+        vault.save(first, "synthetic-first", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        QTRY_COMPARE(stored, 1);
+        QVERIFY(vault.currentAccountId().isEmpty());
+        QVERIFY(vault.setCurrentAccountId(id).isEmpty());
+        vault.save(second, "synthetic-second", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        QTRY_COMPARE(stored, 2);
+        // Background credential persistence cannot select another startup owner.
+        QCOMPARE(vault.currentAccountId(), id);
+        const auto operations = backend.operations;
+        SessionVault reopened(path, &backend);
+        QCOMPARE(reopened.currentAccountId(), id);
+        QCOMPARE(reopened.accounts().size(), 2);
+        QCOMPARE(backend.operations, operations); // Metadata inspection reads no credential.
+        QVERIFY(!reopened.setCurrentAccountId(QString(64, u'f')).isEmpty());
+        QCOMPARE(reopened.currentAccountId(), id);
+    }
+
+    void invalidOrMissingStartupMarkerDoesNotChooseAnotherAccount() {
+        QTemporaryDir directory;
+        MemorySecrets backend;
+        const auto path = directory.filePath("accounts.ini");
+        SessionVault vault(path, &backend);
+        bool stored = false;
+        vault.save(account(), "synthetic-token", [&](QString error) { QVERIFY(error.isEmpty()); stored = true; });
+        QTRY_VERIFY(stored);
+        for (const auto &invalid : {QString{}, QString(64, u'f'), QString("../accounts"), QString("not-an-id")}) {
+            { QSettings metadata(path, QSettings::IniFormat); metadata.setValue("currentAccountId", invalid); metadata.sync(); }
+            SessionVault reopened(path, &backend);
+            QCOMPARE(reopened.accounts().size(), 1);
+            QVERIFY(reopened.currentAccountId().isEmpty());
+        }
+    }
+
+    void forgettingStartupAccountNeverFallsBackToAnotherIdentity() {
+        QTemporaryDir directory;
+        MemorySecrets backend;
+        const auto path = directory.filePath("accounts.ini");
+        SessionVault vault(path, &backend);
+        int stored = 0;
+        vault.save(account(), "synthetic-first", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        vault.save(account("https://other.example"), "synthetic-second", [&](QString error) { QVERIFY(error.isEmpty()); ++stored; });
+        QTRY_COMPARE(stored, 2);
+        const auto id = SessionVault::accountId(account().server, projectId, userId);
+        QVERIFY(vault.setCurrentAccountId(id).isEmpty());
+        backend.hold = true;
+        bool forgotten = false;
+        vault.forget(id, [&](QString error) { QVERIFY(error.isEmpty()); forgotten = true; });
+        QVERIFY(vault.currentAccountId().isEmpty());
+        QVERIFY(!vault.setCurrentAccountId(id).isEmpty());
+        QTRY_COMPARE(backend.pending.size(), size_t(1));
+        backend.finish();
+        QTRY_VERIFY(forgotten);
+        SessionVault reopened(path, &backend);
+        QCOMPARE(reopened.accounts().size(), 1);
+        QVERIFY(reopened.currentAccountId().isEmpty());
+    }
+
+    void missingStartupCredentialClearsOnlyItsMarker() {
+        QTemporaryDir directory;
+        MemorySecrets backend;
+        const auto path = directory.filePath("accounts.ini");
+        SessionVault vault(path, &backend);
+        bool stored = false;
+        vault.save(account(), "synthetic-token", [&](QString error) { QVERIFY(error.isEmpty()); stored = true; });
+        QTRY_VERIFY(stored);
+        const auto id = vault.accounts().first().id;
+        QVERIFY(vault.setCurrentAccountId(id).isEmpty());
+        backend.secrets.remove(id);
+        bool loaded = false;
+        vault.load(id, [&](SavedAccount, QByteArray secret, QString error) {
+            QVERIFY(secret.isEmpty()); QVERIFY(!error.isEmpty()); loaded = true;
+        });
+        QTRY_VERIFY(loaded);
+        QVERIFY(vault.currentAccountId().isEmpty());
+        SessionVault reopened(path, &backend);
+        QVERIFY(reopened.accounts().isEmpty());
+        QVERIFY(reopened.currentAccountId().isEmpty());
+    }
+
     void forgetFencesInFlightSaveAndSerializesDelete() {
         QTemporaryDir directory;
         MemorySecrets backend;
@@ -181,6 +269,7 @@ private slots:
         vault.save(account(), "synthetic-token", [&](QString error) { QVERIFY(error.isEmpty()); saved = true; });
         QTRY_VERIFY(saved);
         const auto id = vault.accounts().first().id;
+        QVERIFY(vault.setCurrentAccountId(id).isEmpty());
         QSettings metadata(path, QSettings::IniFormat);
         metadata.beginWriteArray("accounts", 1);
         metadata.setArrayIndex(0);
@@ -192,6 +281,7 @@ private slots:
         metadata.sync();
         SessionVault restarted(path, &backend);
         QVERIFY(restarted.accounts().isEmpty());
+        QVERIFY(restarted.currentAccountId().isEmpty());
         const auto calls = backend.operations.size();
         bool loadRejected = false;
         restarted.load(id, [&](SavedAccount, QByteArray token, QString error) {

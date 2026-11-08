@@ -8431,8 +8431,16 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void rememberedAccountResumesAndRemovesThroughVisibleQuickControls_data()
+    {
+        QTest::addColumn<bool>("startup");
+        QTest::newRow("manual-continue") << false;
+        QTest::newRow("automatic-startup") << true;
+    }
+
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls()
     {
+        QFETCH(bool, startup);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         WindowSecrets backend;
@@ -8445,6 +8453,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(error.isEmpty()); stored = true;
         });
         QTRY_VERIFY(stored);
+        if (startup) QVERIFY(vault.setCurrentAccountId(saved.id).isEmpty());
         ApiClient api;
         int requests = 0;
         Session session(&api, nullptr,
@@ -8481,7 +8490,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(item(content, "remembered-label-" + saved.id)->property("text").toString(), saved.projectName);
         backend.holdRead = true;
         backend.readError = SessionSecretStore::Error::Unavailable;
-        click(window, item(content, "resume-" + saved.id));
+        if (startup) {
+            QTimer::singleShot(0, &session, &Session::resumeCurrentAccount);
+            QTRY_VERIFY(controller.busy());
+        } else click(window, item(content, "resume-" + saved.id));
         QVERIFY(controller.busy());
         QVERIFY(!item(content, "resume-" + saved.id)->isEnabled());
         QVERIFY(!item(content, "forget-" + saved.id)->isEnabled());
@@ -8499,6 +8511,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.error().isEmpty());
         QCOMPARE(requests, 2);
         QTRY_COMPARE(backend.values.value(saved.id), QByteArray("synthetic-rotated-private"));
+        QTRY_COMPARE(vault.currentAccountId(), saved.id);
         QVERIFY(item(content, "passwordInput")->property("text").toString().isEmpty());
         QVERIFY(!item(content, "messageComposer")->isEnabled());
         click(window, item(content, "accountMenuButton"));
@@ -8507,6 +8520,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.authenticated());
         QTRY_VERIFY(controller.savedAccounts().isEmpty());
         QTRY_VERIFY(backend.values.isEmpty());
+        QVERIFY(vault.currentAccountId().isEmpty());
         stored = false;
         vault.save(saved, "synthetic-remove-private", [&](QString error) {
             QVERIFY(error.isEmpty()); stored = true;
