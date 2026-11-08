@@ -6,6 +6,7 @@
 #include "native-desktop.h"
 #include "native-cache-service.h"
 #include "native-instance.h"
+#include "native-updater.h"
 #include "native-preferences.h"
 #include "realtime-client.h"
 #include "session.h"
@@ -16,6 +17,8 @@
 #include <QResource>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
+#include <QProcess>
+#include <QTimer>
 #include <QWindow>
 #include <openssl/ssl.h>
 #include <limits>
@@ -24,7 +27,7 @@ int main(int argc, char **argv)
 {
     QCoreApplication::setOrganizationName("Exordos");
     QCoreApplication::setApplicationName("Workspace Native Preview");
-    QCoreApplication::setApplicationVersion("0.1.0");
+    QCoreApplication::setApplicationVersion(WORKSPACE_NATIVE_VERSION);
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
     QApplication app(argc, argv);
     // A direct SSL dependency keeps Qt's TLS backend and message crypto on the
@@ -68,11 +71,13 @@ int main(int argc, char **argv)
     workspace::RealtimeClient realtime(&api, &session);
     controller.useRealtime(&realtime);
     QQmlApplicationEngine engine;
-    workspace::loadNativeUi(engine, &controller, &preferences, &avatars);
+    workspace::NativeUpdater updater;
+    workspace::loadNativeUi(engine, &controller, &preferences, &avatars, &updater);
     if (engine.rootObjects().isEmpty())
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
     workspace::NativeDesktop desktop(window);
+    QString restartExecutable;
     const auto beginShutdown = [&cache, &chatKeys, &controller, &app, window] {
         window->hide();
         controller.setChatKeyStoreOpening(false);
@@ -82,6 +87,25 @@ int main(int argc, char **argv)
     };
     QObject::connect(&app, &QGuiApplication::lastWindowClosed, &cache, beginShutdown);
     QObject::connect(&desktop, &workspace::NativeDesktop::quitRequested, &cache, beginShutdown);
+    QObject::connect(&updater, &workspace::NativeUpdater::restartRequested, &cache,
+                     [&restartExecutable, beginShutdown](const QString &executable) {
+        restartExecutable = executable;
+        beginShutdown();
+    });
+    QObject::connect(&desktop, &workspace::NativeDesktop::checkForUpdatesRequested, &updater,
+                     [&updater, window] {
+        window->setProperty("updatesVisible", true);
+        window->show();
+        window->requestActivate();
+        updater.check();
+    });
+#ifdef Q_OS_LINUX
+    QTimer::singleShot(10000, &updater, &workspace::NativeUpdater::check);
+    QTimer updateChecks;
+    updateChecks.setInterval(4 * 60 * 60 * 1000);
+    QObject::connect(&updateChecks, &QTimer::timeout, &updater, &workspace::NativeUpdater::check);
+    updateChecks.start();
+#endif
     QObject::connect(&cache, &workspace::NativeCacheService::shutdownFinished, &app, &QCoreApplication::quit);
     preferences.attachWindow(window);
     const auto activate = [&preferences] { preferences.activateWindow(); };
@@ -108,5 +132,14 @@ int main(int argc, char **argv)
     updateUnread();
     QObject::connect(&instance, &workspace::NativeInstance::activationRequested, &app, activate);
     if (instance.activationPending()) activate();
-    return app.exec();
+    const int code = app.exec();
+    if (!restartExecutable.isEmpty()) {
+        // A successor must acquire the primary lock after cache/key shutdown.
+        instance.release();
+        if (!QProcess::startDetached(restartExecutable, {})) {
+            qCritical("The updated application could not be started.");
+            return 1;
+        }
+    }
+    return code;
 }

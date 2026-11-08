@@ -15,6 +15,7 @@ public:
     enum class Outcome { Primary, Secondary, Failed };
     explicit NativeInstance(QString directory = {}, QObject *parent = nullptr);
     Outcome acquireOrActivate();
+    void release();
     QString error() const { return m_error; }
     bool activationPending() const { return m_activationPending; }
 

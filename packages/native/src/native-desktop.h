@@ -27,6 +27,7 @@ public:
 signals:
     void activateRequested();
     void quitRequested();
+    void checkForUpdatesRequested();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -42,6 +43,7 @@ private:
     QAction *m_calendar = nullptr;
     QAction *m_mail = nullptr;
     QAction *m_quit = nullptr;
+    QAction *m_updates = nullptr;
     qint64 m_unread = 0;
     bool m_quitting = false;
 };

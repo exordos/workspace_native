@@ -1,5 +1,6 @@
 #include "mock-server.h"
 #include "native-app.h"
+#include "native-updater.h"
 #include "native-controller.h"
 #include "native-chat-crypto.h"
 #include "native-markdown.h"
@@ -853,6 +854,47 @@ public:
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void updaterActualMainShowsAndExecutesTheDownloadAndInstallActions_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void updaterActualMainShowsAndExecutesTheDownloadAndInstallActions()
+    {
+        QFETCH(QString,locale); QFETCH(QString,mode);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        MockServer releases;
+        const QByteArray archive("verified bytes that are deliberately not a tar archive");
+        const QJsonObject asset{{"name","Exordos-Workspace-Native-0.1.1-linux-x86_64.tar.gz"},
+            {"size",archive.size()}, {"digest","sha256:" + QString::fromLatin1(QCryptographicHash::hash(archive,QCryptographicHash::Sha256).toHex())},
+            {"browser_download_url",releases.origin().resolved(QUrl("/archive")).toString()}};
+        releases.handler=[&](const Request &request) -> Response {
+            if(request.target.path()=="/latest") return {QJsonObject{{"tag_name","v0.1.1"},{"draft",false},{"prerelease",false},{"assets",QJsonArray{asset}}}};
+            Response result; result.rawBody=archive; return result;
+        };
+        NativeUpdater updater(releases.origin().resolved(QUrl("/latest")),"0.1.0",directory.filePath("updates"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences,nullptr,&updater);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data())) QTest::qFail("Updater Main teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(releases.requests.size(),0);
+        updater.check(); QTRY_COMPARE(updater.state(),QString("available"));
+        QTRY_VERIFY(visibleItem("nativeUpdateAction"));
+        QCOMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Загрузить обновление"):QString("Download update"));
+        click(window,visibleItem("nativeUpdateAction")); QTRY_COMPARE(updater.state(),QString("downloaded"));
+        QCOMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Установить обновление"):QString("Install update"));
+        click(window,visibleItem("nativeUpdateAction")); QTRY_COMPARE(updater.state(),QString("error"));
+        QVERIFY(visibleItem("nativeUpdateStatus")); QCOMPARE(releases.requests.size(),2);
+        click(window,visibleItem("nativeUpdateClose")); QTRY_VERIFY(!visibleItem("nativeUpdateAction"));
+        QCOMPARE(controller.authenticated(),false);
+        QVERIFY(QDir(directory.filePath("updates")).entryList(QDir::AllEntries|QDir::NoDotAndDotDot).isEmpty());
+    }
+
     void ownStatusClearKeepsItsRenderedInkWhileSaveIsPending_data()
     {
         QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");

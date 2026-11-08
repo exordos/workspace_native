@@ -13,6 +13,22 @@ using namespace workspace;
 class NativeDesktopTest final : public QObject {
     Q_OBJECT
 private slots:
+    void updateActionRequestsOneCheckAndStopsAfterQuit()
+    {
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray && tray->contextMenu());
+        auto *action = tray->contextMenu()->findChild<QAction *>("trayCheckForUpdates");
+        QVERIFY(action && action->isEnabled());
+        QSignalSpy checks(&desktop, &NativeDesktop::checkForUpdatesRequested);
+        action->trigger();
+        QCOMPARE(checks.count(), 1);
+        desktop.requestQuit();
+        action->trigger();
+        QCOMPARE(checks.count(), 1);
+    }
+
     void closeHidesToAnAvailableTrayAndActivationCanRestoreTheSameWindow()
     {
         QWindow window;

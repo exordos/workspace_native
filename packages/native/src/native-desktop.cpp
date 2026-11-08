@@ -35,6 +35,8 @@ NativeDesktop::NativeDesktop(QWindow *window, QObject *parent, std::function<boo
     m_calendar->setEnabled(false);
     m_mail->setEnabled(false);
     m_menu->addSeparator();
+    m_updates = m_menu->addAction(QString{});
+    m_updates->setObjectName("trayCheckForUpdates");
     m_quit = m_menu->addAction(QString{});
     m_quit->setObjectName("trayQuit");
     m_tray->setContextMenu(m_menu.get());
@@ -42,6 +44,9 @@ NativeDesktop::NativeDesktop(QWindow *window, QObject *parent, std::function<boo
         if (!m_quitting) emit activateRequested();
     });
     connect(m_quit, &QAction::triggered, this, &NativeDesktop::requestQuit);
+    connect(m_updates, &QAction::triggered, this, [this] {
+        if (!m_quitting) emit checkForUpdatesRequested();
+    });
     connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
         if (!m_quitting && (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick))
             emit activateRequested();
@@ -93,6 +98,7 @@ void NativeDesktop::refreshLabels()
     m_mail->setText(tr("Mail"));
     m_mail->setToolTip(tr("Mail is not available in this native preview"));
     m_quit->setText(tr("Quit"));
+    m_updates->setText(tr("Check for updates"));
     m_tray->setToolTip(title);
     const auto suffix = m_unread > 0 ? QStringLiteral("-unread.png") : QStringLiteral(".png");
 #if defined(Q_OS_MACOS)

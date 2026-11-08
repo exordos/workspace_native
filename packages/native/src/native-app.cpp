@@ -1,4 +1,5 @@
 #include "native-app.h"
+#include "native-updater.h"
 #include "native-controller.h"
 #include "native-markdown.h"
 #include "native-preferences.h"
@@ -120,7 +121,7 @@ void bindNativeLocale(QQmlEngine &engine, NativePreferences *preferences)
     apply();
 }
 
-void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences, AvatarImages *avatars)
+void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences, AvatarImages *avatars, NativeUpdater *updater)
 {
     initializeNativeResources();
     if (!preferences) preferences = new NativePreferences({}, &engine);
@@ -143,6 +144,7 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     engine.rootContext()->setContextProperty("nativePreferences", preferences);
     if (avatars) engine.addImageProvider("avatars", avatars->createImageProvider());
     engine.rootContext()->setContextProperty("nativeAvatars", avatars);
+    engine.rootContext()->setContextProperty("nativeUpdater", updater);
     engine.load(QUrl("qrc:/workspace/qml/Main.qml"));
 }
 

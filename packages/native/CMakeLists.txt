@@ -28,6 +28,7 @@ add_library(workspace-native-core STATIC
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-instance.cpp src/native-instance.h
+    src/native-updater.cpp src/native-updater.h
     src/native-cache.cpp src/native-cache.h
     src/native-cache-service.cpp src/native-cache-service.h
     src/session.cpp src/session.h
@@ -68,7 +69,7 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
     BASE "${CMAKE_CURRENT_BINARY_DIR}/translations" FILES "${native_ru_qm}")
 set(native_qml_files
     qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeUpdateDialog.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
@@ -95,6 +96,7 @@ qt_add_resources(workspace-native-ui native_app_icon PREFIX /workspace/brand
     BASE ../electron/resources FILES ../electron/resources/icon.png)
 
 qt_add_executable(workspace-native WIN32 MACOSX_BUNDLE src/main.cpp)
+target_compile_definitions(workspace-native PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
 qt_add_qml_module(workspace-native
     URI Exordos.Workspace.Native
@@ -153,6 +155,7 @@ if(UNIX AND NOT APPLE)
     # Qt's default Linux deployment can select only XCB, even on a Wayland
     # desktop. Include the Wayland platform and its dynamically loaded helpers.
     list(APPEND native_deploy_plugin_args
+        NO_TRANSLATIONS
         INCLUDE_PLUGINS qwayland
         INCLUDE_PLUGIN_TYPES wayland-shell-integration
             wayland-graphics-integration-client wayland-decoration-client)
@@ -161,12 +164,23 @@ qt_generate_deploy_qml_app_script(TARGET workspace-native
     OUTPUT_SCRIPT deploy_script MACOS_BUNDLE_POST_BUILD ${native_deploy_plugin_args})
 install(SCRIPT ${deploy_script})
 if(UNIX AND NOT APPLE)
+    # The app currently supports English/source strings and Russian. Deploy
+    # only the reviewed Qt locale instead of every unrelated SDK catalog.
+    qt_generate_deploy_script(TARGET workspace-native OUTPUT_SCRIPT native_translations_script
+        CONTENT "qt_deploy_translations(LOCALES ru)")
+    install(SCRIPT ${native_translations_script})
     configure_file(cmake/FinalizeLinuxRuntime.cmake.in FinalizeLinuxRuntime.cmake @ONLY)
     install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/FinalizeLinuxRuntime.cmake")
 endif()
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
+    add_executable(native-updater-test tests/native-updater-test.cpp src/native-updater.cpp src/native-updater.h)
+    target_include_directories(native-updater-test PRIVATE src)
+    target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME native-updater COMMAND native-updater-test)
+    set_tests_properties(native-updater PROPERTIES TIMEOUT 120)
+
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
     foreach(test api-client domain workspace-reference file-client avatar-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences session session-vault realtime-client native-controller native-window native-desktop)

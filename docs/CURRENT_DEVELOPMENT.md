@@ -422,3 +422,15 @@ not accepted. The earlier single initial-open failure did not reproduce in
 passive prefix17/whole257; its cause remains unknown, not claimed fixed by this
 change. Current whole265 uses no private observer. See
 [status picker checks](provenance/status-picker-checks.json).
+
+Linux release preparation now belongs to the same public `workspace_native`
+repository and its `master` branch. The initial updater transport/apply checks
+passed 47 cases; the later TERM/cleanup regression first failed, then passed
+with all 48 updater cases. Instance9, Desktop8, Locale14 and actual Main4 passed.
+Installer6 and the configured-build version regression passed, including a real
+GLib desktop launch from a literal path. These are component results: the first
+whole Window267 run reported 266 passes and one unconfirmed member selection in
+the Russian/dark channel form. Its cause is under investigation. No full UI,
+published release or installed upgrade acceptance is claimed. See
+[release workflow](NATIVE_DESKTOP_RELEASES.md) and
+[initial updater evidence](provenance/linux-updater-initial-checks.json).

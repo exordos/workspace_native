@@ -42,6 +42,19 @@ static int worker(QCoreApplication &app, const QStringList &arguments)
 class NativeInstanceTest final : public QObject {
     Q_OBJECT
 private slots:
+    void releaseHandsThePrimaryLockToTheRestartedVersion()
+    {
+        QTemporaryDir directory;
+        NativeInstance oldVersion(directory.filePath("instance"));
+        QCOMPARE(oldVersion.acquireOrActivate(), NativeInstance::Outcome::Primary);
+        oldVersion.release();
+        oldVersion.release();
+        NativeInstance successor(directory.filePath("instance"));
+        QCOMPARE(successor.acquireOrActivate(), NativeInstance::Outcome::Primary);
+        successor.release();
+        QCOMPARE(oldVersion.acquireOrActivate(), NativeInstance::Outcome::Primary);
+    }
+
     void secondProcessActivatesPrimaryAndExits()
     {
         QTemporaryDir directory;

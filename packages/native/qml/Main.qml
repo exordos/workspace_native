@@ -31,6 +31,9 @@ ApplicationWindow {
     readonly property var controller: nativeController
     readonly property var markdown: nativeMarkdown
     readonly property var preferences: nativePreferences
+    readonly property var updater: nativeUpdater
+    property bool updatesVisible: false
+    onUpdatesVisibleChanged: if (updatesVisible && updater) updateDialog.open()
     // qmllint enable unqualified
     NativeTheme {
         id: theme
@@ -38,6 +41,19 @@ ApplicationWindow {
         dark: root.preferences.dark
     }
     readonly property var colors: theme.colors
+    NativeUpdateDialog {
+        id: updateDialog
+        parent: Overlay.overlay
+        updater: root.updater
+        colors: root.colors
+        onClosed: root.updatesVisible = false
+    }
+    Connections {
+        target: root.updater
+        function onChanged() {
+            if (root.updater.state === "available") root.updatesVisible = true;
+        }
+    }
     readonly property real preferredSidebarWidth: root.preferences.sidebarPreferredWidth
     readonly property real sidebarMaximum: Math.max(240, Math.min(720, Math.round(width * 0.4)))
     readonly property real sidebarMinimum: Math.min(sidebarMaximum, Math.max(240, Math.round(width * 0.12)))
@@ -3001,7 +3017,7 @@ ApplicationWindow {
                 property int layoutTicket: 0
                 property bool positioning: false
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
+                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !updateDialog.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
                 function routeKey() {
                     return serviceScope();
                 }

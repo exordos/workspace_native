@@ -1,0 +1,117 @@
+name: Linux release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional package version; empty uses CMake project version
+        required: false
+        type: string
+  push:
+    branches: [master]
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-linux:
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    timeout-minutes: 45
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install documented build and runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            ca-certificates git build-essential binutils pkg-config python3 \
+            cmake ninja-build patchelf gh qt6-base-dev qt6-image-formats-plugins \
+            qt6-declarative-dev qt6-svg-dev qt6-websockets-dev qt6-l10n-tools \
+            qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev \
+            libqt6sql6-sqlite libmd4c-dev libssl-dev \
+            qml6-module-qtquick qml6-module-qtquick-dialogs \
+            qml6-module-qt-labs-folderlistmodel qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts qml6-module-qtquick-effects \
+            qml6-module-qtquick-window qml6-module-qtquick-templates \
+            qml6-module-qtqml-workerscript
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check installer and package-version regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 packages/native/tests/linux-installer-test.py -v
+          python3 packages/native/tests/linux-package-test.py -v
+
+      - name: Configure Release with tests disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S packages/native -B build/linux-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_INSTALL_LIBDIR=lib
+
+      - name: Build
+        run: cmake --build build/linux-release --parallel 3
+
+      - name: Package installed runtime
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_INPUT}"
+          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [[ -n "${version}" && "${version}" != "${tag_version}" ]]; then
+              echo 'Version input does not match tag' >&2
+              exit 1
+            fi
+            version="${tag_version}"
+          fi
+          if [[ -z "${version}" ]]; then
+            version=$(sed -nE 's/^project\(WorkspaceNative VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' packages/native/CMakeLists.txt)
+          fi
+          version_args=()
+          if [[ -n "${version}" ]]; then
+            if [[ ! "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo 'Expected stable X.Y.Z' >&2
+              exit 1
+            fi
+            version_args=(--version "${version}")
+          fi
+          python3 packages/native/scripts/package-linux.py \
+            --build-dir "${GITHUB_WORKSPACE}/build/linux-release" \
+            --output-dir "${GITHUB_WORKSPACE}/dist/linux" \
+            "${version_args[@]}"
+
+      - name: Upload Linux packages for review
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-native-linux-${{ github.sha }}
+          path: |
+            dist/linux/*.tar.gz
+            dist/linux/SHA256SUMS
+            dist/linux/package-result.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish Linux release in this repository
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag --title "Workspace Native ${GITHUB_REF_NAME} — Linux preview" \
+            --notes-file docs/NATIVE_DESKTOP_RELEASE_NOTES.md \
+            dist/linux/*.tar.gz dist/linux/SHA256SUMS

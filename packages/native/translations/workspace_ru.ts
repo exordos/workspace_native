@@ -1702,6 +1702,10 @@
     <context>
         <name>workspace::NativeDesktop</name>
         <message>
+            <source>Check for updates</source>
+            <translation>Проверить обновления</translation>
+        </message>
+        <message>
             <source>Workspace</source>
             <translation>Workspace</translation>
         </message>
@@ -1915,6 +1919,136 @@
         <message>
             <source>The saved account identity is invalid.</source>
             <translation>Сохранённый идентификатор учётной записи недействителен.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeUpdateDialog</name>
+        <message>
+            <source>Workspace updates</source>
+            <translation>Обновления Workspace</translation>
+        </message>
+        <message>
+            <source>Current version: %1</source>
+            <translation>Текущая версия: %1</translation>
+        </message>
+        <message>
+            <source>Checking for updates…</source>
+            <translation>Проверка обновлений…</translation>
+        </message>
+        <message>
+            <source>You are using the latest version.</source>
+            <translation>Вы используете последнюю версию.</translation>
+        </message>
+        <message>
+            <source>Version %1 is available.</source>
+            <translation>Доступна версия %1.</translation>
+        </message>
+        <message>
+            <source>Downloading update… %1%</source>
+            <translation>Загрузка обновления… %1%</translation>
+        </message>
+        <message>
+            <source>The update is downloaded and verified.</source>
+            <translation>Обновление загружено и проверено.</translation>
+        </message>
+        <message>
+            <source>Installing update…</source>
+            <translation>Установка обновления…</translation>
+        </message>
+        <message>
+            <source>The update is installed. Restart to use it.</source>
+            <translation>Обновление установлено. Перезапустите приложение.</translation>
+        </message>
+        <message>
+            <source>Check GitHub for a new version.</source>
+            <translation>Проверьте наличие новой версии на GitHub.</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>Download update</source>
+            <translation>Загрузить обновление</translation>
+        </message>
+        <message>
+            <source>Install update</source>
+            <translation>Установить обновление</translation>
+        </message>
+        <message>
+            <source>Restart now</source>
+            <translation>Перезапустить</translation>
+        </message>
+        <message>
+            <source>Check again</source>
+            <translation>Проверить снова</translation>
+        </message>
+    </context>
+    <context>
+        <name>workspace::NativeUpdater</name>
+        <message>
+            <source>The downloaded update failed verification.</source>
+            <translation>Загруженное обновление не прошло проверку.</translation>
+        </message>
+        <message>
+            <source>The installed update could not be verified.</source>
+            <translation>Не удалось проверить установленное обновление.</translation>
+        </message>
+        <message>
+            <source>The update archive layout is invalid.</source>
+            <translation>Некорректная структура архива обновления.</translation>
+        </message>
+        <message>
+            <source>The update configuration is invalid.</source>
+            <translation>Некорректная конфигурация обновления.</translation>
+        </message>
+        <message>
+            <source>The update could not be prepared.</source>
+            <translation>Не удалось подготовить обновление.</translation>
+        </message>
+        <message>
+            <source>The update download could not be saved.</source>
+            <translation>Не удалось сохранить обновление.</translation>
+        </message>
+        <message>
+            <source>The update download redirect was rejected.</source>
+            <translation>Перенаправление загрузки обновления отклонено.</translation>
+        </message>
+        <message>
+            <source>The update installation failed.</source>
+            <translation>Не удалось установить обновление.</translation>
+        </message>
+        <message>
+            <source>The update installer could not be started.</source>
+            <translation>Не удалось запустить установку обновления.</translation>
+        </message>
+        <message>
+            <source>The update installer produced too much output.</source>
+            <translation>Установщик обновления превысил допустимый объём вывода.</translation>
+        </message>
+        <message>
+            <source>The update operation timed out.</source>
+            <translation>Превышено время ожидания обновления.</translation>
+        </message>
+        <message>
+            <source>The update release metadata is invalid.</source>
+            <translation>Некорректные сведения о выпуске обновления.</translation>
+        </message>
+        <message>
+            <source>The update request failed.</source>
+            <translation>Не удалось получить обновление.</translation>
+        </message>
+        <message>
+            <source>The update response encoding was rejected.</source>
+            <translation>Кодировка ответа сервера обновлений отклонена.</translation>
+        </message>
+        <message>
+            <source>The update response is too large.</source>
+            <translation>Ответ сервера обновлений слишком большой.</translation>
+        </message>
+        <message>
+            <source>Updates are not available for this platform.</source>
+            <translation>Обновления для этой платформы пока недоступны.</translation>
         </message>
     </context>
 </TS>

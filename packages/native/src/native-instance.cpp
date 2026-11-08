@@ -82,6 +82,15 @@ NativeInstance::Outcome NativeInstance::acquireOrActivate()
     return Outcome::Primary;
 }
 
+void NativeInstance::release()
+{
+    m_server.close();
+    const auto sockets = m_server.findChildren<QLocalSocket *>();
+    for (auto *socket : sockets) socket->abort();
+    m_lock.reset();
+    m_activationPending = false;
+}
+
 void NativeInstance::acceptConnections()
 {
     while (auto *socket = m_server.nextPendingConnection()) {
