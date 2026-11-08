@@ -1006,6 +1006,14 @@
     <context>
         <name>workspace::FileClient</name>
         <message>
+            <source>Invalid file identifier.</source>
+            <translation>Некорректный идентификатор файла.</translation>
+        </message>
+        <message>
+            <source>File exceeds the allowed in-memory size of 25 MiB.</source>
+            <translation>Размер файла превышает допустимые для загрузки в память 25 МиБ.</translation>
+        </message>
+        <message>
             <source>Redirects are not allowed.</source>
             <translation>Перенаправления запрещены.</translation>
         </message>

@@ -32,6 +32,15 @@ verified. These are component measurements; several-minute maintenance and the
 pre-existing huge-freelist case remain performance work. See
 [current cache measurements](NATIVE_DESKTOP_CACHE_BENCHMARK.md#current-schema-4-public-worker-measurement).
 
+FileClient now has an additive in-memory download mode for the upcoming user
+images. It reuses the existing exact UUID metadata/download pipeline and enforces
+a fixed 25 MiB payload cap, declared/actual length, optional checksum, session
+cancellation and deadline, without a temporary destination. The whole file suite
+passed 57 Qt cases (29 new logical rows plus unchanged old attachment coverage)
+and Locale14 passed with two reviewed Russian messages. This accepts the C++
+transfer capability; image decoding, bounded shared demand and rendered avatars
+remain separate work. See [memory transfer checks](provenance/avatar-memory-transfer-checks.json).
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS

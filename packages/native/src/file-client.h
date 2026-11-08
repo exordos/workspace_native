@@ -33,6 +33,7 @@ struct FileResult {
     QString error;
     int status = 0;
     bool checksumVerified = false;
+    QByteArray bytes; // Success-only downloadBytes result; path stays empty.
 
     bool ok() const { return status >= 200 && status < 300 && error.isEmpty(); }
 };
@@ -49,6 +50,7 @@ class FileClient final : public QObject {
 
 public:
     using Completion = std::function<void(const FileResult &)>;
+    static constexpr qint64 MemoryDownloadLimitBytes = 25 * 1024 * 1024;
     explicit FileClient(ApiClient *api, QObject *parent = nullptr,
                         const FileTransferLimits &limits = {});
     ~FileClient() override;
@@ -58,6 +60,8 @@ public:
     quint64 upload(const QString &path, const QString &streamUuid, const QString &name,
                    Completion completion);
     quint64 download(const QString &uuid, const QString &destination, Completion completion);
+    // Fixed memory cap; metadata and the streamed body must both fit. No disk staging.
+    quint64 downloadBytes(const QString &uuid, Completion completion);
     void cancel(quint64 operation);
     void cancelAll();
 

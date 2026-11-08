@@ -92,6 +92,8 @@ struct FileClient::Operation {
     QPointer<QNetworkReply> reply;
     QPointer<QTimer> timer;
     bool upload = false;
+    bool memory = false;
+    QByteArray bytes;
     QByteArray json;
     QString uuid;
     QString destination;
@@ -282,6 +284,21 @@ quint64 FileClient::download(const QString &uuid, const QString &destination, Co
     return id;
 }
 
+quint64 FileClient::downloadBytes(const QString &uuid, Completion completion)
+{
+    const auto id = begin(std::move(completion));
+    if (!validUuid(uuid)) { fail(id, FileClient::tr("Invalid file identifier.")); return id; }
+    const auto operation = m_operations.value(id);
+    operation->memory = true;
+    operation->uuid = uuid.toLower();
+    operation->reply = m_api ? m_api->startFileMetadata(operation->uuid) : nullptr;
+    if (!operation->reply) { fail(id, FileClient::tr("Sign in to download files.")); return id; }
+    operation->reply->setReadBufferSize(m_limits.metadataBytes + 1);
+    connect(operation->reply, &QNetworkReply::readyRead, this, [this, id] { readMetadata(id); });
+    connect(operation->reply, &QNetworkReply::finished, this, [this, id] { finishMetadata(id); });
+    return id;
+}
+
 void FileClient::readMetadata(quint64 id)
 {
     if (!current(id)) return;
@@ -322,6 +339,9 @@ void FileClient::finishMetadata(quint64 id)
         return;
     }
     if (metadata.uuid != operation->uuid) { fail(id, FileClient::tr("Server returned a different file identifier."), code); return; }
+    if (operation->memory && metadata.sizeBytes > MemoryDownloadLimitBytes) {
+        fail(id, FileClient::tr("File exceeds the allowed in-memory size of 25 MiB."), code); return;
+    }
     operation->metadata = metadata;
     disconnect(reply, nullptr, this, nullptr);
     reply->deleteLater();
@@ -334,14 +354,16 @@ void FileClient::startDownload(quint64 id)
 {
     if (!current(id)) return;
     const auto operation = m_operations.value(id);
-    const QStorageInfo storage(QFileInfo(operation->destination).absolutePath());
-    if (storage.isValid() && storage.isReady() && storage.bytesAvailable() >= 0
-        && operation->metadata.sizeBytes > storage.bytesAvailable()) {
-        fail(id, FileClient::tr("Not enough free space to save the file.")); return;
+    if (!operation->memory) {
+        const QStorageInfo storage(QFileInfo(operation->destination).absolutePath());
+        if (storage.isValid() && storage.isReady() && storage.bytesAvailable() >= 0
+            && operation->metadata.sizeBytes > storage.bytesAvailable()) {
+            fail(id, FileClient::tr("Not enough free space to save the file.")); return;
+        }
+        operation->output = std::make_unique<QSaveFile>(operation->destination);
+        operation->output->setDirectWriteFallback(false);
+        if (!operation->output->open(QIODevice::WriteOnly)) { fail(id, FileClient::tr("Cannot create the destination file.")); return; }
     }
-    operation->output = std::make_unique<QSaveFile>(operation->destination);
-    operation->output->setDirectWriteFallback(false);
-    if (!operation->output->open(QIODevice::WriteOnly)) { fail(id, FileClient::tr("Cannot create the destination file.")); return; }
     operation->reply = m_api->startFileDownload(operation->uuid);
     if (!operation->reply) { fail(id, FileClient::tr("Sign in to download files.")); return; }
     operation->reply->setReadBufferSize(ChunkSize);
@@ -366,7 +388,10 @@ void FileClient::readDownload(quint64 id)
         if (bytes.size() > operation->metadata.sizeBytes - operation->received) {
             fail(id, FileClient::tr("Download exceeds the declared file size."), code); return;
         }
-        if (operation->output->write(bytes) != bytes.size()) { fail(id, FileClient::tr("Cannot write the destination file."), code); return; }
+        // Metadata for memory mode was capped before the binary GET; the
+        // shared declared-size check above bounds every append to that cap.
+        if (operation->memory) operation->bytes.append(bytes);
+        else if (operation->output->write(bytes) != bytes.size()) { fail(id, FileClient::tr("Cannot write the destination file."), code); return; }
         operation->hash.addData(bytes);
         operation->received += bytes.size();
     }
@@ -389,10 +414,11 @@ void FileClient::finishDownload(quint64 id)
     }
     // Check ownership immediately before the only operation that replaces a file.
     if (!current(id)) return;
-    if (!operation->output->commit()) { fail(id, FileClient::tr("Cannot commit the destination file."), code); return; }
+    if (!operation->memory && !operation->output->commit()) { fail(id, FileClient::tr("Cannot commit the destination file."), code); return; }
     FileResult result;
     result.metadata = operation->metadata;
     result.path = operation->destination;
+    if (operation->memory) result.bytes = std::move(operation->bytes);
     result.status = code;
     result.checksumVerified = !operation->metadata.sha256.isEmpty();
     complete(id, result);

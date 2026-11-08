@@ -1,0 +1,38 @@
+{
+  "schema": "avatar-memory-transfer-checks-v1",
+  "parent": "a0f19abb333455d1887c07a68634e145106da1af",
+  "sourceManifestSha256": "35d53e719471de2c18a9c5d13dcbcb747585f60bc8e4d67cfe64db109779b134",
+  "productionPatchSha256": "dc7bc3ede5e34d28b7b5c5233c917fbd0eb5f28cef9ffe5afba6fb8c29f258bd",
+  "testPatchSha256": "0283fb1fa085b161502be56ca8167026a60b3451768f1a4c75c0d39ff7b37367",
+  "scope": "Additive FileClient.downloadBytes via existing UUID metadata/download/size/hash/generation/cancel/deadline pipeline; fixed25MiB per-operation payload-length cap, no disk staging. Existing attachment tests byte-exact. No image decoding/provider/Main acceptance.",
+  "behavioralBaselineRedClaimed": false,
+  "newLogicalData": 29,
+  "completeOldAttachmentSuitePreserved": true,
+  "steps": [
+    {
+      "label": "whole-file-client57",
+      "totals": [
+        "Totals: 57 passed, 0 failed, 0 skipped, 0 blacklisted, 4061ms"
+      ],
+      "stdoutSha256": "0a98d43bc1d13fcf94e0d8aa4cb6c9a4770b237a3f41dba93d250f4095fc3c4e",
+      "stderrBytes": 0,
+      "wallSeconds": 4.077,
+      "warnings": []
+    },
+    {
+      "label": "whole-locale",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 126ms"
+      ],
+      "stdoutSha256": "eb354ae840a1fa07d7d5596226639aec8e59fe66f591d90920b29efe6aa78a3b",
+      "stderrBytes": 0,
+      "wallSeconds": 0.215,
+      "warnings": []
+    }
+  ],
+  "twoRussianMessagesReviewed": true,
+  "allSourceBinaryRawHashesAndOwnedCleanupVerified": true,
+  "resourceBoundary": "Payload length only; no global concurrency/RSS/decoded-pixel cache bound yet",
+  "sourceRequestDifference": "Source direct1binaryGET; this validated cold path 1metadata+1binaryGET. No fallback after metadata failure.",
+  "remaining": "Demand dedup/queue/decode/cache, owner-scoped provider, actual pixels/crop/fallback/Main and installed image decoder checks"
+}

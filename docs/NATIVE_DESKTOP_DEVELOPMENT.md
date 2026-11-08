@@ -609,6 +609,15 @@ the verified reopen action performs one toggle POST and canonical topic GET.
 Visible mouse/keyboard and failed-confirmation regressions check pending gating,
 retained drafts and the absence of a repeated toggle after uncertain confirmation.
 
+The same FileClient exposes a C++-only `downloadBytes` mode with a fixed 25 MiB
+payload-length cap and no temporary disk destination. It first validates metadata,
+then exact binary size and optional checksum through the same authenticated UUID
+transport. A cold result costs one metadata plus one binary GET (the source avatar
+loader uses a direct binary GET). Metadata failure cannot fall through to download.
+Cancel, owner-generation replacement and deadlines complete once; destruction
+suppresses completion. This is a per-operation payload bound, not a global RSS or
+concurrency bound. Image demand/decode/provider limits remain separate work.
+
 [FileClient](../packages/native/src/file-client.cpp) uploads nonempty files up to
 25 MiB through authenticated multipart requests. It validates returned metadata,
 streams downloads to an atomic local destination, and enforces size/checksum and

@@ -100,6 +100,14 @@ private slots:
     void streamingAcrossMultipleChunks();
     void apiDestructionCancelsTransfers();
     void realWriteFailurePreservesDestination();
+    void memoryDownloadReturnsBytes_data();
+    void memoryDownloadReturnsBytes();
+    void memoryDownloadRejectsUnsafeTransfers_data();
+    void memoryDownloadRejectsUnsafeTransfers();
+    void memoryDownloadLifetime_data();
+    void memoryDownloadLifetime();
+    void memoryCancellationDoesNotCancelAnotherOperation();
+    void memoryCompletionMayDestroyItsClient();
 };
 
 void FileClientTest::multipartUpload()
@@ -464,6 +472,244 @@ void FileClientTest::realWriteFailurePreservesDestination()
     QCOMPARE(read(destination), "original");
     QCOMPARE(QDir(directory.path()).entryList(QDir::Files | QDir::Hidden), QStringList{"saved.bin"});
 #endif
+}
+
+void FileClientTest::memoryDownloadReturnsBytes_data()
+{
+    QTest::addColumn<QString>("scenario");
+    for (const auto *scenario : {"avatar-null-stream", "empty", "optional-hash",
+                                "multiple-chunks-no-length", "exact-25-MiB"})
+        QTest::newRow(scenario) << QString::fromLatin1(scenario);
+}
+
+void FileClientTest::memoryDownloadReturnsBytes()
+{
+    QFETCH(QString, scenario);
+    auto bytes = scenario == "empty" ? QByteArray{} : Bytes;
+    if (scenario == "multiple-chunks-no-length") bytes = QByteArray(257 * 1024 + 17, 's');
+    if (scenario == "exact-25-MiB") bytes = QByteArray(25 * 1024 * 1024, 'b');
+    FileResult result;
+    int completions = 0;
+    Server server;
+    auto object = QJsonDocument::fromJson(metadata(bytes)).object();
+    object["stream_uuid"] = QJsonValue::Null; // Uploaded avatars have no stream binding.
+    object["content_type"] = "image/png"; // Transport bytes only; not a decoder acceptance fixture.
+    if (scenario == "optional-hash") object["hash"] = QJsonValue::Null;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) {
+            Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 200,
+                          "Set-Cookie: never-send=synthetic\r\n");
+        } else if (scenario == "multiple-chunks-no-length") {
+            socket->write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+            auto *pump = new QTimer(socket);
+            connect(pump, &QTimer::timeout, socket, [socket, pump, bytes, offset = qsizetype(0)]() mutable {
+                socket->write(bytes.mid(offset, 8192));
+                offset += 8192;
+                if (offset >= bytes.size()) { pump->stop(); socket->disconnectFromHost(); }
+            });
+            pump->start(0); // Same real chunked-arrival fixture as the existing disk test.
+        } else Server::reply(socket, bytes);
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    const auto operation = client.downloadBytes(FileUuid.toUpper(), [&](const FileResult &value) {
+        result = value; ++completions;
+    });
+    QVERIFY(operation != 0);
+    QTRY_COMPARE(completions, 1);
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QCOMPARE(result.status, 200);
+    QCOMPARE(result.bytes, bytes);
+    QVERIFY(result.path.isEmpty());
+    QCOMPARE(result.metadata.uuid, FileUuid);
+    QVERIFY(result.metadata.streamUuid.isEmpty());
+    QCOMPARE(result.metadata.sizeBytes, bytes.size());
+    QCOMPARE(result.checksumVerified, scenario != "optional-hash");
+    QCOMPARE(FileClient::MemoryDownloadLimitBytes, qint64(25 * 1024 * 1024));
+    QCOMPARE(server.requests.size(), 2);
+    QVERIFY(server.requests[0].startsWith("GET /api/workspace/v1/messenger/files/" + FileUuid.toUtf8() + " HTTP/1.1"));
+    QVERIFY(server.requests[1].startsWith("GET /api/workspace/v1/messenger/files/" + FileUuid.toUtf8() + "/actions/download HTTP/1.1"));
+    for (const auto &request : server.requests) {
+        QCOMPARE(header(request, "Authorization"), "Bearer file-test-token");
+        QCOMPARE(header(request, "Accept-Encoding"), "identity");
+        QVERIFY(header(request, "Cookie").isEmpty());
+    }
+    client.cancel(operation); // A completed operation cannot complete twice.
+    QCOMPARE(completions, 1);
+}
+
+void FileClientTest::memoryDownloadRejectsUnsafeTransfers_data()
+{
+    QTest::addColumn<QString>("scenario");
+    for (const auto *scenario : {"invalid-uuid", "unsigned", "declared-over-25-MiB",
+             "wrong-uuid", "invalid-json", "metadata-403", "metadata-404",
+             "metadata-redirect", "binary-403", "binary-404", "binary-redirect",
+             "wrong-content-length", "stream-overflow", "truncated", "bad-hash"})
+        QTest::newRow(scenario) << QString::fromLatin1(scenario);
+}
+
+void FileClientTest::memoryDownloadRejectsUnsafeTransfers()
+{
+    QFETCH(QString, scenario);
+    FileResult result;
+    int completions = 0;
+    Server server, other;
+    auto object = QJsonDocument::fromJson(metadata()).object();
+    object["stream_uuid"] = QJsonValue::Null;
+    if (scenario == "declared-over-25-MiB") object["size_bytes"] = 25 * 1024 * 1024 + 1;
+    if (scenario == "wrong-uuid") object["uuid"] = StreamUuid;
+    const auto redirect = "Location: " + other.origin().toEncoded() + "/collect\r\n";
+    other.handler = [](QTcpSocket *socket, const QByteArray &) { Server::reply(socket, ""); };
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) {
+            if (scenario == "metadata-403") { Server::reply(socket, "private failure body", 403); return; }
+            if (scenario == "metadata-404") { Server::reply(socket, "private failure body", 404); return; }
+            if (scenario == "metadata-redirect") { Server::reply(socket, "", 302, redirect); return; }
+            Server::reply(socket, scenario == "invalid-json" ? QByteArray("not json")
+                : QJsonDocument(object).toJson(QJsonDocument::Compact), 200,
+                "Set-Cookie: never-send=synthetic\r\n");
+            return;
+        }
+        if (scenario == "binary-403") { Server::reply(socket, "private failure body", 403); return; }
+        if (scenario == "binary-404") { Server::reply(socket, "private failure body", 404); return; }
+        if (scenario == "binary-redirect") { Server::reply(socket, "", 302, redirect); return; }
+        if (scenario == "wrong-content-length") { Server::reply(socket, Bytes + 'x'); return; }
+        if (scenario == "stream-overflow") {
+            socket->write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + Bytes + 'x');
+            socket->disconnectFromHost(); return;
+        }
+        if (scenario == "truncated") {
+            socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(Bytes.size())
+                          + "\r\nConnection: close\r\n\r\n" + Bytes.left(3));
+            socket->disconnectFromHost(); return;
+        }
+        Server::reply(socket, scenario == "bad-hash" ? QByteArray(Bytes.size(), 'x') : Bytes);
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    if (scenario == "unsigned") api.clearSession();
+    FileClient client(&api);
+    const auto operation = client.downloadBytes(scenario == "invalid-uuid" ? FileUuid + "/../other" : FileUuid,
+        [&](const FileResult &value) { result = value; ++completions; });
+    QVERIFY(operation != 0);
+    QTRY_COMPARE(completions, 1);
+    QVERIFY(!result.ok()); QVERIFY(!result.error.isEmpty());
+    QVERIFY(!result.error.contains("private failure body"));
+    QVERIFY(result.bytes.isEmpty()); QVERIFY(result.path.isEmpty());
+    QVERIFY(!result.checksumVerified);
+    const bool local = scenario == "invalid-uuid" || scenario == "unsigned";
+    const bool binary = scenario.startsWith("binary-") || scenario == "wrong-content-length"
+        || scenario == "stream-overflow" || scenario == "truncated" || scenario == "bad-hash";
+    QCOMPARE(server.requests.size(), local ? 0 : binary ? 2 : 1);
+    QCOMPARE(other.requests.size(), 0);
+    if (scenario.endsWith("403")) QCOMPARE(result.status, 403);
+    if (scenario.endsWith("404")) QCOMPARE(result.status, 404);
+    if (scenario.endsWith("redirect")) QCOMPARE(result.status, 302);
+    for (const auto &request : server.requests) {
+        QCOMPARE(header(request, "Authorization"), "Bearer file-test-token");
+        QVERIFY(header(request, "Cookie").isEmpty());
+    }
+    client.cancel(operation);
+    QCOMPARE(completions, 1);
+}
+
+void FileClientTest::memoryDownloadLifetime_data()
+{
+    QTest::addColumn<QString>("action");
+    QTest::addColumn<bool>("metadataPhase");
+    QTest::newRow("cancel-metadata") << QString("cancel") << true;
+    QTest::newRow("cancel-binary") << QString("cancel") << false;
+    QTest::newRow("generation-metadata") << QString("generation") << true;
+    QTest::newRow("generation-binary") << QString("generation") << false;
+    QTest::newRow("destroy-client") << QString("client") << false;
+    QTest::newRow("destroy-api") << QString("api") << false;
+    QTest::newRow("deadline") << QString("deadline") << false;
+}
+
+void FileClientTest::memoryDownloadLifetime()
+{
+    QFETCH(QString, action); QFETCH(bool, metadataPhase);
+    FileResult result;
+    int completions = 0;
+    QPointer<QTcpSocket> held;
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!metadataPhase && !request.contains("/actions/download ")) {
+            Server::reply(socket, metadata()); return;
+        }
+        held = socket;
+        if (!metadataPhase)
+            socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(Bytes.size())
+                          + "\r\n\r\n" + Bytes.left(3));
+    };
+    auto api = std::make_unique<ApiClient>(nullptr, true); authorize(*api, server);
+    FileTransferLimits limits;
+    if (action == "deadline") limits.timeoutMs = 100; // Existing FileClient deadline fixture value.
+    auto client = std::make_unique<FileClient>(api.get(), nullptr, limits);
+    const auto operation = client->downloadBytes(FileUuid, [&](const FileResult &value) {
+        result = value; ++completions;
+    });
+    QTRY_COMPARE(server.requests.size(), metadataPhase ? 1 : 2); // Wire acknowledgment before mutation.
+    QVERIFY(held); QVERIFY(held->state() == QAbstractSocket::ConnectedState);
+    if (action == "cancel") { client->cancel(operation); client->cancel(operation); }
+    else if (action == "generation") api->setAccessToken("replacement-synthetic-token");
+    else if (action == "client") client.reset();
+    else if (action == "api") api.reset();
+    if (action != "client") {
+        QTRY_COMPARE(completions, 1);
+        QVERIFY(!result.ok()); QCOMPARE(result.status, 0);
+        QVERIFY(result.bytes.isEmpty()); QVERIFY(result.path.isEmpty());
+    } else QCOMPARE(completions, 0); // FileClient destruction intentionally suppresses callbacks.
+    QTRY_VERIFY(!held || held->state() == QAbstractSocket::UnconnectedState);
+    QCoreApplication::processEvents();
+    QCOMPARE(completions, action == "client" ? 0 : 1);
+    QCOMPARE(server.requests.size(), metadataPhase ? 1 : 2);
+}
+
+void FileClientTest::memoryCancellationDoesNotCancelAnotherOperation()
+{
+    int first = 0, second = 0;
+    FileResult secondResult;
+    QPointer<QTcpSocket> abandoned;
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (server.requests.size() == 1) { abandoned = socket; return; }
+        Server::reply(socket, request.contains("/actions/download ") ? Bytes : metadata());
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    const auto cancelled = client.downloadBytes(FileUuid, [&](const FileResult &result) {
+        QVERIFY(!result.ok()); QVERIFY(result.bytes.isEmpty()); ++first;
+    });
+    QTRY_COMPARE(server.requests.size(), 1); QVERIFY(abandoned);
+    client.downloadBytes(FileUuid, [&](const FileResult &result) { secondResult = result; ++second; });
+    client.cancel(cancelled);
+    QTRY_COMPARE(first, 1); QTRY_COMPARE(second, 1);
+    QVERIFY2(secondResult.ok(), qPrintable(secondResult.error));
+    QCOMPARE(secondResult.bytes, Bytes); QVERIFY(secondResult.path.isEmpty());
+    QCOMPARE(server.requests.size(), 3);
+    QTRY_VERIFY(!abandoned || abandoned->state() == QAbstractSocket::UnconnectedState);
+}
+
+void FileClientTest::memoryCompletionMayDestroyItsClient()
+{
+    int completions = 0;
+    QByteArray received;
+    Server server;
+    server.handler = [](QTcpSocket *socket, const QByteArray &request) {
+        Server::reply(socket, request.contains("/actions/download ") ? Bytes : metadata());
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    auto client = std::make_unique<FileClient>(&api);
+    client->downloadBytes(FileUuid, [&](const FileResult &result) {
+        if (result.ok()) received = result.bytes;
+        ++completions;
+        client.reset();
+    });
+    QTRY_COMPARE(completions, 1);
+    QVERIFY(!client); QCOMPARE(received, Bytes);
+    QCOMPARE(server.requests.size(), 2);
+    QCoreApplication::processEvents();
+    QCOMPARE(completions, 1);
 }
 
 QTEST_GUILESS_MAIN(FileClientTest)
