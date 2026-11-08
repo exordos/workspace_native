@@ -1,0 +1,89 @@
+{
+  "version": "0.2.0",
+  "status": "PACKAGED_PRIMARY_SESSION_RESTORE_AND_ORDINARY_MESSAGES_PASS_PUBLIC_RELEASE_PENDING",
+  "candidate": {
+    "sourceCommit": "35f8a573978926db9a02c04a7c09aef8e0c363a2",
+    "ciRunId": 42530969026,
+    "archiveBytes": 63636509,
+    "archiveSha256": "ba5c688e71e8509e3fafad6bae61ac3ac1953563f1938a2c02753fcfcbbed3ea",
+    "binarySha256": "34445400e5786fa516f2ec76470f6d3a42a84e8bbc0227f91afa5cdb5288d71d"
+  },
+  "realSession": {
+    "primaryCredentialAndOtpLogin": true,
+    "exactVerifiedProjectAndOwner": true,
+    "automaticNewProcessRestores": 2,
+    "manualLoginProjectAndRouteInputsInRestoredProcesses": 0,
+    "observedNormalAppExitCodes": [
+      0,
+      0
+    ],
+    "lastConversationMessagesAndEnabledComposerRestored": true,
+    "credentialStore": "Actual OS credential service in an isolated test environment; same store and profile across application restarts",
+    "plainCredentialFallbackEnabled": false,
+    "defaultDesktopCredentialConfigurationChanged": false
+  },
+  "messages": {
+    "oneNativeSendCanonicalApiReadback": true,
+    "exactAuthorProjectStreamTopicAndMarkdownConfirmed": true,
+    "independentAuthenticatedSourceDisplayedNativeSend": true,
+    "apiIncomingAppearedWithoutManualReloadOrNavigation": true,
+    "explicitWebSocketFrameOrExternalProviderProof": false
+  },
+  "runtime": {
+    "qmlModules": 10,
+    "imageFormats": [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "svg"
+    ],
+    "installedMessageGrantAndTlsProbePassed": true,
+    "probeMappedLibrariesInsidePrefix": 28,
+    "restoredLiveMappedLibrariesInsidePrefix": 54
+  },
+  "comparison": {
+    "number": 54,
+    "sameClientViewport": [
+      1440,
+      900
+    ],
+    "sourceRawSize": [
+      1440,
+      900
+    ],
+    "nativeRawSize": [
+      1462,
+      960
+    ],
+    "nativeDecorationAndCompositorShadowIncluded": true,
+    "rawPixelsUnedited": true,
+    "attachmentDownloadsAndMessageUuidReadbackVerified": true,
+    "sourceImageSha256": "c5924f2f05f7bc3fd6c3d9a8728a8b2405b5efefc296161dc276c11ca540b85b",
+    "nativeImageSha256": "2f1d4e30524d0f91aa72b57d9ea239944420c50aab379be867daef759f6ea5a8",
+    "remainingVisibleDifferences": [
+      "sidebar",
+      "avatars",
+      "header",
+      "message layout"
+    ],
+    "deployedSourceCommitEstablished": false
+  },
+  "cleanup": {
+    "observedAppProcessesReaped": true,
+    "allOwnedRuntimeProcessesAbsent": true,
+    "temporaryNativeProfileAndEncryptedKeysRemoved": true,
+    "visibleSourceBrowserAndTemporaryProfileRemoved": true,
+    "clipboardHistoryAndScreenshotSettingsRestored": true,
+    "primaryDefaultProfileUntouched": true
+  },
+  "rootReviewSha256": "8e57fef5964113d3a50cf555418cd62735a6c2d00daec11a443a7735ba9ad812",
+  "limits": [
+    "Actual current-host packaged acceptance with one primary account and ordinary topic; not every workflow or distribution",
+    "The OS provider was temporary and isolated; permanent desktop credential-provider setup remains unaccepted",
+    "Initial observer interruption retained privately; the completed observation verified two restored processes and their normal exits",
+    "The earlier intermittent archive-input test failure remains without an established cause",
+    "Public package, installed0.1.6-to0.2.0 upgrade and authenticated upgrade preservation remain pending",
+    "Full feature/pixel parity and other operating systems remain open"
+  ]
+}

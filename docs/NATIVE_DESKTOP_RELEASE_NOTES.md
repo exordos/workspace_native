@@ -1,3 +1,33 @@
+# Workspace Native 0.2.0 — Linux development preview
+
+Reopening the application now restores the last verified saved account, project
+and conversation. A moved topic opens at its current server location. Explicit
+navigation takes priority over pending restoration; an unavailable saved chat
+does not silently select another conversation.
+
+Remembered sign-in requires a working operating-system credential store. Accounts
+saved by earlier previews retain **Continue**; using it successfully once selects
+that account for subsequent automatic startup. Existing credential storage and
+the cache schema remain compatible. Published versions retain their original tags.
+
+Complete local session, vault, controller, preferences, window and encrypted UI
+checks passed. Packaged Linux checks exercised actual OTP sign-in, automatic
+account/project/conversation restoration in new processes with a real OS store,
+ordinary message send/read-back and automatic incoming-message display. Matched
+unedited source/native frames retain the remaining visual differences. These
+checks do not establish permanent credential-provider setup on other desktops,
+authenticated upgrade preservation or complete application parity.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. Download and extract the archive, then run `bash install.sh`
+for a new per-user installation. This preview targets Ubuntu 26.04 x86_64 /
+glibc 2.43 or newer. The configurable disk cache defaults to 10 GB. Other
+distributions, Windows, macOS and full feature/pixel parity remain open.
+
+[Full changelog: 0.1.6…0.2.0](https://github.com/exordos/workspace_native/compare/0.1.6...0.2.0)
+
+---
+
 # Workspace Native 0.1.6 — Linux development preview
 
 The message composer adds Ctrl+B for bold, Ctrl+I for italic, Ctrl+E for inline

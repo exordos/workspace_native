@@ -18,8 +18,8 @@ while the application is a development preview:
   refactoring alone does not require a MAJOR increase unless it is the substantial
   architectural rework described above.
 
-After the published 0.1.6, the next feature release is 0.2.0. Corrections to that
-release use 0.2.1, 0.2.2 and so on; the next feature release uses 0.3.0. Published
+For example, adding a feature after 0.1.6 produces 0.2.0. Corrections to that
+release use 0.2.1, 0.2.2 and so on; another new feature produces 0.3.0. Published
 tags and immutable package contents keep their original versions. Update the
 CMake project version with the implemented release scope before building and
 tagging it; a documentation-only change does not itself publish a product release.

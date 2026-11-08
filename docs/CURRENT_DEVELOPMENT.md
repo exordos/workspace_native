@@ -849,6 +849,41 @@ A real executable saved-account restart, primary desktop credential persistence,
 public package/installed update and live0.2.0 acceptance remain open. Complete
 functional/pixel parity is not established. See [last-conversation checks](provenance/last-conversation-checks.json).
 
+## Packaged 0.2.0 session-restoration check
+
+The immutable master CI package passed its archive digest, ten-module runtime and
+image/message/grant/TLS checks. Actual credential/OTP sign-in selected the exact
+primary account and project. Two new application processes then opened that
+account/project and the last ordinary conversation automatically, without manual
+login, project choice or navigation. Both observed restored processes exited with
+code 0. The account and route metadata remained correct after those exits.
+
+A real OS credential service and the same isolated profile were retained across
+application restarts. This establishes the packaged application's restoration
+path on the current host; it does not establish permanent desktop-provider setup,
+OS-login/reboot restoration, every account or encrypted live workflow. The
+earlier initial observation ended before its native exit code could be collected;
+the completed observation verified the subsequent processes and normal exits.
+
+One Send from the restored session produced exactly one canonical message with
+the expected author, project, conversation and Markdown in independent API
+read-back. A fresh authenticated source client displayed it. Another API message
+appeared in the native conversation without manual reload or navigation. This
+does not independently attribute a WebSocket frame or external-provider delivery.
+The restored live process mapped 54 selected runtime libraries inside its package.
+
+Comparison54 contains unedited real source/native frames with 1440×900 client
+areas. The native 1462×960 frame also includes its decoration and compositor shadow.
+Sidebar, avatars, header and message-layout differences remain visible. The
+deployed source commit was not established; upload/download hashes and message
+UUID read-back were verified. All owned app, store, bus and browser processes,
+temporary profiles and encrypted test keys were removed; clipboard-history and
+screenshot settings were restored. The primary default profile was untouched.
+
+The 55 product inputs remain identical to the accepted local checks above.
+Public release, installed 0.1.6→0.2.0 update and authenticated upgrade preservation
+remain separate pending gates. See [packaged session-restoration checks](provenance/linux-session-restore-0.2.0-checks.json).
+
 ## Version policy check
 
 The next feature release is 0.2.0; corrections to existing behavior increment
