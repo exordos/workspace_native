@@ -1,6 +1,6 @@
 {
   "version": "0.1.6",
-  "status": "CANDIDATE_FOCUSED_PHYSICAL_CTRL_B_LOCAL_PACKAGE_PASS_WHOLE_PENDING",
+  "status": "COHERENT_016_LOCAL_WHOLE_AND_PACKAGE_PASS_CHECKPOINT_CI_PASS_PUBLIC_PENDING",
   "sourceReferenceCommit": "95495b10b828f853c9e770b47216073eb973fa95",
   "implementation": "Four window-context composer-only Shortcut defaults, existing draft binding and owner/API/route guards; no transport/cache schema change",
   "markers": {
@@ -79,11 +79,42 @@
     "privateXdgRemoved": true
   },
   "whole": {
-    "window": "PENDING",
-    "encryptedUi": "PENDING",
-    "locale": "PENDING"
+    "rootReviewed": true,
+    "status": "COHERENT_016_ALL_CURRENT_WINDOW_ENCRYPTED_UI_LOCALE_PASS",
+    "counts": {
+      "window293": {
+        "pass": 293,
+        "qtSeconds": 336.711,
+        "configuredTimeoutSeconds": 360
+      },
+      "encrypted142": {
+        "pass": 142,
+        "qtSeconds": 339.966,
+        "configuredTimeoutSeconds": 360
+      },
+      "locale14": {
+        "pass": 14,
+        "qtSeconds": 0.11,
+        "configuredTimeoutSeconds": 45
+      }
+    },
+    "runtimeFailuresWarningsSkipsStderr": 0,
+    "frozenFiles": 340,
+    "runtimePathsMatchingD": 269,
+    "allObservedOwnedIdentitiesAbsent": 74,
+    "privateXdgRemoved": true,
+    "originalRegisteredCommandsTimeoutsAndOraclesPreserved": true,
+    "noRetryNoRebuild": true,
+    "resultSha256": "d51c3cda16d9c680996640f2ecefa88567dbd218aaeccbd90cb2817823c948cd",
+    "sourceManifestSha256": "287f1a92300f61a3f5b5165ed304c87afc828fa6eaaa7c3f01e0c7fe76d203d3",
+    "rootReviewSha256": "9d6a594ba2ec8be0c464849d295785409590540f97021313ec569ca3a6f5166e"
   },
-  "ci": "PENDING",
+  "ci": {
+    "checkpointMaster": "success",
+    "runId": 42521044601,
+    "url": "https://github.com/exordos/workspace_native/actions/runs/42521044601",
+    "tagAndFinalMaster": "PENDING"
+  },
   "published": "PENDING",
   "installedUpdate": "PENDING",
   "limits": [

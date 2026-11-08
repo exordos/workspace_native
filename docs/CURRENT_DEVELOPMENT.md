@@ -758,7 +758,9 @@ The completed run kept the same binary, assertions and 90/210 second budgets.
 
 The coherent local 0.1.6 Release package passed installer6, package-version1,
 ten QML modules and image/message/grant/TLS probes. Configure25 and build18
-warning lines remain recorded; a warning-free build is not claimed. Full
-Window293/encrypted UI142, locale14, CI, publication and installed update remain
-pending. Toolbar, shortcut remapping, full composer/pixel parity and other
+warning lines remain recorded; a warning-free build is not claimed. The clean
+full Window293/encrypted UI142 and locale14 suites passed with their original
+360/360/45 second registered limits, no runtime warnings/stderr/failures/skips
+and no retries. Checkpoint GitHub packaging CI passed. Public tag/assets and
+the installed 0.1.5 to 0.1.6 update remain separate pending gates. Toolbar, shortcut remapping, full composer/pixel parity and other
 platforms remain open. See [formatting checks](provenance/composer-formatting-checks.json).
