@@ -1,0 +1,124 @@
+{
+  "schema": "selected-canonical-topic-checks-v1",
+  "sourceRef": "61dacef78dab2f5d0be76f283bebf49fe29b84af",
+  "sourceManifestSha256": "d82ba568c740954a95fdaa9dfd51a95b887d81cc1ba39c1c8fc24539c84b9b5d",
+  "productionPatchSha256": "44e5e72735db4b540ed8a9faa2d2aa4a6d303c65b048a97b025a3829d8dc85e0",
+  "scope": "Selected explicit topic deletion retains its route/draft while one existing owned canonical resolver opens returned topic/channel. Signal-free authority/content barrier precedes cancellation/publication; existing unverified flag and missing-row predicate fence writes, poll/live bodies after404/foreign result. No new alias store, endpoint, schema, timer or global topic catalog.",
+  "actualControllerRed": [
+    {
+      "label": "selected-deleted-topic-resolver-red7",
+      "totals": [
+        "Totals: 2 passed, 5 failed, 0 skipped, 0 blacklisted, 32478ms"
+      ],
+      "stdoutSha256": "42d91916e42b7f84853ff9350390615da2bea277522126fdad539c6cc1d308b3",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 32.574
+    }
+  ],
+  "controllerGreenAndControls": [
+    {
+      "label": "selected-deleted-topic-resolver-green9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 3429ms"
+      ],
+      "stdoutSha256": "02c917521f6163fdbd27d335cf8300a076899eb501e99b469e3275addb770bd0",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 3.527
+    },
+    {
+      "label": "topic-opening-controls",
+      "totals": [
+        "Totals: 47 passed, 0 failed, 0 skipped, 0 blacklisted, 21995ms"
+      ],
+      "stdoutSha256": "6ba8e15f304327725cc113a81a2a4a63103e7a43478b515ade4b2dbcdd301a4f",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 22.086
+    }
+  ],
+  "actualMainRed": [
+    {
+      "label": "selected-deleted-topic-main-red4",
+      "totals": [
+        "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 14525ms"
+      ],
+      "stdoutSha256": "96d5f117cbddbfc4d2f529dfa6a034866ccc19846ceaf9e7e347e167051177d6",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 14.713
+    }
+  ],
+  "actualMainGreenAndControls": [
+    {
+      "label": "selected-deleted-topic-main-green4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2641ms"
+      ],
+      "stdoutSha256": "2a4980d29423f3fac2da2b4de0de1375529cc424dc5de69517c9781f6fae40ab",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 2.774
+    },
+    {
+      "label": "old-main-reference-and-encryption-controls",
+      "totals": [
+        "Totals: 13 passed, 0 failed, 0 skipped, 0 blacklisted, 4497ms"
+      ],
+      "stdoutSha256": "05b63286559b85d247218ad5887809f3caa2f0861767df91c9295b977a18f6ba",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 4.629
+    }
+  ],
+  "completeIntegratedGroups": [
+    {
+      "label": "whole-window",
+      "totals": [
+        "Totals: 226 passed, 0 failed, 0 skipped, 0 blacklisted, 239163ms"
+      ],
+      "stdoutSha256": "cff4c89e4dea9294d8bbc2c2368ee21f6912880b053f5363772cd31b95890201",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 239.316
+    },
+    {
+      "label": "whole-controller755",
+      "totals": [
+        "Totals: 755 passed, 0 failed, 0 skipped, 0 blacklisted, 476921ms"
+      ],
+      "stdoutSha256": "460e5dbcc0745b6a82148b78b5bf82bcfde14dc0e3361f0475b0bafa252e6ae9",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 477.024
+    },
+    {
+      "label": "whole-core274",
+      "totals": [
+        "Totals: 274 passed, 0 failed, 0 skipped, 0 blacklisted, 615005ms"
+      ],
+      "stdoutSha256": "b351d849539b280b67327b34230245657f7d79fdc5718fbaf69685c1b6457348",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 615.098
+    },
+    {
+      "label": "whole-ui138",
+      "totals": [
+        "Totals: 138 passed, 0 failed, 0 skipped, 0 blacklisted, 319258ms"
+      ],
+      "stdoutSha256": "ae8c6b6556f6521de63e83b0030b8d781fb169a7a1bfc7adb4df90904b0a5ad1",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 319.408
+    }
+  ],
+  "allOldTestFilesRestoredByteExactWhenAdditionsRemoved": true,
+  "reverseProductionCompositionMatchesD11": true,
+  "allSourceBinaryRawHashesAndOwnedResourceCleanupVerified": true,
+  "warningPrefixAndMouseBoundsReviewEmpty": true,
+  "qtCountNote": "Each group includes initialization/cleanup. Counts are not unique user scenarios.",
+  "liveAliasAndFullLinuxAccepted": false,
+  "remaining": "Explicit refresh/reloadSnapshot absent-topic policy; known owner-global topic fast opening outside currentlist; initial OSURI/message anchors/browser history; deployed backend alias/event ordering, real-account/WSS/live and complete Linux parity."
+}

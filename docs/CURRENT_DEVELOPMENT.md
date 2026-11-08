@@ -42,6 +42,25 @@ read/mask and entry-budget controls passed; see
 the manager-response change below; sanitizer and live-service acceptance remain
 open.
 
+An admitted deletion of the selected explicit topic now retains its address and
+local draft while the existing resolver asks for its canonical identity. The old
+body and write authority are revoked before callbacks or model notifications. An
+owned result opens the returned topic/channel directly; a newer user selection
+or logout cancels the old lookup. A 404 or foreign result leaves the original
+address empty and locked, including against later poll/live body refill. There
+is no aggregate hop, invented alias or new cache collection.
+
+Both the Controller and actual Main regressions failed at the missing resolver
+GET before the fix. The new Controller9 and existing opening/lifetime controls47
+passed, as did actual Main4 and its prior reference/encryption controls13. The
+coherent candidate then passed the complete Window226, Controller755, Core274
+and UI138 groups without skips, runtime stderr or warning prefixes. Counts
+include setup/cleanup. These are local HTTP/visible-window fixtures; deployed
+merge/alias and full Linux acceptance remain open. Explicit refresh's separate
+missing-topic fallback and the owner-global known-topic catalog are not changed.
+[Canonical topic checks](provenance/selected-canonical-topic-checks.json) preserve
+the exact inputs, REDs and integrated results.
+
 Ordinary manager Grant reproduced the missing action in both the controller and
 the actual Main window before the change. Focused checks now pass for owners with
 a member binding and administrators, exact-generation and current-member fences,

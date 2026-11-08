@@ -24,6 +24,15 @@ the pending resolver. Request handles cancel only the exact in-flight request;
 they cannot cancel another client or a completed/replacement request. A selected
 topic follows an owned realtime move without an additional resolver lookup.
 
+An admitted deletion of the selected explicit topic keeps that address and its
+local draft while the same resolver asks for a canonical placement. The retired
+body and write authority are cleared before outward callbacks. A valid owned
+result opens directly; 404 or invalid ownership leaves an empty, locked explicit
+route. A newer selection or logout wins, and poll/live messages cannot repopulate
+the unresolved route. This automatic event path does not change the separate
+explicit refresh/reloadSnapshot missing-list fallback or introduce an owner-wide
+topic collection.
+
 ## Verification scope
 
 The native regression coverage includes exact request paths, canonical placement,

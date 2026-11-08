@@ -4844,6 +4844,74 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
     } else if (kind == "topic.deleted") {
         if (!isUuid(id) || !isUuid(payload.value("stream_uuid").toString()))
             return false;
+        const auto deletedStream = payload.value("stream_uuid").toString();
+        if (deletedStream == m_stream && id == m_topic) {
+            // Keep the explicit A/T intent, but revoke its authority and retire
+            // old history/list callbacks before cancellation or any notification.
+            ++m_selection;
+            ++m_topicRequest;
+            ++m_topicRevision;
+            ++m_messageRevision;
+            ++m_topicMutation;
+            m_topicChanging = false;
+            m_topics.erase(std::remove_if(m_topics.begin(), m_topics.end(),
+                [&id](const Topic &topic) { return topic.uuid == id; }), m_topics.end());
+            m_topicsVerified = m_historyVerified = false;
+            m_topicSeedUnverified = true;
+            m_messages.clear();
+            pruneMessageFields();
+            m_before.clear();
+            m_loading = false;
+            m_recoveringMarker = m_resumeOlder = false;
+            resetReadState();
+
+            const QPointer<NativeController> guard(this);
+            const auto owner = creationOwnerKey();
+            const auto generation = m_api->generation();
+            const auto catalog = m_catalog;
+            const auto selection = m_selection;
+            const auto previousOpening = m_nextTopicOpening;
+            const auto cache = m_cache.data(); // Identity only; never dereferenced.
+            const auto lease = m_cacheLease;
+            const auto *stream = currentStream();
+            const auto security = stream ? topicOpeningSecurity(*stream) : QString{};
+            const auto catalogVerified = m_catalogVerified;
+            const auto syncBlocked = m_syncBlocked;
+            const auto forgetting = m_cacheForgettingAccount;
+            const auto current = [&] {
+                if (!guard || !authenticated() || owner != creationOwnerKey()
+                    || generation != m_api->generation() || catalog != m_catalog
+                    || selection != m_selection || previousOpening != m_nextTopicOpening
+                    || deletedStream != m_stream || id != m_topic || !unresolvedTopicRoute()
+                    || cache != m_cache.data() || lease.owner != m_cacheLease.owner
+                    || lease.generation != m_cacheLease.generation
+                    || catalogVerified != m_catalogVerified || syncBlocked != m_syncBlocked
+                    || forgetting != m_cacheForgettingAccount) return false;
+                const auto *selected = currentStream();
+                return security == (selected ? topicOpeningSecurity(*selected) : QString{});
+            };
+            interruptTopicOpening();
+            if (!current()) return true;
+            interruptChatRequestLookups();
+            if (!current()) return true;
+            cancelSnapshot();
+            if (!current()) return true;
+            noteTopicCreationEvent(deletedStream, id, true);
+            noteChannelCreationEvent(deletedStream, id, true);
+            noteDirectChatEvent(deletedStream, id, true);
+            invalidateCache(NativeCache::Kind::Topics, deletedStream);
+            if (!current()) return true;
+            invalidateCache(NativeCache::Kind::History, deletedStream, id);
+            if (!current()) return true;
+            emit topicsChanged();
+            if (!current()) return true;
+            emit messagesChanged();
+            if (!current()) return true;
+            // One existing resolver owns canonical identity, latest-selection
+            // cancellation and owner/cache/lifetime fences. No aggregate hop.
+            beginTopicOpening(id);
+            return true;
+        }
         if (m_topicOpening.active && (m_topicOpening.requested == id
             || (m_topicOpening.canonical && m_topicOpening.canonical->uuid == id))) {
             const QPointer<NativeController> openingGuard(this);
@@ -5458,9 +5526,21 @@ const Stream *NativeController::currentStream() const
     return found == m_streams.end() ? nullptr : &*found;
 }
 
+bool NativeController::unresolvedTopicRoute() const
+{
+    // A canonical opening seed contains its Topic row and can read history.
+    // A retired explicit topic has no row: keep poll/live bodies out even after
+    // the resolver finishes with 404 or invalid/foreign metadata.
+    return m_topicSeedUnverified && !m_topic.isEmpty()
+        && std::none_of(m_topics.cbegin(), m_topics.cend(), [&](const Topic &topic) {
+            return topic.uuid == m_topic && topic.stream == m_stream;
+        });
+}
+
 bool NativeController::inConversation(const Message &message) const
 {
-    return hasConversation() && message.project == m_session->project() && message.stream == m_stream
+    return hasConversation() && !unresolvedTopicRoute()
+        && message.project == m_session->project() && message.stream == m_stream
         && (m_topic.isEmpty() || message.topic == m_topic);
 }
 
@@ -6321,7 +6401,8 @@ void NativeController::loadOlder()
 
 void NativeController::loadMessages(bool older)
 {
-    if (!authenticated() || !hasConversation() || m_loading || (older && m_before.isEmpty())) return;
+    if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
+        || m_loading || (older && m_before.isEmpty())) return;
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, older ? m_before : QByteArray{}};
     const auto selection = m_selection;
     const auto generation = m_api->generation();

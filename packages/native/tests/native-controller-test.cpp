@@ -904,6 +904,249 @@ private slots:
         QCOMPARE(test.aggregateHistory, 0);
     }
 
+    void selectedDeletedTopicResolutionKeepsOwnedNavigationAndWriteBarriers_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"canonical-owned-alias", "newer-known-topic-wins", "logout-cancels",
+                                    "404-keeps-unresolved-topic-locked", "foreign-viewer-keeps-unresolved-topic-locked"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+    void selectedDeletedTopicResolutionKeepsOwnedNavigationAndWriteBarriers()
+    {
+        QFETCH(QString, scenario);
+        // These handler captures outlive Fixture and every deferred send closure.
+        std::function<void()> releaseLookup;
+        bool retired = false;
+        int uploads = 0;
+        TopicOpeningFixture test;
+        FileClient files(&test.fixture.api);
+        auto &controller = test.fixture.controller;
+        controller.useFiles(&files);
+        test.includeDestination = true;
+        test.resolved = creationTopic(openingCanonicalId, openingStreamId, "Canonical merged topic");
+        auto canonicalMessage = message("Actual canonical alias history", returnedId, openingCanonicalId);
+        canonicalMessage["stream_uuid"] = openingStreamId;
+        test.history = QJsonArray{canonicalMessage};
+        test.fixture.files = [&uploads](const Request &request) -> Response {
+            if (request.method == "POST") ++uploads;
+            return {QJsonObject{}, 503}; // Any upload here is an actual guard violation.
+        };
+        const QString lookupPath = "/api/workspace/v1/messenger/stream_topics/" + topicId;
+        auto raw = test.resolved;
+        if (scenario.startsWith("foreign-viewer")) raw["user_uuid"] = channelMemberA;
+        Response lookup{scenario.startsWith("404-") ? QJsonObject{} : raw,
+                        scenario.startsWith("404-") ? 404 : 200};
+        lookup.defer = [&releaseLookup](std::function<void()> send) { releaseLookup = std::move(send); };
+        test.additionalLookups.insert(lookupPath, lookup);
+        // After the admitted deletion, a fresh origin list must not resurrect T.
+        // Only this new test's exact origin-list response changes; legacy Fixture
+        // and destination-list/canonical-history handling remain untouched.
+        const auto previous = test.fixture.server.handler;
+        test.fixture.server.handler = [previous, &retired](const Request &request) -> Response {
+            if (retired && request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/"
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId)
+                return {QJsonArray{creationTopic(secondTopicId, streamId, "Other known topic")}};
+            return previous(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile input(directory.filePath("canonical-alias-write-barrier.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); QCOMPARE(input.write("synthetic"), qint64(9)); input.close();
+        const QVariantList selection{QUrl::fromLocalFile(input.fileName())};
+        QVERIFY(test.start());
+        QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), topicId);
+        QVERIFY(controller.topicsComplete());
+        controller.setDraft("Original topic draft must not be sent after deletion");
+        QVERIFY(controller.canSend()); QVERIFY(controller.canAttach()); // Non-vacuous capability baseline.
+        QCOMPARE(test.lookups, 0); QCOMPARE(test.mutations, 0); QCOMPARE(uploads, 0);
+
+        retired = true;
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("topic.deleted",
+            QJsonObject{{"uuid", topicId}, {"stream_uuid", streamId}}, 77)));
+        // The event, not a direct openTopic call, must start the exact resolver.
+        QTRY_COMPARE_WITH_TIMEOUT(test.lookups, 1, 2000);
+        QCOMPARE(test.lookupTargets, QStringList{lookupPath});
+        QVERIFY(releaseLookup);
+        QPointer<QNetworkReply> pending;
+        for (auto *reply : test.fixture.api.findChildren<QNetworkReply *>())
+            if (reply->url().path() == lookupPath) pending = reply;
+        QVERIFY(pending); QVERIFY(!pending->isFinished());
+        QSignalSpy finished(pending.data(), &QNetworkReply::finished); QVERIFY(finished.isValid());
+        QCOMPARE(finished.size(), 0); QVERIFY(controller.topicResolving());
+        QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), topicId);
+        QCOMPARE(controller.draft(), QString("Original topic draft must not be sent after deletion"));
+        QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+        controller.send(); controller.attachFiles(selection);
+        QVERIFY(!controller.fileBusy()); QCOMPARE(test.mutations, 0); QCOMPARE(uploads, 0);
+        QCOMPARE(test.aggregateHistory + test.topicHistory, 0);
+
+        const bool latest = scenario == "newer-known-topic-wins", logout = scenario == "logout-cancels";
+        if (latest) {
+            controller.selectTopic(secondTopicId);
+            QTRY_VERIFY_WITH_TIMEOUT(!pending, 2000); // Existing physical-cancellation contract.
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && !controller.topicResolving(), 2000);
+            QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), secondTopicId);
+            controller.setDraft("New explicit route draft");
+            QVERIFY(controller.canSend()); QVERIFY(controller.canAttach());
+        } else if (logout) {
+            controller.logout();
+            QTRY_VERIFY_WITH_TIMEOUT(!pending, 2000);
+            QVERIFY(!controller.authenticated()); QVERIFY(!controller.topicResolving());
+            QVERIFY(controller.selectedStream().isEmpty()); QVERIFY(controller.selectedTopic().isEmpty());
+            QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+        }
+        // Exactly one immutable response delivery, also safe after socket cancel.
+        auto deliver = std::move(releaseLookup); releaseLookup = {}; QVERIFY(deliver); deliver();
+        QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(finished.size(), 1);
+        const bool invalid = scenario.startsWith("404-") || scenario.startsWith("foreign-viewer");
+        if (latest) {
+            QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), secondTopicId);
+            QCOMPARE(controller.draft(), QString("New explicit route draft"));
+            QCOMPARE(test.topicHistory, 1); QCOMPARE(test.targetTopicLists, 0);
+        } else if (logout) {
+            QVERIFY(!controller.authenticated()); QVERIFY(controller.selectedStream().isEmpty());
+            QVERIFY(controller.selectedTopic().isEmpty()); QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+            QCOMPARE(test.topicHistory, 0); QCOMPARE(test.targetTopicLists, 0);
+        } else if (invalid) {
+            QVERIFY(!controller.topicResolving()); QVERIFY(!controller.error().isEmpty());
+            // Source retains the unresolved explicit route; it does not silently
+            // turn a permanently deleted/foreign T into an aggregate selection.
+            QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), topicId);
+            QCOMPARE(controller.draft(), QString("Original topic draft must not be sent after deletion"));
+            QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+            controller.send(); controller.attachFiles(selection);
+            QVERIFY(!controller.fileBusy());
+            QCOMPARE(test.topicHistory, 0); QCOMPARE(test.targetTopicLists, 0);
+        } else {
+            QTRY_COMPARE_WITH_TIMEOUT(controller.selectedStream(), openingStreamId, 2000);
+            QCOMPARE(controller.selectedTopic(), openingCanonicalId);
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && !controller.topicResolving(), 2000);
+            QVERIFY(controller.topicsComplete());
+            QCOMPARE(controller.messages().size(), 1);
+            QCOMPARE(modelMessage(controller, returnedId).value("content").toString(), QString("Actual canonical alias history"));
+            QCOMPARE(test.topicHistory, 1); QCOMPARE(test.targetTopicLists, 1);
+            controller.setDraft("Fresh canonical route draft");
+            QVERIFY(controller.canSend()); QVERIFY(controller.canAttach()); // Authority returns only on owned complete target.
+            QVERIFY(controller.error().isEmpty());
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(test.lookups, 1); QCOMPARE(test.aggregateHistory, 0);
+        QCOMPARE(test.details, 0); QCOMPARE(test.catalogs, 0); QCOMPARE(test.users, 0);
+        QCOMPARE(test.mutations, 0); QCOMPARE(uploads, 0);
+        QVERIFY2(test.unexpectedRequests.isEmpty(), qPrintable(test.unexpectedRequests.join(QStringLiteral("; "))));
+        QCOMPARE(test.historyTargets.size(), logout || invalid ? 0 : 1);
+        for (const auto &target : test.historyTargets) {
+            const QUrlQuery query(target);
+            QCOMPARE(query.queryItemValue("stream_uuid"), latest ? streamId : openingStreamId);
+            QCOMPARE(query.queryItemValue("topic_uuid"), latest ? secondTopicId : openingCanonicalId);
+        }
+    }
+
+    void selectedDeletedTopicBarrierPrecedesPublicationAndKeepsLatestIntent_data()
+    {
+        QTest::addColumn<bool>("selectNewer");
+        QTest::newRow("first-publication-is-locked-then-404-and-live") << false;
+        QTest::newRow("first-publication-selects-a-newer-known-topic") << true;
+    }
+
+    void selectedDeletedTopicBarrierPrecedesPublicationAndKeepsLatestIntent()
+    {
+        QFETCH(bool, selectNewer);
+        std::function<void()> releaseLookup;
+        bool retired = false, armed = false, observed = false;
+        QString firstSignal, observedStream, observedTopic, observedDraft;
+        int observedRows = -1, uploads = 0;
+        bool observedSend = true, observedAttach = true;
+        TopicOpeningFixture test;
+        auto &controller = test.fixture.controller;
+        FileClient files(&test.fixture.api);
+        controller.useFiles(&files);
+        const QString lookupPath = "/api/workspace/v1/messenger/stream_topics/" + topicId;
+        Response lookup{QJsonObject{}, 404};
+        lookup.defer = [&releaseLookup](std::function<void()> send) { releaseLookup = std::move(send); };
+        test.additionalLookups.insert(lookupPath, lookup);
+        auto oldMessage = message("Actual old selected-topic content", messageId, topicId);
+        const auto previous = test.fixture.server.handler;
+        test.fixture.server.handler = [previous, oldMessage, &retired](const Request &request) -> Response {
+            auto response = previous(request); // Keep the real fixture's HTTP accounting.
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/"
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId
+                && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                response.data = QJsonArray{oldMessage};
+            if (retired && request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/"
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId)
+                response.data = QJsonArray{creationTopic(secondTopicId, streamId, "Other known topic")};
+            return response;
+        };
+        test.fixture.files = [&uploads](const Request &request) -> Response {
+            if (request.method == "POST") ++uploads;
+            return {QJsonObject{}, 503};
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile input(directory.filePath("first-notify-write-barrier.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); QCOMPARE(input.write("synthetic"), qint64(9)); input.close();
+        const QVariantList selection{QUrl::fromLocalFile(input.fileName())};
+        QVERIFY(test.start());
+        QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(controller.messages().size(), 1);
+        QCOMPARE(modelMessage(controller, messageId).value("content").toString(), QString("Actual old selected-topic content"));
+        controller.setDraft("Keep the explicit original draft");
+        QVERIFY(controller.canSend()); QVERIFY(controller.canAttach());
+        const auto observer = [&](const QString &signal) {
+            if (!armed) return;
+            armed = false; observed = true; firstSignal = signal;
+            observedStream = controller.selectedStream(); observedTopic = controller.selectedTopic();
+            observedDraft = controller.draft(); observedRows = controller.messages().size();
+            observedSend = controller.canSend(); observedAttach = controller.canAttach();
+            controller.send(); controller.attachFiles(selection);
+            if (selectNewer) controller.selectTopic(secondTopicId);
+        };
+        const auto topics = connect(&controller, &NativeController::topicsChanged, &controller,
+            [&] { observer(QStringLiteral("topicsChanged")); });
+        const auto messages = connect(&controller, &NativeController::messagesChanged, &controller,
+            [&] { observer(QStringLiteral("messagesChanged")); });
+        const auto state = connect(&controller, &NativeController::stateChanged, &controller,
+            [&] { observer(QStringLiteral("stateChanged")); });
+        const auto snapshot = connect(&controller, &NativeController::snapshotFailed, &controller,
+            [&] { observer(QStringLiteral("snapshotFailed")); });
+        const auto disconnectObservers = qScopeGuard([&] {
+            disconnect(topics); disconnect(messages); disconnect(state); disconnect(snapshot);
+        });
+        retired = armed = true;
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("topic.deleted",
+            QJsonObject{{"uuid", topicId}, {"stream_uuid", streamId}}, 78)));
+        QVERIFY(observed); QVERIFY(!firstSignal.isEmpty());
+        QCOMPARE(observedStream, streamId); QCOMPARE(observedTopic, topicId);
+        QCOMPARE(observedDraft, QString("Keep the explicit original draft"));
+        QCOMPARE(observedRows, 0); QVERIFY(!observedSend); QVERIFY(!observedAttach);
+        QVERIFY(!controller.fileBusy()); QCOMPARE(uploads, 0); QCOMPARE(test.mutations, 0);
+        if (selectNewer) {
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && test.topicHistory == 1, 2000);
+            QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), secondTopicId);
+            QCOMPARE(test.lookups, 0); QVERIFY(!releaseLookup); QVERIFY(!controller.topicResolving());
+            controller.setDraft("New explicit user intent"); QVERIFY(controller.canSend()); QVERIFY(controller.canAttach());
+        } else {
+            QTRY_COMPARE_WITH_TIMEOUT(test.lookups, 1, 2000); QVERIFY(releaseLookup);
+            QCOMPARE(test.lookupTargets, QStringList{lookupPath});
+            QVERIFY(controller.topicResolving()); QCOMPARE(controller.messages().size(), 0);
+            auto deliver = std::move(releaseLookup); releaseLookup = {}; deliver();
+            QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+            QVERIFY(!controller.topicResolving()); QVERIFY(!controller.error().isEmpty());
+            QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), topicId);
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.created", oldMessage, 79)));
+            QCOMPARE(controller.messages().size(), 0); // Admitted real RT cannot refill the retired route.
+            QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+            QCOMPARE(test.topicHistory, 0);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(test.fixture.api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(test.aggregateHistory, 0); QCOMPARE(test.catalogs, 0); QCOMPARE(test.details, 0);
+        QCOMPARE(test.users, 0); QCOMPARE(test.mutations, 0); QCOMPARE(uploads, 0);
+        QVERIFY2(test.unexpectedRequests.isEmpty(), qPrintable(test.unexpectedRequests.join(QStringLiteral("; "))));
+    }
+
     void selectedTopicFollowsItsOwnedRealtimeMoveWithoutResolverGet()
     {
         TopicOpeningFixture test;

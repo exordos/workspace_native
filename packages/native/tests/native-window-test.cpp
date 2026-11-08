@@ -837,6 +837,213 @@ private slots:
         QVERIFY(!controller.authenticated()); QVERIFY(api.findChildren<QNetworkReply *>().isEmpty());
     }
 
+    void selectedDeletedTopicKeepsAnExplicitMainRouteUntilCanonicalOpening_data()
+    {
+        QTest::addColumn<bool>("chooseNewer");
+        QTest::newRow("selected-deletion-opens-owned-canonical-topic") << false;
+        QTest::newRow("real-newer-sidebar-click-wins-over-held-alias") << true;
+    }
+
+    void selectedDeletedTopicKeepsAnExplicitMainRouteUntilCanonicalOpening()
+    {
+        QFETCH(bool, chooseNewer);
+        // Deferred transport and observer captures outlive Fixture/Controller.
+        std::function<void()> releaseLookup;
+        bool retired = false, observeAggregate = false, sawAggregate = false;
+        WindowTopicLinkFixture fixture("cross-canonical");
+        const auto canonical = windowChannelTopic(linkCanonicalId, linkDestinationId, "Linked destination");
+        const auto oldBody = message("Retired topic body must disappear", messageId, topicId);
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&, fallback, canonical, oldBody](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (retired && request.method == "GET" && path == "/api/workspace/v1/messenger/stream_topics/" + topicId) {
+                ++fixture.lookupGets;
+                Response response{canonical};
+                response.defer = [&releaseLookup](std::function<void()> send) { releaseLookup = std::move(send); };
+                return response;
+            }
+            auto response = fallback(request); // Keep existing real HTTP accounting.
+            if (request.method != "GET") return response;
+            if (path == "/api/workspace/v1/messenger/streams/") {
+                auto rows = response.data.toArray();
+                rows.append(windowChannel(linkDestinationId, "Destination channel"));
+                response.data = rows; // B is already an owned known channel.
+            }
+            const QUrlQuery query(request.target);
+            if (path == "/api/workspace/v1/messenger/stream_topics/" && retired
+                && query.queryItemValue("stream_uuid") == streamId)
+                response.data = QJsonArray{windowChannelTopic(secondTopicId, streamId, "Planning")};
+            if (path == "/api/workspace/v1/messenger/messages/"
+                && query.queryItemValue("stream_uuid") == streamId) {
+                if (query.queryItemValue("topic_uuid") == topicId) response.data = QJsonArray{oldBody};
+                if (query.queryItemValue("topic_uuid") == secondTopicId)
+                    response.data = QJsonArray{message("Latest Planning selection stays visible", returnedId, secondTopicId)};
+            }
+            return response;
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("selected-deletion.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        FileClient files(&api); controller.useFiles(&files); // Non-vacuous attachment baseline.
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([guard = QPointer<QQuickWindow>(window), &engine] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Canonical-route Main window did not settle and release focus before teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000); session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 2000);
+        // Same normal window-fixture mode as the existing canonical-link test:
+        // polling is stopped after bootstrap; no realtime transport is claimed.
+        controller.setRealtimeMode(true);
+        preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+
+        const auto renderedFrame = [&] {
+            QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+            if (!frame.isValid()) return false;
+            window->update();
+            return QTest::qWaitFor([&] { return !frame.isEmpty(); }, 2000);
+        };
+        // Resolve the real current item and map only after the caller's frame.
+        // No global helper, artificial offset, forced layout or input delay.
+        const auto pointerClick = [&](const QString &name) {
+            QPointer<QQuickItem> target = visibleItem(window->contentItem(), name);
+            if (!target || target->window() != window || target->width() <= 0 || target->height() <= 0) return false;
+            const QRectF bounds(target->mapToScene(QPointF{}), target->size());
+            if (!QRectF(0, 0, window->width(), window->height()).contains(bounds)) return false;
+            QTest::mouseClick(window, Qt::LeftButton, {}, bounds.center().toPoint());
+            return true;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 2000);
+        QVERIFY(renderedFrame());
+        {
+            QSignalSpy chosen(visibleItem(window->contentItem(), "stream-" + streamId), SIGNAL(clicked())); QVERIFY(chosen.isValid());
+            QVERIFY(pointerClick("stream-" + streamId)); QTRY_COMPARE_WITH_TIMEOUT(chosen.size(), 1, 2000);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(controller.topics().size(), 2, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicId), 2000);
+        QVERIFY(renderedFrame());
+        {
+            QSignalSpy chosen(visibleItem(window->contentItem(), "topic-" + topicId), SIGNAL(clicked())); QVERIFY(chosen.isValid());
+            QVERIFY(pointerClick("topic-" + topicId)); QTRY_COMPARE_WITH_TIMEOUT(chosen.size(), 1, 2000);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "message-content-" + messageId), 2000);
+        QVERIFY(visibleItem(window->contentItem(), "message-content-" + messageId)->property("text").toString()
+            .contains("Retired topic body must disappear")); // Actual RichText also contains inline time markup.
+        QPointer<QQuickItem> header = item(window->contentItem(), "conversationHeader");
+        QPointer<QQuickItem> list = item(window->contentItem(), "messageList");
+        QPointer<QQuickItem> prompt = item(window->contentItem(), "streamTopicPrompt");
+        QPointer<QQuickItem> shell = item(window->contentItem(), "messageComposerShell");
+        QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+        QPointer<QQuickItem> send = item(window->contentItem(), "sendButton");
+        QPointer<QQuickItem> attach = item(window->contentItem(), "attachButton");
+        QVERIFY(header && list && prompt && shell && composer && send && attach);
+        QVERIFY(hasVisibleText(header, "General Topic")); QVERIFY(hasVisibleText(header, " · Product team"));
+        QVERIFY(shell->isVisible() && composer->isVisible());
+        QVERIFY(!prompt->isVisible()); QVERIFY(!window->property("aggregateConversation").toBool());
+        QVERIFY(renderedFrame()); QVERIFY(pointerClick("messageComposer"));
+        QTRY_VERIFY_WITH_TIMEOUT(composer->hasActiveFocus(), 2000);
+        const QByteArray originalDraft("original topic draft is still local");
+        for (const auto key : originalDraft) QTest::keyClick(window, key);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.draft(), QString::fromLatin1(originalDraft), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(send->isEnabled() && attach->isEnabled(), 2000);
+        QVERIFY(controller.canSend() && controller.canAttach());
+        QTRY_VERIFY_WITH_TIMEOUT(api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QCOMPARE(fixture.lookupGets, 0);
+        QVERIFY(renderedFrame());
+
+        const auto promptChange = connect(prompt.data(), &QQuickItem::visibleChanged, &controller, [&] {
+            if (observeAggregate && prompt && prompt->isVisible()) sawAggregate = true;
+        });
+        const auto observeRoute = [&] {
+            if (observeAggregate && controller.selectedTopic().isEmpty()) sawAggregate = true;
+        };
+        const auto topicChange = connect(&controller, &NativeController::topicsChanged, &controller, observeRoute);
+        const auto messageChange = connect(&controller, &NativeController::messagesChanged, &controller, observeRoute);
+        const auto stateChange = connect(&controller, &NativeController::stateChanged, &controller, observeRoute);
+        const auto disconnectObservers = qScopeGuard([&] {
+            disconnect(promptChange); disconnect(topicChange); disconnect(messageChange); disconnect(stateChange);
+        });
+        fixture.record = true; retired = observeAggregate = true;
+        QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+            {"uuid", "99000000-0000-4000-8000-000000000061"},
+            {"payload", QJsonObject{{"kind", "topic.deleted"}, {"uuid", topicId}, {"stream_uuid", streamId}}}}));
+        // Positive real HTTP admission, not a direct openTopic invocation.
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.lookupGets, 1, 2000); QVERIFY(releaseLookup);
+        QVERIFY(controller.topicResolving());
+        QCOMPARE(controller.selectedStream(), streamId); QCOMPARE(controller.selectedTopic(), topicId);
+        QCOMPARE(controller.draft(), QString::fromLatin1(originalDraft));
+        QTRY_COMPARE_WITH_TIMEOUT(list->property("count").toInt(), 0, 2000);
+        QVERIFY(renderedFrame());
+        QVERIFY(!visibleItem(window->contentItem(), "message-content-" + messageId));
+        QVERIFY(!visibleItem(window->contentItem(), "topic-" + topicId));
+        QVERIFY(!prompt->isVisible()); QVERIFY(!window->property("aggregateConversation").toBool()); QVERIFY(!sawAggregate);
+        QVERIFY(shell->isVisible() && composer->isVisible());
+        QCOMPARE(composer->property("text").toString(), QString::fromLatin1(originalDraft));
+        QVERIFY(!send->isEnabled() && !attach->isEnabled()); QVERIFY(!controller.canSend() && !controller.canAttach());
+        {
+            QSignalSpy sent(send.data(), SIGNAL(clicked())); QSignalSpy attached(attach.data(), SIGNAL(clicked()));
+            QVERIFY(sent.isValid() && attached.isValid());
+            QVERIFY(pointerClick("sendButton")); QVERIFY(pointerClick("attachButton"));
+            QCOMPARE(sent.size(), 0); QCOMPARE(attached.size(), 0);
+        }
+        QCOMPARE(fixture.routeHistoryGets, 0); QCOMPARE(fixture.routeTopicGets, 0);
+        QCOMPARE(fixture.aggregateGets, 0); QCOMPARE(fixture.mutations, 0);
+
+        if (chooseNewer) {
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + secondTopicId), 2000);
+            QVERIFY(renderedFrame());
+            QSignalSpy chosen(visibleItem(window->contentItem(), "topic-" + secondTopicId), SIGNAL(clicked())); QVERIFY(chosen.isValid());
+            QVERIFY(pointerClick("topic-" + secondTopicId)); QTRY_COMPARE_WITH_TIMEOUT(chosen.size(), 1, 2000);
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.topicResolving() && !controller.busy(), 2000);
+        }
+        // Deliver the identical held canonical result once, also safe after the
+        // newer real click has cancelled its socket through existing TopicOpening.
+        auto deliver = std::move(releaseLookup); releaseLookup = {}; QVERIFY(deliver); deliver();
+        const auto expectedStream = chooseNewer ? streamId : linkDestinationId;
+        const auto expectedTopic = chooseNewer ? secondTopicId : linkCanonicalId;
+        const auto expectedTitle = chooseNewer ? QString("Planning") : QString("Linked destination");
+        const auto expectedBody = chooseNewer ? QString("Latest Planning selection stays visible") : QString("The canonical topic is open");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedStream(), expectedStream, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), expectedTopic, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topicResolving() && !controller.busy(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(api.findChildren<QNetworkReply *>().isEmpty(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "message-content-" + returnedId), 2000);
+        QVERIFY(renderedFrame());
+        QVERIFY(hasVisibleText(header, expectedTitle));
+        QVERIFY(hasVisibleText(header, chooseNewer ? QString(" · Product team") : QString(" · Destination channel")));
+        QVERIFY(visibleItem(window->contentItem(), "message-content-" + returnedId)->property("text").toString().contains(expectedBody));
+        QCOMPARE(controller.messages().size(), 1);
+        QCOMPARE(controller.messages().first().toMap().value("id").toString(), returnedId);
+        QCOMPARE(controller.messages().first().toMap().value("content").toString(), expectedBody);
+        QVERIFY(!visibleItem(window->contentItem(), "message-content-" + messageId));
+        auto *selected = visibleItem(window->contentItem(), "topic-" + expectedTopic); QVERIFY(selected);
+        QCOMPARE(QQmlProperty::read(selected, "background.color").value<QColor>(),
+            QColor(window->property("colors").toMap().value("card-bg-active").toString()));
+        QVERIFY(!prompt->isVisible()); QVERIFY(!window->property("aggregateConversation").toBool()); QVERIFY(!sawAggregate);
+        QVERIFY(shell->isVisible() && composer->isVisible() && composer->isEnabled());
+        QVERIFY(pointerClick("messageComposer")); QTRY_VERIFY_WITH_TIMEOUT(composer->hasActiveFocus(), 2000);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        const QByteArray freshDraft("fresh canonical route draft");
+        for (const auto key : freshDraft) QTest::keyClick(window, key);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.draft(), QString::fromLatin1(freshDraft), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(send->isEnabled() && attach->isEnabled(), 2000);
+        QVERIFY(controller.canSend() && controller.canAttach()); QVERIFY(controller.error().isEmpty());
+        QCOMPARE(fixture.lookupGets, 1); QCOMPARE(fixture.detailGets, 0);
+        QCOMPARE(fixture.routeTopicGets, 1); QCOMPARE(fixture.routeHistoryGets, 1);
+        QCOMPARE(fixture.aggregateGets, 0); QCOMPARE(fixture.mutations, 0);
+        QVERIFY2(fixture.unexpected.isEmpty(), qPrintable(fixture.unexpected.join(QStringLiteral("; "))));
+        QCOMPARE(fixture.historyTargets.size(), 1);
+        const QUrlQuery history(fixture.historyTargets.first());
+        QCOMPARE(history.queryItemValue("stream_uuid"), expectedStream);
+        QCOMPARE(history.queryItemValue("topic_uuid"), expectedTopic);
+    }
     void messageTopicReferenceUsesTheCanonicalRoute_data()
     {
         QTest::addColumn<QString>("scenario");

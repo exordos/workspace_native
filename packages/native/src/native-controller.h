@@ -655,6 +655,7 @@ private:
     const Stream *currentStream() const;
     QString peerDisplayName(const QString &id, const QString &fallback = {}) const;
     const Message *findMessage(const QString &id) const;
+    bool unresolvedTopicRoute() const;
     bool inConversation(const Message &message) const;
     QString conversationKey() const { return m_stream + "/" + m_topic; }
 
