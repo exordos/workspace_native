@@ -1311,6 +1311,10 @@
             <translation>Чат изменён или больше недоступен. Проверьте результат.</translation>
         </message>
         <message>
+            <source>The saved conversation is no longer available.</source>
+            <translation>Сохранённый чат больше недоступен.</translation>
+        </message>
+        <message>
             <source>Too many pending chat accounts. Restart the application before opening another chat.</source>
             <translation>Достигнут лимит учётных записей для открытия чатов. Перезапустите приложение.</translation>
         </message>

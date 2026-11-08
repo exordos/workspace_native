@@ -4088,13 +4088,28 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(visibleItem("archive-name-"+archiveWindowId)->property("text").toString(),QString("Alice"));
         QCOMPARE(visibleItem("archive-name-"+archiveWindowId)->property("textFormat").toInt(),int(Qt::PlainText));
         const auto catalogs=fixture.catalogGets,users=fixture.usersGets,history=fixture.historyGets;
-        click(window,search);
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped);
+        QJsonArray inputTrace;
+        const auto trace = [&](const QString &phase) {
+            auto *focus = window->activeFocusItem();
+            const auto at = search->mapToScene(QPointF(search->width() / 2, search->height() / 2));
+            inputTrace.append(QJsonObject{{"phase",phase},{"text",search->property("text").toString()},
+                {"activeFocus",search->hasActiveFocus()},{"focusItem",focus?focus->objectName():QString{}},
+                {"visible",search->isVisible()},{"enabled",search->isEnabled()},{"windowActive",window->isActive()},
+                {"count",list->property("count").toInt()},{"tab",window->findChild<QObject *>("createChatTabs")->property("currentIndex").toInt()},
+                {"frames",rendered.size()},{"x",at.x()},{"y",at.y()},{"selectedText",search->property("selectedText").toString()}});
+        };
+        const auto traceOnExit = qScopeGuard([&] { qInfo().noquote() << "Synthetic archive input trace" << QJsonDocument(inputTrace).toJson(QJsonDocument::Compact); });
+        click(window,search); trace("initial-click");
         const auto capture=[&](const QString &state) { if(scenario!="virtual")captureArchiveWindow(window,scenario,state); };
         capture("normal");
         if(scenario=="virtual"){QVERIFY(itemCountWithPrefix(window->contentItem(),"archive-row-")<30);QCOMPARE(controller.archivedChats().size(),505);}
         for(const auto key:QByteArray("  ALICE  "))QTest::keyClick(window,key);QTRY_COMPARE(list->property("count").toInt(),1);QVERIFY(visibleItem("archive-open-"+archiveWindowId));
         click(window,visibleItem("createChatTab-0"));click(window,visibleItem("createChatTab-3"));QCOMPARE(search->property("text").toString(),QString("  ALICE  "));
-        click(window,search);QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);for(const auto key:QByteArray("zzzz-no-synthetic-chat"))QTest::keyClick(window,key);QTRY_COMPARE(list->property("count").toInt(),0);QVERIFY(visibleItem("archiveEmptyStatus"));capture("empty");
+        trace("returned-to-archive"); click(window,search); trace("replacement-click");
+        QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier); trace("select-all");
+        for(const auto key:QByteArray("zzzz-no-synthetic-chat"))QTest::keyClick(window,key);
+        trace("typed-replacement"); QTRY_COMPARE(list->property("count").toInt(),0);QVERIFY(visibleItem("archiveEmptyStatus"));capture("empty");
         QCOMPARE(fixture.catalogGets,catalogs);QCOMPARE(fixture.usersGets,users);QCOMPARE(fixture.historyGets,history);QCOMPARE(fixture.restorePosts,0);
         QTest::keyClick(window,Qt::Key_Escape);QTRY_VERIFY(!visibleItem("archiveChatSearch"));openArchive(window);QVERIFY(visibleItem("archiveChatSearch")->property("text").toString().isEmpty());window->close();
     }
@@ -8429,6 +8444,99 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!controller.error().isEmpty());
         QVERIFY(!controller.busy());
         window->close();
+    }
+
+    void lastConversationRestoresInANewActualMainAfterSettingsReopen()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        int canonicalTopicLookups = 0;
+        QVector<QUrl> planningHistory;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto route = request.target.path();
+            if (route == "/api/workspace/v1/messenger/stream_topics/" + secondTopicId) {
+                ++canonicalTopicLookups;
+                auto topic = windowChannelTopic(secondTopicId, streamId, "Planning");
+                topic["is_default"] = false;
+                return {topic};
+            }
+            if (route.endsWith("/messages/") && request.method == "GET") {
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("topic_uuid") != secondTopicId) return {QJsonArray{}};
+                planningHistory.append(request.target);
+                auto row = message("Planning restored through the real message view.", messageId, secondTopicId);
+                row["author_uuid"] = channelPeer; row["is_own"] = false;
+                return {QJsonArray{row}};
+            }
+            if (route.endsWith("/streams/") && request.method == "GET") {
+                auto stream = windowChannel(streamId, "Product team");
+                stream["default_topic_uuid"] = topicId;
+                return {QJsonArray{stream}};
+            }
+            return fallback(request);
+        };
+        const auto owner = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
+            fixture.server.origin().toString(QUrl::FullyEncoded), projectId, userId}).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex());
+        for (int visit = 0; visit != 2; ++visit) {
+            NativePreferences preferences(path);
+            ApiClient api(nullptr, true);
+            Session session(&api);
+            NativeController controller(&api, &session);
+            QQmlApplicationEngine engine;
+            loadNativeUi(engine, &controller, &preferences);
+            QVERIFY(!engine.rootObjects().isEmpty());
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+            QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Saved conversation Main teardown did not settle", __FILE__, __LINE__);
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            auto *content = window->contentItem();
+            QVERIFY(controller.selectedStream().isEmpty());
+            QVERIFY(controller.selectedTopic().isEmpty());
+            controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+            QTRY_COMPARE(controller.projects().size(), 1);
+            controller.openProject(projectId);
+            if (visit == 0) {
+                QTRY_VERIFY(item(content, "stream-" + streamId));
+                QTRY_VERIFY(!controller.busy());
+                QVERIFY(controller.selectedStream().isEmpty());
+                QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+                QVERIFY(frame.isValid());
+                window->update(); QTRY_VERIFY(!frame.isEmpty());
+                click(window, item(content, "stream-" + streamId));
+                QTRY_COMPARE(controller.selectedStream(), streamId);
+                QTRY_VERIFY(item(content, "topic-" + secondTopicId));
+                frame.clear(); window->update(); QTRY_VERIFY(!frame.isEmpty());
+                click(window, item(content, "topic-" + secondTopicId));
+            }
+            QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), secondTopicId, 2000);
+            QCOMPARE(controller.selectedStream(), streamId);
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && !controller.topicResolving(), 2000);
+            QTRY_VERIFY_WITH_TIMEOUT(controller.topicsComplete(), 2000);
+            QTRY_VERIFY(visibleItem(content, "message-content-" + messageId));
+            QVERIFY(visibleItem(content, "message-content-" + messageId)->property("text").toString()
+                .contains("Planning restored through the real message view."));
+            QTRY_VERIFY(item(content, "messageComposer")->isEnabled());
+            QCOMPARE(preferences.loadLastConversation(owner), (QStringList{streamId, secondTopicId}));
+            const bool closed = closeIncubatedTestWindow(engine, window);
+            if (closed) close.dismiss();
+            QVERIFY(closed);
+        }
+        QCOMPARE(canonicalTopicLookups, 1); // Only the fresh Main needs canonical restoration.
+        QCOMPARE(planningHistory.size(), 2);
+        for (const auto &target : planningHistory) {
+            const QUrlQuery query(target);
+            QCOMPARE(query.queryItemValue("stream_uuid"), streamId);
+            QCOMPARE(query.queryItemValue("topic_uuid"), secondTopicId);
+        }
+        QCOMPARE(fixture.posts, 0);
+        QCOMPARE(fixture.memberPosts, 0);
     }
 
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls_data()

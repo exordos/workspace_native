@@ -1,0 +1,52 @@
+{
+  "version": "0.2.0",
+  "status": "LAST_CONVERSATION_LOCAL_PASS_REAL_EXECUTABLE_RESTART_AND_RELEASE_PENDING",
+  "sourceReferenceCommit": "95495b10b828f853c9e770b47216073eb973fa95",
+  "behavior": {
+    "owner": "Existing SHA256 of exact verified server/project/user tuple",
+    "storage": "Two UUIDs in existing private application preferences; no credentials or cache-schema change",
+    "debounceMilliseconds": 300,
+    "flush": "Owner switch, normal application quit and preference destruction",
+    "automaticRoute": "One attempt after authenticated authoritative catalog; existing canonical topic resolver handles moved placement",
+    "explicitNavigationWins": true,
+    "missingSavedStreamDoesNotSelectAnother": true
+  },
+  "local": {
+    "qtCasesPassed": {
+      "controllerWhole": 844,
+      "preferencesWhole": 22,
+      "localeWhole": 14,
+      "windowWholeObserved": 295,
+      "encryptedUiWhole": 142,
+      "sessionWhole": 28,
+      "sessionVaultWhole": 12,
+      "focusedActualMain": 5
+    },
+    "actualMainScenario": "Mouse-select Planning, close the native Main and reopen settings plus a new Main; automatic exact topic/messages/enabled composer; one canonical lookup and two scoped history queries",
+    "wholeWindowSeconds": 315.28,
+    "wholeEncryptedUiSeconds": 328.445,
+    "originalWholeUiTimeoutSeconds": 360,
+    "acceptedRunsRuntimeWarningsFailuresSkipsStderr": 0,
+    "sourceManifestSha256": "7920702c363adc38da9f6bc100192ee0ff21b85683094b3e11ac39007690d83e",
+    "rootReviewSha256": "07b6a28de5acffd1a29a4273742793dcf0aeb12f8baba0e257dac778b6579aa6",
+    "allGateProcessesAndPrivateXdgRemoved": true
+  },
+  "archiveSearchObservation": {
+    "firstWholeWindow": "294 passed, 1 failed: archiveMatchesPinnedGeometryAndVirtualSearch(en-light), expected empty list after replacement input",
+    "firstStdoutSha256": "dc89021ff6d4653c3097aa7ec4855569c4fbd7c7e0e8b46fc647aa9cf1ccf34e",
+    "diagnosticSingleRowQtPass": 3,
+    "diagnosticExactOrderedPrefixQtPass": 86,
+    "observedWholeWindowQtPass": 295,
+    "originalAssertionsAndTimeoutPreserved": true,
+    "productArchiveQmlUnchanged": true,
+    "causeEstablished": false,
+    "fixedArchiveClaim": false
+  },
+  "limits": [
+    "Main/settings reopen is within one synthetic test process, not an actual saved-account executable restart",
+    "Primary desktop OS credential configuration and real0.2.0 session persistence remain unaccepted",
+    "First intermittent archive-input failure remains retained without a proven cause",
+    "Public0.2.0 package, installed upgrade and live-account acceptance remain pending",
+    "Full functionality/pixel parity and other platforms remain open"
+  ]
+}

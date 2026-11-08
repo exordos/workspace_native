@@ -8,6 +8,7 @@
 #include <QDate>
 #include <QJsonObject>
 #include <QVariantList>
+#include <QStringList>
 #include <functional>
 
 class QWindow;
@@ -33,6 +34,7 @@ class NativePreferences final : public QObject {
 public:
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
+    ~NativePreferences() override;
     QString paletteId() const { return m_palette; }
     QString mode() const { return m_mode; }
     QString locale() const { return m_locale; }
@@ -51,6 +53,8 @@ public:
     // Explicit settings I/O actions; never called from a QML/read-only getter.
     bool loadOwnStatusAway(const QString &owner);
     void recordOwnStatusAway(const QString &owner, bool away);
+    QStringList loadLastConversation(const QString &owner);
+    void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
     void setPaletteId(const QString &palette);
     void setMode(const QString &mode);
     void setLocale(const QString &locale);
@@ -86,6 +90,7 @@ private:
     void persistReactionHistory();
     QJsonObject recentReactionUsage(const QJsonObject &days) const;
     void saveWindow();
+    void saveLastConversation();
     QSettings m_settings;
     QString m_owner;
     QString m_palette = QStringLiteral("blue-cold");
@@ -105,6 +110,9 @@ private:
     bool m_systemDark = false;
     QPointer<QWindow> m_window;
     QTimer m_windowSaveTimer;
+    QTimer m_conversationSaveTimer;
+    QString m_pendingConversationOwner;
+    QStringList m_pendingConversation;
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
 };

@@ -2301,8 +2301,72 @@ void NativeController::usePreferences(NativePreferences *preferences)
     if (!guard) return;
     m_statusPreferences = preferences;
     m_statusPreferenceOwner.clear();
+    m_conversationPreferenceOwner.clear();
+    cancelConversationRestore();
     prepareOwnStatusPreferences();
+    prepareConversationRestore();
+    if (!m_stream.isEmpty()) rememberConversation();
+    maybeRestoreConversation();
     emit stateChanged();
+}
+
+void NativeController::cancelConversationRestore()
+{
+    ++m_conversationRestoreTicket;
+    m_conversationRestore.clear();
+    m_conversationRestoreScheduled = false;
+}
+
+void NativeController::prepareConversationRestore()
+{
+    const auto owner = creationOwnerKey();
+    if (owner == m_conversationPreferenceOwner) return;
+    cancelConversationRestore();
+    m_conversationPreferenceOwner = owner;
+    if (m_statusPreferences && !owner.isEmpty() && m_stream.isEmpty() && m_topic.isEmpty())
+        m_conversationRestore = m_statusPreferences->loadLastConversation(owner);
+}
+
+void NativeController::rememberConversation()
+{
+    if (m_statusPreferences && authenticated())
+        m_statusPreferences->recordLastConversation(creationOwnerKey(), m_stream, m_topic);
+}
+
+void NativeController::maybeRestoreConversation()
+{
+    if (!m_statusPreferences || m_conversationRestore.size() != 2 || m_conversationRestoreScheduled
+        || !authenticated() || !m_catalogVerified || m_snapshotActive || m_syncBlocked || m_cacheForgettingAccount) return;
+    const auto ticket = m_conversationRestoreTicket;
+    const auto owner = creationOwnerKey();
+    const auto generation = m_api->generation(), catalog = m_catalog, selection = m_selection;
+    const QPointer<NativePreferences> preferences = m_statusPreferences;
+    m_conversationRestoreScheduled = true;
+    QTimer::singleShot(0, this, [this, ticket, owner, generation, catalog, selection, preferences] {
+        if (!preferences || ticket != m_conversationRestoreTicket || owner != creationOwnerKey()
+            || preferences != m_statusPreferences) return;
+        m_conversationRestoreScheduled = false;
+        if (generation != m_api->generation() || catalog != m_catalog || selection != m_selection) {
+            maybeRestoreConversation();
+            return;
+        }
+        if (!authenticated() || !m_catalogVerified || m_snapshotActive || m_syncBlocked || m_cacheForgettingAccount) return;
+        const auto route = m_conversationRestore;
+        cancelConversationRestore(); // One automatic attempt; explicit navigation wins thereafter.
+        if (route.size() != 2 || route[0].isEmpty()) return;
+        if (!route[1].isEmpty()) {
+            openTopic(route[1], route[0]); // Canonical resolver owns moved/merged placement.
+            return;
+        }
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &value) {
+            return value.uuid == route[0];
+        });
+        if (stream != m_streams.cend()) {
+            const auto id = stream->uuid;
+            selectStream(id);
+        }
+        else report(tr("The saved conversation is no longer available."));
+    });
 }
 
 void NativeController::prepareOwnStatusPreferences()
@@ -3698,6 +3762,7 @@ void NativeController::notifyTrustChanged()
     if (!guard) return;
     emit stateChanged();
     if (guard && m_cacheProtection && !m_messages.isEmpty()) emit messagesChanged();
+    if (guard) maybeRestoreConversation();
 }
 
 bool NativeController::cacheStale() const
@@ -4293,6 +4358,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
             if (it->owner != ownerKey()) it = m_reactionIntents.erase(it); else ++it;
         resetReadState();
         ++m_selection;
+        prepareConversationRestore();
         m_loading = false;
         m_sending = false;
         m_topicChanging = false;
@@ -4635,6 +4701,8 @@ void NativeController::reset()
     interruptOwnStatusUpdate();
     if (!guard) return;
     m_statusPreferenceOwner.clear(); m_statusManualAway = false;
+    m_conversationPreferenceOwner.clear();
+    cancelConversationRestore();
     cancelFileTransfers();
     if (!guard) return;
     closeCache();
@@ -6337,6 +6405,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     if (!id.isEmpty() && std::none_of(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; }))
         return;
+    cancelConversationRestore();
     const QPointer<NativeController> guard(this);
     const auto previousOpening = m_nextTopicOpening;
     if (openingTicket) {
@@ -6362,6 +6431,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     m_stream = id;
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
+    rememberConversation();
     m_topics = initialTopic ? QVector<Topic>{*initialTopic}
         : verifiedTopics ? *verifiedTopics : QVector<Topic>{};
     m_topicsVerified = verifiedTopics != nullptr && !initialTopic;
@@ -6496,6 +6566,7 @@ void NativeController::openTopic(const QString &id, const QString &)
         report(tr("Enter a valid topic identifier."));
         return;
     }
+    cancelConversationRestore();
     const auto known = std::find_if(m_topics.cbegin(), m_topics.cend(), [&](const Topic &topic) {
         return topic.uuid == target && topic.stream == m_stream;
     });
@@ -6626,6 +6697,7 @@ void NativeController::selectTopic(const QString &id)
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;
+    cancelConversationRestore();
     const QPointer<NativeController> guard(this);
     const auto previousOpening = m_nextTopicOpening;
     interruptTopicOpening();
@@ -6641,6 +6713,7 @@ void NativeController::selectTopic(const QString &id)
     ++m_topicMutation;
     ++m_selection;
     m_topic = id;
+    rememberConversation();
     m_historyVerified = false;
     m_messages.clear();
     pruneMessageFields();

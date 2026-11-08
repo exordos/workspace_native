@@ -62,6 +62,10 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     m_windowSaveTimer.setInterval(350);
     connect(&m_windowSaveTimer, &QTimer::timeout, this, &NativePreferences::saveWindow);
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &NativePreferences::saveWindow);
+    m_conversationSaveTimer.setSingleShot(true);
+    m_conversationSaveTimer.setInterval(300); // Source last-messenger-route debounce.
+    connect(&m_conversationSaveTimer, &QTimer::timeout, this, &NativePreferences::saveLastConversation);
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &NativePreferences::saveLastConversation);
     if (qobject_cast<QGuiApplication *>(QCoreApplication::instance())) {
         auto *style = QGuiApplication::styleHints();
         m_systemDark = style->colorScheme() == Qt::ColorScheme::Dark;
@@ -83,6 +87,45 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
         if (storedLimit >= 1 && storedLimit <= 1000) m_cacheLimitGb = storedLimit;
     }
     loadAppearance();
+}
+
+NativePreferences::~NativePreferences()
+{
+    saveLastConversation();
+}
+
+QStringList NativePreferences::loadLastConversation(const QString &owner)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()) return {};
+    if (owner == m_pendingConversationOwner) return m_pendingConversation;
+    const auto route = m_settings.value("navigation/owners/" + owner + "/lastConversation").toStringList();
+    if (route.size() != 2 || (!route[0].isEmpty() && !isUuid(route[0]))
+        || (!route[1].isEmpty() && (!isUuid(route[1]) || route[0].isEmpty()))) return {};
+    return route;
+}
+
+void NativePreferences::recordLastConversation(const QString &owner, const QString &stream, const QString &topic)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()
+        || (!stream.isEmpty() && !isUuid(stream)) || (!topic.isEmpty() && (!isUuid(topic) || stream.isEmpty()))) return;
+    const QStringList route{stream.toLower(), topic.toLower()};
+    if (loadLastConversation(owner) == route) return;
+    if (!m_pendingConversationOwner.isEmpty() && owner != m_pendingConversationOwner) saveLastConversation();
+    m_pendingConversationOwner = owner;
+    m_pendingConversation = route;
+    m_conversationSaveTimer.start();
+}
+
+void NativePreferences::saveLastConversation()
+{
+    if (m_pendingConversationOwner.isEmpty()) return;
+    m_conversationSaveTimer.stop();
+    m_settings.setValue("navigation/owners/" + m_pendingConversationOwner + "/lastConversation", m_pendingConversation);
+    m_settings.sync();
+    m_pendingConversationOwner.clear();
+    m_pendingConversation.clear();
 }
 
 bool NativePreferences::dark() const

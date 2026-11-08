@@ -782,9 +782,127 @@ public:
     ~OwnStatusFixture() { if (release) release(); }
 };
 
+static QString conversationPreferenceOwner(const QUrl &origin, const QString &user = userId,
+                                           const QString &project = projectId)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
+        origin.toString(QUrl::FullyEncoded), project, user}).toJson(QJsonDocument::Compact),
+        QCryptographicHash::Sha256).toHex());
+}
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void lastConversationStartupUsesCanonicalOwnedRoute_data()
+    {
+        QTest::addColumn<QString>("mode");
+        for (const auto *mode : {"stream", "topic", "moved-topic"}) QTest::newRow(mode) << QString(mode);
+    }
+    void lastConversationStartupUsesCanonicalOwnedRoute()
+    {
+        QFETCH(QString, mode);
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        TopicOpeningFixture test;
+        const auto owner = conversationPreferenceOwner(test.fixture.server.origin());
+        if (mode != "moved-topic") test.resolved["stream_uuid"] = streamId;
+        else test.resolved["uuid"] = openingCanonicalId;
+        {
+            NativePreferences initial(path);
+            initial.recordLastConversation(owner, streamId, mode == "stream" ? QString{} : openingRequestedId);
+        }
+        NativePreferences preferences(path);
+        auto &controller = test.fixture.controller;
+        controller.usePreferences(&preferences);
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        const auto expectedStream = mode == "moved-topic" ? openingStreamId : streamId;
+        const auto expectedTopic = mode == "stream" ? QString{} : test.resolved.value("uuid").toString();
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedStream(), expectedStream, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), expectedTopic, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && !controller.topicResolving(), 2000);
+        QVERIFY2(controller.error().isEmpty(), qPrintable(controller.error()));
+        QCOMPARE(test.lookups, mode == "stream" ? 0 : 1);
+        QCOMPARE(test.mutations, 0);
+        QCOMPARE(preferences.loadLastConversation(owner), (QStringList{expectedStream, expectedTopic}));
+        for (const auto &target : test.historyTargets) {
+            const QUrlQuery query(target);
+            QCOMPARE(query.queryItemValue("stream_uuid"), expectedStream);
+            QCOMPARE(query.queryItemValue("topic_uuid"), expectedTopic);
+        }
+    }
+
+    void manualNavigationWinsBeforeAutomaticConversationDispatch_data()
+    {
+        QTest::addColumn<bool>("root");
+        QTest::newRow("manual-stream") << false;
+        QTest::newRow("manual-messenger-root") << true;
+    }
+    void manualNavigationWinsBeforeAutomaticConversationDispatch()
+    {
+        QFETCH(bool, root);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test;
+        const auto owner = conversationPreferenceOwner(test.fixture.server.origin());
+        preferences.recordLastConversation(owner, streamId, openingRequestedId);
+        auto &controller = test.fixture.controller;
+        controller.usePreferences(&preferences);
+        bool chosen = false;
+        connect(&controller, &NativeController::streamsChanged, &controller, [&] {
+            if (chosen || !controller.authenticated() || controller.streams().isEmpty()) return;
+            chosen = true;
+            controller.selectStream(root ? QString{} : streamId);
+        });
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_VERIFY(chosen);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 2000);
+        QCOMPARE(controller.selectedStream(), root ? QString{} : streamId);
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(test.lookups, 0);
+        QCOMPARE(test.mutations, 0);
+        QCOMPARE(preferences.loadLastConversation(owner), (QStringList{root ? QString{} : streamId, QString{}}));
+    }
+
+    void lastConversationDoesNotCrossTheVerifiedOwner()
+    {
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test;
+        preferences.recordLastConversation(conversationPreferenceOwner(test.fixture.server.origin(), returnedId), streamId, openingRequestedId);
+        auto &controller = test.fixture.controller;
+        controller.usePreferences(&preferences);
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(controller.selectedStream().isEmpty());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(test.lookups, 0);
+        QCOMPARE(test.mutations, 0);
+    }
+
+    void unavailableSavedStreamDoesNotChooseAnotherChat()
+    {
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test;
+        preferences.recordLastConversation(conversationPreferenceOwner(test.fixture.server.origin()), openingStreamId, {});
+        auto &controller = test.fixture.controller;
+        controller.usePreferences(&preferences);
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_VERIFY(!controller.error().isEmpty());
+        QVERIFY(controller.selectedStream().isEmpty());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(test.lookups, 0);
+        QCOMPARE(test.mutations, 0);
+    }
     void usersHttpNamesMatchSourceAndPreserveLegacyAbsentFields_data()
     {
         QTest::addColumn<QString>("scenario");

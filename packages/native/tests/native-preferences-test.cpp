@@ -22,6 +22,64 @@ private slots:
     void init() { originalScheme = QGuiApplication::styleHints()->colorScheme(); }
     void cleanup() { QGuiApplication::styleHints()->setColorScheme(originalScheme); }
 
+    void lastConversationPersistsAcrossRestartWithExactOwnerIsolation()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        const QString ownerA(64, u'a'), ownerB(64, u'b');
+        const QString stream = "33333333-3333-4333-8333-333333333333";
+        const QString topic = "44444444-4444-4444-8444-444444444444";
+        {
+            NativePreferences preferences(path);
+            preferences.recordLastConversation(ownerA, stream, topic);
+            QCOMPARE(preferences.loadLastConversation(ownerA), (QStringList{stream, topic}));
+            QVERIFY(preferences.loadLastConversation(ownerB).isEmpty());
+            QSettings before(path, QSettings::IniFormat);
+            QVERIFY(!before.contains("navigation/owners/" + ownerA + "/lastConversation"));
+            preferences.recordLastConversation(ownerB, stream, {});
+            QCOMPARE(preferences.loadLastConversation(ownerB), (QStringList{stream, QString{}}));
+        } // Flush the last pending route on normal shutdown, before its debounce expires.
+        NativePreferences reopened(path);
+        QCOMPARE(reopened.loadLastConversation(ownerA), (QStringList{stream, topic}));
+        QCOMPARE(reopened.loadLastConversation(ownerB), (QStringList{stream, QString{}}));
+        reopened.recordLastConversation(ownerA, {}, {});
+        QCOMPARE(reopened.loadLastConversation(ownerA), (QStringList{QString{}, QString{}}));
+        QCOMPARE(reopened.loadLastConversation(ownerB), (QStringList{stream, QString{}}));
+    }
+
+    void lastConversationCoalescesNavigationBeforeWritingTheFinalRoute()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        const QString owner(64, u'a'), stream = "33333333-3333-4333-8333-333333333333";
+        const QString first = "44444444-4444-4444-8444-444444444444", last = "55555555-5555-4555-8555-555555555555";
+        NativePreferences preferences(path);
+        preferences.recordLastConversation(owner, stream, first);
+        preferences.recordLastConversation(owner, stream, last);
+        QSettings disk(path, QSettings::IniFormat);
+        const auto key = "navigation/owners/" + owner + "/lastConversation";
+        QVERIFY(!disk.contains(key));
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { disk.sync(); return disk.value(key).toStringList() == QStringList{stream, last}; })(), 1500);
+        QCOMPARE(preferences.loadLastConversation(owner), (QStringList{stream, last}));
+    }
+
+    void malformedLastConversationAndOwnerCannotBecomeARoute()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        const QString owner(64, u'a'), stream = "33333333-3333-4333-8333-333333333333";
+        for (const auto &route : {QStringList{}, QStringList{stream}, QStringList{stream, "bad-topic"},
+                 QStringList{"", stream}, QStringList{stream, "", "extra"}}) {
+            { QSettings disk(path, QSettings::IniFormat); disk.setValue("navigation/owners/" + owner + "/lastConversation", route); disk.sync(); }
+            NativePreferences preferences(path);
+            QVERIFY(preferences.loadLastConversation(owner).isEmpty());
+            preferences.recordLastConversation("../owner", stream, {});
+            preferences.recordLastConversation(owner, {}, stream);
+            QVERIFY(preferences.loadLastConversation("../owner").isEmpty());
+            QVERIFY(preferences.loadLastConversation(owner).isEmpty());
+        }
+    }
+
     void defaultsFollowTheSystemAndToggleUsesResolvedAppearance()
     {
         QTemporaryDir directory;

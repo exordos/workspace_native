@@ -811,9 +811,43 @@ processes and private XDG state were removed.
 
 These checks use synthetic credentials and a memory store. The executable's
 startup hook compiled, but a real saved-account process restart on the desktop is
-not yet accepted. Last-conversation restoration, complete 0.2.0 window/encrypted
-UI checks, packaging, installed update and live-account acceptance remain in
+not yet accepted. Last-conversation restoration and complete local UI checks are
+recorded below; packaging, installed update and live-account acceptance remain in
 progress. See [startup checks](provenance/session-startup-checks.json).
+
+## 0.2.0 in progress: last-conversation restoration
+
+The application remembers the selected stream/topic in its existing preferences,
+scoped by the verified server, project and user. A 300 ms debounce coalesces route
+changes; owner replacement, normal quit and preference destruction flush pending
+work. No credential format, cache schema or network service was added.
+
+After authentication and an authoritative catalog, one automatic attempt opens
+the saved route through the existing canonical topic resolver. A moved topic uses
+its actual server placement. Explicit navigation, owner/API lifetime changes and
+forgetting guards fence pending work; an unavailable saved stream does not pick
+another chat. The normal archive-opening behavior remains unchanged.
+
+The complete Controller844, Preferences22 and locale14 suites passed. The actual
+Main check mouse-selects Planning, closes the interface and constructs a new Main
+with reopened settings; the selected topic, message body and enabled composer
+return automatically. It observes one canonical lookup and two exact history
+queries, with no stream/member writes. Focused Main5 and complete Session28/Vault12
+also passed. This Main/settings reopen occurs within one synthetic test process.
+
+The first whole Window run retained 294 passes and one failure in archive search
+after tab switching. Additive focus/text/selection/rendered-frame diagnostics
+preserve every existing assertion and deadline. The single row and exact ordered
+prefix passed 3 and 86 Qt results; the observed complete Window295 and encrypted
+UI142 suites then passed in 315.28 s and 328.445 s with their original 360 s limits,
+without runtime warnings, stderr, failures or skips. The first failure is retained;
+its cause is not established and no archive runtime fix is claimed. All 55 product
+inputs match the accepted controller run; the subsequent change adds Main coverage
+and test observations. Owned gate processes and private XDG state were removed.
+
+A real executable saved-account restart, primary desktop credential persistence,
+public package/installed update and live0.2.0 acceptance remain open. Complete
+functional/pixel parity is not established. See [last-conversation checks](provenance/last-conversation-checks.json).
 
 ## Version policy check
 
