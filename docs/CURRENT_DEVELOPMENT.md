@@ -502,3 +502,29 @@ The next delivery priority is everyday usage: composer emoji selection, then
 inline received-image previews, using the existing draft/send and bounded file
 transport. Smaller tested releases take precedence over licenses-page or
 secondary presentation work. Full Linux parity remains the overall goal.
+
+
+The composer Emoji action now reuses the existing native picker/catalog and
+appends selected Unicode to the current draft end, preserving a selected prefix.
+It returns focus and the caret to the text area and stays open for another choice.
+Only an explicit normal send writes a message; its matching confirmation closes
+the popup. Current owner/API generation, route and compose permissions fence
+selection; harmless Users updates retain the current draft and open panel.
+
+The unchanged released button first failed two actual missing-capability cases.
+Earlier test compilation and catalog-bootstrap mistakes are retained separately.
+A new lifetime check then exposed a real allowed-binding/close invalidation loop.
+The same test sources pass after invalidation moved into the existing imperative
+controller-state callback; no warning or wait was suppressed. Actual Main5,
+independent Source encrypted-peer3, old composer controls13, Locale14, Updater49
+and About policy10 passed. The full current Window278 passed in 299.964 s without
+runtime warnings, stderr or skips. C++ product, crypto, existing picker callers
+and prior translation records are unchanged.
+
+Four actual Source component captures and four Qt Main captures exercise initial
+and searched picker states in both themes/locales. Comparison48 sends four raw
+frames with verified attachment downloads and message read-back. Source includes
+its Sticker tab; this small native slice supports Unicode emoji only. Wrapper,
+outside-pointer consumption, full glyph/shell and live-account acceptance remain
+open. Earlier intermittent failures retain unknown causes despite current278pass.
+See [composer emoji checks](provenance/composer-emoji-checks.json).

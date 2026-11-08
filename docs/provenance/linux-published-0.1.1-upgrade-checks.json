@@ -26,11 +26,6 @@
     "knownIntermittentPublicMetadataCheckCauseResolved": false,
     "earlierInterruptedRunsRetained": true,
     "privateHomeRemoved": true,
-    "pidsAbsent": {
-      "2719426": false,
-      "2719491": false,
-      "2721384": false
-    },
     "rawHashes": {
       "root-action-002.json": "f50f05177a91f7c2c1c9d98a40decdbeaf835d602ee64e5993c7418f271ac357",
       "root-action-012.json": "a0a496fa869bf8afb2c6bb4cec4b9e47ecff5f3e21d369fafb676e09700d6462",
@@ -60,10 +55,15 @@
       "RESULT.json": "d5e0cc048ccff0324cbeebbb2e68e4587cd9519ed70a9386621fe7d4580b3241",
       "github-old-release.json": "9e43bd652effb388b32ff4f05d466d5a3bab9136fefa48e54ef353464f7f8cfe",
       "downloaded-process.json": "cf5cfa3135cb625488e3279aeb933565ab3a22e478e8cee08407f88686fb8c4b"
+    },
+    "pidExistsAfterCleanup": {
+      "2719426": false,
+      "2719491": false,
+      "2721384": false
     }
   },
   "rawResultSha256": "d5e0cc048ccff0324cbeebbb2e68e4587cd9519ed70a9386621fe7d4580b3241",
-  "rootReviewSha256": "8e982d723ae31b57d209e33f06476dda1ee566d13c67e14717950ea6421e597f",
+  "rootReviewSha256": "d15b673b8e65ed45087d52252eafbc7eb55ab777985d7b124265fb1d225a354f",
   "limits": [
     "One synthetic owned schema4 History row, not authenticated account history or secure credential preservation",
     "Twelve actual Root CUA observations/clicks; screenshots emitted but no raw PNG files saved for this run",
@@ -71,5 +71,64 @@
     "Earlier interrupted runs retained; no cause assigned to external SIGTERM",
     "Intermittent metadata-check errors remain unexplained; successful run is not a network reliability fix",
     "Complete Linux feature/pixel/live-account acceptance and other operating systems remain open"
-  ]
+  ],
+  "laterRepeatedMetadataCheckObservation": {
+    "rootReviewSha256": "e32e43782ceabf9176310c01d4d56061eb84948b78e7f5e214d6d156d04c8510",
+    "facts": {
+      "actualDownloadedReleaseRuntimeVerified": true,
+      "defaultNativeUpdaterThreeChecks": [
+        {
+          "check": 1,
+          "http": 200,
+          "error": "NoError",
+          "h2": true,
+          "ms": 351
+        },
+        {
+          "check": 2,
+          "http": 200,
+          "error": "NoError",
+          "h2": true,
+          "ms": 47
+        },
+        {
+          "check": 3,
+          "http": 200,
+          "error": "NoError",
+          "h2": true,
+          "ms": 47
+        }
+      ],
+      "mappedFiles": [
+        {
+          "path": "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/release-0.1.1-unpacked/workspace-native-0.1.1-linux-x86_64/lib/libQt6Core.so.6.10.2",
+          "sha256": "37f096cc0c5f9a1a90ff17885a16c8387cc386908be4cf893fe47cf1ebf2e639"
+        },
+        {
+          "path": "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/release-0.1.1-unpacked/workspace-native-0.1.1-linux-x86_64/lib/libQt6Network.so.6.10.2",
+          "sha256": "8f6bb71f8f118ae0ce3f01d0716af2b13c23a8e6dbd60ff8b5aae6cd7ee41c00"
+        },
+        {
+          "path": "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/release-0.1.1-unpacked/workspace-native-0.1.1-linux-x86_64/lib/libcrypto.so.3",
+          "sha256": "06a35b49eaec2c3666e493848f250ffdb9b8544da738e02e1f746b066fbb0c06"
+        },
+        {
+          "path": "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/release-0.1.1-unpacked/workspace-native-0.1.1-linux-x86_64/lib/libssl.so.3",
+          "sha256": "e7991405be03278ea73aab661406c747053c53d8ebdb3315a35a611229021984"
+        },
+        {
+          "path": "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/release-0.1.1-unpacked/workspace-native-0.1.1-linux-x86_64/lib/x86_64-linux-gnu/qt6/plugins/tls/libqopensslbackend.so",
+          "sha256": "b9b29913f6f2fa5a4980d5800221f76dd2564bf66d65be4be97cfb079374287b"
+        }
+      ],
+      "sameUpdaterAndNetworkManager": true,
+      "productNetworkPolicyChanged": false,
+      "earlierErrorCauseResolved": false,
+      "notReliabilityFix": true,
+      "mappingRegressionAndFirstUnmatchedRunRetained": true,
+      "cleanupVerified": true,
+      "rawSha256": "d5f2a6c279894e684c026c465f6d7e584c18325b0e39d90652f6ce0d778c7f50"
+    },
+    "limit": "These successes do not explain or repair the earlier intermittent checks."
+  }
 }

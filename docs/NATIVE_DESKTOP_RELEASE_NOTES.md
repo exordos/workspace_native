@@ -1,35 +1,29 @@
-# Workspace Native 0.1.1 — Linux development preview
+# Workspace Native 0.1.2 — Linux development preview
 
-This is an early Qt native development build. Complete desktop feature and
-pixel parity is still in progress. Linux is the current priority.
+This update enables Unicode emoji selection in the message composer, including
+search and repeated choices. A selection appends to the draft end, restores the
+caret and focus, and keeps the panel open. Ordinary and encrypted text use their
+existing send paths. Changing the conversation or session closes the old panel.
+Sticker selection and the complete Source popup presentation remain unfinished.
 
-The downloadable archive contains the Qt runtime and a per-user installer.
-Extract it and run `bash install.sh`; start Workspace Native Preview from the
-application menu or `~/.local/bin/workspace-native`. No administrator privileges
-are required. This initial build targets Ubuntu 26.04 x86_64 / glibc 2.43 or newer;
-other distributions and operating systems have not yet been accepted.
+The complete current window suite passed 278 cases. Focused checks include real
+mouse/keyboard input, an independent Source encrypted-message reader and the
+existing send/locked-key controls. These use synthetic local services; complete
+live-account and desktop feature/pixel acceptance remain in progress.
 
-This update adds the Source-shaped **App version** side panel, available from
-the account menu and the new toolbar update indicator. A found update downloads
-automatically; **Install and restart** is an explicit action. Closing the panel
-keeps the transfer running, and reopening does not repeat requests or restart.
-The panel includes English/Russian text and light/dark themes. The licenses
-page and post-restart success notice remain unfinished.
+The 0.1.1 updater automatically downloads a found update and offers an explicit
+**Install and restart** action. Acceptance of the actual public 0.1.1 → 0.1.2
+transition remains pending until after publication. The earlier public 0.1.0 → 0.1.1 upgrade passed on
+the current Ubuntu/Wayland host, including one preserved synthetic cache row.
+Intermittent public metadata-check errors remain unexplained; no network fix
+is claimed.
 
-The tray also includes **Check for updates**. The actual published 0.1.0 → 0.1.1
-download, installation and restart passed on the current Ubuntu/Wayland host,
-including a single-instance check and preservation of one synthetic cache row.
-Authenticated account history and secure-store preservation remain unaccepted.
-Intermittent public update-check errors are still under investigation.
-Binary versions are installed side
-by side; settings, secure-store credentials and disk cache have separate paths.
-The disk cache defaults to a configurable decimal 10 GB.
+Download and extract the archive, then run `bash install.sh`. The per-user
+installation includes Qt and needs no administrator privileges. This preview
+targets Ubuntu 26.04 x86_64 / glibc 2.43 or newer. Other distributions and
+operating systems remain unaccepted. The disk cache defaults to a configurable
+decimal 10 GB. Keep an existing client available for unfinished workflows.
 
-The native client includes ordinary/encrypted conversation foundations, channel
-and topic navigation, composer and attachments, reactions, cache, profile/status
-presentation and tray behavior. Several desktop sections and live acceptance
-remain unfinished; keep an existing client available for those workflows.
-
-Known UI checks still under investigation: intermittent channel-member selection
-and archive-dialog closing failures. These are retained as open failures; this
-preview does not establish complete Linux or live-account acceptance.
+Historical intermittent channel-member selection and archive-dialog checks
+remain under investigation; the current passing run does not establish their
+causes or resolution.

@@ -852,6 +852,59 @@ public:
     ~WindowOwnStatusFixture(){if(release)release();}
 };
 
+// Additive test helpers only; the old disabled control is found on unchanged Main.
+static QQuickItem *composerEmojiTrigger(QQuickItem *root)
+{
+    if (!root) return nullptr;
+    if (root->isVisible() && root->property("asset").toString()=="composer-emoji.svg") return root;
+    for (auto *child:root->childItems()) if(auto *found=composerEmojiTrigger(child)) return found;
+    return nullptr;
+}
+static QQuickItem *composerEmojiContent(QQuickWindow *window)
+{
+    auto *popup=window->findChild<QObject *>("composerEmojiPicker");
+    return popup&&popup->property("visible").toBool()?popup->property("contentItem").value<QQuickItem *>():nullptr;
+}
+
+static bool composerEmojiChoiceReady(QQuickWindow *window,QQuickItem *picker)
+{
+    auto *choice=picker?item(picker,"emoji-choice-grinning"):nullptr;
+    auto *grid=picker?item(picker,"reactionGrid"):nullptr;
+    return choice&&grid&&choice->isVisible()&&choice->isEnabled()&&choice->width()>0&&choice->height()>0
+        &&QRectF(QPointF{},grid->size()).contains(QRectF(choice->mapToItem(grid,QPointF{}),choice->size()))
+        &&QRectF(QPointF{},QSizeF(window->size())).contains(choice->mapToScene(QPointF(choice->width()/2,choice->height()/2)));
+}
+static void captureComposerEmojiFrame(QQuickWindow *window,const QString &locale,const QString &mode,const QString &state)
+{
+    const auto directory=qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY");if(directory.isEmpty())return;
+    QSignalSpy frame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!frame.isEmpty());
+    const auto base=QDir(directory).filePath("native-composer-emoji-"+locale+"-"+mode+"-"+state);
+    QVERIFY(window->grabWindow().save(base+".png"));
+    QJsonObject data{{"synthetic",true},{"fullShellParity",false},{"liveAccountAcceptance",false},
+        {"locale",locale},{"mode",mode},{"state",state},{"dpr",window->devicePixelRatio()},
+        {"width",window->width()},{"height",window->height()},
+        {"graphicsApi",int(window->rendererInterface()->graphicsApi())}};
+    if(auto *popup=window->findChild<QObject *>("composerEmojiPicker"))
+        data["composerEmojiPicker"]=QJsonObject{{"x",popup->property("x").toDouble()},{"y",popup->property("y").toDouble()},
+            {"width",popup->property("width").toDouble()},{"height",popup->property("height").toDouble()}};
+    for(const auto &name:QStringList{"reactionSearch","reactionGrid","messageComposer"})
+        if(auto *found=visibleItem(name)){const auto at=found->mapToScene(QPointF{});data[name]=QJsonObject{{"x",at.x()},{"y",at.y()},{"width",found->width()},{"height",found->height()}};}
+    QFile output(base+".json");QVERIFY(output.open(QIODevice::WriteOnly));output.write(QJsonDocument(data).toJson());
+}
+
+static bool startComposerEmojiFixture(WindowChannelFixture &fixture,NativeController &controller,Session &session)
+{
+    session.login(fixture.server.origin(),"synthetic-composer","synthetic-password");
+    if(!QTest::qWaitFor([&]{return session.projects().size()==1;},2000))return false;
+    session.selectProject(projectId);
+    if(!QTest::qWaitFor([&]{return session.ready()&&!controller.busy()&&!controller.streams().isEmpty();},2000))return false;
+    controller.setRealtimeMode(true);
+    controller.selectStream(streamId);
+    if(!QTest::qWaitFor([&]{return !controller.busy()&&controller.topics().size()==3;},2000))return false;
+    controller.selectTopic(topicId);
+    return QTest::qWaitFor([&]{return !controller.busy()&&controller.hasConversation();},2000);
+}
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -2746,6 +2799,144 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::failOnWarning(QRegularExpression(".*items in the process of being created at engine destruction.*"));
         QTest::failOnWarning(QRegularExpression(".*(?:[Ff]ailed.*shader|shader.*[Ff]ailed|ShaderEffect.*(?:unsupported|not supported)).*"));
         QTest::failOnWarning(QRegularExpression(".*(?:Cannot open|Error decoding|Cannot load).*qrc:/workspace/.*"));
+    }
+
+    void composerEmojiAppendsUnicodeAndSendsFromTheActualMain_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light")<<QString("en")<<QString("light");
+        QTest::newRow("ru-dark")<<QString("ru")<<QString("dark");
+    }
+    void composerEmojiAppendsUnicodeAndSendsFromTheActualMain()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);
+        WindowChannelFixture fixture;fixture.sourceScene=true;
+        QJsonObject posted,saved;int posts=0,confirmations=0;
+        const auto fallback=fixture.server.handler;
+        fixture.server.handler=[&,fallback](const Request &request)->Response {
+            const auto path=request.target.path();
+            if(request.method=="POST"&&path=="/api/workspace/v1/messenger/messages/") {
+                ++posts;posted=request.body;
+                const auto id=QUuid::createUuidV5(QUuid(topicId),posted.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved=message(posted.value("payload").toObject().value("content").toString(),id);
+                saved["user_uuid"]=userId;saved["updated_at"]=saved.value("created_at");return {saved,201};
+            }
+            if(request.method=="GET"&&!saved.isEmpty()&&path=="/api/workspace/v1/messenger/messages/"+saved.value("uuid").toString()) {
+                ++confirmations;return {saved};
+            }
+            if(request.method=="GET"&&path=="/api/workspace/v1/messenger/messages/")return {QJsonArray{}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("composer-emoji.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Composer emoji teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture,controller,session));
+        preferences.setLocale(locale);preferences.setMode(mode);
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        auto *composer=item(window->contentItem(),"messageComposer");QVERIFY(composer&&composer->isEnabled());
+        QVERIFY(!controller.reactionChoices().isEmpty());QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        click(window,composer);for(const auto key:QByteArray("Draft "))QTest::keyClick(window,key);
+        QTRY_COMPARE(controller.draft(),QString("Draft "));QVERIFY(controller.canSend());
+        // Actual selection is deliberately not replaced: pinned Source appends.
+        QTest::keyClick(window,Qt::Key_Home);QTest::keyClick(window,Qt::Key_Right,Qt::ShiftModifier);
+        QCOMPARE(composer->property("selectedText").toString(),QString("D"));
+        auto *trigger=composerEmojiTrigger(window->contentItem());QVERIFY(trigger);
+        QCOMPARE(posts,0);QCOMPARE(fixture.memberPosts,0);
+        // First intended capability RED on real unchanged product: disabled action.
+        QVERIFY(trigger->isEnabled());click(window,trigger);
+        QTRY_VERIFY(composerEmojiContent(window));
+        QPointer<QQuickItem> picker=composerEmojiContent(window);QVERIFY(picker);
+        auto *search=item(picker.data(),"reactionSearch");QVERIFY(search);
+        captureComposerEmojiFrame(window,locale,mode,"initial");
+        click(window,search);for(const auto key:QByteArray("grinning"))QTest::keyClick(window,key);
+        QTRY_VERIFY(composerEmojiChoiceReady(window,picker.data()));
+        captureComposerEmojiFrame(window,locale,mode,"search");
+        click(window,item(picker.data(),"emoji-choice-grinning"));
+        const QString once=QString::fromUtf8("Draft 😀"),twice=QString::fromUtf8("Draft 😀😀");
+        QTRY_COMPARE(controller.draft(),once);QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("cursorPosition").toInt(),once.size());
+        QCOMPARE(composer->property("selectionStart").toInt(),composer->property("selectionEnd").toInt());
+        QVERIFY(picker&&picker->isVisible());QCOMPARE(posts,0);
+        QTRY_VERIFY(composerEmojiChoiceReady(window,picker.data()));
+        click(window,item(picker.data(),"emoji-choice-grinning"));
+        QTRY_COMPARE(controller.draft(),twice);QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("cursorPosition").toInt(),twice.size());QVERIFY(picker&&picker->isVisible());
+        QTest::keyClick(window,Qt::Key_Period);QTRY_COMPARE(controller.draft(),twice+".");QCOMPARE(posts,0);
+        // Keep the popup open: a real Return from the refocused composer sends
+        // and only the matching successful confirmation closes this picker.
+        QSignalSpy sent(&controller,&NativeController::messageSent);QTest::keyClick(window,Qt::Key_Return);
+        QTRY_COMPARE(posts,1);QTRY_COMPARE(confirmations,1);QTRY_COMPARE(sent.size(),1);
+        QTRY_VERIFY(!composerEmojiContent(window));
+        QCOMPARE(posted.value("stream_uuid").toString(),streamId);QCOMPARE(posted.value("topic_uuid").toString(),topicId);
+        QCOMPARE(posted.value("payload").toObject(),(QJsonObject{{"kind","markdown"},{"content",twice+"."}}));
+        const auto canonical=QUuid::createUuidV5(QUuid(topicId),posted.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(saved.value("uuid").toString(),canonical);QCOMPARE(sent.first().at(0).toString(),canonical);
+        QTRY_COMPARE(controller.draft(),QString{});QTRY_VERIFY(item(window->contentItem(),"message-content-"+canonical));
+        QVERIFY(item(window->contentItem(),"message-content-"+canonical)->property("text").toString().contains(twice));
+        QCOMPARE(posts,1);QCOMPARE(fixture.memberPosts,0);
+        for(const auto &request:fixture.server.requests)
+            if(request.method!="GET")QVERIFY(!request.target.path().contains("/reactions")&&!request.target.path().contains("/presence/")&&!request.target.path().contains("/files/"));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+    void composerEmojiKeepsHarmlessUsersButClosesOnRealRouteAndApiLifetime()
+    {
+        WindowChannelFixture fixture;fixture.sourceScene=true;int tokenSerial=0;
+        const auto fallback=fixture.server.handler;
+        fixture.server.handler=[&,fallback](const Request &request)->Response {
+            auto response=fallback(request);
+            if(request.target.path().endsWith("/actions/get_token/invoke")&&request.body.value("grant_type")=="refresh_token") {
+                auto token=response.data.toObject();token["access_token"]=QString("synthetic-composer-token-%1").arg(++tokenSerial);response.data=token;
+            }
+            if(request.method=="GET"&&request.target.path()=="/api/workspace/v1/messenger/messages/")response.data=QJsonArray{};
+            return response;
+        };
+        QTemporaryDir directory;NativePreferences preferences(directory.filePath("composer-lifetime.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Composer lifetime teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture,controller,session));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        auto *composer=item(window->contentItem(),"messageComposer");QVERIFY(composer&&composer->isEnabled());
+        click(window,composer);for(const auto key:QByteArray("Retained draft"))QTest::keyClick(window,key);
+        auto *trigger=composerEmojiTrigger(window->contentItem());QVERIFY(trigger);QVERIFY(trigger->isEnabled());
+        click(window,trigger);QTRY_VERIFY(composerEmojiContent(window));
+        QPointer<QQuickItem> picker=composerEmojiContent(window);QVERIFY(picker);
+        const auto context=controller.ownStatusContextKey();const auto generation=api.generation();
+        auto user=QJsonObject{{"uuid",userId},{"project_id",projectId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Updated"},
+            {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},{"source","iam"},{"status","active"},
+            {"status_text",""},{"status_emoji",""},{"last_ping_at","2026-01-02T10:02:00Z"},
+            {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:02:00Z"},{"kind","user.updated"}};
+        QVERIFY(controller.applyRealtimeEvent({{"uuid",QUuid::createUuid().toString(QUuid::WithoutBraces)},
+            {"project_id",projectId},{"user_uuid",userId},{"payload",user}}));
+        QTRY_COMPARE(controller.viewerDisplayName(),QString("Cassi Updated"));
+        QCOMPARE(controller.ownStatusContextKey(),context);QCOMPARE(api.generation(),generation);
+        QVERIFY(picker&&picker->isVisible());QCOMPARE(controller.draft(),QString("Retained draft"));
+        // Real public route admission, not a chosen()/notify or private QML setter.
+        controller.selectTopic(secondTopicId);QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.selectedTopic(),secondTopicId);QTRY_VERIFY(!composerEmojiContent(window));
+        QCOMPARE(controller.draft(),QString{});
+        controller.selectTopic(topicId);QTRY_VERIFY(!controller.busy());QCOMPARE(controller.draft(),QString("Retained draft"));
+        trigger=composerEmojiTrigger(window->contentItem());QVERIFY(trigger&&trigger->isEnabled());click(window,trigger);
+        QTRY_VERIFY(composerEmojiContent(window));
+        const auto beforeRefresh=api.generation();session.requestRefresh();
+        QTRY_VERIFY(session.ready()&&api.generation()>beforeRefresh);QTRY_VERIFY(!composerEmojiContent(window));
+        QVERIFY(controller.ownStatusContextKey()!=context);
+        for(const auto &request:fixture.server.requests)
+            QVERIFY(request.method=="GET"||request.target.path().contains("/iam/"));
+        QCOMPARE(fixture.posts,0);QCOMPARE(fixture.memberPosts,0);
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
     }
 
     void canonicalUsersHttpNameAppearsInTheActualMainAuthorLabel()

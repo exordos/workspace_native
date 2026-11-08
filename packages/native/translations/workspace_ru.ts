@@ -356,6 +356,10 @@
             <translation>Прикрепить файлы</translation>
         </message>
         <message>
+            <source>Emoji</source>
+            <translation>Эмодзи</translation>
+        </message>
+        <message>
             <source>Emoji and stickers are not implemented yet</source>
             <translation>Эмодзи и стикеры ещё не реализованы</translation>
         </message>

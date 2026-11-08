@@ -6492,6 +6492,67 @@ private slots:
         QCOMPARE(clicked.size(),1); QCOMPARE(f.posts,before+1);
     }
 
+    void uiEncryptedComposerEmojiUsesActualSourcePeer()
+    {
+        Fixture f;f.stream=fullEncryptedStream();useCompleteSendEcho(f);QVERIFY(f.start());
+        const QString text=QString::fromUtf8("Emoji 😀");
+        SourceSendPeer peer;QVERIFY(peer.prepare(f,topicId,text));
+        NativePreferences preferences(f.directory.filePath("composer-emoji-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey());preferences.setLocale("en");preferences.setMode("light");
+        QQmlApplicationEngine engine;loadNativeUi(engine,&f.controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedEncryptedVisualWindow(guard.data()))QTest::qFail("Encrypted emoji teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        auto *composer=encryptedUiItem(window,"messageComposer");QVERIFY(composer&&composer->isEnabled());
+        QVERIFY(f.controller.canCompose());QVERIFY(!f.controller.canAttach());QCOMPARE(f.controller.draft(),QString{});
+        const int before=f.posts;encryptedUiClick(composer);
+        for(const auto key:QByteArray("Emoji "))QTest::keyClick(window,key);
+        QTRY_COMPARE(f.controller.draft(),QString("Emoji "));
+        std::function<QQuickItem *(QQuickItem *)> findTrigger=[&](QQuickItem *entry)->QQuickItem * {
+            if(entry->isVisible()&&entry->property("asset").toString()=="composer-emoji.svg")return entry;
+            for(auto *child:entry->childItems())if(auto *found=findTrigger(child))return found;
+            return nullptr;
+        };
+        auto *trigger=findTrigger(window->contentItem());QVERIFY(trigger);
+        QVERIFY(trigger->isEnabled());encryptedUiClick(trigger);
+        auto *popup=window->findChild<QObject *>("composerEmojiPicker");QVERIFY(popup);
+        QTRY_VERIFY(popup->property("visible").toBool());
+        QPointer<QQuickItem> picker=popup->property("contentItem").value<QQuickItem *>();QVERIFY(picker);
+        auto *search=encryptedUiItem(picker.data(),"reactionSearch");QVERIFY(search);encryptedUiClick(search);
+        for(const auto key:QByteArray("grinning"))QTest::keyClick(window,key);
+        const auto ready=[&] {
+            auto *choice=picker?encryptedUiItem(picker.data(),"emoji-choice-grinning"):nullptr;
+            auto *grid=picker?encryptedUiItem(picker.data(),"reactionGrid"):nullptr;
+            return choice&&grid&&choice->isEnabled()&&choice->width()>0&&choice->height()>0
+                &&QRectF(QPointF{},grid->size()).contains(QRectF(choice->mapToItem(grid,QPointF{}),choice->size()))
+                &&QRectF(QPointF{},QSizeF(window->size())).contains(choice->mapToScene(QPointF(choice->width()/2,choice->height()/2)));
+        };
+        QTRY_VERIFY(ready());encryptedUiClick(encryptedUiItem(picker.data(),"emoji-choice-grinning"));
+        QTRY_COMPARE(f.controller.draft(),text);QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("cursorPosition").toInt(),text.size());QVERIFY(picker&&picker->isVisible());QCOMPARE(f.posts,before);
+        QTest::keyClick(window,Qt::Key_Escape);QTRY_VERIFY(!popup->property("visible").toBool());
+        auto *send=encryptedUiItem(window,"sendButton");QVERIFY(send&&send->isEnabled());
+        QSignalSpy sent(&f.controller,&NativeController::messageSent);encryptedUiClick(send);
+        QTRY_COMPARE(f.posts,before+1);QTRY_COMPARE(sent.size(),1);
+        const auto body=f.requestBody,payload=body.value("payload").toObject();
+        QCOMPARE(body.value("stream_uuid").toString(),streamId);QCOMPARE(body.value("topic_uuid").toString(),topicId);
+        QCOMPARE(payload.keys(),QStringList({"content","key_uuid","kind"}));
+        QCOMPARE(payload.value("kind").toString(),QString("e2ee"));QCOMPARE(payload.value("key_uuid").toString(),returnedId);
+        const auto localId=body.value("uuid").toString();QVERIFY(isUuid(localId));
+        const auto publicId=QUuid::createUuidV5(QUuid(topicId),localId.toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(sent.first().at(0).toString(),publicId);
+        QCOMPARE(exactRequests(f,"GET","/api/workspace/v1/messenger/messages/"+publicId),1);
+        QCOMPARE(f.savedRequests.value(publicId).value("payload").toObject(),payload);
+        for(const auto &posted:f.requestBodies)QVERIFY(!QJsonDocument(posted).toJson(QJsonDocument::Compact).contains(text.toUtf8()));
+        const auto verified=peer.verify(payload,topicId);
+        QVERIFY(verified.value("ok").toBool());QVERIFY(verified.value("matchesExpected").toBool());
+        QCOMPARE(verified.value("plaintextBytes").toInt(),text.toUtf8().size());QCOMPARE(verified.value("keyUuid").toString(),returnedId);
+        QTRY_COMPARE(f.controller.draft(),QString{});QCOMPARE(f.posts,before+1);
+        const bool closed=closeIncubatedEncryptedVisualWindow(window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
     void uiEncryptedComposerSendsActualSourceCipher_data() {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
         QTest::addColumn<bool>("aggregate"); QTest::addColumn<bool>("historical");

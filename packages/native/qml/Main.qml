@@ -255,6 +255,54 @@ ApplicationWindow {
         root.controller.requestChatKey(String(message.encryptionKeyUuid));
     }
     readonly property bool composerAvailable: root.controller.authenticated && (root.selectedStreamEncrypted ? root.controller.canCompose : root.controller.selectedTopic.length > 0 && !root.controller.topicClosed)
+    property string composerEmojiContext: ""
+    property string composerEmojiStream: ""
+    property string composerEmojiTopic: ""
+    property string composerEmojiKind: ""
+    readonly property bool composerEmojiAllowed: root.composerAvailable
+        && root.composerEmojiContext.length > 0 && root.composerEmojiContext === root.controller.ownStatusContextKey
+        && root.composerEmojiStream === root.controller.selectedStream && root.composerEmojiTopic === root.controller.selectedTopic
+        && root.composerEmojiKind === root.controller.conversationKind
+    function settleComposerEmojiUi() {
+        if (composerEmojiPicker.visible && !root.composerEmojiAllowed)
+            composerEmojiPicker.close();
+    }
+
+    function positionComposerEmojiPicker() {
+        const point = composerEmojiButton.mapToItem(root.contentItem, 0, 0);
+        const width = composerEmojiPicker.width, height = composerEmojiPicker.height;
+        composerEmojiPicker.x = Math.max(8, Math.min(root.width - width - 8, point.x + composerEmojiButton.width / 2 - width / 2));
+        const above = point.y - height - 8;
+        composerEmojiPicker.y = above >= 8 ? above : Math.max(8, Math.min(root.height - height - 8, point.y + composerEmojiButton.height + 8));
+    }
+    function toggleComposerEmojiPicker() {
+        if (composerEmojiPicker.visible) {
+            composerEmojiPicker.close();
+            return;
+        }
+        if (!root.composerAvailable || !composerText.enabled || !root.controller.ownStatusContextKey.length)
+            return;
+        root.composerEmojiContext = root.controller.ownStatusContextKey;
+        root.composerEmojiStream = root.controller.selectedStream;
+        root.composerEmojiTopic = root.controller.selectedTopic;
+        root.composerEmojiKind = root.controller.conversationKind;
+        composerEmojiChoices.reset();
+        root.positionComposerEmojiPicker();
+        composerEmojiPicker.open();
+    }
+    function pickComposerEmoji(name) {
+        if (!root.composerEmojiAllowed || !composerText.enabled)
+            return;
+        const entry = composerEmojiChoices.byName[name];
+        const unicode = entry && entry.pickerEligible ? String(entry.pickerUnicode || "").trim() : "";
+        if (!unicode.length)
+            return;
+        root.controller.draft = String(root.controller.draft) + unicode;
+        if (!root.composerEmojiAllowed)
+            return;
+        composerText.forceActiveFocus(Qt.OtherFocusReason);
+        composerText.cursorPosition = composerText.length;
+    }
     readonly property var encryptedPendingSend: root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
     readonly property bool encryptedSendingKeyOutdated: root.encryptedComposerHasKey && String(root.chatEncryption.sendingKeyUuid) !== String(root.chatEncryption.currentKeyUuid || "")
@@ -855,6 +903,7 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onStateChanged() {
+            root.settleComposerEmojiUi();
             root.settleOwnStatusUi();
             root.validateStreamUi();
             root.validateChannelUi();
@@ -910,6 +959,9 @@ ApplicationWindow {
                 reactionPicker.close();
         }
         function onMessageSent(id, stream, topic) {
+            if (composerEmojiPicker.visible && root.composerEmojiAllowed && root.composerEmojiStream === stream
+                    && (root.composerEmojiKind === "stream" || root.composerEmojiTopic === topic))
+                composerEmojiPicker.close();
             if (root.controller.selectedStream === stream && root.controller.selectedTopic === topic)
                 messageList.followSentMessage(id);
         }
@@ -4776,8 +4828,12 @@ ApplicationWindow {
                                     rightPadding: 0
                                     background: null
                                     Accessible.name: qsTr("Message")
+                                    onContentHeightChanged: if (composerEmojiPicker.visible) root.positionComposerEmojiPicker()
                                     Keys.onPressed: event => {
-                                        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && root.controller.canSend && !root.controller.busy && !inputMethodComposing) {
+                                        if (event.key === Qt.Key_Escape && composerEmojiPicker.visible) {
+                                            composerEmojiPicker.close();
+                                            event.accepted = true;
+                                        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && root.controller.canSend && !root.controller.busy && !inputMethodComposing) {
                                             root.controller.send();
                                             event.accepted = true;
                                         }
@@ -4805,13 +4861,16 @@ ApplicationWindow {
                                     }
                                 }
                                 NativeIconButton {
+                                    id: composerEmojiButton
+                                    objectName: "composerEmojiButton"
                                     colors: root.colors
                                     asset: "composer-emoji.svg"
-                                    help: qsTr("Emoji and stickers are not implemented yet")
-                                    enabled: false
+                                    help: qsTr("Emoji")
+                                    enabled: root.composerAvailable && composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
                                     glyphSize: 24
+                                    onClicked: root.toggleComposerEmojiPicker()
                                 }
                             }
                         }
@@ -4884,6 +4943,47 @@ ApplicationWindow {
             implicitHeight: 1
             color: root.colors["border-subtle"]
         }
+    }
+
+    Popup {
+        id: composerEmojiPicker
+        objectName: "composerEmojiPicker"
+        parent: Overlay.overlay
+        width: Math.min(320, root.width - 16)
+        height: Math.min(322, root.height - 16)
+        padding: 1
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onWidthChanged: if (visible) root.positionComposerEmojiPicker()
+        onHeightChanged: if (visible) root.positionComposerEmojiPicker()
+        onOpened: composerEmojiChoices.focusSearch()
+        onClosed: {
+            root.composerEmojiContext = "";
+            root.composerEmojiStream = "";
+            root.composerEmojiTopic = "";
+            root.composerEmojiKind = "";
+        }
+        background: Rectangle {
+            color: root.colors["bg-elevated"]
+            radius: 12
+            border.color: root.colors["border-subtle"]
+        }
+        contentItem: NativeReactionPicker {
+            id: composerEmojiChoices
+            choices: root.controller.reactionChoices
+            suggested: root.preferences.suggestedReactions
+            dark: theme.dark
+            active: composerEmojiPicker.visible
+            allowed: root.composerEmojiAllowed && composerText.enabled
+            onChosen: name => root.pickComposerEmoji(name)
+        }
+    }
+    Connections {
+        target: root
+        function onWidthChanged() { if (composerEmojiPicker.visible) root.positionComposerEmojiPicker(); }
+        function onHeightChanged() { if (composerEmojiPicker.visible) root.positionComposerEmojiPicker(); }
     }
 
     Popup {

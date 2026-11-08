@@ -1,0 +1,216 @@
+{
+  "scope": "Unicode emoji selection in actual native composer; local Source-peer and runtime-window tests, separate from published/live acceptance",
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "reviews": {
+    "v75-composer-emoji-red-gate/ROOT-CAPABILITY-RED-REVIEW.json": {
+      "sha256": "afa43418b044794896e87ef0c941e63ef5e0985b31dce446c6ef1729445533bb",
+      "facts": {
+        "actualUnchangedReleasedProduct": true,
+        "actualMainLocales": [
+          "en-light",
+          "ru-dark"
+        ],
+        "intendedDisabledEmojiActionRed": true,
+        "priorCompileAndFixtureFailuresRetained": true,
+        "earlierDiagnosticObservedAuthenticatedThenUnservedResynchronizeRequested": true,
+        "correctedBootstrapOnlyRelocatesRealtimeAfterCatalog": true,
+        "noProductChangeInRed": true,
+        "counts": [
+          "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 2738ms"
+        ],
+        "cleanupVerified": true
+      }
+    },
+    "v78-composer-emoji-fixed-functional-gate/ROOT-FOCUSED-REVIEW.json": {
+      "sha256": "1825ea88a5166e33aa5587c5bf59279f91e5f6969e9aa1cd006f98cc3aac0255",
+      "facts": {
+        "actualMainCases": 5,
+        "actualEncryptedSourcePeerCases": 3,
+        "oldComposerControls": 13,
+        "locale": 14,
+        "updater": 49,
+        "policyObjectGraphNoWindow": 10,
+        "runtimeWarningsOrStderr": 0,
+        "productionCppAndExistingPickerUnchanged": true,
+        "retainedTranslations": 510,
+        "addedTranslation": [
+          "Main",
+          "Emoji"
+        ],
+        "sameTestsAsV77WarningRed": true,
+        "productFix": "Imperative controller state callback closes popup instead of mutation in its allowed-binding change handler",
+        "priorCompileBootstrapAndObserverFailuresRetained": true,
+        "rawResultSha256": "1c2738b5d82359fd979280de1ce7e4abc5cf217acaa4e63e550c722f00b7f515",
+        "cleanupVerified": true,
+        "fullWindowPending": true,
+        "actualReleased0_1_1To0_1_2Pending": true
+      }
+    },
+    "v78-composer-emoji-fixed-whole-gate/ROOT-WHOLE-WINDOW-REVIEW.json": {
+      "sha256": "57e97919ff32a048503af7f87cbfb4a934751a9e8bbbc481fec1145b3714a94c",
+      "facts": {
+        "wholeWindowCases": 278,
+        "qtSeconds": 299.964,
+        "outerSeconds": 300.174,
+        "runtimeWarnings": 0,
+        "failures": 0,
+        "skips": 0,
+        "rawSha256": "8c6d72b08983f10fe57cf8efd560aae1e7f2ed2775bc168770846b61007dcc5e",
+        "cleanupVerified": true,
+        "historicalIntermittentCausesRemainUnknown": true,
+        "notFullLinuxOrLiveAccountAcceptance": true
+      }
+    },
+    "source-composer-media-picker-reference-run-v3/ROOT-SOURCE-REFERENCE-REVIEW.json": {
+      "sha256": "3535de764df5615f6cfc936e5eda10d950498321352f5f58d110737b91c9c13d",
+      "facts": {
+        "status": "ROOT_REVIEWED_REAL_SOURCE_COMPONENT_ONLY",
+        "actualHeadedGlobalPlaywright": true,
+        "rawFrames": 4,
+        "runtimeWarningsErrorsBlocked": 0,
+        "productionAndInputsUnchanged": true,
+        "initialFixtureSyntaxBuildFailureRetained": true,
+        "oldObserverSearchClassTimeoutRetained": true,
+        "actualDomDiagnosticJustifiedSemanticTextInputSelector": true,
+        "noProductOrTimeoutChange": true,
+        "rootViewedRawENInitialAndRUSearch": true,
+        "fullComposerDispatchOrShellAccepted": false,
+        "sourceStickerTabNativeGapRetained": true,
+        "ownedServerPidGone": true,
+        "portFree": true,
+        "allFreshProfilesRemoved": true,
+        "sourceManifestSha256": "5fb86ce9ae99f8622892d69a085e6ba66e364d9443a3d8c89694f9c04b6d0973",
+        "rawProofSha256": "bf6b4595640761478106823e9affa07ae47c3bf7997e2626f013b35b511ce12f",
+        "geometry": [
+          {
+            "tag": "en-light",
+            "phase": "initial",
+            "sourceOuter": {
+              "x": 578,
+              "y": 452,
+              "width": 320,
+              "height": 367
+            },
+            "sourcePicker": {
+              "x": 579,
+              "y": 498,
+              "width": 320,
+              "height": 320
+            },
+            "searchBox": {
+              "x": 590,
+              "y": 514,
+              "width": 270,
+              "height": 40
+            }
+          },
+          {
+            "tag": "en-light",
+            "phase": "search",
+            "sourceOuter": {
+              "x": 578,
+              "y": 452,
+              "width": 320,
+              "height": 367
+            },
+            "sourcePicker": {
+              "x": 579,
+              "y": 498,
+              "width": 320,
+              "height": 320
+            },
+            "searchBox": {
+              "x": 590,
+              "y": 514,
+              "width": 270,
+              "height": 40
+            }
+          },
+          {
+            "tag": "ru-dark",
+            "phase": "initial",
+            "sourceOuter": {
+              "x": 578,
+              "y": 452,
+              "width": 320,
+              "height": 367
+            },
+            "sourcePicker": {
+              "x": 579,
+              "y": 498,
+              "width": 320,
+              "height": 320
+            },
+            "searchBox": {
+              "x": 590,
+              "y": 514,
+              "width": 270,
+              "height": 40
+            }
+          },
+          {
+            "tag": "ru-dark",
+            "phase": "search",
+            "sourceOuter": {
+              "x": 578,
+              "y": 452,
+              "width": 320,
+              "height": 367
+            },
+            "sourcePicker": {
+              "x": 579,
+              "y": 498,
+              "width": 320,
+              "height": 320
+            },
+            "searchBox": {
+              "x": 590,
+              "y": 514,
+              "width": 270,
+              "height": 40
+            }
+          }
+        ]
+      }
+    }
+  },
+  "bindingLoopRegression": {
+    "actualPriorWarnings": 4,
+    "sameTestSourcesAfterFix": true,
+    "fix": "Pure allowed binding; existing controller-state callback performs close/invalidation",
+    "noWarningSuppressionOrWaitChange": true
+  },
+  "rawLogs": {
+    "v77-composer-emoji-green-functional-gate/composer-main5.log": "313ce4c1235588c00f4d5ed9e5545839f9e2a8b72b16c248240a52e93bb24428",
+    "v78-composer-emoji-fixed-functional-gate/composer-main5.log": "6151a69e8b90f7b4e40fc72b57858c302ff40a71ef8fcf29e92546b832935249",
+    "v78-composer-emoji-fixed-functional-gate/composer-encrypted-peer3.log": "d15a6d1f4843d1ef07690f70732416f147d6bfbc0b717771fca1fd3d1c65e92a",
+    "v78-composer-emoji-fixed-functional-gate/composer-old-send-controls.log": "0b986dba7cc1bd5f0209142d18fc231bc05349580b6720ec703a3cb897ba5bcf"
+  },
+  "comparison48": {
+    "messageReadBackVerified": true,
+    "attachmentCount": 4,
+    "attachmentDownloadHashesVerified": true,
+    "fullApplicationAcceptance": false,
+    "privateReceiptSha256": "d8d8bd9d07002914f78bbcb95d58a90c4814cfbcb22c9c08f6a10c3559c241e8"
+  },
+  "limits": [
+    "Sticker tab/content, exact Source wrapper/pixels and outside-click consumption remain open",
+    "Source captures are real component with synthetic anchor, not full composer dispatch or account",
+    "Native send tests use owned loopback/TLS fixtures, not live Workspace account",
+    "Historical intermittent whole-window failures remain unexplained despite current full278pass",
+    "Actual public0.1.1\u21920.1.2 install/restart follows publication; not claimed yet"
+  ],
+  "localPackage": {
+    "reviewSha256": "76155780bbcca84c414c06f82461d2570356f8c26904c5c8287e0a6b3eea9447",
+    "facts": {
+      "local0_1_2PackagePassed": true,
+      "installerTests": 6,
+      "configuredVersionRegression": 1,
+      "allCurrentPackageSourceBytesEqualToAcceptedCandidate": true,
+      "runtimeFiveCodecCryptoTlsProbePassed": true,
+      "publicReleaseOrInstalledUpgradeClaim": false,
+      "rawResultSha256": "330ad26660d8a5f26219af72372f66f0cc57008dfd9399280ad697ea884ab68b",
+      "cleanupVerified": true
+    }
+  }
+}
