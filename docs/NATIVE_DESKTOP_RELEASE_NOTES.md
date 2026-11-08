@@ -8,7 +8,16 @@ paragraph. Ordinary file/video attachments retain their serialized behavior.
 The actual file-dialog/send/readback/pixel regression, complete Controller830
 and Window283 suites, eight Source encrypted workflow cases, installer/version
 checks and local packaged image/crypto/TLS probes passed. The public archive and
-actual installed 0.1.3 → 0.1.4 update are verified separately after publication.
+actual installed 0.1.3 → 0.1.4 update passed the separate published checks.
+
+The published 0.1.4 archive passed its checksum and deployed runtime checks.
+The actual public 0.1.3 → 0.1.4 update passed: automatic download, one Install
+and restart click, normal exits into the exact new binary, same-primary
+activation and preservation/reopen of one synthetic cache row. The completed
+run required no manual update-check recovery. An earlier interrupted attempt
+and its manual metadata recovery remain recorded with unresolved causes.
+Portal/AT-SPI diagnostics remain; this does not establish authenticated history
+or credential preservation, warning-free desktop operation or a transport fix.
 
 This remains a Linux development preview. Full feature/pixel parity, Source
 image-first composer ordering, live-account acceptance, the complete media

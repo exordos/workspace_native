@@ -1,9 +1,9 @@
 {
   "schema": "native-picked-caption-image-repair-v1",
-  "status": "LOCAL_ACCEPTED_PUBLICATION_AND_INSTALLED_UPGRADE_PENDING",
+  "status": "LOCAL_ACCEPTED_AND_PUBLISHED_CHECKS_LINKED",
   "targetVersion": "0.1.4",
-  "releasePublishedClaimed": false,
-  "reviewScope": "Root reviewed the actual regression, current complete runtime suites, Source/Qt raw frames and local packaged runtime; separate publication/installed upgrade remain pending",
+  "releasePublishedClaimed": true,
+  "reviewScope": "Root reviewed local regression/runtime/Source/Qt/package evidence; separate public release and anonymous installed upgrade linked",
   "repair": {
     "trigger": "Pick a PNG with an existing caption, then Send from the real Main file dialog",
     "priorFailure": "Exact multipart upload, canonical own message and draft clearing succeeded, but no image transfer or pixels followed",
@@ -98,18 +98,6 @@
     "externalDeliveryClaimed": false,
     "fullApplicationAcceptanceClaimed": false
   },
-  "pending": {
-    "publicRelease": {
-      "status": "NOT_PUBLISHED_AT_DRAFT_HANDOFF",
-      "releaseId": null,
-      "assetId": null
-    },
-    "installedUpgrade0_1_3To0_1_4": {
-      "status": "NOT_RUN",
-      "resultSha256": null
-    },
-    "commitAndFinalAcceptance": "ROOT_LOCAL_ACCEPTED_READY_FOR_COMMIT"
-  },
   "cleanup": {
     "completedNativeGateGroupsReaped": true,
     "completedNativePrivateXdgRemoved": true,
@@ -157,7 +145,7 @@
     "Synthetic ordinary route with one picked PNG and one existing caption; no live account or real server upload acceptance",
     "Source received-body presentation only; Source image-first composer/upload ordering remains open",
     "Full shell, glyph parity, animation, mixed/multiple-image composition and complete media viewer remain open",
-    "Public archive and actual installed-upgrade acceptance are separate from the accepted local package",
+    "Authenticated account/history and credential preservation remain outside the separate published anonymous-upgrade acceptance",
     "Retained configure and Source build diagnostics prevent a warning-free build claim"
   ],
   "localPackage": {
@@ -177,5 +165,9 @@
     "bytes": 71217394,
     "sha256": "c621b14e5ff75059069a6f66d7e4887f10a08685d0401a4473352850a383c32a",
     "scope": "Locally built package only; published artifact is verified independently"
+  },
+  "publishedAcceptance": {
+    "reference": "linux-published-0.1.4-upgrade-checks.json",
+    "scope": "Actual public archive and completed anonymous installed update; earlier interrupted attempt retained separately"
   }
 }

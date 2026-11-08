@@ -35,6 +35,18 @@ without a manual retry; earlier intermittent failures remain unexplained.
 Authenticated account/history, credential preservation and full application parity
 remain separate. See [published 0.1.3 upgrade checks](provenance/linux-published-0.1.3-upgrade-checks.json).
 
+[0.1.4](https://github.com/exordos/workspace_native/releases/tag/0.1.4) repairs
+a picked image missing after Send when the draft already contains a caption.
+Tag/master CI and the actual downloaded archive passed their checks. The
+completed public 0.1.3 → 0.1.4 update passed with one Install and restart action,
+normal old/new exits, exact binary/current link, same-primary activation and
+one synthetic NativeCache History row preserved/reopened. No manual metadata
+recovery was needed in that completed run. A separate interrupted run retained
+one real manual Check recovery; its interruption and metadata-error causes
+remain unknown. Portal/AT-SPI diagnostics remain. Live-account, credential
+preservation and full application/Linux parity stay outside this acceptance.
+See [published 0.1.4 update checks](provenance/linux-published-0.1.4-upgrade-checks.json).
+
 ## Build pipeline
 
 `.github/workflows/linux-release.yml` builds on master pushes, plain `X.Y.Z` tags

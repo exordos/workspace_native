@@ -625,3 +625,26 @@ observations. Source image-first composer ordering, live account, full shell,
 glyph parity and complete media functionality remain open. The 25 Qt configure
 static-import warnings and Source build diagnostics are retained; a warning-free
 build is not claimed. See [picked-caption checks](provenance/picked-caption-image-repair.json).
+
+## Published 0.1.4 and installed update
+
+The public 0.1.4 tag and master CI runs passed on the same source. The downloaded
+archive matches its GitHub digest and SHA256SUMS; the independent deployed
+probe passed ten QML modules, PNG/JPEG/GIF/WebP/SVG, message/grant and TLS checks.
+The actual anonymous 0.1.3 → 0.1.4 installed update then passed in the completed
+v6b run: automatic download, one Install and restart click, exact new executable,
+normal old/new exits, same-primary activation after a secondary launch and
+preservation/reopen of one synthetic NativeCache History row. Each installed
+process exposed 53 selected packaged Qt/keychain/QML/plugin/Markdown mappings.
+
+The earlier v6 attempt remains NOT COMPLETED. Its tool session exited 143 after
+seven consumed CUA receipts; the eighth real receipt was present but unconsumed.
+Root subsequently quit the app, reopened the synthetic cache and independently
+verified cleanup. Its initial new-version metadata check failed and one actual
+manual Check recovered; HTTP/2 closed/protocol diagnostics are retained. Neither
+the worker termination nor the metadata failure has an established cause.
+The completed v6b required no manual recovery and logged no HTTP/2 error, but
+retained two portal and 156 AT-SPI diagnostics. No warning-free desktop or
+transport-fix claim follows. This is anonymous upgrade/cache acceptance only,
+not live-account, credential-store, authenticated history or full application
+parity. See [published 0.1.4 update checks](provenance/linux-published-0.1.4-upgrade-checks.json).
