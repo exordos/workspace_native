@@ -28,6 +28,7 @@
 #include <QPlatformSurfaceEvent>
 #include <QLocale>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -854,6 +855,185 @@ public:
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void aboutDrawerPreservesTheActualPendingCheck_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void aboutDrawerPreservesTheActualPendingCheck()
+    {
+        QFETCH(QString,locale); QFETCH(QString,mode);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        MockServer releases; std::function<void()> sendMetadata;
+        auto releaseHeld=qScopeGuard([&]{if(sendMetadata)sendMetadata();});
+        releases.handler=[&](const Request &)->Response {
+            Response result{QJsonObject{{"tag_name","0.1.0"},{"draft",false},{"prerelease",false}}};
+            result.defer=[&](std::function<void()> send){sendMetadata=std::move(send);}; return result;
+        };
+        NativeUpdater updater(releases.origin().resolved(QUrl("/latest")),"0.1.0",directory.filePath("updates"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences,nullptr,&updater);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("About pending check teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(window->setProperty("updatesVisible",true)); QTRY_VERIFY(visibleItem("nativeUpdateAction"));
+        auto *drawer=visibleItem("nativeAboutDrawer");
+        QVERIFY2(drawer,"Actual Source-shaped nonmodal About drawer is required");
+        QCOMPARE(drawer->width(),qreal(315)); QCOMPARE(drawer->mapToScene(QPointF{}).x(),window->width()-315);
+        auto *version=visibleItem("nativeAboutCurrentVersionText");QVERIFY(version);
+        QCOMPARE(version->property("text").toString(),locale=="ru"?QString::fromUtf8("Текущая версия: 0.1.0"):QString("Current version: 0.1.0"));
+        QCOMPARE(releases.requests.size(),0);
+        click(window,visibleItem("nativeUpdateAction"));QTRY_COMPARE(updater.state(),QString("checking"));
+        QTRY_VERIFY(bool(sendMetadata));QCOMPARE(releases.requests.size(),1);
+        click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
+        QCOMPARE(updater.state(),QString("checking"));QCOMPARE(releases.requests.size(),1);
+        QVERIFY(window->setProperty("updatesVisible",true));QTRY_VERIFY(visibleItem("nativeAboutDrawer"));
+        QCOMPARE(updater.state(),QString("checking"));QCOMPARE(releases.requests.size(),1);
+        auto send=std::move(sendMetadata);send();QTRY_COMPARE(updater.state(),QString("current"));
+        QTRY_VERIFY(visibleItem("nativeUpdateStatus"));
+        QTRY_COMPARE(visibleItem("nativeUpdateStatus")->property("text").toString(),locale=="ru"?QString::fromUtf8("Установлена последняя версия"):QString("You're up to date"));
+        window->resize(700,600);QTRY_COMPARE(window->width(),700);
+        drawer=visibleItem("nativeAboutDrawer");QVERIFY(drawer);QCOMPARE(drawer->width(),qreal(315));
+        const QRectF bounds(drawer->mapToScene(QPointF{}),drawer->size());
+        for(const auto &name:{QString("nativeUpdateClose"),QString("nativeUpdateAction")}){
+            auto *action=visibleItem(name);QVERIFY(action);
+            QVERIFY(bounds.contains(QRectF(action->mapToScene(QPointF{}),action->size())));
+        }
+        click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
+        QCOMPARE(releases.requests.size(),1);QCOMPARE(controller.authenticated(),false);
+    }
+    void aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall_data()
+    {
+        aboutDrawerPreservesTheActualPendingCheck_data();
+    }
+    void aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);
+        QTemporaryDir directory;QVERIFY(directory.isValid());WindowOwnStatusFixture fixture;
+        MockServer releases;std::function<void()> sendArchive;
+        auto releaseHeld=qScopeGuard([&]{if(sendArchive)sendArchive();});
+        const QByteArray archive("verified bytes that are deliberately not a tar archive");
+        const QJsonObject asset{{"name","Exordos-Workspace-Native-0.1.1-linux-x86_64.tar.gz"},
+            {"size",archive.size()},{"digest","sha256:"+QString::fromLatin1(QCryptographicHash::hash(archive,QCryptographicHash::Sha256).toHex())},
+            {"browser_download_url",releases.origin().resolved(QUrl("/archive")).toString()}};
+        releases.handler=[&](const Request &request)->Response {
+            if(request.target.path()=="/latest")return {QJsonObject{{"tag_name","0.1.1"},{"draft",false},{"prerelease",false},{"assets",QJsonArray{asset}}}};
+            Response result;result.rawBody=archive;result.defer=[&](std::function<void()>send){sendArchive=std::move(send);};return result;
+        };
+        NativeUpdater updater(releases.origin().resolved(QUrl("/latest")),"0.1.0",directory.filePath("updates"));
+        QSignalSpy restart(&updater,&NativeUpdater::restartRequested);
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));preferences.setLocale(locale);preferences.setMode(mode);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences,nullptr,&updater);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("About automatic download teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        auto *profile=visibleItem("accountMenuButton");QVERIFY(profile);const auto profilePosition=profile->mapToScene(QPointF{});
+        QVERIFY(!visibleItem("nativeAboutDrawer"));QCOMPARE(releases.requests.size(),0);
+        updater.check();QTRY_COMPARE(updater.state(),QString("downloading"));
+        QTRY_VERIFY(bool(sendArchive));QCOMPARE(releases.requests.size(),2);
+        QVERIFY(!visibleItem("nativeAboutDrawer"));auto *indicator=visibleItem("nativeUpdateIndicator");QVERIFY(indicator);
+        QCOMPARE(indicator->width(),qreal(36));QCOMPARE(indicator->height(),qreal(36));
+        QCOMPARE(profile->mapToScene(QPointF{}),profilePosition);
+        click(window,indicator);QTRY_VERIFY(visibleItem("nativeAboutDrawer"));QCOMPARE(releases.requests.size(),2);
+        click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
+        QCOMPARE(updater.state(),QString("downloading"));QCOMPARE(releases.requests.size(),2);
+        click(window,visibleItem("nativeUpdateIndicator"));QTRY_VERIFY(visibleItem("nativeAboutDrawer"));
+        auto send=std::move(sendArchive);send();QTRY_COMPARE(updater.state(),QString("downloaded"));
+        QCOMPARE(restart.size(),0);QCOMPARE(releases.requests.size(),2);
+        QTRY_VERIFY(visibleItem("nativeUpdateAction"));
+        QTRY_COMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Установить и перезапустить"):QString("Install and restart"));
+        click(window,visibleItem("nativeUpdateAction"));QTRY_COMPARE(updater.state(),QString("error"));
+        QCOMPARE(restart.size(),0);QCOMPARE(releases.requests.size(),2);
+        QVERIFY(QDir(directory.filePath("updates")).entryList(QDir::AllEntries|QDir::NoDotAndDotDot).isEmpty());
+    }
+
+    void aboutInstallRestartsOnlyForTheExplicitMatchingAction_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<bool>("explicitAction");
+        QTest::newRow("en-explicit")<<QString("en")<<true;
+        QTest::newRow("ru-explicit")<<QString("ru")<<true;
+        QTest::newRow("en-external-install")<<QString("en")<<false;
+        QTest::newRow("ru-external-install")<<QString("ru")<<false;
+    }
+    void aboutInstallRestartsOnlyForTheExplicitMatchingAction()
+    {
+        QFETCH(QString,locale);QFETCH(bool,explicitAction);
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        const bool hadHome=qEnvironmentVariableIsSet("HOME"),hadData=qEnvironmentVariableIsSet("XDG_DATA_HOME");
+        const auto oldHome=qgetenv("HOME"),oldData=qgetenv("XDG_DATA_HOME");
+        auto restoreEnvironment=qScopeGuard([&]{
+            if(hadHome)qputenv("HOME",oldHome);else qunsetenv("HOME");
+            if(hadData)qputenv("XDG_DATA_HOME",oldData);else qunsetenv("XDG_DATA_HOME");
+        });
+        qputenv("HOME",directory.path().toUtf8());qputenv("XDG_DATA_HOME",directory.filePath("data").toUtf8());
+        // A small real tar/installer contract exercises Main's intent boundary.
+        // It is synthetic and does not replace installed GitHub release acceptance.
+        const QString name="workspace-native-0.1.1-linux-x86_64",prefix=directory.filePath(name);
+        QVERIFY(QDir().mkpath(prefix+"/bin"));
+        const auto write=[](const QString &path,const QByteArray &bytes){
+            QFile file(path);return file.open(QIODevice::WriteOnly)&&file.write(bytes)==bytes.size();
+        };
+        QVERIFY(write(prefix+"/VERSION","0.1.1\n"));
+        QVERIFY(write(prefix+"/bin/workspace-native","#!/bin/sh\nexit 0\n"));
+        QVERIFY(QFile::setPermissions(prefix+"/bin/workspace-native",QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+        QVERIFY(write(prefix+"/install.sh",R"SH(#!/bin/bash
+set -eu
+test "$#" = 1 && test "$1" = --no-launch
+src="$(cd -- "$(dirname -- "$0")" && pwd)"
+root="$XDG_DATA_HOME/workspace-native-install"
+mkdir -p "$root/versions/0.1.1"
+cp -a "$src/VERSION" "$src/bin" "$root/versions/0.1.1/"
+ln -s versions/0.1.1 "$root/.current-new"
+mv -Tf "$root/.current-new" "$root/current"
+)SH"));
+        const auto archivePath=directory.filePath("archive.tar.gz");QProcess tar;
+        auto environment=QProcessEnvironment::systemEnvironment();environment.remove("TAR_OPTIONS");environment.remove("GZIP");
+        tar.setProcessEnvironment(environment);tar.start("/usr/bin/tar",{"-czf",archivePath,"-C",directory.path(),name});
+        QVERIFY(tar.waitForFinished(2000));QCOMPARE(tar.exitStatus(),QProcess::NormalExit);QCOMPARE(tar.exitCode(),0);
+        QFile archiveFile(archivePath);QVERIFY(archiveFile.open(QIODevice::ReadOnly));const auto archive=archiveFile.readAll();QVERIFY(!archive.isEmpty());
+        MockServer releases;
+        const QJsonObject asset{{"name","Exordos-Workspace-Native-0.1.1-linux-x86_64.tar.gz"},{"size",archive.size()},
+            {"digest","sha256:"+QString::fromLatin1(QCryptographicHash::hash(archive,QCryptographicHash::Sha256).toHex())},
+            {"browser_download_url",releases.origin().resolved(QUrl("/archive")).toString()}};
+        releases.handler=[&](const Request &request)->Response{
+            if(request.target.path()=="/latest")return {QJsonObject{{"tag_name","0.1.1"},{"draft",false},{"prerelease",false},{"assets",QJsonArray{asset}}}};
+            Response result;result.rawBody=archive;return result;
+        };
+        NativeUpdater updater(releases.origin().resolved(QUrl("/latest")),"0.1.0",directory.filePath("updates"));
+        QSignalSpy restart(&updater,&NativeUpdater::restartRequested);
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));preferences.setLocale(locale);preferences.setMode(locale=="ru"?"dark":"light");
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences,nullptr,&updater);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("About restart intent teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        updater.check();QTRY_COMPARE(updater.state(),QString("downloaded"));QCOMPARE(restart.size(),0);
+        QVERIFY(window->setProperty("updatesVisible",true));QTRY_VERIFY(visibleItem("nativeUpdateAction"));
+        if(explicitAction)click(window,visibleItem("nativeUpdateAction"));else updater.install();
+        QTRY_COMPARE(updater.state(),QString("ready"));QCOMPARE(restart.size(),explicitAction?1:0);
+        if(explicitAction)QCOMPARE(restart.first().first().toString(),directory.filePath("data/workspace-native-install/current/bin/workspace-native"));
+        // Repeated state publication and closing/reopening cannot reuse intent.
+        QVERIFY(QMetaObject::invokeMethod(&updater,"changed",Qt::DirectConnection));
+        click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
+        QVERIFY(window->setProperty("updatesVisible",true));QTRY_VERIFY(visibleItem("nativeAboutDrawer"));
+        QCoreApplication::processEvents();QCOMPARE(restart.size(),explicitAction?1:0);QCOMPARE(releases.requests.size(),2);
+        QVERIFY(updater.downloadedPath().isEmpty());
+        QVERIFY(QDir(directory.filePath("updates")).entryList(QDir::AllEntries|QDir::NoDotAndDotDot).isEmpty());
+        for(const auto &request:releases.requests){
+            QVERIFY(!request.headers.contains("authorization"));QVERIFY(!request.headers.contains("cookie"));
+        }
+    }
+
     void updaterActualMainShowsAndExecutesTheDownloadAndInstallActions_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
@@ -883,11 +1063,11 @@ private slots:
         });
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QCOMPARE(releases.requests.size(),0);
-        updater.check(); QTRY_COMPARE(updater.state(),QString("available"));
+        updater.check(); QTRY_COMPARE(updater.state(),QString("downloaded"));
+        QVERIFY(!visibleItem("nativeAboutDrawer"));
+        QVERIFY(window->setProperty("updatesVisible",true));
         QTRY_VERIFY(visibleItem("nativeUpdateAction"));
-        QCOMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Загрузить обновление"):QString("Download update"));
-        click(window,visibleItem("nativeUpdateAction")); QTRY_COMPARE(updater.state(),QString("downloaded"));
-        QCOMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Установить обновление"):QString("Install update"));
+        QCOMPARE(visibleItem("nativeUpdateAction")->property("text").toString(),locale=="ru"?QString::fromUtf8("Установить и перезапустить"):QString("Install and restart"));
         click(window,visibleItem("nativeUpdateAction")); QTRY_COMPARE(updater.state(),QString("error"));
         QVERIFY(visibleItem("nativeUpdateStatus")); QCOMPARE(releases.requests.size(),2);
         click(window,visibleItem("nativeUpdateClose")); QTRY_VERIFY(!visibleItem("nativeUpdateAction"));

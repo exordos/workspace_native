@@ -6,6 +6,18 @@ binary release feed. The initial pipeline and updater are under development;
 the [initial checks](provenance/linux-updater-initial-checks.json) explicitly
 retain the first whole-window failure and outstanding release acceptance.
 
+## Published preview
+
+[0.1.0](https://github.com/exordos/workspace_native/releases/tag/0.1.0) is the
+first public Linux preview. Its archive and SHA256SUMS are available in that
+release. The actual downloaded archive passed checksum, per-user installation,
+anonymous Wayland startup, private runtime mapping, five-codec/crypto/TLS and
+explicit quit checks on the current Ubuntu host. Full functionality, visual
+parity and an upgrade between two released versions remain open. The initial
+installed public update check failed; a later check on the unchanged downloaded
+binary succeeded. Its earlier failure remains unexplained.
+See [the recorded checks](provenance/linux-first-published-preview-checks.json).
+
 ## Build pipeline
 
 `.github/workflows/linux-release.yml` builds on master pushes, plain `X.Y.Z` tags
@@ -67,6 +79,11 @@ files. Installer cancellation first allows shell cleanup before a bounded hard
 stop. Restart waits for cache/key shutdown and releases the primary-instance
 lock before starting the selected binary.
 
-The current update dialog is a functional initial view. Source's About card and
-toolbar indicator, full visual equivalence, actual installed upgrade, GitHub
-asset delivery and complete live application acceptance remain separate checks.
+The Source-shaped About dock and toolbar indicator share the app-scoped updater.
+Available releases download automatically. The verified download exposes one
+explicit Install and restart action; disclosure never starts or cancels work.
+The actual Main and lifecycle policy checks are recorded in
+[About/update checks](provenance/about-update-checks.json). CI runs the policy
+object graph without a native surface; that is not a visual/window check.
+Full visual equivalence, actual installed upgrade, GitHub asset delivery,
+licenses navigation and complete live application acceptance remain separate.

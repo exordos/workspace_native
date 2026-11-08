@@ -1,0 +1,328 @@
+{
+  "scope": "Source-shaped About/update milestone; independent component/actual Main/public released-check boundaries retained",
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "nativeLeafSha256": "ddcc203d7e76e1f8ec8e1ae784f28a57429d1a86ef89f7c24b04270ec8f4069e",
+  "reviews": {
+    "v69-about-main-red-gate/ROOT-ABOUT-RED-REVIEW.json": {
+      "sha256": "08e181e51795f092a45a049372771a4e369d2efbc69ff12a463c1e595c0a66ae",
+      "facts": {
+        "acceptedIntendedFeatureRed": true,
+        "observation": "Two locales: real existing dialog opens but315nonmodalAboutmissing; actual metadataaccepted butstateavailable withoutautomaticbinaryGET. Existingproductunchanged.",
+        "steps": [
+          {
+            "label": "configure",
+            "command": [
+              "cmake",
+              "-S",
+              "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/v69-about-main-red-preparation/source/packages/native",
+              "-B",
+              "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/v69-about-main-red-build",
+              "-G",
+              "Ninja",
+              "-DCMAKE_BUILD_TYPE=Release",
+              "-DCMAKE_INSTALL_LIBDIR=lib",
+              "-DBUILD_TESTING=ON"
+            ],
+            "outerSeconds": 150,
+            "pid": 2682302,
+            "exitCode": 0,
+            "wallSeconds": 0.767,
+            "reaped": true,
+            "remainingGroup": [],
+            "stdoutSha256": "3937c44f5a2a9cff96f2d4313c11c782b4987b925e64d838a5798c5b710a5497",
+            "stderrSha256": "712a1bf6a6ea06181100be7420f405ea64bdcd7b833c5202c2c539b615d0680c",
+            "stderrBytes": 18726,
+            "totals": [],
+            "failures": [],
+            "warnings": [],
+            "sourceUnchanged": true,
+            "accepted": true
+          },
+          {
+            "label": "build-window",
+            "command": [
+              "cmake",
+              "--build",
+              "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/v69-about-main-red-build",
+              "--target",
+              "native-window-test",
+              "--parallel",
+              "2"
+            ],
+            "outerSeconds": 300,
+            "pid": 2682379,
+            "exitCode": 0,
+            "wallSeconds": 119.317,
+            "reaped": true,
+            "remainingGroup": [],
+            "stdoutSha256": "7e82dc9569829bd77ef365eecc8ca64fd992940fafd957730dd742134a2d8a67",
+            "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrBytes": 0,
+            "totals": [],
+            "failures": [],
+            "warnings": [],
+            "sourceUnchanged": true,
+            "accepted": true
+          },
+          {
+            "label": "about-feature-red6",
+            "command": [
+              "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/v69-about-main-red-build/native-window-test",
+              "aboutDrawerPreservesTheActualPendingCheck",
+              "aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall"
+            ],
+            "outerSeconds": 120,
+            "pid": 2682804,
+            "exitCode": 4,
+            "wallSeconds": 33.777,
+            "reaped": true,
+            "remainingGroup": [],
+            "stdoutSha256": "c3fc32af719d2ffb767b98bf495ab205325e47df11f1a7d9d70d536928a0b53d",
+            "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrBytes": 0,
+            "totals": [
+              "Totals: 2 passed, 4 failed, 0 skipped, 0 blacklisted, 33661ms"
+            ],
+            "failures": [
+              "FAIL!  : NativeWindowTest::aboutDrawerPreservesTheActualPendingCheck(en-light) 'drawer' returned FALSE. (Actual Source-shaped nonmodal About drawer is required)",
+              "FAIL!  : NativeWindowTest::aboutDrawerPreservesTheActualPendingCheck(ru-dark) 'drawer' returned FALSE. (Actual Source-shaped nonmodal About drawer is required)",
+              "FAIL!  : NativeWindowTest::aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall(en-light) Compared values are not the same",
+              "FAIL!  : NativeWindowTest::aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall(ru-dark) Compared values are not the same"
+            ],
+            "warnings": [],
+            "sourceUnchanged": true,
+            "intendedRedOnly": true,
+            "accepted": true
+          }
+        ],
+        "cleanup": {
+          "sourceUnchanged": true,
+          "privateXdgRemoved": true,
+          "remainingGroups": {
+            "2682302": [],
+            "2682379": [],
+            "2682804": []
+          }
+        }
+      }
+    },
+    "v70-about-main-green-gate/ROOT-ABOUT-FOCUSED-REVIEW.json": {
+      "sha256": "2335c3f0d895f143dfd0053f187055ebda3dd99865cdaf7cefa332aa2f16e9b1",
+      "facts": {
+        "passed": true,
+        "actualMainCasesIncludingInitCleanup": 12,
+        "updaterCases": 49,
+        "localeCases": 14,
+        "warnings": 0,
+        "frozenProductUnchanged": true,
+        "privateXdgRemoved": true,
+        "childGroupsEmpty": true,
+        "noFullWindowOrInstalledUpgradeClaim": true,
+        "rawSha256": "05ffcdeb906ec8231aa72461c4e3dc40337a34de401a7283f41a14f4e843eb40"
+      }
+    },
+    "v70-about-main-whole-gate/ROOT-FULL-ABOUT-WINDOW-REVIEW.json": {
+      "sha256": "d4cbe26bd1db2047171a0e92da0801c79f91fed34a6bc8362c36012b641569a4",
+      "facts": {
+        "passed": true,
+        "wholeWindowCases": 275,
+        "wholeWindowSeconds": 290.274,
+        "desktopCases": 8,
+        "warnings": 0,
+        "rawResultSha256": "43d346447227cd96e2e4e9e45ec1adf5981b463f46042da35efe37d69d034535",
+        "cleanupVerified": true,
+        "oldIntermittentFailuresRemainUnexplained": true,
+        "notFullFeaturePixelOrInstalledUpgradeAcceptance": true
+      }
+    },
+    "v71-about-policy-green-gate/ROOT-POLICY-REVIEW.json": {
+      "sha256": "5b8a6909418afc0b1afb7a129402f7cc8b9546a1b41fe090d38b4dc69a84ee46",
+      "facts": {
+        "passed": true,
+        "qtCases": 10,
+        "publicSyntheticAdaptersOnly": true,
+        "actualLeafSha256": "ddcc203d7e76e1f8ec8e1ae784f28a57429d1a86ef89f7c24b04270ec8f4069e",
+        "noWindowNetworkOrInstalledUpgradeAcceptance": true,
+        "warnings": 0,
+        "cleanupVerified": true,
+        "rawResultSha256": "1ceae5b54ed4f7f6d98d7167001e9a44f66cbe13be8fe8b5cd2fac2e65c48928"
+      }
+    },
+    "source-app-update-about-reference-run-v1/ROOT-SOURCE-REFERENCE-REVIEW.json": {
+      "sha256": "abafc7a75d9303dad1f6f659556ada5860fa79a30d4217a2148ed8875c6d6360",
+      "facts": {
+        "status": "ROOT_REVIEWED_COMPONENT_REFERENCE_ONLY",
+        "frames": 14,
+        "actualHeadedGlobalPlaywright": true,
+        "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+        "transportOrFullShellAcceptance": false,
+        "serverPidGone": true,
+        "portReleased": true,
+        "profilesRemoved": true,
+        "warningsErrorsBlocked": 0,
+        "rawProofSha256": "5576ceeb3afd607220a605a45fb1ffddac28570476688df219e1b54c86445543"
+      }
+    },
+    "native-about-leaf-capture-gate-v2/ROOT-COMPONENT-CAPTURE-REVIEW.json": {
+      "sha256": "0c2a6b350e53b07bd2ef20b92a86ef8ef624ab07b3ffa297ee0fece990426d4f",
+      "facts": {
+        "passedComponentCaptureOnly": true,
+        "rawPairs": 14,
+        "runtimeWarnings": 0,
+        "geometryComparedControls": [
+          "title",
+          "versionCard",
+          "updateCard",
+          "status",
+          "action"
+        ],
+        "all14RelativeRectanglesEqual": true,
+        "rootViewedAllFramesViaContactSheets": true,
+        "noPixelOrGlyphEqualityClaim": true,
+        "sourceAndNativeSyntheticCurrentVersion": "0.9.11",
+        "actualPublishedNativeVersion": "0.1.0",
+        "sourceLicensesCardRemainsUnimplemented": true,
+        "mainIndicatorNotDrawnInThisLeafScene": true,
+        "noFullShellOrTransportClaim": true,
+        "cleanupVerified": true,
+        "resultSha256": "2378c0a374ab1d1fe36be9aec1041672f5990fc314b1bcc8900fdd2bc818fdcd",
+        "geometryComparisonSha256": "03a6dc8f34f79885ab49f46e23f508e1fbc5c894c70db8605bd99555917b850d"
+      }
+    },
+    "ROOT-LIVE-PUBLISHED-CURRENT-REVIEW.json": {
+      "sha256": "2a047ed8c8cb7d76372924a656e82770b9a9fb68fbfdc53ba14f0ea0b73ed56b",
+      "facts": {
+        "actualUnchangedPublishedVersion": "0.1.0",
+        "pid": 2703721,
+        "windowId": 1856415866,
+        "cuaAtSpiLabel": "You are using the latest version.",
+        "explicitPublicTrayCheck": true,
+        "compiledTransportUnchanged": true,
+        "normalCtrlQExit0": true,
+        "cleanupVerified": true,
+        "priorFailedChecksCauseStillUnknown": true,
+        "notActualTwoReleaseUpgrade": true,
+        "rawResultSha256": "b485129e315df0aa2e4ceb3aa5fa76cc9102d668bbefe7b8ac27dd2f44d669a4"
+      }
+    }
+  },
+  "geometry": [
+    {
+      "tag": "en-light-available",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-checking",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-downloading",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-error",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-idle",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-ready",
+      "differences": {}
+    },
+    {
+      "tag": "en-light-up-to-date",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-available",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-checking",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-downloading",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-error",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-idle",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-ready",
+      "differences": {}
+    },
+    {
+      "tag": "ru-dark-up-to-date",
+      "differences": {}
+    }
+  ],
+  "limits": [
+    "Source and Qt captures are real component presentation under synthetic equal version0.9.11 inputs; actual native version is separate",
+    "No full-shell, glyph/pixel, Source IPC or actual installed upgrade acceptance",
+    "Source licenses card and post-restart success toast remain open",
+    "Prior intermittent whole-window failures remain unexplained",
+    "Actual unchanged0.1.0 public check later succeeded; no network fix/cause claimed"
+  ],
+  "rawLogs": {
+    "v70-about-main-green-gate/about-main-focused12.log": "b1c596283c7ec812c3be4a10c99ec6b3ef03dde9f7a7b7882f1c19f6f9643c63",
+    "v70-about-main-whole-gate/whole-window275.log": "7590c80eca75787ecb0f189dea0c8697b4515738d29922d5d45d937b680732ce",
+    "v71-about-policy-green-gate/policy10.log": "f7656f3f033acd5f853b4cf13034ea882a6fdd300982d9685b3b1b59e4671a1b",
+    "live-update-peer-observer-v1-output.json": "97d8555660a240b381fbdaeaa3ddb3692a9a2499e111ef426c531d5a7d8bd9b3"
+  },
+  "localReleasePreparation0_1_1": {
+    "sha256": "241e136618e273c8e7b317972b7f23fd7a1a3036af3ac74878b0239ab3c70657",
+    "facts": {
+      "passedLocalReleasePreparation": true,
+      "configuredVersion": "0.1.1",
+      "sourceCppQmlEqualToFull275": true,
+      "comparedProductFiles": 50,
+      "componentSuites": {
+        "updater": 49,
+        "policyNoWindowCiMode": 10,
+        "locale": 14,
+        "installer": 6,
+        "configuredPackageVersion": 1
+      },
+      "actualFiveCodecTlsCryptoProbe": {
+        "cryptoMapped": true,
+        "grantRoundTrip": true,
+        "imageRoundTrips": {
+          "gif": true,
+          "jpeg": true,
+          "png": true,
+          "svg": true,
+          "webp": true
+        },
+        "imagesDecoded": true,
+        "messageRoundTrip": true,
+        "relevantLibraries": 28,
+        "runtimePathsInsidePrefix": true,
+        "sslMapped": true,
+        "svgDecodeError": "",
+        "tlsBackend": "openssl",
+        "tlsSupported": true,
+        "tlsVersion": "OpenSSL 3.5.5 27 Jan 2026"
+      },
+      "actualLocalInstalledWindow": {
+        "pid": 2707640,
+        "windowId": 1856415867,
+        "compiledCurrentVersionShown": "0.1.1",
+        "statusShown": "You're up to date",
+        "wayland": true,
+        "screenshotEmitted": true,
+        "normalCtrlQExit0": true,
+        "cleanupVerified": true
+      },
+      "rawResultSha256": "6d94c00d6ab9f00ccc2b8b12d2e2be879379644dd4e7b33f70de3a0ffc7276e2",
+      "noPublished0_1_1OrInstalledUpgradeClaimYet": true
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "scope": "Actual first published Linux preview, not complete Linux parity or installed upgrade acceptance",
+  "sourceCommit": "68270a224b4b097128d725e6db9371f468b13bac",
+  "release": {
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.1.0",
+    "tag": "0.1.0",
+    "publishedAt": "2026-11-08T11:16:23Z",
+    "assetUrl": "https://github.com/exordos/workspace_native/releases/download/0.1.0/Exordos-Workspace-Native-0.1.0-linux-x86_64.tar.gz",
+    "bytes": 63510804,
+    "sha256": "e184264644b7a83f0cfa086d0bd1b4f41ffe1b2e9f907ebb7a15eb3e1a2ac9b0",
+    "githubDigestVerified": true,
+    "sha256sumsVerified": true,
+    "exactlyMatchesPreviouslyInstalledCiArchive": false,
+    "ci": {
+      "conclusion": "success",
+      "headBranch": "0.1.0",
+      "headSha": "68270a224b4b097128d725e6db9371f468b13bac",
+      "status": "completed",
+      "url": "https://github.com/exordos/workspace_native/actions/runs/42474798303"
+    }
+  },
+  "actualDownloadedReleaseInstalled": {
+    "scope": "Actual package installation/runtime mappings plus separate Root native-window visual inspection; no account/fullparity/upgrade acceptance",
+    "version": "0.1.0",
+    "pid": 2673735,
+    "installedBinarySha256": "98447a1d5e06c42d621973ef3932a4b041b1115bca1dd83edc6aba053c1c9901",
+    "runtimeMapsVerified": true,
+    "exitedBeforeForcedCleanup": true,
+    "runtimeDecodeErrors": [],
+    "componentChecksPassed": true,
+    "exitCode": 0,
+    "remainingNativeProcesses": [],
+    "privateSettingsAndInstallationRemoved": true,
+    "processReaped": true
+  },
+  "nativeWindow": {
+    "pid": 2673735,
+    "windowId": 1856415539,
+    "backend": "wayland",
+    "visibleAnonymousSignIn": true,
+    "accessibleNodes": 52,
+    "nativeScreenshotObserved": true,
+    "realCtrlQAction": true
+  },
+  "actualFiveCodecTlsProbe": {
+    "cryptoMapped": true,
+    "grantRoundTrip": true,
+    "imageRoundTrips": {
+      "gif": true,
+      "jpeg": true,
+      "png": true,
+      "svg": true,
+      "webp": true
+    },
+    "imagesDecoded": true,
+    "messageRoundTrip": true,
+    "relevantLibraries": 28,
+    "runtimePathsInsidePrefix": true,
+    "sslMapped": true,
+    "svgDecodeError": "",
+    "tlsBackend": "openssl",
+    "tlsSupported": true,
+    "tlsVersion": "OpenSSL 3.5.5 27 Jan 2026"
+  },
+  "originalRootReviewSha256": "3ac7be5024b814b90e467d20065e7e3499f767bf36145f2874fe88aa9a78ed8b",
+  "rawSha256": {
+    "release-0.1.0-runtime-probe.log": "5448a92edac6ec15e348748dcbd358fdcd964d56b85a3ac5cb16b238277b6f68",
+    "release-0_1_0-native-view-result.json": "3bd9df63366af1648e37381fc0b9cbde16b0b07ef0e1a377cef965858dfe62c1",
+    "release-0_1_0-lifecycle-result.json": "e7123637e7a87afae8a8216321b0a20585eb95bb761c3ce116d7d4b21fa31235",
+    "release-0_1_0-lifecycle-maps.log": "1c843317c75aca0d7a333640eafd40d2495816c2d686f28ffaa64b1e13ec20d0",
+    "release-0_1_0-lifecycle-app.log": "99549890e78ca6ab6fba38ba4cb7648558837c9a46bed65cbb760cb494c68552"
+  },
+  "limits": [
+    "Ubuntu26.04 x86_64/glibc2.43+ target only; current Wayland host checked",
+    "Full feature, pixel, live account and two-release installed upgrade remain open",
+    "Two whole-window failures retained; causes unknown",
+    "Initial installed check failed399; HTTP1 control also failed503. Later unchanged published binary check succeeded. Cause remains unknown, no transport fix claimed."
+  ],
+  "laterUnchangedPublishedCheck": {
+    "actualUnchangedPublishedVersion": "0.1.0",
+    "pid": 2703721,
+    "windowId": 1856415866,
+    "cuaAtSpiLabel": "You are using the latest version.",
+    "explicitPublicTrayCheck": true,
+    "compiledTransportUnchanged": true,
+    "normalCtrlQExit0": true,
+    "cleanupVerified": true,
+    "priorFailedChecksCauseStillUnknown": true,
+    "notActualTwoReleaseUpgrade": true,
+    "rawResultSha256": "b485129e315df0aa2e4ceb3aa5fa76cc9102d668bbefe7b8ac27dd2f44d669a4"
+  }
+}

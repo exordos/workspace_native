@@ -452,3 +452,30 @@ byte-for-byte; the complete 49-case updater suite passed in 4.408 s without
 runtime warnings. CI now runs that QCore suite as well as the installed runtime
 probe. The cancelled unpublished prefixed tag was removed. See
 [bare tag checks](provenance/linux-bare-release-tag-checks.json).
+
+The first public Linux preview, [0.1.0](https://github.com/exordos/workspace_native/releases/tag/0.1.0),
+was published on 8 November 2026. The actual downloaded 63,510,804-byte archive
+matched its GitHub digest and SHA256SUMS. Its per-user installation, anonymous
+Wayland window, 51 private runtime mappings, five image codecs including SVG,
+crypto/TLS probe and explicit Ctrl+Q exit passed on the current Linux host.
+These are first-release checks, not full feature/pixel or upgrade acceptance.
+The initial installed update check failed. A later public check with the same
+downloaded binary reported the current version and exited normally; the earlier
+network failure's cause remains unknown, with no transport fix claimed.
+The earlier whole-window failures remain open. See
+[published preview checks](provenance/linux-first-published-preview-checks.json).
+
+The App version entry now opens a nonmodal 315px About dock, with current-version
+and update cards plus a 36px toolbar indicator. A newer release downloads once
+even while the dock is hidden. The explicit Install and restart action binds
+consent to the updater and target version, then consumes it before one restart;
+cancel, error or replacement clears consent. Close/reopen does not drive transport.
+Actual Main12, Updater49, Locale14 and Desktop8 passed, followed by complete
+Window275 in 290.274 s without runtime warnings. Policy10 separately exercises
+the real QML leaf with public synthetic adapters; it creates no window or network.
+Fourteen Source/Qt component captures have equal measured relative rectangles
+for title, version/update cards, status and action. They use equal synthetic
+version text, not the installed release identity. Glyph/full-shell equivalence,
+licenses navigation, success notification and actual two-release upgrade remain
+open. Earlier intermittent failures remain unexplained, despite this passing run.
+See [About/update checks](provenance/about-update-checks.json).

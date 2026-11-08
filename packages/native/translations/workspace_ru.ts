@@ -847,6 +847,10 @@
             <source>Status</source>
             <translation>Статус</translation>
         </message>
+        <message>
+            <source>App version</source>
+            <translation>Версия приложения</translation>
+        </message>
     </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -2049,6 +2053,73 @@
         <message>
             <source>Updates are not available for this platform.</source>
             <translation>Обновления для этой платформы пока недоступны.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeAboutDrawer</name>
+        <message>
+            <source>Version %1 available</source>
+            <translation>Доступна версия %1</translation>
+        </message>
+        <message>
+            <source>Downloading update… %1%</source>
+            <translation>Загрузка обновления… %1%</translation>
+        </message>
+        <message>
+            <source>Update ready to install</source>
+            <translation>Обновление готово к установке</translation>
+        </message>
+        <message>
+            <source>Application update</source>
+            <translation>Обновление приложения</translation>
+        </message>
+        <message>
+            <source>Back</source>
+            <translation>Назад</translation>
+        </message>
+        <message>
+            <source>App version</source>
+            <translation>Версия приложения</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>Current version: %1</source>
+            <translation>Текущая версия: %1</translation>
+        </message>
+        <message>
+            <source>Checking for updates…</source>
+            <translation>Проверка обновлений…</translation>
+        </message>
+        <message>
+            <source>The update is installed. Restart to use it.</source>
+            <translation>Обновление установлено. Перезапустите приложение.</translation>
+        </message>
+        <message>
+            <source>You&#x27;re up to date</source>
+            <translation>Установлена последняя версия</translation>
+        </message>
+        <message>
+            <source>Failed to check updates</source>
+            <translation>Не удалось проверить обновления</translation>
+        </message>
+        <message>
+            <source>Check whether a new version is available</source>
+            <translation>Проверьте, доступна ли новая версия</translation>
+        </message>
+        <message>
+            <source>Installation may take up to a minute. The application will restart automatically.</source>
+            <translation>Установка займёт до минуты. Приложение запустится автоматически.</translation>
+        </message>
+        <message>
+            <source>Install and restart</source>
+            <translation>Установить и перезапустить</translation>
+        </message>
+        <message>
+            <source>Check for updates</source>
+            <translation>Проверить обновления</translation>
         </message>
     </context>
 </TS>

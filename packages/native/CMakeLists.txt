@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.1.0 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,7 +69,7 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
     BASE "${CMAKE_CURRENT_BINARY_DIR}/translations" FILES "${native_ru_qm}")
 set(native_qml_files
     qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeUpdateDialog.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
@@ -77,7 +77,7 @@ endforeach()
 set(native_icons chat_bubble calendar mail folders profile channels add attach smile
     composer-send composer-bottom-panel-open composer-bottom-panel-close
     composer-emoji composer-attach-compact side_panel phone chevron-down close check
-    reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning)
+    reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right)
 set(native_icon_files)
 foreach(icon IN LISTS native_icons)
     list(APPEND native_icon_files "../web/src/shared/assets/icons/${icon}.svg")
@@ -180,6 +180,15 @@ if(BUILD_TESTING)
     target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
     add_test(NAME native-updater COMMAND native-updater-test)
     set_tests_properties(native-updater PROPERTIES TIMEOUT 120)
+
+    # Real About leaf policy with public QObject adapters; no network/window.
+    add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
+    target_link_libraries(native-about-policy-test PRIVATE workspace-native-ui Qt6::Test)
+    qt_add_resources(native-about-policy-test native_about_policy_qml
+        PREFIX /workspace/qml BASE qml FILES
+            qml/NativeAboutDrawer.qml qml/NativeIconButton.qml qml/NativeTheme.qml)
+    add_test(NAME native-about-policy COMMAND native-about-policy-test)
+    set_tests_properties(native-about-policy PROPERTIES TIMEOUT 30)
 
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)

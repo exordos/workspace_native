@@ -59,10 +59,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib
 
       - name: Build
-        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test --parallel 3
+        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test --parallel 3
 
       - name: Check update transport and installer contracts
         run: ctest --test-dir build/linux-release -R '^native-updater$' --output-on-failure
+
+      - name: Check About policy without creating a native window
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build/linux-release -R '^native-about-policy$' --output-on-failure
 
       - name: Package installed runtime
         shell: bash

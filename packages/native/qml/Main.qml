@@ -33,7 +33,22 @@ ApplicationWindow {
     readonly property var preferences: nativePreferences
     readonly property var updater: nativeUpdater
     property bool updatesVisible: false
-    onUpdatesVisibleChanged: if (updatesVisible && updater) updateDialog.open()
+    property bool aboutFromProfile: false
+    function openAbout(fromProfile) {
+        if (!updatesVisible)
+            aboutFromProfile = fromProfile;
+        accountPopup.close();
+        updatesVisible = true;
+        aboutDrawer.forceActiveFocus();
+    }
+    onUpdatesVisibleChanged: {
+        if (updatesVisible) {
+            accountPopup.close();
+            aboutDrawer.forceActiveFocus();
+        } else {
+            aboutFromProfile = false;
+        }
+    }
     // qmllint enable unqualified
     NativeTheme {
         id: theme
@@ -41,17 +56,20 @@ ApplicationWindow {
         dark: root.preferences.dark
     }
     readonly property var colors: theme.colors
-    NativeUpdateDialog {
-        id: updateDialog
-        parent: Overlay.overlay
+    NativeAboutDrawer {
+        id: aboutDrawer
+        anchors.right: parent.right
+        anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
+        anchors.topMargin: root.controller.authenticated ? 4 : 8
+        anchors.bottom: parent.bottom
+        visible: root.updatesVisible && !!root.updater
         updater: root.updater
         colors: root.colors
-        onClosed: root.updatesVisible = false
-    }
-    Connections {
-        target: root.updater
-        function onChanged() {
-            if (root.updater.state === "available") root.updatesVisible = true;
+        canGoBack: root.aboutFromProfile
+        onCloseRequested: root.updatesVisible = false
+        onBackRequested: {
+            root.updatesVisible = false;
+            accountPopup.open();
         }
     }
     readonly property real preferredSidebarWidth: root.preferences.sidebarPreferredWidth
@@ -1223,7 +1241,55 @@ ApplicationWindow {
             anchors.rightMargin: 8
             anchors.verticalCenter: sectionButtons.verticalCenter
             anchors.alignWhenCentered: false
-            spacing: 10
+            spacing: 12
+            NativeIconButton {
+                id: updateIndicator
+                objectName: "nativeUpdateIndicator"
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.alignWhenCentered: false
+                visible: aboutDrawer.indicatorVisible
+                colors: root.colors
+                width: 36; height: 36; glyphSize: 18
+                asset: "download.svg"
+                help: aboutDrawer.indicatorLabel
+                iconColor: hovered ? root.colors["text-primary"] : root.colors.accent
+                onClicked: root.openAbout(false)
+                background: Item {
+                    Rectangle {
+                        anchors.fill: parent; anchors.margins: -2
+                        visible: updateIndicator.visualFocus
+                        radius: 8; color: "transparent"
+                        border.width: 2; border.color: root.colors["accent-soft"]
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 6
+                        color: updateIndicator.hovered ? root.colors["card-bg-active"] : root.colors["accent-soft"]
+                        border.width: 1
+                        border.color: updateIndicator.hovered ? root.colors.accent : root.colors["border-subtle"]
+                    }
+                }
+                Rectangle {
+                    anchors.right: parent.right; anchors.rightMargin: 3
+                    anchors.top: parent.top; anchors.topMargin: 3
+                    width: 8; height: 8; radius: 4
+                    color: root.colors["bg-elevated"]
+                    Rectangle {
+                        objectName: "nativeUpdateIndicatorDot"
+                        anchors.centerIn: parent
+                        width: 6; height: 6; radius: 3
+                        color: root.colors.accent
+                    }
+                    Accessible.ignored: true
+                }
+                SequentialAnimation on opacity {
+                    running: updateIndicator.visible && root.visible && aboutDrawer.phase === "downloading"
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 1; to: 0.5; duration: 1000 }
+                    NumberAnimation { from: 0.5; to: 1; duration: 1000 }
+                    onStopped: updateIndicator.opacity = 1
+                }
+            }
             Button {
                 id: profileControl
                 objectName: "accountMenuButton"
@@ -1778,6 +1844,13 @@ ApplicationWindow {
                 onClicked: root.openOwnStatus()
             }
             NativeButton {
+                objectName: "aboutAction"
+                colors: root.colors
+                Layout.fillWidth: true
+                text: qsTr("App version")
+                onClicked: root.openAbout(true)
+            }
+            NativeButton {
                 colors: root.colors
                 Layout.fillWidth: true
                 text: theme.dark ? qsTr("Use light appearance") : qsTr("Use dark appearance")
@@ -1996,6 +2069,7 @@ ApplicationWindow {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
+        anchors.rightMargin: aboutDrawer.visible ? aboutDrawer.width + 4 : 0
         spacing: 4
 
         Item {
@@ -3017,7 +3091,7 @@ ApplicationWindow {
                 property int layoutTicket: 0
                 property bool positioning: false
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !updateDialog.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
+                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
                 function routeKey() {
                     return serviceScope();
                 }
