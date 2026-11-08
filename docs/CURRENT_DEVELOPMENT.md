@@ -31,8 +31,21 @@ run; this is not evidence that the authority guard caused or fixed that earlier
 startup observation. The previous complete UI126 run predates this guard. A full
 current UI acceptance, live service and complete Linux parity are still open.
 
-Current screenshots compare the service row against the pinned desktop components.
-Full shell, unknown-user generic bubble labels, presence/counts, Source crypto/role
-and action dispatch, live service, complete Linux and other platforms remain open.
-Future changes are committed separately after their focused checks, with full
-acceptance recorded only when the required complete groups pass.
+Missing foreign users now have the pinned desktop's `#` plus first eight UUID
+characters as their generic message author label. This changes only the missing
+directory-entry fallback. Known names, optional-name/username fallbacks and the
+existing own-message behavior are preserved. Seven controller and three visible
+Main cases reproduced the difference before the change and passed afterward.
+The complete Controller suite passed all 746 Qt cases in 466.723 seconds.
+
+The complete Window run passed its 224 functional cases in 235.153 seconds, but
+its quality gate is **not accepted**: one test sent a mouse event outside a 700px
+window. Separately, an ordinary owner Main capture reported `QMutex: destroying
+locked mutex`. One diagnostic run passed both Main cases without that warning,
+so no emitting stack or cause was established. Neither warning is suppressed or
+claimed fixed. See [author checks](provenance/message-author-checks.json).
+
+Current screenshots compare the service row and show the author-label change.
+Full shell, presence/counts, Source crypto/role and action dispatch, live service,
+complete Linux and other platforms remain open. Full acceptance is recorded only
+when the required complete groups and warning checks pass.

@@ -5419,7 +5419,7 @@ QVariantList NativeController::messages() const
         const auto announcement = announcementMetadata(message);
         result.append(QVariantMap{{"id", message.uuid}, {"authorId", message.author},
             {"topicId", message.topic}, {"topicName", topicName},
-            {"author", m_names.value(message.author, ownMessage ? tr("You") : message.author)},
+            {"author", m_names.value(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
             {"content", content}, {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},

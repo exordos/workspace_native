@@ -1,0 +1,59 @@
+{
+  "schema": "workspace-native-message-author-checks-v1",
+  "sourceBaseline": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceContract": "actual ChatPageWorkspace directory resolver returns null for missing user; WorkspaceMessageList falls back to # plus first8",
+  "productionChange": "Only missing foreign-directory default in messages(); known-name/own behavior unchanged",
+  "productionSha256": "d20f7bd6ed00574375ef5d9cd1eece0f2658ba3dea5acdd24d7ad73f62ca8206",
+  "checks": [
+    {
+      "check": "controllerRed",
+      "rawSha256": "9fb660520a457affca846e38c6d63cc2735538516562626d7abc982bdea02466",
+      "qtTotals": "Totals: 8 passed, 1 failed, 0 skipped, 0 blacklisted, 2752ms"
+    },
+    {
+      "check": "windowRed",
+      "rawSha256": "2cf3a98e66e00c13928ada9b671862d372b41c24377db314f6b52009734ca9ec",
+      "qtTotals": "Totals: 4 passed, 1 failed, 0 skipped, 0 blacklisted, 2696ms"
+    },
+    {
+      "check": "controllerFocused",
+      "rawSha256": "d3b02b5aa8fc6539c5c1c8051a74b802e966688eded16c339cbf4015e1143d17",
+      "qtTotals": "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 2753ms"
+    },
+    {
+      "check": "windowFocused",
+      "rawSha256": "ad52ff24351e77e750a5d89c7af9269e0106b989eb2571f0388bea0b03e12552",
+      "qtTotals": "Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 2728ms"
+    },
+    {
+      "check": "wholeController",
+      "rawSha256": "60524ee575992d227b269724debfa2675ec856d91dac6c59a3481c23c7f52eec",
+      "qtTotals": "Totals: 746 passed, 0 failed, 0 skipped, 0 blacklisted, 466723ms"
+    },
+    {
+      "check": "wholeWindow",
+      "rawSha256": "2785a1d11630f9b1ffe2770fdd036b43c1b96e23d8ea84bc9da39f9c0a685605",
+      "qtTotals": "Totals: 224 passed, 0 failed, 0 skipped, 0 blacklisted, 235153ms"
+    },
+    {
+      "check": "mainWarning",
+      "rawSha256": "50c98271e105704a1e4cefd3c6b823ffe98dd0d6d077ba35f45763aca49b701d",
+      "qtTotals": "Totals: 3 passed, 1 failed, 0 skipped, 0 blacklisted, 4424ms"
+    },
+    {
+      "check": "mainDiagnostic",
+      "rawSha256": "3b3b699696d21624a4369cf369f4af4ca7e2ffecdcb03e6eaf42e6c0439f21cb",
+      "qtTotals": "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 4741ms"
+    }
+  ],
+  "wholeControllerAccepted": true,
+  "wholeWindowAccepted": false,
+  "wholeWindowOpenWarning": "One QTest mouse event759,115 outside700x600 in archive ru-light-700. All224 assertions passed; warning gate failed. Caller not yet proven.",
+  "mainCaptureOpenWarning": "QMutex destroying locked mutex in first owner row; one diagnostic-only run passed without warning/stack, cause UNKNOWN.",
+  "wholeUiAccepted": false,
+  "temporaryDirectoriesRemoved": true,
+  "remainingOwnedProcesses": 0,
+  "fullShellAccepted": false,
+  "liveServiceAccepted": false,
+  "fullLinuxParity": false
+}

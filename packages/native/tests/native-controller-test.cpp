@@ -650,6 +650,61 @@ public:
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void genericMessageAuthorUsesSourceUnknownFallback_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"missing-user", "known-name", "null-optional-names",
+                                    "blank-optional-names", "own-missing-user", "own-known-name", "server-own-foreign"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+
+    void genericMessageAuthorUsesSourceUnknownFallback()
+    {
+        QFETCH(QString, scenario);
+        const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const bool identityOwn = scenario.startsWith("own-");
+        const bool serverOwn = scenario == "server-own-foreign";
+        const auto author = identityOwn ? userId : peer;
+        const bool named = scenario == "known-name" || scenario == "own-known-name";
+        const bool usernameOnly = scenario == "null-optional-names" || scenario == "blank-optional-names";
+        const QString preferred = "Known peer";
+        const QString username = "known-peer";
+        QJsonArray directory;
+        if (named || usernameOnly) {
+            QJsonObject user{{"uuid", author}, {"username", username}, {"source", "iam"}, {"status", "offline"},
+                {"last_ping_at", "2026-01-02T10:00:00Z"}, {"created_at", "2026-01-02T10:00:00Z"},
+                {"updated_at", "2026-01-02T10:00:00Z"}, {"name", named ? QJsonValue(preferred) : QJsonValue::Null},
+                {"display_name", QJsonValue::Null},
+                {"first_name", named ? QJsonValue("Known") : scenario == "blank-optional-names" ? QJsonValue(" ") : QJsonValue::Null},
+                {"last_name", named ? QJsonValue("peer") : scenario == "blank-optional-names" ? QJsonValue("") : QJsonValue::Null}};
+            directory.append(user);
+        }
+        auto served = message("Actual HTTP author fallback witness");
+        served["author_uuid"] = author; served["is_own"] = serverOwn;
+        int usersGets = 0, historyGets = 0, mutations = 0;
+        Fixture fixture;
+        fixture.users = [directory, &usersGets](const Request &) { ++usersGets; return Response{directory}; };
+        fixture.messages = [served, &historyGets, &mutations](const Request &request) {
+            if (request.method == "GET") ++historyGets; else ++mutations;
+            return Response{QJsonArray{served}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(usersGets, 1);
+        QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        const auto row = modelMessage(fixture.controller, messageId);
+        QVERIFY(!row.isEmpty()); QVERIFY(historyGets > 0); QCOMPARE(mutations, 0);
+        QCOMPARE(row.value("id").toString(), messageId);
+        QCOMPARE(row.value("authorId").toString(), author);
+        QCOMPARE(row.value("topicId").toString(), topicId);
+        QCOMPARE(row.value("kind").toString(), QString("markdown"));
+        QCOMPARE(row.value("content").toString(), served.value("payload").toObject().value("content").toString());
+        QCOMPARE(row.value("own").toBool(), identityOwn || serverOwn);
+        const auto expected = named ? preferred : usernameOnly ? username
+            : identityOwn || serverOwn ? NativeController::tr("You") : "#" + author.left(8);
+        QCOMPARE(row.value("author").toString(), expected);
+    }
+
     void knownTopicOpeningIgnoresAStaleStreamHintWithoutLookup()
     {
         TopicOpeningFixture test;

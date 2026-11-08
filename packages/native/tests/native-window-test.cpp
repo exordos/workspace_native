@@ -706,6 +706,72 @@ private slots:
         QTest::failOnWarning(QRegularExpression(".*(?:Cannot open|Error decoding|Cannot load).*qrc:/workspace/.*"));
     }
 
+    void visibleGenericAuthorUsesSourceUnknownFallback_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"missing-user", "known-name", "null-optional-names"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+
+    void visibleGenericAuthorUsesSourceUnknownFallback()
+    {
+        QFETCH(QString, scenario);
+        const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const bool named = scenario == "known-name";
+        const bool usernameOnly = scenario == "null-optional-names";
+        const QString preferred = "<b>Known peer</b>";
+        const QString username = "known-peer";
+        QJsonArray directory;
+        if (named || usernameOnly) directory.append(QJsonObject{{"uuid", peer}, {"username", username},
+            {"source", "iam"}, {"status", "offline"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"},
+            {"name", named ? QJsonValue(preferred) : QJsonValue::Null}, {"display_name", QJsonValue::Null},
+            {"first_name", named ? QJsonValue("<b>Known") : QJsonValue::Null},
+            {"last_name", named ? QJsonValue("peer</b>") : QJsonValue::Null}});
+        auto served = message("Synthetic ordinary author witness");
+        served["author_uuid"] = peer; served["is_own"] = false;
+        int usersGets = 0, historyGets = 0, mutations = 0;
+        MockServer server;
+        server.handler = [&, directory, served](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/") return {QJsonArray{windowChannel(streamId, "Synthetic ordinary channel")}};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId) return {windowChannel(streamId, "Synthetic ordinary channel")};
+            if (path.endsWith("/users/")) { ++usersGets; return {directory}; }
+            if (path == "/api/workspace/v1/messenger/stream_topics/") return {QJsonArray{windowChannelTopic(topicId, streamId, "Synthetic topic")}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/" + topicId) return {windowChannelTopic(topicId, streamId, "Synthetic topic")};
+            if (path.endsWith("/messages/")) {
+                if (request.method == "GET") ++historyGets; else ++mutations;
+                return {QJsonArray{served}};
+            }
+            return sessionResponse(request);
+        };
+        QTemporaryDir directoryPath; QVERIFY(directoryPath.isValid());
+        NativePreferences preferences(directoryPath.filePath("author-fallback.ini")); preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([guard = QPointer<QQuickWindow>(window), &engine] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Author witness window did not settle and release focus before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy()); QTRY_COMPARE(controller.messages().size(), 1);
+        QTRY_COMPARE(usersGets, 1); QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(historyGets > 0); QCOMPARE(mutations, 0);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid()); window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "message-" + messageId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "message-author-" + messageId));
+        auto *label = visibleItem(window->contentItem(), "message-author-" + messageId); QVERIFY(label);
+        QCOMPARE(label->property("textFormat").toInt(), 0); // Text.PlainText, including the named markup-shaped control.
+        const auto expected = named ? preferred : usernameOnly ? username : "#" + peer.left(8);
+        QCOMPARE(label->property("text").toString(), expected);
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
     void focusedTextWindowLosesFocusBeforeNativeSurfaceIsDestroyed()
     {
         QTemporaryDir directory; NativePreferences preferences(directory.filePath("focus-lifecycle.ini"));

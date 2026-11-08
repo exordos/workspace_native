@@ -34,8 +34,9 @@ fresh extraction checks are recorded in [extraction checks](provenance/extractio
 The imported snapshot and pinned source references are listed in
 [provenance](provenance/import-v34.json). This repository starts its history with
 the current snapshot; it does not reconstruct or claim earlier commits.
-The next ordinary-channel manager Reject changes remain a separate work in progress.
-Their whole Core suite has unresolved observations and is not part of this import.
+Ordinary-channel manager responses and later fixes are recorded separately in
+[current development](CURRENT_DEVELOPMENT.md). Their checks do not retroactively
+change the imported baseline or establish complete UI acceptance.
 
 Live service, complete Linux parity, full shell comparison, installers, signing,
 Windows and macOS acceptance remain open.
