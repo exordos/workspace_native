@@ -56,7 +56,7 @@ Cache129, Service53, Domain34 and Controller770 passed with no runtime warnings 
 skips. The original runner expected obsolete Domain13 metadata and stopped after
 actual Domain34 PASS; a fresh exact-source continuation ran only Controller770.
 [Avatar reference checks](provenance/avatar-reference-checks.json) retain both
-segments and the preserved REDs. Main image rendering remains the next gate.
+segments and the preserved REDs. Main image rendering is checked separately below.
 
 The new avatar service passed all 28 local HTTP/decoder/resource/lifetime cases.
 It shares at most two network/decode jobs, one serial worker, 64 circular 128px
@@ -79,9 +79,36 @@ the codec-library RPATH fix; a loader trace identified TIFF's transitive JPEG
 lookup. All 28 observed relevant runtime libraries now resolve inside the prefix.
 Service code/tests are byte-exact with the accepted 28-case run; only packaging
 and its stronger observer changed afterward. See
-[avatar service checks](provenance/avatar-service-checks.json). Main photos remain
-the next gate. Animation, external URNs and a newly mounted concurrent consumer
+[avatar service checks](provenance/avatar-service-checks.json). Main photos are checked below. Animation, external URNs and a newly mounted concurrent consumer
 after another consumer's failed transport remain separate parity work.
+
+Uploaded user images now appear in the actual profile, Direct sidebar/header and
+peer message rail. The application creates the real bounded service before the
+QML engine; an engine-owned cache-only provider supplies its thumbnails. The
+small image child preserves each existing circle/border and initial/lock fallback,
+shares the exact file across peer surfaces and reacquires only on real scope,
+reference or visibility changes. Plain revision delivery reads the current URL.
+
+An actual reentrant component check first exposed strict QML binding-loop warnings;
+it did not reach the proposed orphan assertion. Atomic lease state and imperative
+URL publication now pass that same real manager/component case. A separate old
+Main continuation failed at the actual viewer pixel before the new image children.
+The first new Main run passed both ordinary rows and the component but stopped both
+protected rows at a mistaken unencrypted-prompt test precondition. The corrected
+test requires the existing unavailable-key footer, with product code and every
+photo/count oracle unchanged. Focused7 and complete coherent Window231, Core274
+and UI138 passed without runtime warnings, stderr or skips.
+
+Four raw reference captures exercised the pinned Source's real avatar callers,
+file loader, Blob and image decode on matched synthetic public inputs. Actual
+file bytes, identity, crop and 36/40/40/48 circles passed independently, including
+protected Direct photos replacing the fallback lock. Root verified all16 actual
+Native handler-returned public DTO responses against the Source inputs. Source
+uses one binary GET per file; Native retains metadata plus binary, with no duplicate
+peer transfer. Failed capture observers and their diagnostics are retained;
+Source/CSP/bundle were unchanged. Presence, profile, navigation, locked footer,
+full shell and live account acceptance remain open. See
+[rendered-avatar checks](provenance/avatar-main-checks.json).
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,

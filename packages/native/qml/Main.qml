@@ -1200,7 +1200,14 @@ ApplicationWindow {
                         color: root.colors.bg
                         border.color: root.colors["border-subtle"]
                         radius: 18
+                        NativeAvatarImage {
+                            id: profilePhoto
+                            anchors.fill: parent
+                            reference: String(root.controller.account.avatar || "")
+                            loadActive: root.visible && root.controller.authenticated
+                        }
                         Text {
+                            visible: !profilePhoto.replacesFallback
                             objectName: "profileInitial"
                             anchors.centerIn: parent
                             text: profileControl.displayName.slice(0, 1).toUpperCase()
@@ -1771,9 +1778,15 @@ ApplicationWindow {
                                 radius: 20
                                 color: root.colors.bg
                                 border.color: root.colors["border-subtle"]
+                                NativeAvatarImage {
+                                    id: streamPhoto
+                                    anchors.fill: parent
+                                    reference: streamDelegate.modelData.isDirect ? String(streamDelegate.modelData.avatar || "") : ""
+                                    loadActive: root.visible && root.controller.authenticated
+                                }
                                 NativeIconButton {
                                     anchors.centerIn: parent
-                                    visible: Boolean(streamDelegate.modelData.encrypted)
+                                    visible: Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
                                     colors: root.colors; asset: "chat_lock.svg"; glyphSize: 24
                                     width: 24; height: 24; padding: 0
                                     enabled: false; opacity: 1; Accessible.ignored: true
@@ -1781,7 +1794,7 @@ ApplicationWindow {
                                 }
                                 Text {
                                     anchors.centerIn: parent
-                                    visible: !Boolean(streamDelegate.modelData.encrypted)
+                                    visible: !Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
                                     text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1).toUpperCase()
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
@@ -2044,7 +2057,14 @@ ApplicationWindow {
                         radius: 20
                         color: root.colors["bg-elevated"]
                         border.color: root.colors["border-subtle"]
+                        NativeAvatarImage {
+                            id: directHeaderPhoto
+                            anchors.fill: parent
+                            reference: String(root.controller.directPeer.avatar || "")
+                            loadActive: root.visible && root.controller.authenticated
+                        }
                         Text {
+                            visible: !directHeaderPhoto.replacesFallback
                             anchors.centerIn: parent
                             text: String(root.controller.directPeer.displayName || "").slice(0, 1).toUpperCase()
                             textFormat: Text.PlainText
@@ -3030,7 +3050,14 @@ ApplicationWindow {
                         radius: 24
                         color: root.colors["bg-elevated"]
                         border.color: root.colors["border-subtle"]
+                        NativeAvatarImage {
+                            id: messagePhoto
+                            anchors.fill: parent
+                            reference: String(messageRow.modelData.authorAvatar || "")
+                            loadActive: root.visible && root.controller.authenticated
+                        }
                         Text {
+                            visible: !messagePhoto.replacesFallback
                             objectName: "message-avatar-initial-" + messageRow.modelData.id
                             anchors.centerIn: parent
                             text: String(messageRow.modelData.author).slice(0, 1).toUpperCase()

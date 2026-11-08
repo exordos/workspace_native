@@ -3,6 +3,8 @@
 #include "native-markdown.h"
 #include "native-preferences.h"
 #include "native-cache-service.h"
+#include "avatar-images.h"
+#include <QQuickImageProvider>
 
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -118,7 +120,7 @@ void bindNativeLocale(QQmlEngine &engine, NativePreferences *preferences)
     apply();
 }
 
-void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences)
+void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences, AvatarImages *avatars)
 {
     initializeNativeResources();
     if (!preferences) preferences = new NativePreferences({}, &engine);
@@ -135,6 +137,8 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     engine.rootContext()->setContextProperty("nativeController", controller);
     engine.rootContext()->setContextProperty("nativeMarkdown", new NativeMarkdown(&engine));
     engine.rootContext()->setContextProperty("nativePreferences", preferences);
+    if (avatars) engine.addImageProvider("avatars", avatars->createImageProvider());
+    engine.rootContext()->setContextProperty("nativeAvatars", avatars);
     engine.load(QUrl("qrc:/workspace/qml/Main.qml"));
 }
 

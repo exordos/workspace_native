@@ -266,9 +266,10 @@ first/last name or username, with verified IAM display name/username/email as a
 fallback. The email and identity remain the verified IAM whitelist; the directory
 name does not change the account UUID or credential identity. New sign-ins and
 sign-out clear the previous profile; identity mismatches never publish the
-rejected metadata. The source-sized 36px initial avatar and name/email
-labels use plain text and elision. Actual profile images, presence, profile
-navigation and editing remain open.
+rejected metadata. The source-sized 36px avatar retains its initial fallback;
+name/email labels use plain text and elision. Uploaded profile images are rendered
+through the bounded avatar service below. Presence, profile navigation and editing
+remain open.
 
 [NativePreferences](../packages/native/src/native-preferences.cpp) stores the four
 palettes, light/dark/system mode and English/Russian language per opaque owner hash,
@@ -616,7 +617,20 @@ transport. A cold result costs one metadata plus one binary GET (the source avat
 loader uses a direct binary GET). Metadata failure cannot fall through to download.
 Cancel, owner-generation replacement and deadlines complete once; destruction
 suppresses completion. This is a per-operation payload bound, not a global RSS or
-concurrency bound. Image demand/decode/provider limits remain separate work.
+concurrency bound. The shared AvatarImages service bounds demand to 4096 leases,
+64 retained 128px thumbnails, two network/decode payload slots and one serial
+decoder. Its thumbnail map is at most 4 MiB; scratch/full decoded images and GPU
+memory are separate. It publishes cache-only image-provider URLs and clears demand
+on actual owner/API generation changes, without a new disk store or schema.
+
+The actual Main binds this service to uploaded profile, Direct sidebar/header and
+peer-message images, retaining existing initial/lock fallbacks and circle sizes.
+The child releases its exact lease on reference/scope/visibility changes and
+reads URLs only on revisions. It disables Qt's separate URL cache. Static PNG,
+JPEG, GIF and WebP are supported; animation, external avatar URNs, complete loading
+phase/failure recovery, presence and full shell remain open. Local real-window
+checks and raw matched Source captures are recorded in
+[rendered-avatar checks](provenance/avatar-main-checks.json).
 
 [FileClient](../packages/native/src/file-client.cpp) uploads nonempty files up to
 25 MiB through authenticated multipart requests. It validates returned metadata,

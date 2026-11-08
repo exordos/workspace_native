@@ -1,4 +1,5 @@
 #include "api-client.h"
+#include "avatar-images.h"
 #include "file-client.h"
 #include "native-app.h"
 #include "native-controller.h"
@@ -49,6 +50,7 @@ int main(int argc, char **argv)
     session.setVault(&vault);
     workspace::NativeChatKeyVault chatKeys;
     workspace::FileClient files(&api);
+    workspace::AvatarImages avatars(&api, &session, &files);
     workspace::NativePreferences preferences;
     workspace::NativeCacheService cache;
     workspace::bindNativeCachePreferences(cache, preferences);
@@ -66,7 +68,7 @@ int main(int argc, char **argv)
     workspace::RealtimeClient realtime(&api, &session);
     controller.useRealtime(&realtime);
     QQmlApplicationEngine engine;
-    workspace::loadNativeUi(engine, &controller, &preferences);
+    workspace::loadNativeUi(engine, &controller, &preferences, &avatars);
     if (engine.rootObjects().isEmpty())
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());

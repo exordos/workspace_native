@@ -6,8 +6,12 @@
 #include "native-cache-service.h"
 #include "native-preferences.h"
 #include "file-client.h"
+#include "avatar-images.h"
 
 #include <QCryptographicHash>
+#include <QColor>
+#include <QImage>
+#include <QtMath>
 #include <QApplication>
 #include <QAccessible>
 #include <QDateTime>
@@ -32,6 +36,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QQuickImageProvider>
 #include <QRegularExpression>
 #include <QSignalSpy>
 #include <QScopeGuard>
@@ -694,9 +699,404 @@ static bool closeIncubatedTestWindow(QQmlEngine &engine,QQuickWindow *window)
     return settled&&closed&&engine.incubationController()==incubation&&incubation->incubatingObjectCount()==0;
 }
 
+static const QString ViewerAvatarFile = "a4300000-0000-4000-8000-000000000001";
+static const QString PeerAvatarFile = "a4300000-0000-4000-8000-000000000002";
+static QByteArray avatarProbePng(bool peer)
+{
+    // Exact 96x64 RGBA fixtures; guard bands distinguish center-cover from stretch.
+    return QByteArray::fromHex(peer ?
+        "89504e470d0a1a0a0000000d4948445200000060000000400806000000e534720e000000ad4944415478daedd1310d80301440c19a68d28d818da4766a017d4c18a8061430b023004474f81d6e7806dea5be5ddf48ebfe84f69e25b4d17f090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009800e05e6a68f968a1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001300fc9d730b851847383f0000000049454e44ae426082" :
+        "89504e470d0a1a0a0000000d4948445200000060000000400806000000e534720e000000ad4944415478daedd1310d80301440c19a68d28d818da4766a017d4c18a8061430b023004474f81d6e7806dea5be5ddf48f75243cb470b6df45f02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000260058f727b4f72ca1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001300fc64110b8532ff49270000000049454e44ae426082");
+}
+
+static QJsonObject avatarProbeMetadata(const QString &uuid, const QByteArray &png)
+{
+    return {{"uuid", uuid}, {"stream_uuid", QJsonValue::Null}, {"name", "public-avatar.png"},
+        {"content_type", "image/png"}, {"size_bytes", png.size()},
+        {"hash", QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex())}};
+}
+
+static QQuickItem *avatarProbeCircle(QQuickItem *root, qreal diameter)
+{
+    if (!root || !root->isVisible()) return nullptr;
+    if (root->size() == QSizeF(diameter, diameter)
+        && root->property("radius").toReal() == diameter / 2) return root;
+    for (auto *child : root->childItems())
+        if (auto *found = avatarProbeCircle(child, diameter)) return found;
+    return nullptr;
+}
+
+static QQuickItem *avatarProbeReadyImage(QQuickItem *root)
+{
+    if (!root || !root->isVisible()) return nullptr;
+    const auto source = root->property("source").toUrl();
+    // Image.status is the public QML enum: Null=0, Ready=1, Loading=2, Error=3.
+    if (source.scheme() == "image" && source.host() == "avatars"
+        && root->property("status").toInt() == 1) return root;
+    for (auto *child : root->childItems())
+        if (auto *found = avatarProbeReadyImage(child)) return found;
+    return nullptr;
+}
+
+static bool avatarProbeHasVisibleLock(QQuickItem *root)
+{
+    if (!root || !root->isVisible()) return false;
+    if (root->property("asset").toString() == "chat_lock.svg") return true;
+    for (auto *child : root->childItems()) if (avatarProbeHasVisibleLock(child)) return true;
+    return false;
+}
+
+static bool avatarProbeMatchesPixels(QQuickWindow *window, QQuickItem *face, bool peer)
+{
+    if (!window || !face || !face->isVisible()) return false;
+    const auto image = window->grabWindow();
+    if (image.isNull()) return false;
+    const auto dpr = window->devicePixelRatio();
+    const auto sample = [&](const QPointF &local) -> QColor {
+        const auto scene = face->mapToScene(local) * dpr;
+        const QPoint pixel(qFloor(scene.x()), qFloor(scene.y()));
+        return image.rect().contains(pixel) ? image.pixelColor(pixel) : QColor{};
+    };
+    const auto close = [](const QColor &a, const QColor &b) {
+        return a.isValid() && b.isValid() && qAbs(a.red() - b.red()) <= 3
+            && qAbs(a.green() - b.green()) <= 3 && qAbs(a.blue() - b.blue()) <= 3;
+    };
+    const QColor red(228,31,45), green(21,177,86), blue(35,103,232), gold(243,183,24);
+    const QVector<QColor> colors = peer ? QVector<QColor>{blue,gold,red,green}
+                                       : QVector<QColor>{red,green,blue,gold};
+    const QSizeF inner(face->width()-2, face->height()-2);
+    const QVector<QPointF> locations{{.30,.28},{.70,.28},{.30,.72},{.70,.72},{.12,.28},{.88,.28}};
+    const int expected[]{0,1,2,3,0,1};
+    for (qsizetype i=0; i<locations.size(); ++i) {
+        const QPointF local(1 + locations[i].x()*inner.width(), 1 + locations[i].y()*inner.height());
+        if (!close(sample(local), colors[expected[i]])) return false;
+    }
+    // These corners are outside the circle. Compare with adjacent real parent
+    // background, not a guessed theme/hover surface. Square image leakage fails.
+    return close(sample(QPointF(2,2)), sample(QPointF(-2,2)));
+}
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void avatarComponentKeepsNestedScopeAndReferenceLease()
+    {
+        // Additive component contract test. Requires the accepted real service,
+        // Root's real native-app binding and avatarProbe* helpers from the pixel
+        // proposal. Both compared closures use exactly this fixture and observer;
+        // only NativeAvatarImage.qml differs (Root v1 vs atomic v2).
+        QMap<QString,int> metadataGets, binaryGets;
+        const auto viewerPng = avatarProbePng(false), peerPng = avatarProbePng(true);
+        const QMap<QString,QByteArray> images{{ViewerAvatarFile,viewerPng},{PeerAvatarFile,peerPng}};
+        WindowDirectFixture fixture; fixture.seed();
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&,original](const Request &request)->Response {
+            const auto path = request.target.path();
+            for (auto it=images.cbegin(); it!=images.cend(); ++it) {
+                const auto file = "/api/workspace/v1/messenger/files/"+it.key();
+                if (request.method=="GET" && path==file) {
+                    ++metadataGets[it.key()]; return {avatarProbeMetadata(it.key(),it.value())};
+                }
+                if (request.method=="GET" && path==file+"/actions/download") {
+                    ++binaryGets[it.key()]; Response response;
+                    response.rawBody=it.value(); response.rawContentType="image/png"; return response;
+                }
+            }
+            return original(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("avatar-reentry.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session); FileClient files(&api);
+        controller.useFiles(&files);
+        AvatarImages avatars(&api,&session,&files);
+        QPointer<QQuickItem> photo;
+        bool armed=false, reentered=false, changedReference=false, advancedGeneration=false;
+        bool readyAtBoundary=false, nestedVisible=false;
+        int nestedLeaseCount=-1;
+        quint64 initialGeneration=0, initialScope=0;
+        TopicCompletionProbe probe; // Existing safe QML -> C++ notifier relay.
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("nativeAvatarReentryProbe",&probe);
+        loadNativeUi(engine,&controller,&preferences,&avatars);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Avatar reentry window did not settle before teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready()); QTRY_VERIFY(controller.authenticated());
+        QCOMPARE(avatars.stats().leases,0); // Fixture accounts have no avatar URNs.
+        QCOMPARE(metadataGets.size(),0); QCOMPARE(binaryGets.size(),0);
+        const auto connection=connect(&probe,&TopicCompletionProbe::completed,&avatars,
+            [&](const QString &,const QString &url) {
+                if(!armed || reentered || !url.isEmpty() || !photo) return;
+                // Guard recursion BEFORE actual outward calls. No QVERIFY/QTRY or
+                // event pumping in this synchronous notifier callback.
+                reentered=true; armed=false;
+                readyAtBoundary=session.ready();
+                api.setAccessToken("synthetic-avatar-reentrant-generation");
+                advancedGeneration=api.generation()>initialGeneration;
+                if(!photo) return;
+                changedReference=photo->setProperty("reference","urn:image:"+PeerAvatarFile);
+                if(!photo) return;
+                photo->setVisible(true);
+                nestedVisible=photo && photo->isVisible(); nestedLeaseCount=avatars.stats().leases;
+            });
+        QQmlComponent component(&engine);
+        component.setData(R"QML(
+            import QtQuick
+            import "qrc:/workspace/qml"
+            NativeAvatarImage {
+                id: subject
+                objectName: "avatarReentrySubject"
+                width: 36; height: 36
+                images: nativeAvatars
+                Connections {
+                    target: subject
+                    function onImageUrlChanged() {
+                        nativeAvatarReentryProbe.completed(subject.reference,subject.imageUrl)
+                    }
+                }
+            }
+        )QML",QUrl("qrc:/native-avatar-reentry-test.qml"));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        std::unique_ptr<QQuickItem> subject(qobject_cast<QQuickItem *>(component.create()));
+        const auto disconnectObserver=qScopeGuard([&armed,connection] { armed=false; QObject::disconnect(connection); });
+        QVERIFY2(subject,qPrintable(component.errorString()));
+        photo=subject.get(); photo->setParentItem(window->contentItem());
+        photo->setPosition(QPointF(90,90));
+        QVERIFY(photo->setProperty("reference","urn:image:"+ViewerAvatarFile));
+        QTRY_VERIFY(!avatars.imageUrl("urn:image:"+ViewerAvatarFile).isEmpty());
+        QTRY_VERIFY(avatarProbeReadyImage(photo.data()));
+        QCOMPARE(avatars.stats().leases,1);
+        QCOMPARE(metadataGets.value(ViewerAvatarFile),1); QCOMPARE(binaryGets.value(ViewerAvatarFile),1);
+        const auto oldUrl=avatars.imageUrl("urn:image:"+ViewerAvatarFile);
+        std::unique_ptr<QQuickImageProvider> provider(avatars.createImageProvider());
+        initialGeneration=api.generation(); initialScope=avatars.scopeRevision();
+        armed=true;
+        photo->setVisible(false); // Actual public visibility notification starts refresh.
+        QVERIFY(reentered); QVERIFY(readyAtBoundary); QVERIFY(advancedGeneration);
+        QVERIFY(changedReference); QVERIFY(nestedVisible); QCOMPARE(nestedLeaseCount,1);
+        QVERIFY(avatars.scopeRevision()>initialScope);
+        QVERIFY(photo && photo->isVisible());
+        QCOMPARE(photo->property("reference").toString(),"urn:image:"+PeerAvatarFile);
+        QTRY_VERIFY(!avatars.imageUrl("urn:image:"+PeerAvatarFile).isEmpty());
+        QCOMPARE(metadataGets.value(PeerAvatarFile),1); QCOMPARE(binaryGets.value(PeerAvatarFile),1);
+        // First intended v1 failure: the real manager has downloaded+decoded B,
+        // but outer dual-property clear orphaned the nested component ownership.
+        QTRY_VERIFY2(avatarProbeReadyImage(photo.data()),"Nested actual B acquisition must remain visible after outer refresh returns");
+        QCOMPARE(photo->property("imageUrl").toString(),avatars.imageUrl("urn:image:"+PeerAvatarFile));
+        QCOMPARE(avatars.stats().leases,1);
+        QSize size;
+        const auto retired=provider->requestImage(QUrl(oldUrl).path().mid(1),&size,QSize{});
+        QCOMPARE(retired.size(),QSize(1,1)); QCOMPARE(retired.pixelColor(0,0).alpha(),0);
+        photo->setVisible(false);
+        QCOMPARE(avatars.stats().leases,0);
+        const auto finalUrl=avatars.imageUrl("urn:image:"+PeerAvatarFile);
+        const auto finalScope=avatars.scopeRevision();
+        api.setAccessToken("synthetic-avatar-hidden-generation");
+        QVERIFY(avatars.scopeRevision()>finalScope);
+        QCOMPARE(avatars.stats().leases,0); QCOMPARE(avatars.stats().pipelineJobs,0);
+        QVERIFY(avatars.imageUrl("urn:image:"+PeerAvatarFile).isEmpty());
+        QVERIFY(photo->property("imageUrl").toString().isEmpty());
+        const auto hiddenRetired=provider->requestImage(QUrl(finalUrl).path().mid(1),&size,QSize{});
+        QCOMPARE(hiddenRetired.size(),QSize(1,1)); QCOMPARE(hiddenRetired.pixelColor(0,0).alpha(),0);
+        QCOMPARE(metadataGets.value(ViewerAvatarFile),1); QCOMPARE(binaryGets.value(ViewerAvatarFile),1);
+        QCOMPARE(metadataGets.value(PeerAvatarFile),1); QCOMPARE(binaryGets.value(PeerAvatarFile),1);
+    }
+
+    void uploadedAvatarsUseRealMainPixels_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("encryptedDirect");
+        QTest::newRow("en-light-direct") << QString("en") << QString("light") << false;
+        QTest::newRow("ru-dark-direct") << QString("ru") << QString("dark") << false;
+        QTest::newRow("en-light-protected-direct") << QString("en") << QString("light") << true;
+        QTest::newRow("ru-dark-protected-direct") << QString("ru") << QString("dark") << true;
+    }
+
+    void uploadedAvatarsUseRealMainPixels()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, encryptedDirect);
+        QMap<QString,int> metadataGets, binaryGets;
+        const auto captures=qEnvironmentVariable("CASSI_NATIVE_AVATAR_SCREENSHOT_DIRECTORY");
+        QJsonArray servedResponses; // Only synthetic public Workspace collection payloads.
+        const auto viewerPng=avatarProbePng(false), peerPng=avatarProbePng(true);
+        QCOMPARE(QCryptographicHash::hash(viewerPng,QCryptographicHash::Sha256).toHex(),
+                 QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9"));
+        QCOMPARE(QCryptographicHash::hash(peerPng,QCryptographicHash::Sha256).toHex(),
+                 QByteArray("d6a802c7cdef5460f2665fb94eb5d46e4b65e03186217cdaa868b9c128541de6"));
+        const QMap<QString,QByteArray> images{{ViewerAvatarFile,viewerPng},{PeerAvatarFile,peerPng}};
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.created["encryption"]=encryptedDirect;
+        // Existing encrypted DM metadata is readable without bootstrap/key material.
+        // This fixture does not claim encrypted message/decrypt/composer acceptance.
+        fixture.created["current_encryption_key_uuid"]=QJsonValue::Null;
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar","urn:image:"+ViewerAvatarFile},
+                {"source","iam"},{"status","offline"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar","urn:image:"+PeerAvatarFile},
+                {"source","iam"},{"status","offline"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        auto peerMessage=message("A public synthetic peer message keeps the actual avatar rail visible. "
+                                 "The picture belongs to Alice Synthetic, not the current viewer.",messageId,channelDefault);
+        peerMessage["stream_uuid"]=windowDirectId(); peerMessage["author_uuid"]=channelPeer;
+        peerMessage["user_uuid"]=userId; peerMessage["is_own"]=false;
+        peerMessage["pinned"]=false; peerMessage["reactions"]=QJsonObject{};
+        peerMessage["reaction_users"]=QJsonObject{};
+        peerMessage["updated_at"]=peerMessage.value("created_at");
+        const auto original=fixture.server.handler;
+        fixture.server.handler=[&,original,peerMessage](const Request &request)->Response {
+            const auto path=request.target.path();
+            for(auto it=images.cbegin();it!=images.cend();++it) {
+                const auto file="/api/workspace/v1/messenger/files/"+it.key();
+                if(request.method=="GET"&&path==file) { ++metadataGets[it.key()]; return {avatarProbeMetadata(it.key(),it.value())}; }
+                if(request.method=="GET"&&path==file+"/actions/download") {
+                    ++binaryGets[it.key()]; Response response; response.rawBody=it.value();
+                    response.rawContentType="image/png"; return response;
+                }
+            }
+            auto response=original(request);
+            if(request.method=="GET"&&path.endsWith("/messages/")
+                &&QUrlQuery(request.target).queryItemValue("stream_uuid")==windowDirectId())
+                response.data=QJsonArray{peerMessage};
+            if (!captures.isEmpty() && request.method=="GET" && path.startsWith("/api/workspace/")
+                && (path.endsWith("/users/") || path.endsWith("/streams/")
+                    || path.endsWith("/stream_topics/") || path.endsWith("/messages/")))
+                servedResponses.append(QJsonObject{{"target",request.target.toString(QUrl::FullyEncoded)},
+                    {"status",response.status},{"body",response.data}});
+            return response;
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("appearance.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session); FileClient files(&api); controller.useFiles(&files);
+        // Controlled Main-only comparison: same REAL service setup in both closures.
+        // Requires Root's separately reviewed optional loadNativeUi argument/wiring.
+        // Main itself must acquire; the test does not prewarm or inject an image.
+        AvatarImages avatars(&api,&session,&files);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences,&avatars);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Avatar window did not settle and release focus before teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->resize(1440,900); QCOMPARE(window->devicePixelRatio(),qreal(1));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_COMPARE(controller.viewerDisplayName(),QString("Cassi Synthetic"));
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId())); // Real existing direct sidebar action.
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.directPeer().value("displayName").toString(),QString("Alice Synthetic"));
+        QTRY_VERIFY(visibleItem("directConversationName"));
+        QCOMPARE(visibleItem("directConversationName")->property("text").toString(),QString("Alice Synthetic"));
+        QCOMPARE(visibleItem("conversationHeader")->height(),qreal(56));
+        QTRY_VERIFY(visibleItem("message-avatar-"+messageId));
+        if (encryptedDirect) {
+            // Source and unchanged Main place the locked-key footer before the
+            // unencrypted aggregate topic chooser. This fixture has no vault.
+            QVERIFY(!visibleItem("streamTopicPrompt"));
+            QTRY_VERIFY(visibleItem("encryptedReadStatus"));
+            QTRY_VERIFY(visibleItem("encryptedReadStatusText"));
+            QCOMPARE(controller.encryption().value("available").toBool(),false);
+            QCOMPARE(visibleItem("encryptedReadStatusText")->property("text").toString(),
+                locale=="ru" ? QString("Шифрование для этого чата недоступно или не удалось открыть локальное хранилище ключей.")
+                             : QString("Encryption is unavailable for this chat or local key storage could not be opened."));
+        } else {
+            QTRY_VERIFY(visibleItem("streamTopicPrompt"));
+            QVERIFY(!visibleItem("encryptedReadStatus"));
+        }
+        QVERIFY(fixture.usersGets>0); QVERIFY(fixture.historyGets>0);
+        QCOMPARE(fixture.users.at(0).toObject().value("avatar").toString(),"urn:image:"+ViewerAvatarFile);
+        QCOMPARE(fixture.users.at(1).toObject().value("avatar").toString(),"urn:image:"+PeerAvatarFile);
+        QPointer<QQuickItem> viewer=visibleItem("profileAvatar");
+        QPointer<QQuickItem> sidebar=avatarProbeCircle(visibleItem("stream-"+windowDirectId()),40);
+        QPointer<QQuickItem> header=avatarProbeCircle(visibleItem("directConversationHeader"),40);
+        QPointer<QQuickItem> rail=visibleItem("message-avatar-"+messageId);
+        QVERIFY(viewer&&sidebar&&header&&rail);
+        QCOMPARE(viewer->size(),QSizeF(36,36)); QCOMPARE(sidebar->size(),QSizeF(40,40));
+        QCOMPARE(header->size(),QSizeF(40,40)); QCOMPARE(rail->size(),QSizeF(48,48));
+        QSignalSpy frame(window,&QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!frame.isEmpty());
+        const auto captureAvatar=[&](const QString &stage) {
+            if (captures.isEmpty()) return;
+            QVERIFY(QDir().mkpath(captures));
+            const auto base=QDir(captures).filePath("native-avatars-"+locale+"-"+mode
+                +(encryptedDirect?"-protected-direct":"-direct")+"-"+stage);
+            const auto pixels=window->grabWindow(); QVERIFY(!pixels.isNull());
+            QCOMPARE(pixels.size(),QSize(1440,900)); QVERIFY(pixels.save(base+".png"));
+            const auto bounds=[](QQuickItem *item) {
+                const auto point=item->mapToScene(QPointF{});
+                return QJsonObject{{"x",point.x()},{"y",point.y()},{"width",item->width()},{"height",item->height()}};
+            };
+            const auto counts=[](const QMap<QString,int> &map) {
+                QJsonObject result; for(auto i=map.cbegin();i!=map.cend();++i) result[i.key()]=i.value(); return result;
+            };
+            const QJsonObject facts{{"synthetic",true},{"liveAccountAcceptance",false},{"stage",stage},
+                {"locale",preferences.locale()},{"mode",preferences.mode()},{"dpr",window->devicePixelRatio()},
+                {"platform",QGuiApplication::platformName()},{"graphicsApi",int(window->rendererInterface()->graphicsApi())},
+                {"stream",controller.selectedStream()},{"topic",controller.selectedTopic()},
+                {"viewerName",controller.viewerDisplayName()},{"peerName",controller.directPeer().value("displayName").toString()},
+                {"encryptedDirect",encryptedDirect},{"headerHeight",visibleItem("conversationHeader")->height()},
+                {"topicPromptVisible",bool(visibleItem("streamTopicPrompt"))},
+                {"encryptionStatusVisible",bool(visibleItem("encryptedReadStatus"))},
+                {"encryptionStatusText",visibleItem("encryptedReadStatusText") ? visibleItem("encryptedReadStatusText")->property("text").toString() : QString{}},
+                {"faces",QJsonObject{{"profile",bounds(viewer.data())},{"sidebar",bounds(sidebar.data())},
+                    {"header",bounds(header.data())},{"rail",bounds(rail.data())}}},
+                {"metadataGets",counts(metadataGets)},{"binaryGets",counts(binaryGets)},
+                {"viewerPngSha256",QString::fromLatin1(QCryptographicHash::hash(viewerPng,QCryptographicHash::Sha256).toHex())},
+                {"peerPngSha256",QString::fromLatin1(QCryptographicHash::hash(peerPng,QCryptographicHash::Sha256).toHex())},
+                {"servedPublicCollectionResponses",servedResponses}};
+            QFile receipt(base+"-metrics.json"); QVERIFY(receipt.open(QIODevice::WriteOnly));
+            const auto body=QJsonDocument(facts).toJson(); QCOMPARE(receipt.write(body),qint64(body.size()));
+        };
+        captureAvatar("before-pixel-check");
+        // First intended old-Main failure is an actual rendered RGB consequence,
+        // not a missing API/property declaration or artificial image-ready flag.
+        QTRY_VERIFY2(avatarProbeMatchesPixels(window,viewer,false),"Viewer avatar must show the actual center-cropped PNG");
+        QTRY_VERIFY2(avatarProbeMatchesPixels(window,sidebar,true),"Direct sidebar avatar must show peer PNG");
+        QTRY_VERIFY2(avatarProbeMatchesPixels(window,header,true),"Direct header avatar must show peer PNG");
+        QTRY_VERIFY2(avatarProbeMatchesPixels(window,rail,true),"Peer rail avatar must show peer PNG");
+        for(const auto &face:{viewer,sidebar,header,rail}) {
+            auto *image=avatarProbeReadyImage(face); QVERIFY(image);
+            const auto bounds=image->mapRectToItem(face,QRectF(QPointF{},image->size()));
+            QCOMPARE(bounds,QRectF(1,1,face->width()-2,face->height()-2));
+            QCOMPARE(QQmlProperty(face,"border.width").read().toReal(),qreal(1));
+            QCOMPARE(face->property("radius").toReal(),face->width()/2);
+        }
+        QVERIFY(!hasVisibleText(viewer,"C")); QVERIFY(!hasVisibleText(header,"A"));
+        QVERIFY(!hasVisibleText(rail,"A"));
+        if(encryptedDirect) QVERIFY(!avatarProbeHasVisibleLock(sidebar));
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}) {
+            QCOMPARE(metadataGets.value(uuid),1); QCOMPARE(binaryGets.value(uuid),1);
+        }
+        for(const auto &request:fixture.server.requests) {
+            if(!request.target.path().startsWith("/api/workspace/v1/messenger/files/")) continue;
+            QCOMPARE(request.method,QByteArray("GET"));
+            QCOMPARE(request.headers.value("authorization"),QByteArray("Bearer synthetic-project-token"));
+            QVERIFY(request.headers.value("cookie").isEmpty());
+        }
+        // Three peer consumers must join one real cold UUID transfer. No data/key
+        // transfer is injected by this test and no plaintext/private key is used.
+        QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+        captureAvatar("ready");
+        const bool closed=closeIncubatedTestWindow(engine,window);
+        if(closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
     void init()
     {
         QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));

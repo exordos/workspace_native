@@ -35,6 +35,8 @@ struct Response {
     int delay = 0;
     QMap<QByteArray, QByteArray> headers;
     std::function<void(std::function<void()>)> defer; // optional test-owned delivery gate
+    QByteArray rawBody; // Null keeps every existing JSON response unchanged.
+    QByteArray rawContentType = "application/octet-stream";
 };
 
 class MockServer final : public QTcpServer {
@@ -81,11 +83,14 @@ public:
                         auto *socket = guarded.data();
                         if (!socket || socket->state() != QAbstractSocket::ConnectedState)
                             return;
-                        const auto body = response.data.isArray()
+                        auto body = response.data.isArray()
                             ? QJsonDocument(response.data.toArray()).toJson(QJsonDocument::Compact)
                             : QJsonDocument(response.data.toObject()).toJson(QJsonDocument::Compact);
+                        if (!response.rawBody.isNull()) body = response.rawBody;
                         QByteArray headers = "HTTP/1.1 " + QByteArray::number(response.status)
-                            + " Test\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "
+                            + " Test\r\nConnection: close\r\nContent-Type: "
+                            + (response.rawBody.isNull() ? QByteArray("application/json") : response.rawContentType)
+                            + "\r\nContent-Length: "
                             + QByteArray::number(body.size()) + "\r\n";
                         for (auto it = response.headers.cbegin(); it != response.headers.cend(); ++it)
                             headers += it.key() + ": " + it.value() + "\r\n";

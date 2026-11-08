@@ -1,0 +1,126 @@
+{
+  "schema": "native-avatar-main-local-checks-v1",
+  "sourceManifestSha256": "5046ac7446700d82741c281557aa483a47b8ec486bd8de298dfec44156bc1a1f",
+  "localSyntheticAcceptanceOnly": true,
+  "productionAndTestFiles": {
+    "packages/native/CMakeLists.txt": "831bc5bcfbbfe7d8327abcbdbb24f6d6b58afc1f67637e7a6080809cc1410117",
+    "packages/native/src/native-app.h": "1f172d8d5111cca3b313528640de7b758ce9220e55a96e01b484815764486e46",
+    "packages/native/src/native-app.cpp": "22b9eb91c79271c7979bb9e5d754aa3b33557c53ae8a72b2861efa221f8bb64d",
+    "packages/native/src/main.cpp": "e1415ed07d92e0388ce509d0e24470decc3944c4f41304331b9dabb3bc49c51b",
+    "packages/native/qml/Main.qml": "b88edd2d4d3be7234dbfcde23af056ab578ef760b9c4c3769a1a050033570563",
+    "packages/native/qml/NativeAvatarImage.qml": "e7ae19375ff8a4b779bdf5f7743d014e90ddb5dea38c85bd9fa8ec0676a26e60",
+    "packages/native/tests/mock-server.h": "8ea2be6eb80c6d11435a0d6edf457741673d2a5b9441681710938a42267e183a",
+    "packages/native/tests/native-window-test.cpp": "02a43061113fe66ef46011664db2ec0261c2dee565331ac6cb342b1e956466ad"
+  },
+  "focusedReviewSha256": "3bbf147503c9f7a2733fdd7658e458c3320e35aad260ee3ff144a290d919f9a1",
+  "focused7RawSha256": "d51bf6773effe9f2ecee87b5fdc07c3382834f5645fbbf54c92edfedeb234bd7",
+  "wholeCoherentSuites": [
+    {
+      "label": "whole-window231",
+      "totals": [
+        "Totals: 231 passed, 0 failed, 0 skipped, 0 blacklisted, 240521ms"
+      ],
+      "wallSeconds": 240.712,
+      "stdoutSha256": "371833f161d8b5a8bbd45b9b70f9e86c6518570a5233e9f70de17f5ff32d3006",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "whole-core274",
+      "totals": [
+        "Totals: 274 passed, 0 failed, 0 skipped, 0 blacklisted, 613978ms"
+      ],
+      "wallSeconds": 614.063,
+      "stdoutSha256": "355409789da8e292a298f0b775e27e15e5d1cf7436fb1f311ef21ea8308e5e56",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "whole-ui138",
+      "totals": [
+        "Totals: 138 passed, 0 failed, 0 skipped, 0 blacklisted, 319390ms"
+      ],
+      "wallSeconds": 319.57,
+      "stdoutSha256": "9f6757bde1e931026e460049de2425a20823081ba6d34167590c2ed84a636cf5",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "binaries": {
+    "native-window-test": "e29fb81540607aae36a5b12771776c52bb1259bab263be5f459da77c0f320f6f",
+    "native-e2ee-read-test": "1bc2fc9f7aa4fa2b15e4f41e58b84cc25554375558e85ff3389ba323dbcd7153",
+    "native-e2ee-ui-test": "1e01292e3db661732178cbb9c6d6c3c4ed0867bd3b2084b6d22b7d2ef7a9d2b1",
+    "workspace-native": "acdde5c47843f2eca031fc67bab6c29d0e826bb58f9f252a00f2e5ed11bda6cf"
+  },
+  "controller770": "Previously accepted with byte-exact controller production/test code; not repeated for this QML integration.",
+  "oldMainPixelRegression": {
+    "rawSha256": "dd1e989e5e48a690aafca36a8d638d64fa27ae2fccc2498ce2cfffed3943e64c",
+    "reportSha256": "459563043aa403ddda317f4f19e9435c754fb7479c787ab63c5bd6d2f0608216",
+    "scope": "Actual viewer pixel failure with old Main, same real service/binding/test; separate continuation after strict component failure."
+  },
+  "preservedFailures": [
+    {
+      "scope": "Component v1 had actual strict QML imageUrl binding-loop warnings. Intended orphan assertion not reached; v2 unrun. Atomic lease and imperative URL v3 passed the same strict real component case.",
+      "resultSha256": "6fbf0baafb3c737a8e591bf66b4dde832b3eedf23e4fae2127d4d4462c99ede9"
+    },
+    {
+      "scope": "First new Main: ordinary2/component passed; protected2 failed test-only wrong topic prompt precondition. Product unchanged in successor; actual unavailable-key footer required before same pixel/count oracles.",
+      "resultSha256": "a360371d7fe066238937db9ec536d58659bba8732f9d59cf5ada2769f40e4028"
+    },
+    {
+      "scope": "Source observer Blob fetch was blocked by unchanged connect-src CSP; independent actual policy diagnostic. Passive actual Blob observation avoids that extra fetch without changing source/CSP/bundle.",
+      "diagnosticSha256": "4fb2cfa86c035337d30054b8d237486ef3d5b0cee7801e8c01e0e510e8bd9ab8"
+    },
+    {
+      "scope": "Next observer saved raw PNG then decoder lacked global Buffer in MCP. Explicit node:buffer binding passed the saved-PNG regression; source/decoder/pixel oracles unchanged.",
+      "failureSha256": "0151c7c9f0dc49f5e2133cb6157993a029b43547b2afc1df7ad9b180ba7ad389",
+      "decoderRegressionSha256": "d34875b2b1fd2ad6f67a5c73328a640bbcfa3214e67ddef7cbd6d2ef5af43b80"
+    }
+  ],
+  "sourceComparison": {
+    "pin": "95495b10b828f853c9e770b47216073eb973fa95",
+    "productionFiles": 1682,
+    "sceneManifestSha256": "65ca9c037675be39570392945d242ea04f10720f7557b3450d43c03e18df62a2",
+    "actualHandlerDtoEqualityResponses": 16,
+    "rootEqualityReviewSha256": "8670fe693642c5ff2dc7ea696de8eede083f58001a55cd22ff3e0565b591cda5",
+    "actualVisibleCaptureProofSha256": "e443a8ad5dcf2e68d7c188aaf261cebaf63c00311cd6a1839d36e751fcc04a50",
+    "rootCaptureReviewSha256": "baecf3630f072198e331ce3245dbe8ebbd564ca87960c6ad0c058bafd1864253",
+    "callbackSha256": "5076dfbe566a75cbe4f06cb028234a1a3b0211612d122f2f2660a7ad492c438b",
+    "frames": [
+      {
+        "tag": "en-light-direct",
+        "pngSha256": "c7487b5a5c9149a6bc51284996b3366d6c55c12ee6962561020c65a2764eb43b",
+        "metricsSha256": "6a109315252ebe5b986cdbad9267442dadb779f07aa739f5a01ec7dccbb05da5",
+        "nativePngSha256": "4aebdb6d3d0188fb43c74f321217a2b2b3e1cce241e59f6d2e10ba9fc2bdbc80"
+      },
+      {
+        "tag": "en-light-protected-direct",
+        "pngSha256": "d69aeeee736f5dfe0cf063a39a9f9d32e166bf77b4c0e13ec6e09eaf550c5bcc",
+        "metricsSha256": "eb911b1bd220b5d674ab9bfc2aa775eb6f83e6ee73c1cd7c1c9b7e5cef0dcc79",
+        "nativePngSha256": "69d455a8e1e619a7afe0229174628ad4fc65e094df4d13ecbaa31fedafb15cc3"
+      },
+      {
+        "tag": "ru-dark-direct",
+        "pngSha256": "b574f6ee54bb1024a472bc2008fb7f661d1cc86d266eabdf216b446963f8fcdf",
+        "metricsSha256": "561b9b99e2889a3db47c90319d6a54646a64021a0432221b53527c2a2ae416e4",
+        "nativePngSha256": "5fcebfe7d7d3274c3aa08369f4c4389b5027b638df662b7efbd47bba711f746d"
+      },
+      {
+        "tag": "ru-dark-protected-direct",
+        "pngSha256": "5f7ccf05a2f4b246f7b1f1787295b111f9327df64c3dcd74d85d69231e1d787a",
+        "metricsSha256": "008386d5bbdc94224fe9d6b606f7421f36a3e9227c9ad27fb99adbc649b7cd35",
+        "nativePngSha256": "0db9fe01352ab46ccf0aa25d09efcd55c70eff745615cd129c36ffbd3b5dc436"
+      }
+    ],
+    "scope": "Real Source avatar callers/URN/file/Blob/img on matched public synthetic store inputs; raw1440x900/DPR1. Source1 binaryGET perUUID vs Native1 metadata+1 binary, three peer surfaces share. No Source login/UsersHTTP/roles/crypto/live acceptance."
+  },
+  "cleanup": {
+    "allNativeGroupsGone": true,
+    "privateXdgRemoved": true,
+    "sourceBrowserGroupsAndProfilesGone": true,
+    "sourceServerGoneAndPortClosed": true
+  },
+  "remaining": [
+    "Presence/profile/navigation/fullshell/footer differences",
+    "Real Main image failure/URN recovery; concurrent fresh-mount retry after failed transport",
+    "Static first frame only; animation/external URNs and precise decode-phase fallback",
+    "Latest installed app/real-account/fullLinux/otherOS acceptance"
+  ]
+}
