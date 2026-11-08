@@ -12,6 +12,11 @@ Item {
     property bool allowed: true
     property string skin: "neutral"
     property bool skinTonesEnabled: true
+    property bool previewEnabled: false
+    property string previewEmojiName: ""
+    readonly property var previewEntry: byName[previewEmojiName] || null
+    onPreviewEnabledChanged: previewEmojiName = ""
+    readonly property int columnCount: Math.max(1, Math.floor(grid.width / grid.cellWidth))
     readonly property int emojiCount: presentation.emojiCount
     readonly property string searchAnnouncement: emojiCount === 0 ? qsTr("No results found") : emojiCount === 1 ? qsTr("1 result found. Use up and down arrow keys to navigate.") : qsTr("%1 results found. Use up and down arrow keys to navigate.").arg(emojiCount)
     onEmojiCountChanged: if (active && search.text.length > 0)
@@ -54,6 +59,7 @@ Item {
 
     function reset() {
         search.text = "";
+        previewEmojiName = "";
         skin = "neutral";
         skinsExpanded = false;
         variations.close();
@@ -118,7 +124,7 @@ Item {
                 index: cells.length,
                 category: category
             });
-            for (let col = 0; col < 7; ++col)
+            for (let col = 0; col < columnCount; ++col)
                 cells.push({
                     kind: "heading",
                     category: category,
@@ -132,7 +138,7 @@ Item {
                 });
                 ++count;
             }
-            while (cells.length % 7)
+            while (cells.length % columnCount)
                 cells.push({
                     kind: "space",
                     category: category
@@ -159,7 +165,7 @@ Item {
 
     function visibleCategory() {
         let result = suggested.length ? 0 : 1;
-        const row = Math.floor(Math.max(0, grid.contentY) / grid.cellHeight) * 7;
+        const row = Math.floor(Math.max(0, grid.contentY) / grid.cellHeight) * columnCount;
         for (let i = 0; i < presentation.headings.length; ++i) {
             if (presentation.headings[i].index > row)
                 break;
@@ -178,7 +184,10 @@ Item {
             if (cells[next].kind === "emoji") {
                 grid.currentIndex = next;
                 grid.positionViewAtIndex(next, GridView.Contain);
-                grid.forceActiveFocus(Qt.TabFocusReason);
+                if (!previewEnabled || !grid.currentItem || grid.currentItem.index !== next
+                        || !grid.currentItem.focusChoice(Qt.TabFocusReason))
+                    grid.forceActiveFocus(Qt.TabFocusReason);
+                if (previewEnabled) previewEmojiName = cells[next].entry.emojiName;
                 return;
             }
         }
@@ -227,7 +236,7 @@ Item {
                 bottomPadding: 0
                 maximumLength: 128
                 font.family: picker.textFamily
-                font.pixelSize: 15
+                font.pixelSize: 16
                 color: picker.foreground
                 placeholderTextColor: picker.foreground
                 placeholderText: qsTr("Search")
@@ -239,7 +248,8 @@ Item {
                     border.width: search.activeFocus ? 1 : 0
                     border.color: picker.highlight
                 }
-                onTextChanged: grid.positionViewAtBeginning()
+                onTextChanged: { grid.positionViewAtBeginning(); picker.previewEmojiName = ""; }
+                onActiveFocusChanged: if (activeFocus) picker.previewEmojiName = ""
                 Keys.onDownPressed: {
                     grid.currentIndex = -1;
                     picker.moveChoice(1);
@@ -411,8 +421,8 @@ Item {
         property int emojiCount: picker.emojiCount
         x: 11
         y: header.y + header.height
-        width: parent.width - 22
-        height: parent.height - y
+        width: parent.width - 22 - (picker.previewEnabled ? 15 : 0)
+        height: picker.previewEnabled ? Math.max(0, preview.y - y) : parent.height - y
         clip: true
         cellWidth: 40
         cellHeight: 40
@@ -421,12 +431,26 @@ Item {
         model: picker.presentation.cells
         onContentYChanged: picker.visibleCategory()
         ScrollBar.vertical: ScrollBar {
-            policy: ScrollBar.AsNeeded
+            parent: picker.previewEnabled ? picker : grid
+            x: picker.previewEnabled ? picker.width - 16 : grid.width - width
+            y: picker.previewEnabled ? grid.y : 0
+            width: picker.previewEnabled ? 15 : implicitWidth
+            height: grid.height
+            policy: picker.previewEnabled ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+        }
+        onCurrentItemChanged: {
+            if (picker.previewEnabled && activeFocus && currentItem && currentItem.index === currentIndex)
+                currentItem.focusChoice(Qt.TabFocusReason);
+        }
+        onActiveFocusChanged: if (!activeFocus) picker.previewEmojiName = ""
+        Keys.onEscapePressed: event => {
+            if (picker.previewEnabled) picker.previewEmojiName = "";
+            event.accepted = false;
         }
         Keys.onLeftPressed: picker.moveChoice(-1)
         Keys.onRightPressed: picker.moveChoice(1)
-        Keys.onUpPressed: picker.moveChoice(-7)
-        Keys.onDownPressed: picker.moveChoice(7)
+        Keys.onUpPressed: picker.moveChoice(-picker.columnCount)
+        Keys.onDownPressed: picker.moveChoice(picker.columnCount)
         Keys.onReturnPressed: {
             const entry = picker.presentation.cells[currentIndex];
             if (entry && entry.kind === "emoji")
@@ -439,6 +463,11 @@ Item {
             width: grid.cellWidth
             height: 40
             z: modelData.kind === "heading" ? 1 : 0
+            function focusChoice(reason) {
+                if (modelData.kind !== "emoji" || !choice || !choice.enabled) return false;
+                choice.forceActiveFocus(reason);
+                return true;
+            }
             Text {
                 objectName: cell.modelData.kind === "heading" && cell.modelData.first ? "reaction-heading-" + picker.categoryIds[cell.modelData.category] : ""
                 visible: cell.modelData.kind === "heading" && cell.modelData.first
@@ -479,6 +508,23 @@ Item {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
+                onHoveredChanged: {
+                    if (!picker.previewEnabled || !entry) return;
+                    if (hovered) {
+                        const point = mapToItem(grid, 0, 0);
+                        // Source focuses fully visible hover targets; clipped targets only preview.
+                        if (point.y >= 0 && point.y + height <= grid.height) {
+                            grid.currentIndex = cell.index;
+                            choice.forceActiveFocus(Qt.MouseFocusReason);
+                        }
+                        picker.previewEmojiName = entry.emojiName;
+                    } else if (picker.previewEmojiName === entry.emojiName) picker.previewEmojiName = "";
+                }
+                onActiveFocusChanged: {
+                    if (!picker.previewEnabled || !entry) return;
+                    if (activeFocus) picker.previewEmojiName = entry.emojiName;
+                    else if (!hovered && picker.previewEmojiName === entry.emojiName) picker.previewEmojiName = "";
+                }
                 onPressed: held = false
                 onClicked: if (!held)
                     picker.select(entry)
@@ -511,6 +557,55 @@ Item {
             }
         }
         Accessible.description: search.text.length > 0 ? picker.searchAnnouncement : ""
+    }
+    Loader {
+        id: preview
+        objectName: "reactionPreview"
+        active: picker.previewEnabled
+        visible: active
+        x: 1
+        y: parent.height - height - 1
+        width: parent.width - 2
+        height: 70
+        sourceComponent: Component {
+            Item {
+                Rectangle {
+                    width: parent.width; height: 1
+                    color: picker.dark ? "#151617" : "#e7e7e7"
+                }
+                Text {
+                    objectName: "reactionPreviewEmoji"
+                    x: 10
+                    y: 1 + (parent.height - 1 - height) / 2
+                    width: 45; height: 45
+                    text: picker.previewEntry ? picker.previewEntry.pickerUnicode : picker.byName.blush ? picker.byName.blush.pickerUnicode : ""
+                    textFormat: Text.PlainText
+                    font.family: picker.emojiFamily
+                    font.pixelSize: Qt.platform.os === "linux" && picker.emojiFamily === "Noto Color Emoji" ? 53 : 45
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 45
+                    horizontalAlignment: Text.AlignLeft
+                    verticalAlignment: Text.AlignVCenter
+                }
+                Text {
+                    objectName: "reactionPreviewLabel"
+                    x: 55
+                    y: 1 + (parent.height - 1 - height) / 2
+                    width: Math.min(implicitWidth, Math.max(0, parent.width - x - 10))
+                    height: contentHeight
+                    leftPadding: 10; rightPadding: 10
+                    text: picker.previewEntry ? String((picker.previewEntry.pickerSearch || []).slice(-1)[0] || picker.previewEntry.emojiName) : "What's your mood?"
+                    textFormat: Text.PlainText
+                    font.family: picker.textFamily
+                    font.pixelSize: 14
+                    font.capitalization: Font.Capitalize
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 21
+                    wrapMode: Text.Wrap
+                    color: picker.foreground
+                }
+            }
+        }
     }
     Popup {
         id: variations

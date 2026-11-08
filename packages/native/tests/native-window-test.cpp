@@ -924,6 +924,329 @@ private slots:
         QCOMPARE(fixture.posts,1);QCOMPARE(fixture.usersGets,1);
         const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
     }
+    void ownStatusPickerMatchesMeasuredSourcePreviewAndSearch_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("firstOracle");
+        for(const auto &first:{QString("preview"),QString("search")}) {
+            const auto en=("en-light-"+first).toUtf8(),ru=("ru-dark-"+first).toUtf8();
+            QTest::newRow(en.constData())<<QString("en")<<QString("light")<<first;
+            QTest::newRow(ru.constData())<<QString("ru")<<QString("dark")<<first;
+        }
+    }
+    void ownStatusPickerMatchesMeasuredSourcePreviewAndSearch()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);QFETCH(QString,firstOracle);
+        WindowOwnStatusFixture fixture;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("picker-raster-search.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Picker raster/search teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900);QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        preferences.setLocale(locale);preferences.setMode(mode);
+        QCOMPARE(preferences.locale(),locale);QCOMPARE(preferences.mode(),mode);
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));
+        const auto context=controller.ownStatusContextKey();const auto identity=session.publicProfile();
+        QVERIFY(!context.isEmpty());const auto userGets=fixture.usersGets;
+        const auto current=[&](const QString &name){return visibleItem(window->contentItem(),name);};
+        click(window,current("accountMenuButton"));QTRY_VERIFY(current("ownStatusAction"));
+        click(window,current("ownStatusAction"));QTRY_VERIFY(current("ownStatusChooseEmoji"));
+        click(window,current("ownStatusChooseEmoji"));
+        QTRY_VERIFY(current("reactionSearch")&&current("reactionSearch")->hasActiveFocus());
+        QPointer<QQuickItem> picker=current("ownStatusEmojiPicker");QVERIFY(picker);
+        QSignalSpy chosen(picker.data(),SIGNAL(chosen(QString)));QVERIFY(chosen.isValid());
+        const auto rect=[](QQuickItem *entry){return QRectF(entry->mapToScene(QPointF{}),entry->size());};
+        const auto jsonRect=[](const QRectF &box){return QJsonObject{{"x",box.x()},{"y",box.y()},
+            {"width",box.width()},{"height",box.height()}};};
+        QList<QRect> inkBounds,rois;QList<QRectF> emojiBoxes;QList<int> searchSizes;
+        for(const auto &phase:{QString("default"),QString("hover")}) {
+            if(phase=="hover") {
+                auto *choice=current("emoji-choice-grinning");QVERIFY(choice);
+                const auto target=choice->mapToScene({choice->width()/2,choice->height()/2});
+                QVERIFY(QRectF(QPointF{},QSizeF(window->size())).contains(target));
+                QTest::mouseMove(window,target.toPoint());
+                QTRY_VERIFY(current("emoji-choice-grinning")&&current("emoji-choice-grinning")->property("hovered").toBool());
+            }
+            const auto expectedEmoji=phase=="default"?QString("😊"):QString("😀");
+            const auto expectedLabel=phase=="default"?QString("What's your mood?"):QString("grinning face");
+            QTRY_VERIFY(current("reactionPreviewEmoji")&&current("reactionPreviewEmoji")->property("text").toString()==expectedEmoji);
+            QTRY_VERIFY(current("reactionPreviewLabel")&&current("reactionPreviewLabel")->property("text").toString()==expectedLabel);
+            QSignalSpy frame(window,&QQuickWindow::frameSwapped);QVERIFY(frame.isValid());
+            window->update();QTRY_VERIFY(!frame.isEmpty());
+            const auto pixels=window->grabWindow();QVERIFY(!pixels.isNull());
+            QCOMPARE(pixels.size(),QSize(1440,900));QCOMPARE(window->devicePixelRatio(),qreal(1));
+            QCOMPARE(window->rendererInterface()->graphicsApi(),QSGRendererInterface::OpenGL);
+            // Reacquire after the actual frame; no retained delegate pointers across input/layout.
+            auto *emoji=current("reactionPreviewEmoji"),*label=current("reactionPreviewLabel");
+            auto *preview=current("reactionPreview"),*search=current("reactionSearch");
+            QVERIFY(picker&&emoji&&label&&preview&&search);
+            const auto previewRect=rect(preview),labelRect=rect(label),emojiRect=rect(emoji);
+            // Half-open right edge is the label's actual text origin (584 at the
+            // matched geometry). Never scan gray caption LCD fringes as emoji ink.
+            const int right=qFloor(labelRect.left()+label->property("leftPadding").toReal());
+            const QRect roi(qCeil(previewRect.left()+1),qCeil(previewRect.top()+2),
+                right-qCeil(previewRect.left()+1),qFloor(previewRect.bottom()-2)-qCeil(previewRect.top()+2));
+            QVERIFY(roi.isValid()&&pixels.rect().contains(roi));QRect bounds;int count=0;
+            for(int y=roi.top();y<=roi.bottom();++y)for(int x=roi.left();x<=roi.right();++x) {
+                const auto color=pixels.pixelColor(x,y);
+                if(color.alpha()>0&&color.red()>=160&&color.green()>=80&&color.blue()<=100
+                    &&color.red()-color.blue()>=80){bounds=bounds.united(QRect(x,y,1,1));++count;}
+            }
+            const auto emojiFont=emoji->property("font").value<QFont>();const QFontInfo resolved(emojiFont);
+            const auto searchFont=search->property("font").value<QFont>();
+            inkBounds.append(bounds);rois.append(roi);emojiBoxes.append(emojiRect);searchSizes.append(searchFont.pixelSize());
+            const QJsonObject measured{{"schema","native-picker-raster-search-v1"},{"locale",locale},{"mode",mode},
+                {"firstOracle",firstOracle},{"phase",phase},{"frameCount",frame.size()},
+                {"picker",jsonRect(rect(picker.data()))},{"preview",jsonRect(previewRect)},
+                {"emojiBox",jsonRect(emojiRect)},{"label",jsonRect(labelRect)},{"roiHalfOpen",QJsonArray{roi.left(),roi.top(),right,roi.bottom()+1}},
+                {"yellowMask","A>0,R>=160,G>=80,B<=100,R-B>=80"},{"yellowCount",count},
+                {"yellowBoundsHalfOpen",QJsonArray{bounds.left(),bounds.top(),bounds.right()+1,bounds.bottom()+1}},
+                {"yellowWidth",bounds.width()},{"yellowHeight",bounds.height()},
+                {"previewFontPx",emojiFont.pixelSize()},{"previewResolvedFamily",resolved.family()},
+                {"previewImplicitWidth",emoji->implicitWidth()},{"searchFontPx",searchFont.pixelSize()},
+                {"searchResolvedFamily",QFontInfo(searchFont).family()},{"previewText",emoji->property("text").toString()},
+                {"previewLabel",label->property("text").toString()},{"posts",fixture.posts},{"chosen",chosen.count()}};
+            qInfo().noquote()<<"PICKER_RASTER_SEARCH"<<QJsonDocument(measured).toJson(QJsonDocument::Compact);
+            const auto output=qEnvironmentVariable("CASSI_NATIVE_STATUS_SCREENSHOT_DIRECTORY");
+            if(!output.isEmpty()) {
+                QVERIFY(QDir().mkpath(output));
+                const auto base=QDir(output).filePath("native-picker-raster-search-"+locale+"-"+mode+"-"+firstOracle+"-"+phase);
+                QVERIFY(!QFile::exists(base+".png")&&!QFile::exists(base+".json"));
+                QVERIFY(pixels.save(base+".png"));QFile file(base+".json");QVERIFY(file.open(QIODevice::WriteOnly));
+                const auto bytes=QJsonDocument(measured).toJson();QCOMPARE(file.write(bytes),qint64(bytes.size()));
+            }
+            QCOMPARE(emojiRect.size(),QSizeF(45,45));QCOMPARE(previewRect.height(),qreal(70));
+            QCOMPARE(picker->size(),QSizeF(404,320));
+            QCOMPARE(emoji->mapToItem(picker.data(),QPointF{}),QPointF(11,262));
+            QCOMPARE(resolved.family(),QString("Noto Color Emoji"));
+            QVERIFY(search->property("text").toString().isEmpty());
+            QCOMPARE(fixture.posts,0);QCOMPARE(chosen.count(),0);QCOMPARE(fixture.usersGets,userGets);
+            QCOMPARE(session.publicProfile(),identity);QCOMPARE(controller.ownStatusContextKey(),context);
+            QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+            QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));
+            QVERIFY(current("ownStatusText")&&current("ownStatusEmojiDraft"));
+            QCOMPARE(current("ownStatusText")->property("text").toString(),QString("Before"));
+            QCOMPARE(current("ownStatusEmojiDraft")->property("text").toString(),QString("💬"));
+        }
+        // Both raw phases are logged before the independent first oracle. Search
+        // rows discriminate the global 16px input rule even when preview is RED.
+        if(firstOracle=="search")for(const int size:searchSizes)QCOMPARE(size,16);
+        for(qsizetype i=0;i<inkBounds.size();++i) {
+            const auto &ink=inkBounds.at(i);const auto &box=emojiBoxes.at(i);const auto &roi=rois.at(i);
+            QVERIFY(!ink.isEmpty());QVERIFY(ink.left()>roi.left()&&ink.right()<roi.right());
+            QVERIFY(ink.top()>roi.top()&&ink.bottom()<roi.bottom());
+            QVERIFY2(qAbs(ink.width()-48)<=1,"Source yellow preview ink is 48px wide (+/-1), not the 45px layout box");
+            QVERIFY2(qAbs(ink.height()-(locale=="ru"?46:45))<=1,"Source measured yellow preview ink height (+/-1)");
+            QVERIFY2(qAbs(ink.left()-(box.left()+4))<=1,"Source measured ink starts four pixels inside the left-aligned preview box (+/-1)");
+            QVERIFY2(qAbs(ink.top()-(box.top()+(locale=="ru"?-1:0)))<=1,"Source measured preview ink top (+/-1)");
+        }
+        if(firstOracle=="preview")for(const int size:searchSizes)QCOMPARE(size,16);
+        click(window,current("ownStatusCancel"));QTRY_VERIFY(!current("ownStatusText"));
+        QCOMPARE(fixture.posts,0);QCOMPARE(controller.ownStatusContextKey(),context);
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+    void ownStatusPickerHoverAndArrowKeepFocusOnTheActualEmojiButton_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light")<<QString("en")<<QString("light");
+        QTest::newRow("ru-dark")<<QString("ru")<<QString("dark");
+    }
+    void ownStatusPickerHoverAndArrowKeepFocusOnTheActualEmojiButton()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);WindowOwnStatusFixture fixture;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("status-picker-button-focus.ini"));
+        preferences.setLocale(locale);preferences.setMode(mode);
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Picker button focus teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusChooseEmoji"));
+        click(window,visibleItem("ownStatusChooseEmoji"));QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
+        QPointer<QQuickItem> picker=visibleItem("ownStatusEmojiPicker");QVERIFY(picker);
+        const auto current=[&](const QString &name) { return picker?visibleItem(picker.data(),name):nullptr; };
+        QTRY_VERIFY(current("reactionSearch")&&current("reactionSearch")->hasActiveFocus());
+        QTRY_VERIFY(current("emoji-choice-grinning")&&current("reactionGrid"));
+        auto *first=current("emoji-choice-grinning");auto *grid=current("reactionGrid");QVERIFY(first&&grid);
+        const auto firstInGrid=QRectF(first->mapToItem(grid,QPointF{}),first->size());
+        QVERIFY(QRectF(QPointF{},grid->size()).contains(firstInGrid));
+        const auto mousePoint=first->mapToScene(QPointF(first->width()/2,first->height()/2));
+        QVERIFY(QRectF(QPointF{},QSizeF(window->size())).contains(mousePoint));
+        QSignalSpy chosen(picker.data(),SIGNAL(chosen(QString)));QVERIFY(chosen.isValid());
+        QTest::mouseMove(window,mousePoint.toPoint());
+        QTRY_VERIFY(current("emoji-choice-grinning")&&current("emoji-choice-grinning")->property("hovered").toBool());
+        QTRY_VERIFY(current("reactionPreviewLabel")&&current("reactionPreviewLabel")->property("text").toString()==QString("grinning face"));
+        QCOMPARE(chosen.count(),0);QCOMPARE(fixture.posts,0);
+        // First intended behavioral RED: Source's actual fully-visible hover
+        // focuses BUTTON 1f600; a GridView/anonymous delegate focus is insufficient.
+        QTRY_VERIFY(current("emoji-choice-grinning")&&current("emoji-choice-grinning")->hasActiveFocus());
+        QTest::keyClick(window,Qt::Key_Right);
+        QTRY_VERIFY(current("emoji-choice-grinning_face_with_big_eyes")
+            &&current("emoji-choice-grinning_face_with_big_eyes")->hasActiveFocus());
+        QTRY_VERIFY(current("reactionPreviewLabel")&&current("reactionPreviewLabel")->property("text").toString()==QString("grinning face with big eyes"));
+        QCOMPARE(chosen.count(),0);QCOMPARE(fixture.posts,0);
+        QTest::keyClick(window,Qt::Key_Return);
+        QTRY_COMPARE(chosen.count(),1);
+        QCOMPARE(chosen.first().first().toString(),QString("grinning_face_with_big_eyes"));
+        QTRY_VERIFY(!visibleItem("ownStatusEmojiPicker"));
+        QTRY_VERIFY(visibleItem("ownStatusEmojiDraft")&&visibleItem("ownStatusEmojiDraft")->property("text").toString()==QString("😃"));
+        auto *statusText=visibleItem("ownStatusText");QVERIFY(statusText);
+        QCOMPARE(statusText->property("text").toString(),QString("Before"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));QCOMPARE(fixture.posts,0);
+        click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+    void widenedPickerKeepsEveryEmojiBelowTheCategoryHeading_data()
+    {
+        QTest::addColumn<int>("pickerWidth");
+        QTest::newRow("actual-old-status-width-408") << 408;
+        QTest::newRow("matched-source-inner-width-404") << 404;
+    }
+    void widenedPickerKeepsEveryEmojiBelowTheCategoryHeading()
+    {
+        QFETCH(int,pickerWidth);
+        QQmlEngine engine;engine.rootContext()->setContextProperty("testCatalog",knownReactionEmojis());
+        QQmlComponent component(&engine);
+        component.setData(R"QML(import QtQuick
+            import "qrc:/workspace/qml"
+            NativeReactionPicker { width: 404; height: 320; choices: testCatalog; active: true; skinTonesEnabled: false }
+        )QML",QUrl("qrc:/native-status-picker-responsive-test.qml"));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        QQuickWindow window;QScopedPointer<QQuickItem> picker(qobject_cast<QQuickItem *>(component.create()));QVERIFY(picker);
+        picker->setWidth(pickerWidth);window.resize(460,380);picker->setParentItem(window.contentItem());picker->setPosition({20,20});
+        auto close=qScopeGuard([&]{const bool closed=closeObservedTestWindow(&window);picker->setParentItem(nullptr);if(!closed)QTest::qFail("Picker component focus teardown",__FILE__,__LINE__);});
+        window.show();window.requestActivate();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(QTest::qWaitForWindowActive(&window));
+        QTRY_VERIFY(item(picker.get(),"emoji-choice-grinning"));
+        auto *heading=item(picker.get(),"reaction-heading-smileys_people");QVERIFY(heading);
+        auto *first=item(picker.get(),"emoji-choice-grinning");QVERIFY(first);
+        const auto bottom=heading->mapToItem(picker.get(),{0,heading->height()}).y();
+        // Existing public component at the actual widened size. No new API is needed
+        // to reproduce the painted heading/emoji overlap on the old product.
+        QVERIFY2(first->mapToItem(picker.get(),QPointF{}).y()>=bottom,"First emoji paints inside the category heading row");
+        for(const auto *name:{"grinning","grinning_face_with_big_eyes","grinning_face_with_closed_eyes","grin","laughing","grinning_face_with_sweat","rofl","joy","slightly_smiling_face"}){
+            auto *emoji=item(picker.get(),"emoji-choice-"+QString::fromLatin1(name));QVERIFY(emoji);
+            QCOMPARE(emoji->mapToItem(picker.get(),QPointF{}).y(),bottom);QCOMPARE(emoji->size(),QSizeF(40,40));
+        }
+        auto *next=item(picker.get(),"emoji-choice-upside_down_face");QVERIFY(next);
+        QCOMPARE(next->mapToItem(picker.get(),QPointF{}).y(),bottom+40);
+        QCOMPARE(next->mapToItem(picker.get(),QPointF{}).x(),first->mapToItem(picker.get(),QPointF{}).x());
+        // Real public size change must reflow without stale heading/spacer strides.
+        const auto firstPosition=[&]{auto *current=item(picker.get(),"emoji-choice-grinning");return current?current->mapToItem(picker.get(),QPointF{}):QPointF(-1,-1);};
+        picker->setWidth(318);QTRY_COMPARE(firstPosition(),QPointF(11,171));
+        picker->setWidth(pickerWidth);QTRY_COMPARE(firstPosition().y(),bottom);
+    }
+
+    void widenedPickerKeyboardDownUsesTheActualNineColumnRow()
+    {
+        QQmlEngine engine;engine.rootContext()->setContextProperty("testCatalog",knownReactionEmojis());
+        QQmlComponent component(&engine);
+        component.setData(R"QML(import QtQuick
+            import "qrc:/workspace/qml"
+            NativeReactionPicker { width: 404; height: 320; choices: testCatalog; active: true; skinTonesEnabled: false }
+        )QML",QUrl("qrc:/native-status-picker-keyboard-test.qml"));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        QQuickWindow window;QScopedPointer<QQuickItem> picker(qobject_cast<QQuickItem *>(component.create()));QVERIFY(picker);
+        window.resize(460,380);picker->setParentItem(window.contentItem());picker->setPosition({20,20});
+        auto close=qScopeGuard([&]{const bool closed=closeObservedTestWindow(&window);picker->setParentItem(nullptr);if(!closed)QTest::qFail("Picker component focus teardown",__FILE__,__LINE__);});
+        window.show();window.requestActivate();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(QTest::qWaitForWindowActive(&window));
+        QTRY_VERIFY(item(picker.get(),"reactionSearch"));click(&window,item(picker.get(),"reactionSearch"));
+        QSignalSpy chosen(picker.get(),SIGNAL(chosen(QString)));QVERIFY(chosen.isValid());
+        QTest::keyClick(&window,Qt::Key_Down);QTest::keyClick(&window,Qt::Key_Down);QTest::keyClick(&window,Qt::Key_Return);
+        QTRY_COMPARE(chosen.count(),1);
+        QCOMPARE(chosen.first().first().toString(),QString("upside_down_face"));
+    }
+    void optionalPickerPreviewMatchesSourceDefaultsAndRealHover_data()
+    {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("light") << false;QTest::newRow("dark") << true;
+    }
+    void optionalPickerPreviewMatchesSourceDefaultsAndRealHover()
+    {
+        QFETCH(bool,dark);
+        QQmlEngine engine;engine.rootContext()->setContextProperty("testCatalog",knownReactionEmojis());
+        QQmlComponent component(&engine);
+        component.setData(R"QML(import QtQuick
+            import "qrc:/workspace/qml"
+            NativeReactionPicker { width: 404; height: 320; choices: testCatalog; active: true; skinTonesEnabled: false }
+        )QML",QUrl("qrc:/native-status-picker-preview-test.qml"));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        QQuickWindow window;QScopedPointer<QQuickItem> picker(qobject_cast<QQuickItem *>(component.create()));QVERIFY(picker);
+        window.resize(460,380);picker->setParentItem(window.contentItem());picker->setPosition({20,20});
+        auto close=qScopeGuard([&]{const bool closed=closeObservedTestWindow(&window);picker->setParentItem(nullptr);if(!closed)QTest::qFail("Picker component focus teardown",__FILE__,__LINE__);});
+        // This is the new public optional-config contract. An absent property is
+        // a missing capability, not the heading-row behavioral reproduction.
+        QVERIFY(picker->metaObject()->indexOfProperty("previewEnabled")>=0);
+        QVERIFY(!picker->property("previewEnabled").toBool());QVERIFY(picker->setProperty("dark",dark));
+        window.show();window.requestActivate();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(QTest::qWaitForWindowActive(&window));
+        QTest::mouseMove(&window,{5,5});
+        QVERIFY(!visibleItem(picker.get(),"reactionPreview"));
+        auto *unexpandedGrid=item(picker.get(),"reactionGrid");QVERIFY(unexpandedGrid);QCOMPARE(unexpandedGrid->size(),QSizeF(382,189));
+        QVERIFY(picker->setProperty("previewEnabled",true));
+        QTRY_VERIFY(visibleItem(picker.get(),"reactionPreview"));
+        auto *preview=visibleItem(picker.get(),"reactionPreview");auto *icon=visibleItem(picker.get(),"reactionPreviewEmoji");auto *label=visibleItem(picker.get(),"reactionPreviewLabel");
+        QVERIFY(preview&&icon&&label);QCOMPARE(preview->mapToItem(picker.get(),QPointF{}),QPointF(1,249));QCOMPARE(preview->size(),QSizeF(402,70));
+        QCOMPARE(icon->mapToItem(preview,QPointF{}),QPointF(10,13));QCOMPARE(icon->size(),QSizeF(45,45));
+        QCOMPARE(icon->property("text").toString(),QString("😊"));QCOMPARE(label->property("text").toString(),QString("What's your mood?"));
+        QCOMPARE(label->property("font").value<QFont>().pixelSize(),14);QCOMPARE(label->property("font").value<QFont>().capitalization(),QFont::Capitalize);
+        auto *grid=item(picker.get(),"reactionGrid");QVERIFY(grid);QCOMPARE(grid->size(),QSizeF(367,118));
+        auto *first=item(picker.get(),"emoji-choice-grinning");QVERIFY(first);QCOMPARE(first->mapToItem(picker.get(),QPointF{}),QPointF(11,171));
+        auto *ninth=item(picker.get(),"emoji-choice-slightly_smiling_face");QVERIFY(ninth);QCOMPARE(ninth->mapToItem(picker.get(),QPointF{}).x(),qreal(331));
+        QSignalSpy chosen(picker.get(),SIGNAL(chosen(QString)));QVERIFY(chosen.isValid());
+        QTest::mouseMove(&window,first->mapToScene({20,20}).toPoint());
+        QTRY_COMPARE(icon->property("text").toString(),QString("😀"));QTRY_COMPARE(label->property("text").toString(),QString("grinning face"));QCOMPARE(chosen.count(),0);
+        QTest::mouseMove(&window,{5,5});QTRY_COMPARE(icon->property("text").toString(),QString("😊"));QTRY_COMPARE(label->property("text").toString(),QString("What's your mood?"));
+        click(&window,item(picker.get(),"reactionSearch"));QTest::keyClick(&window,Qt::Key_Down);
+        QTRY_COMPARE(label->property("text").toString(),QString("grinning face"));
+        QTest::keyClick(&window,Qt::Key_Escape);QTRY_COMPARE(label->property("text").toString(),QString("What's your mood?"));QCOMPARE(chosen.count(),0);
+        QVERIFY(picker->setProperty("previewEnabled",false));QTRY_VERIFY(!visibleItem(picker.get(),"reactionPreview"));QCOMPARE(grid->width(),qreal(382));
+    }
+    void ownStatusPickerAcceptsImmediateTypingWithoutAnotherSearchClick_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light")<<QString("en")<<QString("light");QTest::newRow("ru-dark")<<QString("ru")<<QString("dark");
+    }
+    void ownStatusPickerAcceptsImmediateTypingWithoutAnotherSearchClick()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);WindowOwnStatusFixture fixture;
+        QTemporaryDir directory;NativePreferences preferences(directory.filePath("status-picker-keyboard.ini"));preferences.setLocale(locale);preferences.setMode(mode);
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Status picker keyboard teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusChooseEmoji"));click(window,visibleItem("ownStatusChooseEmoji"));QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
+        QPointer<QQuickItem> picker=visibleItem("ownStatusEmojiPicker");QVERIFY(picker);
+        QPointer<QQuickItem> search=item(picker.data(),"reactionSearch");QVERIFY(search);
+        // Real immediate keyboard, deliberately no click/focusSearch invocation here.
+        for(const auto key:QByteArray("coffee"))QTest::keyClick(window,key);
+        QTRY_COMPARE(search->property("text").toString(),QString("coffee"));QVERIFY(search->hasActiveFocus());
+        QTRY_VERIFY(visibleItem(picker.data(),"emoji-choice-coffee"));click(window,visibleItem(picker.data(),"emoji-choice-coffee"));
+        QTRY_VERIFY(!visibleItem("ownStatusEmojiPicker"));QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("☕"));
+        QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));QCOMPARE(fixture.posts,0);
+        click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(fixture.posts,0);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
     void ownStatusUsesMeasuredSourceGeometry_data()
     {
         QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");

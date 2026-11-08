@@ -410,3 +410,15 @@ Whole Window252 after this small paint delta is not claimed; the prior accepted
 Window250 is separate. The responsive-picker candidate and its unresolved full257
 initial-opening failure are not included in this change. See
 [Clear paint checks](provenance/clear-status-paint-checks.json).
+
+
+The status picker now reflows headings and keyboard rows from actual width,
+shows an opt-in preview, accepts typing immediately and focuses the real emoji
+button on hover/Arrow before Return selects. Search uses the measured 16px rule.
+Current Window265 passed in 286.083 s with no runtime warnings. Four matched
+Source/Qt raw states retain equal picker/footer boxes; measured yellow preview
+ink edges and size differ by at most one pixel. Full glyph and shell parity are
+not accepted. The earlier single initial-open failure did not reproduce in
+passive prefix17/whole257; its cause remains unknown, not claimed fixed by this
+change. Current whole265 uses no private observer. See
+[status picker checks](provenance/status-picker-checks.json).

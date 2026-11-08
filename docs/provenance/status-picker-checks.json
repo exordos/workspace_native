@@ -1,0 +1,227 @@
+{
+  "schema": "native-status-picker-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "emojiPickerReferenceVersion": "4.19.1",
+  "productAndTestFiles": {
+    "packages/native/qml/Main.qml": "755cdb781da4ff539689655fc1ca5e715badbfd4f88e7204eebeadc1ae1ac92d",
+    "packages/native/qml/NativeReactionPicker.qml": "7a020143e4ec884a646d79951be72cf1ec667cd7fa1dd4948e3d4a16cfb468a9",
+    "packages/native/tests/native-window-test.cpp": "d1e8aeb594ef751bd306084fd508b80a2c08f0b93bcba0251622aa41b848d760"
+  },
+  "allOldD25WindowTestBytesPreserved": true,
+  "allOtherCurrentPackageAndLicenseBytesUnchanged": true,
+  "sourceManifestSha256": "2bdf7e2346c2f69b5fe143932842422815746f9f579557782c0b8830e88b0964",
+  "reviewProofSha256": {
+    "actualResponsiveAndAutofocusRed": "9faa7b1cf79f7f18f8cd4baee28b821f54057dafcd3d0251138242f5781620da",
+    "firstNewTestBuildFailure": "d659a06df8ce4ef4f44f224910816d98a3668957865d5d4342e29dc6712acfaa",
+    "firstComponentTeardownWarning": "c57ad4ee9bb5324eab21b174947b7089245e50340cd862cc866819f6a359102c",
+    "firstFull257Failure": "9322e54169bbf35b6a3f6dab9a9a2e03f9e0f143ba01807ccb4cf4dde46c73f6",
+    "passivePrefix17": "733adb93c466f891f956183279a50ca56345f379c83d774f140b491e549d3fe2",
+    "passiveWhole257": "5b790db983ee9aa64cc4e6c4a040b617f466957793df46ec2c50d62861973645",
+    "actualRasterSearchRed": "35e645bfbcd41c5ad3f7cdf61e560b9d90ed260e17fd7bb3653d149a64b74da2",
+    "actualButtonFocusRed": "1a146f35eedfe956564d929a5b2180b0688f60ee8614ecea1f9f9d0610eb3235",
+    "firstFont54CandidateFailure": "c82a96f3d861584ee0c5248f0aefb33eb1ba04e6fe4e3d7fed53656d066e98e8",
+    "focused": "38cf22a6285f410f3395474b4ff84f8ba3856810b2f709ea01462e74362023ae",
+    "whole265": "62d336ff91d258d3d1bfeeb90faa54ea5ca00cd222c0ddca47aea1e660d7a8a5",
+    "rawCapture4": "893eebfdc1990e9ef62086f1382a2cf79b3009c3b5bb1302a65dd188858893c3"
+  },
+  "wholeWindow265": {
+    "label": "whole-window265",
+    "totals": [
+      "Totals: 265 passed, 0 failed, 0 skipped, 0 blacklisted, 286083ms"
+    ],
+    "wallSeconds": 286.299,
+    "stdoutSha256": "b9473300f62a544aa2d819272267bda6c7fb0a57953c96e080ac7b9ff92b393b",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "focusedRows": [
+    {
+      "label": "actual-preview-search6",
+      "totals": [
+        "Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 5881ms"
+      ],
+      "wallSeconds": 5.982,
+      "stdoutSha256": "5cfb54150d97f9a3247fe8ac74bb69b34c40b925f443affe11da8cf543d35099",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-button-focus4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2326ms"
+      ],
+      "wallSeconds": 2.471,
+      "stdoutSha256": "82919dfab9129d818ee1e769db25b6f44005abc7efd1422a0289fbc7069192d3",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "prior-responsive-preview9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 4620ms"
+      ],
+      "wallSeconds": 4.727,
+      "stdoutSha256": "84471575b8f9ec703b76c438cc742ab24ce6bd4e64c9e43c400a518df5dec67b",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "current-clear4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2941ms"
+      ],
+      "wallSeconds": 3.072,
+      "stdoutSha256": "091c94c61c1f4f21fe8003c797d0252d72fe60b499002468bfeaf05298337782",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "prior-status15",
+      "totals": [
+        "Totals: 15 passed, 0 failed, 0 skipped, 0 blacklisted, 19040ms"
+      ],
+      "wallSeconds": 19.172,
+      "stdoutSha256": "87d8341d412bed6cc15d1bd3a6c0ce0aa4342a254f2df20e1e63d7923f300ecb",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "fourMatchedSourceNativeStates": [
+    {
+      "tag": "en-light",
+      "phase": "default",
+      "canonicalOwnUserRawDraftViewportThemeEqual": true,
+      "actualSourceInkHalfOpen": [
+        533,
+        528,
+        581,
+        573
+      ],
+      "actualNativeInkHalfOpen": [
+        533,
+        527,
+        580,
+        572
+      ],
+      "yellowInkEachEdgeAndSizeWithinOnePixel": true,
+      "sameLimitedMaskRoiHalfOpen": [
+        520,
+        517,
+        584,
+        583
+      ],
+      "actualSearchFont16": true,
+      "actualNativeFocusMatchesInputOrButton": true,
+      "sourceMetricsSha256": "e2dff9868187c46ae5a92200f2bebbd977fcc1f40f38c70ce5bea56e9141825d",
+      "nativeMetricsSha256": "bb38e3a3a9f16640305524d44f3aa3661a61fc841c0662b2062023220cf8b2aa",
+      "nativePngSha256": "71ee8246450757795fadc5f2264ae52e9e25a5c3551da091ed61fd89c7328789",
+      "pickerAndFooterAndEmojiLayoutRectsEqual": true,
+      "rasterParityAccepted": false
+    },
+    {
+      "tag": "en-light",
+      "phase": "hover",
+      "canonicalOwnUserRawDraftViewportThemeEqual": true,
+      "actualSourceInkHalfOpen": [
+        533,
+        528,
+        581,
+        573
+      ],
+      "actualNativeInkHalfOpen": [
+        533,
+        527,
+        580,
+        572
+      ],
+      "yellowInkEachEdgeAndSizeWithinOnePixel": true,
+      "sameLimitedMaskRoiHalfOpen": [
+        520,
+        517,
+        584,
+        583
+      ],
+      "actualSearchFont16": true,
+      "actualNativeFocusMatchesInputOrButton": true,
+      "sourceMetricsSha256": "4f5c691dba6f37379a3eeaf04329b7edf311a20f43aed44083644c3fdde43294",
+      "nativeMetricsSha256": "361158e78fab761fdd5a7366753082fba4f1684cb1f74106cee153fdf334ee47",
+      "nativePngSha256": "2ddb90975d3f1fc8fe01682afc0c414485430dbf6ad8d485e88a50940dc39242",
+      "pickerAndFooterAndEmojiLayoutRectsEqual": true,
+      "rasterParityAccepted": false
+    },
+    {
+      "tag": "ru-dark",
+      "phase": "default",
+      "canonicalOwnUserRawDraftViewportThemeEqual": true,
+      "actualSourceInkHalfOpen": [
+        533,
+        527,
+        581,
+        573
+      ],
+      "actualNativeInkHalfOpen": [
+        533,
+        527,
+        580,
+        572
+      ],
+      "yellowInkEachEdgeAndSizeWithinOnePixel": true,
+      "sameLimitedMaskRoiHalfOpen": [
+        520,
+        517,
+        584,
+        583
+      ],
+      "actualSearchFont16": true,
+      "actualNativeFocusMatchesInputOrButton": true,
+      "sourceMetricsSha256": "fdc48f50a37b1d48119df5366fc8710ec904cba6239e7fbf34979f5169c258c7",
+      "nativeMetricsSha256": "78cf5df6968a5a70b7b52214ca61faa672630883e309fc8534a09a3f9dcda920",
+      "nativePngSha256": "d9e0bfefdfe725b0909f9fefa7f81d7d91ac264bf348d7c4df25768678f3658b",
+      "pickerAndFooterAndEmojiLayoutRectsEqual": true,
+      "rasterParityAccepted": false
+    },
+    {
+      "tag": "ru-dark",
+      "phase": "hover",
+      "canonicalOwnUserRawDraftViewportThemeEqual": true,
+      "actualSourceInkHalfOpen": [
+        533,
+        527,
+        581,
+        573
+      ],
+      "actualNativeInkHalfOpen": [
+        533,
+        527,
+        580,
+        572
+      ],
+      "yellowInkEachEdgeAndSizeWithinOnePixel": true,
+      "sameLimitedMaskRoiHalfOpen": [
+        520,
+        517,
+        584,
+        583
+      ],
+      "actualSearchFont16": true,
+      "actualNativeFocusMatchesInputOrButton": true,
+      "sourceMetricsSha256": "e198d35d2e5be8bcb48f380c33c4d1e0fc67432caaca0eec8569ca80ae36c146",
+      "nativeMetricsSha256": "be236a1fbef224d71b6067a16092e20e4c439e8a7b29d5ce2e56b0115ce4a6db",
+      "nativePngSha256": "44f7e74b682826b193bfc6169001db3a5090cadf94c3c3ed338ae39fc74a8d11",
+      "pickerAndFooterAndEmojiLayoutRectsEqual": true,
+      "rasterParityAccepted": false
+    }
+  ],
+  "comparisonPreflightSha256": "3df14673decaf6c9df365c0e0a13e440b2a88ac475b04c2a087a9c11d439aaed",
+  "scope": [
+    "Column count follows actual grid width; headings/spacers/keyboard use the same count; original320px picker keeps7columns",
+    "Opt-in preview loader/footer only for status, actual hover and Arrow/Return focus on emoji Buttons, immediate search focus from real caller",
+    "Source global search16px; preview keeps45x45 layout/line and left alignment, LinuxNoto measured font53, other platforms45",
+    "Clear2 previously accepted and all old tests are retained; no C++/catalog/CMake/cache/schema/asset changes"
+  ],
+  "measuredInk": "Current actual native47x45 vsSource48x45 EN/48x46 RU. Same limited raw-frame yellow mask edges and dimensions differ<=1px. Caption LCD fringes excluded. Not complete glyph alpha/AA/color equality.",
+  "failedHistory": [
+    "First new tests did not compile due ambiguous point/rect overload; ten new calls made explicit QPointF without oracle change",
+    "First GREEN9 behavior passed but four Wayland warnings rejected gate; three new standalone guards now use existing observed focus close",
+    "First full257 had one RU initial Status-open failure; passiveprefix17 and diagnosticfull257 passed. CauseUNKNOWN, no fix claimed. Current changed product full265 passes without private observers.",
+    "First LinuxNoto54 candidate painted49x47 and failed unchanged ENheight oracle;53 passes same original1px tolerance"
+  ],
+  "privateCaptureAndDiagnosticCasesNotShipped": true,
+  "remaining": "Scrollbar/sticky edge, shadow/spinner and other glyph/full-shell paint, own profile/right drawer/global notice queue, live/full Linux/other OS acceptance. Earlier single opening failure remains unexplained; no blanket complete-app claim.",
+  "cleanup": "Accepted gates source/raw/binary hashes checked; every own group reaped/private XDG removed. Reference browser resources previously closed."
+}

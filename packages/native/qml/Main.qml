@@ -1556,6 +1556,7 @@ ApplicationWindow {
                     Loader {
                         anchors.fill: parent; anchors.margins: statusPickerFrame.border.width
                         active: statusPickerFrame.visible
+                        onLoaded: item.focusSearch()
                         sourceComponent: Component {
                             NativeReactionPicker {
                                 objectName: "ownStatusEmojiPicker"
@@ -1563,6 +1564,7 @@ ApplicationWindow {
                                 suggested: []
                                 dark: theme.dark
                                 skinTonesEnabled: false
+                                previewEnabled: true
                                 active: true
                                 onChosen: emojiName => {
                                     const rows = root.controller.reactionChoices;

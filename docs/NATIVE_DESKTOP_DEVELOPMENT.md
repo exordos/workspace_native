@@ -835,3 +835,29 @@ also requires Clear to be disabled and unhovered/unfocused in both frames. This
 is a paint check, not an opacity-property inference or complete glyph comparison.
 The actual RED/GREEN witnesses and focused scope are in
 [Clear paint checks](provenance/clear-status-paint-checks.json).
+
+
+## Responsive status emoji picker
+
+`NativeReactionPicker` derives columns from its actual 40px grid cells. The
+ordinary 320px reaction caller remains seven columns; the wider status caller
+uses nine. Heading cells, padding rows, visible category and Arrow strides share
+that derived count. `previewEnabled` defaults false and instantiates its footer
+only when enabled by the status caller. The caller also focuses search when the
+real Loader completes. Fully visible hover and keyboard navigation focus the
+actual emoji Button; late current delegates use the existing current-item event,
+without forced layout or a new timer.
+
+The Source45px preview layout overflows its span. On this Linux/Noto renderer,
+font45 painted40x38; font54 painted49x47 and failed the unchanged ENheight oracle.
+Measured font53 with left alignment paints47x45, within the original one-pixel
+Source48x45/46 footprint tolerance. The45px layout/line box is preserved; other
+platforms keep45 pending their own measured acceptance. The raw-image mask stops
+before caption text to avoid counting LCD fringes as emoji. Search uses16px.
+No complete glyph/AA equivalence is inferred from these bounds.
+
+Actual initial REDs, first build/teardown/font candidate failures, the earlier
+unexplained initial-open observation, full Window265 and raw component captures
+are in [status picker checks](provenance/status-picker-checks.json). Private
+measurement and diagnostic cases are not checked into the normal test inventory.
+Scrollbar/shadow/spinner/full-shell and live/platform acceptance remain separate.
