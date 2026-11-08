@@ -79,8 +79,7 @@ the codec-library RPATH fix; a loader trace identified TIFF's transitive JPEG
 lookup. All 28 observed relevant runtime libraries now resolve inside the prefix.
 Service code/tests are byte-exact with the accepted 28-case run; only packaging
 and its stronger observer changed afterward. See
-[avatar service checks](provenance/avatar-service-checks.json). Main photos are checked below. Animation, external URNs and a newly mounted concurrent consumer
-after another consumer's failed transport remain separate parity work.
+[avatar service checks](provenance/avatar-service-checks.json). Main photos are checked below. Animation and external URNs remain separate parity work.
 
 Uploaded user images now appear in the actual profile, Direct sidebar/header and
 peer message rail. The application creates the real bounded service before the
@@ -109,6 +108,25 @@ peer transfer. Failed capture observers and their diagnostics are retained;
 Source/CSP/bundle were unchanged. Presence, profile, navigation, locked footer,
 full shell and live account acceptance remain open. See
 [rendered-avatar checks](provenance/avatar-main-checks.json).
+
+A new actual HTTP regression reproduced a fresh avatar consumer being unable to
+retry while an older failed consumer remained mounted. Explicit acquire now
+requeues only a failed transport, sharing one bounded operation with later joins.
+Pure URL/failure reads and ordinary revision delivery still do not retry; decoded
+image failures retain their existing policy. The retry notification is guarded
+against actual owner replacement and manager deletion before starting work.
+
+The preserved regression failed at one metadata GET instead of the required two.
+The complete current avatar service passed 31 cases, including real reentrant
+scope/deletion controls. Actual Main/component checks passed eight cases: prior
+four photo rows, nested component replacement and a new protected Direct failure
+and recovery. The last holds a real binary403 until all consumers are mounted,
+checks lock/initial fallbacks, then admits a canonical user update with a new URN
+and observes the actual PNG on all three peer surfaces. Viewer pixels/URL and
+transfer counts remain unchanged; no Users reload or POST occurs. These local
+checks follow the D17 complete groups above; those earlier groups are not claimed
+rerun on this small failed-acquire change. See
+[avatar remount checks](provenance/avatar-remount-checks.json).
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,

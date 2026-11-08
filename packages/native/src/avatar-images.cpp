@@ -194,8 +194,14 @@ quint64 AvatarImages::acquire(const QString &urn)
     }
     const auto token = ++m_nextLease; const auto scope = m_scope;
     auto &entry = m_entries[uuid]; ++entry.consumers; entry.touched = ++m_order;
+    const bool retry = entry.phase == Phase::TransportFailed;
+    if (retry) { entry.phase = Phase::Queued; entry.order = entry.touched; }
     m_leases.insert(token, uuid);
     const QPointer<AvatarImages> guard(this);
+    if (retry) {
+        notifyRevision();
+        if (!guard || scope != m_scope) return 0;
+    }
     drain(); if (!guard || scope != m_scope || !m_leases.contains(token)) return 0;
     return token;
 }

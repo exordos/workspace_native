@@ -202,6 +202,9 @@ private slots:
     void providerOutlivesManagerAndNeverFetches();
     void transportFailureRetriesOnlyAfterLastRelease();
     void projectSelectionInvalidatesBeforeHeldTokenReply();
+    void newConcurrentMountRetriesTransportFailureAndCoalesces();
+    void concurrentMountRetryNotificationIsReentrant_data();
+    void concurrentMountRetryNotificationIsReentrant();
 };
 
 void AvatarImagesTest::pureReadsInvalidAndNoOwnerNeverFetch()
@@ -493,8 +496,7 @@ void AvatarImagesTest::transportFailureRetriesOnlyAfterLastRelease()
     QTRY_VERIFY(f.images.failed(urn())); QCOMPARE(f.metadataGets, 1); QCOMPARE(f.binaryGets, 0);
     f.metadataStatus = 200; f.images.release(first);
     for (int i = 0; i < 1000; ++i) { QVERIFY(f.images.failed(urn())); QVERIFY(f.images.imageUrl(urn()).isEmpty()); }
-    const auto stillMounted = f.images.acquire(urn()); QVERIFY(stillMounted); f.images.release(stillMounted);
-    QCOMPARE(f.metadataGets, 1); // Existing mounted consumer/revision reads cannot retry.
+    QCOMPARE(f.metadataGets, 1); // Pure reads do not constitute a fresh consumer mount.
     f.images.release(second);
     auto freshMount = f.images.acquire(urn()); QVERIFY(freshMount);
     QTRY_COMPARE(f.metadataGets, 2); // Intended RED: retained failed entry leaves actual count at1.
@@ -508,6 +510,91 @@ void AvatarImagesTest::transportFailureRetriesOnlyAfterLastRelease()
     QCOMPARE(f.metadataGets, 4); QCOMPARE(f.binaryGets, 2); f.images.release(freshMount);
     for (const auto &release : f.releases) release(); // Late cancelled response cannot replace the new thumbnail.
     QVERIFY(!f.images.imageUrl(urn(2)).isEmpty());
+}
+
+void AvatarImagesTest::newConcurrentMountRetriesTransportFailureAndCoalesces()
+{
+    Fixture f; QVERIFY(f.start()); const auto scope=f.images.scopeRevision();
+    f.metadataStatus=403;
+    const auto oldConsumer=f.images.acquire(urn()); QVERIFY(oldConsumer);
+    QTRY_VERIFY(f.images.failed(urn()));
+    QCOMPARE(f.requestedIds.count(fileId()),1); QCOMPARE(f.binaryGets,0);
+    QCOMPARE(f.images.stats().leases,1); QCOMPARE(f.images.stats().pipelineJobs,0);
+    for(int i=0;i<1000;++i) { QVERIFY(f.images.failed(urn())); QVERIFY(f.images.imageUrl(urn()).isEmpty()); }
+    // Real unrelated HTTP+decode crosses event-loop turns and revision publication;
+    // neither pure reads nor revision delivery may retry the failed original.
+    f.metadataStatus=200;
+    const auto revision=f.images.revision();
+    const auto unrelated=f.images.acquire(urn(9)); QVERIFY(unrelated);
+    QTRY_VERIFY(!f.images.imageUrl(urn(9)).isEmpty());
+    QVERIFY(f.images.revision()>revision); QCOMPARE(f.requestedIds.count(fileId()),1);
+    QCOMPARE(f.metadataGets,2); QCOMPARE(f.binaryGets,1);
+    QVERIFY(f.images.failed(urn())); f.images.release(unrelated);
+    QCOMPARE(f.images.stats().leases,1); // The original failed consumer never unmounted.
+    f.holdMetadata=true;
+    const auto beforeRetryRevision=f.images.revision();
+    const auto freshConsumer=f.images.acquire(urn()); QVERIFY(freshConsumer);
+    QTRY_COMPARE(f.requestedIds.count(fileId()),2); // First intended RED: old code remains at1.
+    QVERIFY(f.images.revision()>beforeRetryRevision); QVERIFY(!f.images.failed(urn()));
+    QVERIFY(f.images.imageUrl(urn()).isEmpty()); QCOMPARE(f.images.stats().pipelineJobs,1);
+    const auto thirdConsumer=f.images.acquire(urn()); QVERIFY(thirdConsumer);
+    QCOMPARE(f.images.stats().leases,3); QCOMPARE(f.images.stats().pipelineJobs,1);
+    QCOMPARE(f.requestedIds.count(fileId()),2); // A real held retry is shared, not retried again.
+    for(int i=0;i<1000;++i) { QVERIFY(!f.images.failed(urn())); QVERIFY(f.images.imageUrl(urn()).isEmpty()); }
+    f.images.release(freshConsumer); QCOMPARE(f.images.stats().leases,2);
+    QCOMPARE(f.images.stats().pipelineJobs,1); // The old and third consumers still own the work.
+    for(const auto &release:f.releases) release();
+    QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty()); QVERIFY(!f.images.failed(urn()));
+    QCOMPARE(f.requestedIds.count(fileId()),2); QCOMPARE(f.metadataGets,3); QCOMPARE(f.binaryGets,2);
+    QCOMPARE(f.images.scopeRevision(),scope); QCOMPARE(f.images.stats().pipelineJobs,0);
+    QCOMPARE(f.images.stats().leases,2); QVERIFY(f.images.stats().entries<=64);
+    f.images.release(oldConsumer); f.images.release(thirdConsumer);
+    QCOMPARE(f.images.stats().leases,0); QCOMPARE(f.images.stats().pipelineJobs,0);
+}
+
+void AvatarImagesTest::concurrentMountRetryNotificationIsReentrant_data()
+{
+    QTest::addColumn<bool>("destroyManager");
+    QTest::newRow("retire-scope-and-own-new-transfer") << false;
+    QTest::newRow("destroy-manager") << true;
+}
+void AvatarImagesTest::concurrentMountRetryNotificationIsReentrant()
+{
+    QFETCH(bool,destroyManager);
+    bool reentered=false; quint64 nested=0;
+    Fixture f; QVERIFY(f.start()); f.metadataStatus=403;
+    auto manager=std::make_unique<AvatarImages>(&f.api,&f.session,&f.files);
+    QPointer<AvatarImages> alive(manager.get());
+    const auto oldConsumer=manager->acquire(urn()); QVERIFY(oldConsumer);
+    QTRY_VERIFY(manager->failed(urn())); QCOMPARE(f.requestedIds.count(fileId()),1);
+    const auto generation=f.api.generation(), scope=manager->scopeRevision();
+    f.metadataStatus=200; f.holdMetadata=true;
+    const auto connection=connect(manager.get(),&AvatarImages::revisionChanged,this,[&] {
+        if(reentered || !alive || alive->failed(urn())) return;
+        reentered=true; // Arm once before outward identity/deletion operations.
+        if(destroyManager) { manager.reset(); return; }
+        f.api.setAccessToken("synthetic-avatar-concurrent-new-generation");
+        if(alive) nested=alive->acquire(urn(2));
+    });
+    const auto disconnectObserver=qScopeGuard([connection] { QObject::disconnect(connection); });
+    const auto staleConsumer=alive->acquire(urn());
+    QVERIFY(reentered); QCOMPARE(staleConsumer,quint64(0));
+    if(destroyManager) {
+        QVERIFY(!alive); QCOMPARE(f.requestedIds.count(fileId()),1);
+        QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,0); return;
+    }
+    QVERIFY(alive); QVERIFY(nested); QVERIFY(f.api.generation()>generation);
+    QVERIFY(alive->scopeRevision()>scope);
+    QTRY_COMPARE(f.requestedIds.count(fileId(2)),1); // Actual current-owner metadata is acknowledged and held.
+    QCOMPARE(f.requestedIds.count(fileId()),1); QCOMPARE(f.metadataGets,2);
+    QCOMPARE(alive->stats().leases,1); QCOMPARE(alive->stats().pipelineJobs,1);
+    alive->release(oldConsumer); // Expired old lease must not cancel the nested exact transfer.
+    QCOMPARE(alive->stats().leases,1); QCOMPARE(alive->stats().pipelineJobs,1);
+    for(const auto &release:f.releases) release();
+    QTRY_VERIFY(!alive->imageUrl(urn(2)).isEmpty());
+    QVERIFY(alive->imageUrl(urn()).isEmpty()); QCOMPARE(f.requestedIds.count(fileId()),1);
+    QCOMPARE(f.metadataGets,2); QCOMPARE(f.binaryGets,1);
+    alive->release(nested); QCOMPARE(alive->stats().leases,0); QCOMPARE(alive->stats().pipelineJobs,0);
 }
 
 QTEST_GUILESS_MAIN(AvatarImagesTest)

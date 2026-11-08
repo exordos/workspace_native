@@ -1,0 +1,61 @@
+{
+  "schema": "native-avatar-concurrent-remount-checks-v1",
+  "baseProductCommit": "e92d87e0f8ea0236bc2fcff7e167de12190ae3fa",
+  "sourceManifestSha256": "b6d5f9f21122e6491a4bb863b047d916511c7c9ee893d5efd57246fb4cea0136",
+  "planSha256": "c56372323fd766c14e211b3f371d1af2f1f1d8c9f27ad7f7d1fbe2052330083e",
+  "localSyntheticAcceptanceOnly": true,
+  "files": {
+    "packages/native/src/avatar-images.cpp": "42343bcaa90f1d44cd8185f5cac1916d7f09b7ed52ff69513895fbc61b1d69e0",
+    "packages/native/tests/avatar-images-test.cpp": "c3980d0084fdfbaf504922b93d83377b5f883e270a949a4939488e321e533f39",
+    "packages/native/tests/native-window-test.cpp": "faa134fc75ffc8c07867d2f04f56b9265fd0ba18d11156a1238c5375ff770736"
+  },
+  "actualRed": {
+    "intendedOnlyRegressionObserved": true,
+    "rawSha256": "24e9f590303377a0064e6bd895e8791a086a31f27c4edc9c45360438c1c78abf",
+    "sourceManifestSha256": "db31cf83d4218094dc6aa4898c721257865cf5ed2a805ca0703c0f126924dfbe",
+    "binaries": {
+      "/home/cassi/CASSI-AI/local/task-runs/workspace-native-6078fd48/v47-avatar-concurrent-red-build/avatar-images-test": "fc6f849a1ead78cb6dd0226b64b107970f019ac4e0799a0ef2518c47923ad969"
+    },
+    "actualFirstFailure": "Original UUID metadata count1 instead of2 after new consumer while old failed lease stays. Earlier real failedHTTP/unrelateddecode+revision/puregetter controls passed.",
+    "sourceUnchanged": true,
+    "allGroupsAndPrivateXdgGone": true
+  },
+  "checks": [
+    {
+      "label": "whole-avatar-images31",
+      "totals": [
+        "Totals: 31 passed, 0 failed, 0 skipped, 0 blacklisted, 16592ms"
+      ],
+      "wallSeconds": 16.618,
+      "stdoutSha256": "abc079c27f58b7d4be4182074b15a81390891dbb38d7fbc97955335daf7af739",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-main-component-and-recovery8",
+      "totals": [
+        "Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 5276ms"
+      ],
+      "wallSeconds": 5.382,
+      "stdoutSha256": "57bb923f2bce633a16cb28fe78293e0afe75eecb1fcfdfdd270d0b7c6f6a1999",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "binaries": {
+    "avatar-images-test": "5292b53456f04083b606ab47f358ff4cdb811920c33bf47e62d6c42fb3c37df0",
+    "native-window-test": "1b9d6434340182e0e45c5c41b65dbea4e0d3b950efe8c0a36cc106316f8ddd40"
+  },
+  "policy": "Only a genuine explicit new consumer requeues TransportFailed; getters/revision/old unchanged mountedconsumer do not retry. One URI job is shared, limits/owner/lease lifetime unchanged. DecodeFailed stays retained.",
+  "reentrantControls": "Actual retry notification changes API scope and owns a new exact transfer, or destroys manager; stale caller returns0 and cannot touch/cancel nested work.",
+  "explicitOldTestTransition": "Remove only contradicted stillMounted=acquire stimulus from former last-release test; preceding1000 pure reads/counters and finalrelease/remount/cancel tests retained. Fresh concurrent behavior has actual new RED/GREEN. Legacy test name preserved.",
+  "actualMainRecovery": "Actual protectedDirect binary403 held until ack+all3peer mounts/4leases; failure keeps existing lock/initials. Public canonical user.updated changes URN; actual newPNG on3peer surfaces, viewerURL/pixels unchanged, eachfile1metadata+1binary, noUsersreload/POST and leases0 afterclose.",
+  "priorFullGroups": "Window231/Core274/UI138 accepted on D17 before this bounded failed-acquire delta; not rerun or claimed latest fullapp acceptance. Current31 plus focused8 tested this exact candidate.",
+  "cleanup": {
+    "allGroupsGone": true,
+    "privateXdgRemoved": true
+  },
+  "remaining": [
+    "Presence/profile/fullshell including known canonical author-name projection difference",
+    "Animation/externalURN/decode-phase behavior",
+    "Installedlatest/liveaccount/fullLinux/Windows/macOS acceptance"
+  ]
+}
