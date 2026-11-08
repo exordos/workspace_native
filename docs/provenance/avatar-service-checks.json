@@ -1,0 +1,97 @@
+{
+  "schema": "native-avatar-service-local-checks-v1",
+  "parent": "921179324bd59c2a45c5fcb08a688c9e03246b37",
+  "sourceManifestSha256": "bd7b74e8ac41807049c80e1a20c75039c697136c0998822cc12f6b5b5f78ad53",
+  "serviceSourceManifestSha256": "5f4f1a3ffa1f660ef227ef65c7ef3e4597938d8feda1946d828268fdbd2a8b87",
+  "adoptedCodeSha256": {
+    "packages/native/CMakeLists.txt": "cc8af2904b0b5ab204a20232482ae38daa38b23040378eaa81a21695782c7497",
+    "packages/native/src/avatar-images.h": "1f000f6bc92188e39434db5e4d4f276d93a9ec2741ea4ba7ecf44d0c0499feb3",
+    "packages/native/src/avatar-images.cpp": "f5af11d68575c893f123feece9c71355a853697ca6f44a6c232bb52a7868f3a4",
+    "packages/native/src/native-image-input.h": "4bc529f3c9d7d49bfe98be23d2cd8ce80c8819a45ebf4af3308cb8871542004e",
+    "packages/native/tests/avatar-images-test.cpp": "ffe4119b53198caf47b9cb3f1b0a36d575d4bd3d59f711602e28afc1e7cd4157",
+    "packages/native/tests/image-decode-fixtures.h": "cf609c186a7a8028953a01c3ec44dcbac1aa0a5ff38f10af287dc882bbd1c4ef",
+    "packages/native/cmake/FinalizeLinuxRuntime.cmake.in": "786afa85be7da4a815cd9a4da6eeac8e6f037b6c2c2ccdea970d23afa1656081",
+    "packages/native/tests/native-runtime-probe.cpp": "ade61a8e38e51c543515a8605fdd90971f4f887f91fc009c72c6ae5f127c8fd8"
+  },
+  "service": {
+    "totals": [
+      "Totals: 28 passed, 0 failed, 0 skipped, 0 blacklisted, 16541ms"
+    ],
+    "wallSeconds": 16.565,
+    "rawSha256": "5f49779047f14b5092ba0968fd8a854cf85a17e816aef63e0035d8265d453f72",
+    "binarySha256": "f0527543fbf447cf7e4ef5bb48f292b6f03c11e43b6cae404bc88c814300680e",
+    "runtimeWarnings": 0,
+    "runtimeStderrBytes": 0,
+    "skips": 0
+  },
+  "limits": {
+    "entries": 64,
+    "leases": 4096,
+    "pipelineJobsIncludingRetiredDecodes": 2,
+    "serialDecoderThreads": 1,
+    "thumbnailEdge": 128,
+    "thumbnailMapBytes": 4194304,
+    "sourcePixels": 16000000,
+    "encodedTransferBytes": 26214400,
+    "wholeProcessRssLimit": null,
+    "diskImageStore": false
+  },
+  "controlledRegressions": {
+    "projectSelectionAndTransportRemount": {
+      "redRawSha256": "437d4e5e10f08e7c783bd0ab915f6f14d7998bee15d718e24f02a0ddbe42e181",
+      "redFailures": 2,
+      "greenIncludedInService28": true
+    },
+    "shortWebp": {
+      "original32BytesUnchanged": true,
+      "systemLibwebpAndPillowDecodedOriginal": true,
+      "qt6102OriginalFailed": true,
+      "privateReaderCopyPadsOnlyCompleteOriginalRiffChunks": true,
+      "originalWireSizeAndHashPreserved": true,
+      "originalWebpAndTruncatedControlsPass": true,
+      "diagnosticRawSha256": "8b69a8fd4a6226e50f29f037cfdfb2bca9d5521ebe486d91ea2bbdb27ec80c7d"
+    },
+    "firstFullServiceFailed": {
+      "resultSha256": "5f813e3ee26fffb3d432c945f47bc174ce8c3cd8aa8320c54fc3a13b8a1d9993",
+      "passed": 22,
+      "failed": 3,
+      "outerBudgetExceeded": true,
+      "reason": "Two PNG fixtures encoded48MB and correctly failed25MiB admission; valid32B WebP exposed Qt short-peek bug. Both preserved; only two large PNG encodings changed, pixels/caps/assertion/whole45s budgets unchanged."
+    }
+  },
+  "installedRuntime": {
+    "stageResultSha256": "7d3d9bf5c38588a1dd0df6f7fe05f6731ea83213fbbd98cf8e60fa58625972af",
+    "stageFilesSha256": "ce02175b563cee488ed5cc9d9f3cdd8124517f5da64575defd758a151adbbb81",
+    "entryCount": 511,
+    "probeRawSha256": "2d793b1fc16c4e49d30ba102efdf91c604d032be8e5048f6dbeae52990b8f10e",
+    "imageRoundTrips": {
+      "gif": true,
+      "jpeg": true,
+      "png": true,
+      "webp": true
+    },
+    "relevantLibraries": 28,
+    "allRelevantLibrariesInsidePrefix": true,
+    "temporaryProbeRemoved": true,
+    "missingPluginRedSha256": "d890e52ec791e72c312676ce3f143092ee066af5ba121aee7b0fddb90edd6648",
+    "firstCodecPathFailureSha256": "5c0981c9218be658f995d77c51db3335b35ce46f6184bd33a6afb43b68af958c",
+    "secondCodecPathFailureSha256": "8b76df55d54edbc41d5976189e0dd2ed237b5ebcaa5b627712d4b49d27d3a076",
+    "actualTiffToSystemJpegLoaderTraceSha256": "c0ec8ff2a608261358954d3a5c8bcd806af43db09e9fb21d6052147df734812b"
+  },
+  "cleanup": {
+    "sourceUnchanged": true,
+    "allOwnedGroupsGone": true,
+    "privateServiceXdgRemoved": true,
+    "allOldPrefixesPreserved": true,
+    "stageBuildEvidenceRetained": true
+  },
+  "boundaries": [
+    "Main binding/rendering not yet adopted or accepted",
+    "Static first-frame PNG/JPEG/GIF/WebP only; animation and external URNs open",
+    "HTTP failure retries after final release; a fresh concurrent consumer while prior failed consumer remains is a separate Source parity gap",
+    "4MiB thumbnail map is not a whole-process/GPU/transient RSS bound",
+    "Cold Native UUID uses metadata+binary GET; Source uses binary GET",
+    "No new persistent image bytes or cache schema; existing response cache remains configurable10GB default",
+    "No live account/full Linux/installer/cross-platform acceptance"
+  ]
+}

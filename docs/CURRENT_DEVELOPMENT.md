@@ -58,6 +58,31 @@ actual Domain34 PASS; a fresh exact-source continuation ran only Controller770.
 [Avatar reference checks](provenance/avatar-reference-checks.json) retain both
 segments and the preserved REDs. Main image rendering remains the next gate.
 
+The new avatar service passed all 28 local HTTP/decoder/resource/lifetime cases.
+It shares at most two network/decode jobs, one serial worker, 64 circular 128px
+thumbnails and 4096 small demand leases. The thumbnail map is at most 4 MiB;
+codec scratch, transient full images and GPU memory are separate costs. Owner or
+API-generation changes clear demand/images; actual project-selection and genuine
+last-release/remount regressions failed before their fixes and passed afterward.
+No image-byte disk store or cache schema was added.
+
+The original valid 32-byte WebP exposed Qt 6.10.2's 40-byte feature peek. Only a
+private reader copy of a complete original RIFF/chunk sequence gains trailing
+padding; original transfer size/hash and both truncated-input controls remain
+intact. Two initial large PNG fixtures accidentally exceeded the 25 MiB transfer
+cap; their pixel content and decoder limits stay unchanged after re-encoding.
+The preserved initial 22-pass/3-failure run is not accepted.
+
+The fresh staged probe decodes PNG/JPEG/GIF/WebP and retains message/grant/TLS
+checks. Actual missing-plugin and host JPEG/SharpYUV mapping failures preceded
+the codec-library RPATH fix; a loader trace identified TIFF's transitive JPEG
+lookup. All 28 observed relevant runtime libraries now resolve inside the prefix.
+Service code/tests are byte-exact with the accepted 28-case run; only packaging
+and its stronger observer changed afterward. See
+[avatar service checks](provenance/avatar-service-checks.json). Main photos remain
+the next gate. Animation, external URNs and a newly mounted concurrent consumer
+after another consumer's failed transport remain separate parity work.
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS

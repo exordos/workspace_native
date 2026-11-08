@@ -42,7 +42,8 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
         resources/emoji_picker_navigation.svg resources/emoji_picker_search.svg
         resources/emoji_picker_clear.svg resources/emoji_picker_triangle.svg)
 
-add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h)
+add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
+    src/avatar-images.cpp src/avatar-images.h src/native-image-input.h)
 target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
@@ -168,7 +169,7 @@ if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences session session-vault realtime-client native-controller native-window native-desktop)
+    foreach(test api-client domain workspace-reference file-client avatar-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences session session-vault realtime-client native-controller native-window native-desktop)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test)
         if(test STREQUAL "native-desktop")

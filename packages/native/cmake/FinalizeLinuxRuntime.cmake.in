@@ -14,7 +14,14 @@ file(GLOB runtime_libraries
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libqt6keychain.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libmd4c*.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libcrypto.so*"
-    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libssl.so*")
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libssl.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libpng*.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libjpeg.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libwebp*.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libsharpyuv.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libmng.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libtiff.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/liblcms2.so*")
 set(processed_libraries)
 foreach(library IN LISTS runtime_libraries)
     file(REAL_PATH "${library}" actual_library)
@@ -34,4 +41,4 @@ foreach(library IN LISTS runtime_libraries)
     endif()
 endforeach()
 list(LENGTH processed_libraries library_count)
-message(STATUS "Finalized ${library_count} installed Qt/keychain/MD4C/OpenSSL library runtime paths")
+message(STATUS "Finalized ${library_count} installed Qt/keychain/MD4C/OpenSSL/image-codec library runtime paths")
