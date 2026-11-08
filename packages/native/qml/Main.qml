@@ -1103,7 +1103,9 @@ ApplicationWindow {
         visible: root.controller.authenticated
         anchors.top: parent.top
         width: parent.width
-        height: 65 + (Qt.platform.os === "osx" ? 28 : 0)
+        readonly property real titleStripHeight: Qt.platform.os === "osx" ? 28 : 0
+        readonly property real toolbarHeight: Math.max(48, profileControl.height) + 16
+        height: titleStripHeight + toolbarHeight + 1
         color: root.colors["bg-elevated"]
         bottomLeftRadius: 6
         bottomRightRadius: 6
@@ -1164,7 +1166,7 @@ ApplicationWindow {
         Row {
             id: sectionButtons
             anchors.horizontalCenter: parent.horizontalCenter
-            y: 8 + (Qt.platform.os === "osx" ? 28 : 0)
+            y: topBar.titleStripHeight + (topBar.toolbarHeight - height) / 2
             spacing: 12
             NativeIconButton {
                 colors: root.colors
@@ -1203,6 +1205,7 @@ ApplicationWindow {
             anchors.right: parent.right
             anchors.rightMargin: 8
             anchors.verticalCenter: sectionButtons.verticalCenter
+            anchors.alignWhenCentered: false
             spacing: 10
             Button {
                 id: profileControl
@@ -1218,6 +1221,8 @@ ApplicationWindow {
                 width: Math.min(implicitWidth, Math.max(96, root.width * 0.3))
                 height: Math.max(48, profileTextColumn.implicitHeight + topPadding + bottomPadding)
                 padding: 6
+                horizontalPadding: 6
+                verticalPadding: 6
                 hoverEnabled: true
                 Accessible.name: qsTr("Profile")
                 Accessible.description: displayName + (statusLabel.length ? ", " + statusLabel : "") + (email.length ? ", " + email : "")
@@ -1227,12 +1232,17 @@ ApplicationWindow {
                     border.width: profileControl.visualFocus ? 1 : 0
                     border.color: root.colors.accent
                 }
-                contentItem: RowLayout {
+                // Plain positioners retain the Source fractional line boxes;
+                // Layouts rounded this stack and its available text width.
+                contentItem: Row {
+                    // Keep Source subpixel centers for fractional line boxes.
+                    anchors.alignWhenCentered: false
                     spacing: 8
                     Rectangle {
                         objectName: "profileAvatar"
-                        Layout.preferredWidth: 36
-                        Layout.preferredHeight: 36
+                        width: 36; height: 36
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.alignWhenCentered: false
                         color: root.colors.bg
                         border.color: root.colors["border-subtle"]
                         radius: 18
@@ -1259,24 +1269,27 @@ ApplicationWindow {
                         }
                         Accessible.ignored: true
                     }
-                    ColumnLayout {
+                    Column {
                         id: profileTextColumn
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
+                        width: Math.max(0, profileControl.availableWidth - 36 - 16 - 2 * 8)
+                        height: implicitHeight
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.alignWhenCentered: false
                         spacing: 0
                         Text {
                             id: profileNameText
                             objectName: "profileDisplayName"
                             text: profileControl.displayName
                             textFormat: Text.PlainText
-                            Layout.fillWidth: true
+                            width: Math.min(implicitWidth, profileTextColumn.width)
+                            height: 20
                             elide: Text.ElideRight
                             maximumLineCount: 1
                             color: root.colors["text-primary"]
                             font.pixelSize: 14
                             font.weight: Font.Medium
                             lineHeightMode: Text.FixedHeight
-                            lineHeight: 17.5
+                            lineHeight: 20
                         }
                         FontMetrics {
                             id: profileStatusMetrics
@@ -1288,8 +1301,8 @@ ApplicationWindow {
                             visible: profileControl.statusLabel.length > 0
                             text: profileControl.statusLabel
                             textFormat: Text.PlainText
-                            Layout.fillWidth: true
-                            Layout.maximumWidth: profileStatusMetrics.advanceWidth("0") * 32
+                            width: Math.min(implicitWidth, profileTextColumn.width, profileStatusMetrics.advanceWidth("0") * 32)
+                            height: 13.75
                             elide: Text.ElideRight
                             maximumLineCount: 1
                             color: root.colors["text-secondary"]
@@ -1306,7 +1319,8 @@ ApplicationWindow {
                             visible: profileControl.email.length > 0
                             text: profileControl.email
                             textFormat: Text.PlainText
-                            Layout.fillWidth: true
+                            width: Math.min(implicitWidth, profileTextColumn.width)
+                            height: 13.75
                             elide: Text.ElideRight
                             maximumLineCount: 1
                             color: root.colors["text-secondary"]
@@ -1319,8 +1333,9 @@ ApplicationWindow {
                         colors: root.colors
                         asset: "chevron-down.svg"
                         enabled: false
-                        Layout.preferredWidth: 16
-                        Layout.preferredHeight: 16
+                        width: 16; height: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.alignWhenCentered: false
                         glyphSize: 16
                         icon.color: root.colors["text-muted"]
                         rotation: accountPopup.visible ? 180 : 0

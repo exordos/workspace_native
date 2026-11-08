@@ -368,3 +368,14 @@ presence/counts, Source runtime role/action acceptance, live service, packaging,
 complete Linux and other platforms remain open. Linux comes first, with a
 configurable 10 GB disk-cache default. Full acceptance requires the complete
 relevant groups and warning checks.
+
+
+The three-line profile now retains Source fractional line boxes and explicit
+6px padding. The toolbar follows its measured content height; plain positioners
+and unrounded center anchors preserve the profile and photo coordinates without
+clipping the complete display email. Separate actual height and email REDs, then
+a first failed fractional-center GREEN, are retained. Exact unchanged regression
+oracles now pass; the full actual Window237 passed in 256.969 s. Comparison42
+contains four unedited Source/Qt frames with 16 matched public DTO responses.
+This accepts these local profile dimensions, not full-frame pixels or complete
+Linux behavior. See [profile geometry checks](provenance/profile-geometry-checks.json).

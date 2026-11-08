@@ -773,3 +773,18 @@ restoration, closed initial history and the visible new live body separately.
 Semantic initialization does not wait for layout completion. The current full
 UI138 result and its narrower transport boundary are recorded in
 [semantic readiness checks](provenance/service-semantic-readiness-checks.json).
+
+
+## Profile geometry regression
+
+The synthetic three-line profile at 1440x900/DPR1 has a 76.5px top bar,
+59.5px profile control at y8, 20/13.75/13.75px name/status/email line boxes and
+36px avatar at y19.75. The control explicitly sets 6px horizontal/vertical
+padding; a style's horizontal padding otherwise overrides the generic padding
+and clips the email. Plain Row/Column positioners and unrounded center anchors
+retain these fractional values. Actual independent height and truncation REDs,
+the preserved first fractional-center failure and the unchanged passing oracles
+are in [profile geometry checks](provenance/profile-geometry-checks.json).
+The full Window237 passed on the visible Wayland/default OpenGL desktop.
+Font glyph width/raster, body wrapping, full shell/runtime state and platform
+acceptance remain separate work.

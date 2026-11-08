@@ -799,6 +799,223 @@ static bool presenceProbeMatchesPixels(QQuickWindow *window, QQuickItem *badge,
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void profileAndTopbarUseMeasuredThreeLineGeometry_data()
+    {
+        QTest::addColumn<QString>("firstOracle");
+        QTest::newRow("height")<<QString("height");
+        QTest::newRow("email")<<QString("email");
+    }
+
+    void profileAndTopbarUseMeasuredThreeLineGeometry()
+    {
+        QFETCH(QString,firstOracle);
+        // Root's unchanged Source43 EN-light actual observation, SHA bd031e91...
+        // Source desktop line boxes, padding and border are geometric oracles;
+        // platform glyph advances/AA are not asserted pixel-exact across engines.
+        QMap<QString,int> metadataGets,binaryGets;
+        const QMap<QString,QByteArray> images{{ViewerAvatarFile,avatarProbePng(false)},
+                                              {PeerAvatarFile,avatarProbePng(true)}};
+        WindowDirectFixture fixture;fixture.seed();
+        fixture.created["encryption"]=false;fixture.created["current_encryption_key_uuid"]=QJsonValue::Null;
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar","urn:image:"+ViewerAvatarFile},
+                {"source","iam"},{"status","offline"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar","urn:image:"+PeerAvatarFile},
+                {"source","iam"},{"status","offline"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        auto peerMessage=message("A public synthetic peer message keeps the actual avatar rail visible. "
+                                 "The picture belongs to Alice Synthetic, not the current viewer.",messageId,channelDefault);
+        peerMessage["stream_uuid"]=windowDirectId();peerMessage["author_uuid"]=channelPeer;
+        peerMessage["user_uuid"]=userId;peerMessage["is_own"]=false;peerMessage["pinned"]=false;
+        peerMessage["reactions"]=QJsonObject{};peerMessage["reaction_users"]=QJsonObject{};
+        peerMessage["updated_at"]=peerMessage.value("created_at");
+        const auto original=fixture.server.handler;
+        fixture.server.handler=[&,original,peerMessage](const Request &request)->Response {
+            const auto path=request.target.path();
+            for(auto it=images.cbegin();it!=images.cend();++it) {
+                const auto file="/api/workspace/v1/messenger/files/"+it.key();
+                if(request.method=="GET"&&path==file){++metadataGets[it.key()];return {avatarProbeMetadata(it.key(),it.value())};}
+                if(request.method=="GET"&&path==file+"/actions/download") {
+                    ++binaryGets[it.key()];Response response;response.rawBody=it.value();response.rawContentType="image/png";return response;
+                }
+            }
+            auto response=original(request);
+            if(request.method=="GET"&&path.endsWith("/messages/")
+                &&QUrlQuery(request.target).queryItemValue("stream_uuid")==windowDirectId())response.data=QJsonArray{peerMessage};
+            return response;
+        };
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("profile-geometry.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        FileClient files(&api);controller.useFiles(&files);AvatarImages avatars(&api,&session,&files);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences,&avatars);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Measured profile window did not settle before teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900);QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));QCOMPARE(window->devicePixelRatio(),qreal(1));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setLocale("en");preferences.setMode("light");
+        QCOMPARE(preferences.locale(),QString("en"));QCOMPARE(preferences.mode(),QString("light"));
+        QTRY_COMPARE(controller.account().value("presence").toString(),QString("offline"));
+        QTRY_COMPARE(controller.account().value("displayEmail").toString(),QString("cassi@example.invalid"));
+        QVERIFY(controller.account().value("email").toString().isEmpty());
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());QVERIFY(controller.selectedTopic().isEmpty());
+        QTRY_VERIFY(!controller.busy());QTRY_COMPARE(controller.messages().size(),1);
+        QTRY_COMPARE(controller.directPeer().value("displayName").toString(),QString("Alice Synthetic"));
+        const auto face=[&](int index)->QQuickItem * {
+            if(index==0)return visibleItem("profileAvatar");
+            if(index==1)return avatarProbeCircle(visibleItem("stream-"+windowDirectId()),40);
+            if(index==2)return avatarProbeCircle(visibleItem("directConversationHeader"),40);
+            return visibleItem("message-avatar-"+messageId);
+        };
+        for(int index=0;index<4;++index)QTRY_VERIFY(avatarProbeMatchesPixels(window,face(index),index!=0));
+        QTRY_COMPARE(avatars.stats().leases,4);QTRY_COMPARE(avatars.stats().pipelineJobs,0);
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}){
+            QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+        }
+        const QStringList badgeNames{"presence-viewer","presence-stream-"+windowDirectId(),"presence-direct-header","presence-author-"+messageId};
+        for(const auto &name:badgeNames)QTRY_VERIFY(visibleItem(name));
+        QTRY_VERIFY(visibleItem("profileDisplayName")&&visibleItem("profilePresenceStatus")&&visibleItem("profileEmail"));
+        QCOMPARE(visibleItem("profileDisplayName")->property("text").toString(),QString("Cassi Synthetic"));
+        QCOMPARE(visibleItem("profilePresenceStatus")->property("text").toString(),QString("offline"));
+        QCOMPARE(visibleItem("profileEmail")->property("text").toString(),QString("cassi@example.invalid"));
+        QTRY_VERIFY(visibleItem("streamTopicPrompt"));QVERIFY(!visibleItem("encryptedReadStatus"));
+        QSignalSpy measuredFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!measuredFrame.isEmpty());
+        auto *bar=visibleItem("topBar"),*profile=visibleItem("accountMenuButton");QVERIFY(bar&&profile);
+        // Passive one-shot observation BEFORE the first measured height oracle.
+        // No event pump, input, wait, state mutation or geometry setter here.
+        const auto observedItem=[&](QQuickItem *entry) {
+            if(!entry)return QJsonObject{{"present",false}};
+            const auto scene=entry->mapToScene(QPointF{});
+            QJsonObject data{{"present",true},{"type",entry->metaObject()->className()},{"name",entry->objectName()},
+                {"x",entry->x()},{"y",entry->y()},{"sceneX",scene.x()},{"sceneY",scene.y()},
+                {"width",entry->width()},{"height",entry->height()},
+                {"implicitWidth",entry->implicitWidth()},{"implicitHeight",entry->implicitHeight()},
+                {"visible",entry->isVisible()},{"clip",entry->clip()}};
+            for(const auto *key:{"text","asset","truncated","contentWidth","contentHeight","availableWidth","availableHeight",
+                "implicitContentWidth","implicitContentHeight","leftPadding","rightPadding","topPadding","bottomPadding",
+                "baselineOffset","lineHeight","lineHeightMode","elide","maximumLineCount"}) {
+                const auto value=entry->property(key);if(value.isValid())data[key]=QJsonValue::fromVariant(value);
+            }
+            const auto fontProperty=entry->property("font");
+            if(fontProperty.isValid()) {
+                const auto font=fontProperty.value<QFont>();const QFontInfo info(font);
+                data["requestedFont"]=QJsonObject{{"family",font.family()},{"pixelSize",font.pixelSize()},
+                    {"pointSize",font.pointSizeF()},{"weight",int(font.weight())},{"bold",font.bold()},{"italic",font.italic()}};
+                data["fontInfo"]=QJsonObject{{"family",info.family()},{"styleName",info.styleName()},
+                    {"pixelSize",info.pixelSize()},{"pointSize",info.pointSizeF()},{"weight",info.weight()},
+                    {"bold",info.bold()},{"italic",info.italic()},{"exactMatch",info.exactMatch()}};
+            }
+            QJsonObject layout;
+            for(const auto *key:{"minimumWidth","preferredWidth","maximumWidth","fillWidth","alignment","minimumHeight","preferredHeight","maximumHeight","fillHeight"}) {
+                const auto value=QQmlProperty(entry,QString("Layout.")+key,&engine).read();
+                if(!value.isValid())continue;
+                // Maximum layout bounds may be infinity; JSON never labels that
+                // as a measured finite cap or silently converts it to null.
+                const bool floating=value.metaType().id()==QMetaType::Double||value.metaType().id()==QMetaType::Float;
+                layout[key]=floating&&!qIsFinite(value.toDouble())?QJsonValue(QString("nonfinite")):QJsonValue::fromVariant(value);
+            }
+            if(!layout.isEmpty())data["layout"]=layout;
+            return data;
+        };
+        auto *observedName=visibleItem("profileDisplayName");QVERIFY(observedName);
+        auto *observedColumn=observedName->parentItem();QVERIFY(observedColumn);
+        auto *observedRow=observedColumn->parentItem();QVERIFY(observedRow);
+        QJsonArray contentChildren;QQuickItem *observedChevron=nullptr;
+        for(auto *child:observedRow->childItems()) {
+            contentChildren.append(observedItem(child));
+            if(child->property("asset").toString()=="chevron-down.svg")observedChevron=child;
+        }
+        QJsonObject profileGeometryObservation{{"stage","before-first-source-height-oracle"},{"firstOracle",firstOracle},{"synthetic",true},
+            {"viewport",QJsonObject{{"width",window->width()},{"height",window->height()},{"dpr",window->devicePixelRatio()}}},
+            {"bar",observedItem(bar)},{"profile",observedItem(profile)},
+            {"name",observedItem(observedName)},{"status",observedItem(visibleItem("profilePresenceStatus"))},
+            {"email",observedItem(visibleItem("profileEmail"))},{"column",observedItem(observedColumn)},
+            {"contentRow",observedItem(observedRow)},{"contentChildren",contentChildren},{"chevron",observedItem(observedChevron)},
+            {"fontInfoScope","QFontInfo resolved for each requested QFont; not per-glyph fallback or cross-platform raster acceptance"}};
+        const auto observedBytes=QJsonDocument(profileGeometryObservation).toJson(QJsonDocument::Compact);
+        qInfo().noquote()<<"PROFILE_GEOMETRY_OBSERVATION"<<observedBytes;
+        const auto observationDirectory=qEnvironmentVariable("CASSI_NATIVE_AVATAR_SCREENSHOT_DIRECTORY");
+        if(!observationDirectory.isEmpty()) {
+            QVERIFY(QDir().mkpath(observationDirectory));
+            const auto path=QDir(observationDirectory).filePath("native-profile-geometry-"+firstOracle+"-before-height-oracle.json");
+            QVERIFY(!QFile::exists(path));QFile output(path);QVERIFY(output.open(QIODevice::WriteOnly));
+            const auto body=QJsonDocument(profileGeometryObservation).toJson(QJsonDocument::Indented);
+            QCOMPARE(output.write(body),qint64(body.size()));
+        }
+        // Independent email-first row reaches the actual visible elision even
+        // while the unchanged old topbar still has its separate height defect.
+        if(firstOracle=="email") {
+            auto *email=visibleItem("profileEmail");QVERIFY(email);
+            QVERIFY2(!email->property("truncated").toBool(),"Actual full Source email must not be elided with this natural-width fixture");
+        }
+        // First intended unchanged-v50 RED: actual65 vs Source76.5, after all
+        // actual images/data/presence prerequisites above have passed.
+        QCOMPARE(bar->height(),qreal(76.5));
+        QCOMPARE(profile->height(),qreal(59.5));QCOMPARE(profile->mapToScene(QPointF{}).y(),qreal(8));
+        QCOMPARE(profile->mapToScene({profile->width(),0}).x(),qreal(1432));
+        QCOMPARE(QQmlProperty(profile,"padding").read().toReal(),qreal(6));
+        QCOMPARE(face(0)->mapToScene(QPointF{}).y(),qreal(19.75));QCOMPARE(face(0)->size(),QSizeF(36,36));
+        const QStringList rows{"profileDisplayName","profilePresenceStatus","profileEmail"};
+        const QList<qreal> y{14,34,47.75},heights{20,13.75,13.75};
+        for(qsizetype index=0;index<rows.size();++index){
+            auto *text=visibleItem(rows[index]);QVERIFY(text);
+            QCOMPARE(text->mapToScene(QPointF{}).y(),y[index]);QCOMPARE(text->height(),heights[index]);
+            QCOMPARE(text->property("lineHeight").toReal(),heights[index]);
+            QCOMPARE(text->mapToItem(profile,QPointF{}).x(),qreal(50)); // p6+avatar36+gap8.
+            QVERIFY(qAbs(text->width()-text->implicitWidth())<=1); // Source natural width; allow native layout pixel rounding.
+            QVERIFY(!text->property("truncated").toBool());
+            QCOMPARE(text->property("textFormat").toInt(),0);
+        }
+        auto *column=visibleItem("profileDisplayName")->parentItem();QVERIFY(column);
+        QCOMPARE(column->height(),qreal(47.5));
+        // Compare the natural width contract using the ACTUAL Qt glyph advances,
+        // not Chromium's190.109375px width as a cross-font exact-pixel oracle.
+        const auto natural=qMax(visibleItem(rows[0])->implicitWidth(),qMax(visibleItem(rows[1])->implicitWidth(),visibleItem(rows[2])->implicitWidth()));
+        QVERIFY(qAbs(column->width()-natural)<=1);QVERIFY(qAbs(profile->width()-(natural+80))<=1);
+        auto *organization=visibleItem("organizationButton");QVERIFY(organization);
+        QCOMPARE(organization->mapToScene(QPointF{}).x(),qreal(28));
+        QCOMPARE(organization->mapToScene({0,organization->height()/2}).y(),qreal(37.75));
+        QCOMPARE(organization->size(),QSizeF(40,40));
+        QVERIFY(QRectF(QPointF{},bar->size()).contains(profile->mapRectToItem(bar,{QPointF{},profile->size()})));
+        QVERIFY(!face(0)->clip());
+        QCOMPARE(visibleItem("conversationHeader")->mapToScene(QPointF{}).y(),qreal(80.5));
+        QCOMPARE(visibleItem("conversationHeader")->height(),qreal(56));
+        QVERIFY(!controller.canSend());QVERIFY(!controller.canAttach());QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        // Canonical nullable-email is a Source-CSS-derived secondary control:
+        // two lines fit inside the36px avatar+p12, so only THIS state stays65.
+        // No Source screenshot of this secondary state is claimed.
+        auto own=fixture.users[0].toObject();own["email"]=QJsonValue::Null;fixture.users[0]=own;
+        const auto beforeMissingEmail=fixture.usersGets;controller.refresh();
+        QTRY_VERIFY(fixture.usersGets>beforeMissingEmail);QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.account().value("displayEmail").toString().isEmpty());
+        QTRY_VERIFY(!visibleItem("profileEmail"));QTRY_COMPARE(visibleItem("topBar")->height(),qreal(65));
+        QCOMPARE(visibleItem("accountMenuButton")->height(),qreal(48));
+        QCOMPARE(visibleItem("accountMenuButton")->mapToScene(QPointF{}).y(),qreal(8));
+        QCOMPARE(visibleItem("profilePresenceStatus")->property("text").toString(),QString("offline"));
+        own["email"]="cassi@example.invalid";fixture.users[0]=own;
+        const auto beforeRestore=fixture.usersGets;controller.refresh();
+        QTRY_VERIFY(fixture.usersGets>beforeRestore);QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.account().value("displayEmail").toString(),QString("cassi@example.invalid"));
+        QTRY_VERIFY(visibleItem("profileEmail"));QTRY_COMPARE(visibleItem("topBar")->height(),qreal(76.5));
+        QCOMPARE(visibleItem("accountMenuButton")->height(),qreal(59.5));
+        for(int index=0;index<4;++index)QTRY_VERIFY(avatarProbeMatchesPixels(window,face(index),index!=0));
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}){
+            QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+        }
+        QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        const bool closed=closeIncubatedTestWindow(engine,window);
+        if(closed)closeBeforeEngine.dismiss();QVERIFY(closed);
+    }
     void actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");

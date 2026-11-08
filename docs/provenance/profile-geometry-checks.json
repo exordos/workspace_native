@@ -1,0 +1,113 @@
+{
+  "schema": "native-profile-geometry-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceManifestSha256": "7e87f529cb2066f54336fb2a3507a7a4010e5ce24e4d2062486c237bb7b00fcf",
+  "productAndTestFiles": {
+    "packages/native/qml/Main.qml": "abfbcb35bc0abf1783ef0a3d3149d756fa8aaf41a04147abe8899c62dafbbfd9",
+    "packages/native/tests/native-window-test.cpp": "13ffd677085cd98426c88343a43aafaccef655ee5f5c59b8dd129ebb7e61b77b"
+  },
+  "allOldWindowTestBytesPreserved": true,
+  "sourceObservationSha256": "bd031e91140529e4f542dcf14dfcc03887e8b7062c80d30bd8abc9facf42932b",
+  "measuredAt1440x900Dpr1": {
+    "topbarHeight": 76.5,
+    "profileHeight": 59.5,
+    "profileY": 8,
+    "nameLineHeight": 20,
+    "nameY": 14,
+    "statusLineHeight": 13.75,
+    "statusY": 34,
+    "emailLineHeight": 13.75,
+    "emailY": 47.75,
+    "avatarY": 19.75,
+    "emailTruncated": false,
+    "explicitPadding": 6
+  },
+  "actualRed": [
+    {
+      "run": "v51-profile-geometry-red-gate",
+      "rawSha256": "44e8b1466124cd717dd830eb346cc6a0982418ec58a46dfc4d3157c5e4051f85",
+      "result": "2PASS1FAIL at actual65px vs Source76.5"
+    },
+    {
+      "run": "v51-profile-geometry-red2-gate",
+      "rawSha256": "2da433956f4978bec494e30a480dca402884a3387ebf1739a1b74dbea3fa51f9",
+      "result": "2PASS2FAIL; independent height and real email.truncated oracles"
+    }
+  ],
+  "firstGreenPreservedNotAccepted": {
+    "run": "v51-profile-geometry-green-gate",
+    "rawSha256": "c6f103957f1be191eb135caecfd65346b552444c51c00e6d0dbcb9e306b54163",
+    "result": "2PASS2FAIL; height/email correct, profileY7.75 vs exactSource8"
+  },
+  "fractionalCenterCorrection": "Five explicit anchors.alignWhenCentered=false settings preserve fractional centers. Tests/geometry constants/renderer/budgets unchanged from failed first GREEN.",
+  "officialQtAnchorSource": {
+    "repository": "qt/qtdeclarative",
+    "ref": "v6.10.2",
+    "path": "src/quick/items/qquickanchors.cpp",
+    "gitBlob": "9bf4264d0ad73436a879c623d5afe575225c811a",
+    "sha256": "d497b7c65581312c7c3b9f025dc514961af08572b5bdf2c7b44b270395ce939b",
+    "lines": "48-63,314-326"
+  },
+  "focused": [
+    {
+      "label": "actual-profile-height-and-email4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2811ms"
+      ],
+      "wallSeconds": 2.922,
+      "stdoutSha256": "b8e2a0beadd61f225aa096efad95a6d46369d420f44accddf5e1f219f43ebcd5",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-main-presence4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 3649ms"
+      ],
+      "wallSeconds": 3.776,
+      "stdoutSha256": "c06131aa2a762bfd87cce6b5c98f311b6ac95f3565c14adcc5d65befd8be1799",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-main-photo-recovery-name9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 5963ms"
+      ],
+      "wallSeconds": 6.085,
+      "stdoutSha256": "54357bfb2d6d62e1066af1efd9c839656c8ba8e4aae2e7139c8eabcb67c7d071",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "wholeWindow237": {
+    "label": "whole-window237",
+    "totals": [
+      "Totals: 237 passed, 0 failed, 0 skipped, 0 blacklisted, 256969ms"
+    ],
+    "wallSeconds": 257.183,
+    "stdoutSha256": "9f004b57a3d3b7fa8124bec145532bbe5520dd8dd440a4ac4fa6c0a3dda4e074",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "wholeWindowRootReviewSha256": "de9ce85769843c083db10e8ef91071dc0881d4e7cbc05951d86cb159cd59d1aa",
+  "actualSourceVsCurrentNative16DtoEqualitySha256": "06cd533fbf0280db05b03597f5fa0bde7d85d9232396882323c77ffbe61e9c61",
+  "comparison42": {
+    "verified": true,
+    "request_uuid": "f31c65ef-d23e-424d-b68f-1c869f4ebe4c",
+    "message_uuid": "d0433f0e-c2d2-5008-9111-910d01099000",
+    "stream_uuid": "8470a07e-2e5e-44c7-81d7-c35015fb63c9",
+    "topic_uuid": "6078fd48-1541-47cd-bec6-f7967b0157a8",
+    "delivery": null,
+    "file_uuids": [
+      "6f106780-94c3-4991-a7eb-4cd5c23b74f1",
+      "3a7c2c10-1b9c-49c5-9e2a-d28abbbf9c2d",
+      "fe3b8f51-3e1d-43b2-9f77-23b76f2a2142",
+      "390cdf94-5e30-4efe-9383-33b1b7cc62cb"
+    ],
+    "allAttachmentDownloadHashesVerified": true,
+    "rootVisuallyReviewed": true,
+    "fullApplicationAccepted": false,
+    "matchedScope": "Same public synthetic Users/streams/topics/history/PNG; currentNative4actualHTTPphoto cases16response DTOs equal frozenSource. Staticoffline frames only. Source1binary vsNative metadata+binary, no liveaccount/roles/crypto/fullshell acceptance. Navigation expansion and lockedfooter state intentionally not treated as matched. Source actual profile observation matches topbar76.5/profile59.5 y8/name20 y14/status13.75 y34/email13.75 y47.75/avatar36 y19.75. Font glyph width/raster and remaining body wrap differ; not whole-frame pixel acceptance."
+  },
+  "comparisonPreflightSha256": "c4867d72cf47197f89afbd58c03bda26f1c70a905e2d8ce9e3e05d7f06a9dbee",
+  "cleanup": "All actual gate process groups reaped, private XDG trees removed; Source observer server/context/profile removed and local port closed.",
+  "remaining": "Font glyph width/raster, body wrapping, matched navigation/footer/runtime state, full right drawer/status editor, live account, full Linux and other OS acceptance remain open."
+}
