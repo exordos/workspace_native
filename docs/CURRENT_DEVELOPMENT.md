@@ -476,6 +476,29 @@ the real QML leaf with public synthetic adapters; it creates no window or networ
 Fourteen Source/Qt component captures have equal measured relative rectangles
 for title, version/update cards, status and action. They use equal synthetic
 version text, not the installed release identity. Glyph/full-shell equivalence,
-licenses navigation, success notification and actual two-release upgrade remain
-open. Earlier intermittent failures remain unexplained, despite this passing run.
+licenses navigation and success notification remain open. Actual two-release
+upgrade is recorded separately below. Earlier intermittent failures remain
+unexplained, despite this passing run.
 See [About/update checks](provenance/about-update-checks.json).
+
+
+[0.1.1](https://github.com/exordos/workspace_native/releases/tag/0.1.1) is public.
+Both master and tag CI passed; the actual downloaded 63,558,061-byte archive
+matched its digest and checksums and passed the packaged five-codec/crypto/TLS
+probe. A real per-user 0.1.0 installation downloaded and installed that public
+0.1.1 through its existing update actions, then restarted into the exact new
+binary. Twelve actual native CUA observations/actions covered both windows.
+Both primaries exited normally; a secondary launch restored the same new
+primary. One synthetic schema-4 History row retained its logical digest and
+reopened through production NativeCache after restart and quit. The owned
+processes, instance lock and private home were removed. This is anonymous
+installed-update acceptance on the current host, not authenticated history,
+credential preservation or full application acceptance. Two externally
+interrupted attempts are retained. Intermittent public metadata-check errors
+remain unexplained; no transport fix is claimed. See
+[published update checks](provenance/linux-published-0.1.1-upgrade-checks.json).
+
+The next delivery priority is everyday usage: composer emoji selection, then
+inline received-image previews, using the existing draft/send and bounded file
+transport. Smaller tested releases take precedence over licenses-page or
+secondary presentation work. Full Linux parity remains the overall goal.

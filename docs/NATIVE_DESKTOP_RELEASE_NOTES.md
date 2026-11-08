@@ -16,9 +16,12 @@ keeps the transfer running, and reopening does not repeat requests or restart.
 The panel includes English/Russian text and light/dark themes. The licenses
 page and post-restart success notice remain unfinished.
 
-The tray also includes **Check for updates**. The first real upgrade between
-published releases is verified after publication; that acceptance is still
-pending for this release. Binary versions are installed side
+The tray also includes **Check for updates**. The actual published 0.1.0 → 0.1.1
+download, installation and restart passed on the current Ubuntu/Wayland host,
+including a single-instance check and preservation of one synthetic cache row.
+Authenticated account history and secure-store preservation remain unaccepted.
+Intermittent public update-check errors are still under investigation.
+Binary versions are installed side
 by side; settings, secure-store credentials and disk cache have separate paths.
 The disk cache defaults to a configurable decimal 10 GB.
 

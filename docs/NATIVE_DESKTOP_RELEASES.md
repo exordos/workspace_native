@@ -13,10 +13,18 @@ first public Linux preview. Its archive and SHA256SUMS are available in that
 release. The actual downloaded archive passed checksum, per-user installation,
 anonymous Wayland startup, private runtime mapping, five-codec/crypto/TLS and
 explicit quit checks on the current Ubuntu host. Full functionality, visual
-parity and an upgrade between two released versions remain open. The initial
+parity remain open. The initial
 installed public update check failed; a later check on the unchanged downloaded
 binary succeeded. Its earlier failure remains unexplained.
 See [the recorded checks](provenance/linux-first-published-preview-checks.json).
+
+[0.1.1](https://github.com/exordos/workspace_native/releases/tag/0.1.1) adds the
+About dock and automatic download. Both CI runs and its actual public archive
+passed their recorded checks. The actual installed 0.1.0 → 0.1.1 download,
+install and restart passed, including same-primary activation and preservation
+of one synthetic NativeCache History row. Authenticated account/history and
+secure-store preservation remain separate acceptance. Intermittent public check
+errors remain unexplained. See [published upgrade checks](provenance/linux-published-0.1.1-upgrade-checks.json).
 
 ## Build pipeline
 
@@ -85,5 +93,6 @@ explicit Install and restart action; disclosure never starts or cancels work.
 The actual Main and lifecycle policy checks are recorded in
 [About/update checks](provenance/about-update-checks.json). CI runs the policy
 object graph without a native surface; that is not a visual/window check.
-Full visual equivalence, actual installed upgrade, GitHub asset delivery,
-licenses navigation and complete live application acceptance remain separate.
+Full visual equivalence, licenses navigation and complete live application
+acceptance remain separate. Actual public asset delivery and anonymous installed
+upgrade are recorded above; they do not establish all account/session workflows.
