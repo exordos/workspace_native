@@ -11,8 +11,12 @@ rules remain unchanged.
 
 The complete local window and encrypted workflow suites passed, together with
 controller, updater, transport, installer and packaged runtime checks. GitHub
-packaging CI passed. Public download and an actual installed 0.1.4 to 0.1.5
-upgrade are the next separate verification steps.
+packaging CI passed. The published archive passed its checksum and runtime checks. An actual
+installed 0.1.4 to 0.1.5 upgrade passed: automatic download, one Install and
+restart click, normal exits, same-primary activation and preservation/reopen
+of one synthetic cache row. No manual update-check retry was needed. Desktop
+diagnostic warnings remain; authenticated history and credential preservation
+are separate unfinished acceptance.
 
 This remains a development preview for Ubuntu 26.04 x86_64 / glibc 2.43 or newer.
 The configurable disk cache defaults to 10 GB. Live-account acceptance, full

@@ -698,3 +698,18 @@ Raw comparison52 shows the same two displayed messages using Source visual
 components and actual Native Main; outgoing UUID/ciphertext equality, full-shell
 pixel parity and live service acceptance are not claimed. Public tag/assets and
 the installed 0.1.4 to 0.1.5 upgrade remain separate pending gates.
+
+## Published 0.1.5 Linux upgrade check
+
+The numeric tag and both GitHub CI runs passed. The actual downloaded public
+archive matched GitHub/SHA256SUMS and passed the deployed runtime probe. An actual
+installed 0.1.4 to 0.1.5 update passed all eight Root native CUA checkpoints:
+automatic download, one Install and restart click, normal old/new exits, exact
+new binary/current link and same-primary activation. Both processes mapped 53
+relevant libraries inside their installed prefixes. One synthetic NativeCache
+row survived and reopened unchanged. No manual metadata retry was needed.
+The shared log retains two portal, 156 AT-SPI and two HTTP2 diagnostic lines; the
+HTTP2 lines are not bound to a version/request, and no warning-free or external
+root-cause claim follows. All owned processes/private XDG state were removed.
+This is anonymous installed acceptance, not live account/history or credential
+preservation. See [published checks](provenance/linux-published-0.1.5-upgrade-checks.json).

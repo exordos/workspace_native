@@ -124,7 +124,10 @@ it without a third manual Check. Eighteen independent transport/lifecycle contro
 also passed using the published 0.1.4 Qt/OpenSSL runtime. These establish the
 bounded recovery behavior, not the cause of earlier intermittent public errors.
 The complete existing updater suite passed 49 cases. The local package/runtime probe and checkpoint GitHub packaging CI also passed.
-Public tag/assets and the installed upgrade remain pending. See the
+The published 0.1.5 archive and actual installed 0.1.4 to 0.1.5 upgrade passed
+the [separate public checks](provenance/linux-published-0.1.5-upgrade-checks.json).
+The shared runtime log still has diagnostic warnings, including two HTTP2 lines
+without a bound originating operation; no warning-free or remote-cause claim follows. See the
 [sanitized recovery checks](provenance/updater-http2-recovery-checks.json).
 
 The Source-shaped About dock and toolbar indicator share the app-scoped updater.

@@ -145,14 +145,15 @@
   },
   "pendingForCandidate": {
     "completeExistingNativeUpdaterQtTestSuite": "PASS_49",
-    "finalPackageRuntimeProbe": "LOCAL_PASS_PUBLIC_PREFIX_PENDING",
-    "githubCIAndPublishedAssetDelivery": "CHECKPOINT_CI_PASS_TAG_CI_AND_PUBLIC_PENDING",
-    "actualInstalledUpgradeAndCachePreservation": "pending"
+    "finalPackageRuntimeProbe": "PUBLIC_DOWNLOADED_PREFIX_PASS",
+    "githubCIAndPublishedAssetDelivery": "MASTER_TAG_CI_AND_PUBLIC_DOWNLOAD_PASS",
+    "actualInstalledUpgradeAndCachePreservation": "PASS_0.1.4_TO_0.1.5_ONE_SYNTHETIC_CACHE_ROW"
   },
   "limits": [
     "The original external intermittent metadata-error cause remains unknown.",
     "Owned local socket closure models a transport failure; it does not identify the remote source of earlier closes.",
     "No Workspace credentials, live account, GUI, About visual or general application acceptance comes from these QCore controls.",
     "A passed private control set is not final package, publication or installed-upgrade acceptance."
-  ]
+  ],
+  "publishedUpgradeReference": "linux-published-0.1.5-upgrade-checks.json"
 }

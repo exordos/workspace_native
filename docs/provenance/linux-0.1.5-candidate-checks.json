@@ -1,6 +1,6 @@
 {
   "schema": "native-linux-0.1.5-candidate-v1",
-  "status": "LOCAL_RELEASE_GATES_ACCEPTED_PUBLIC_AND_INSTALLED_PENDING",
+  "status": "PUBLISHED_DOWNLOAD_RUNTIME_AND_INSTALLED_UPGRADE_ACCEPTED",
   "version": "0.1.5",
   "sourceReference": {
     "repository": "exordos/workspace_ui",
@@ -278,12 +278,12 @@
     "wholeWindow285": "PASS_285",
     "wholeE2eeCore": "PASS_274",
     "wholeEncryptedUi": "PASS_141",
-    "ci": "CHECKPOINT_PACKAGE_CI_PASS_TAG_CI_PENDING",
-    "packagedRuntime": "LOCAL_PACKAGE_AND_DEPLOYED_PROBE_PASS_PUBLIC_PENDING",
-    "publication": "PENDING",
-    "installedUpgrade": "PENDING",
-    "releaseTag": null,
-    "asset": null
+    "ci": "MASTER_AND_TAG_CI_PASS",
+    "packagedRuntime": "PUBLIC_DOWNLOADED_PREFIX_PASS",
+    "publication": "PUBLISHED",
+    "installedUpgrade": "PASS_0.1.4_TO_0.1.5_SYNTHETIC_CACHE",
+    "releaseTag": "0.1.5",
+    "asset": "https://github.com/exordos/workspace_native/releases/download/0.1.5/Exordos-Workspace-Native-0.1.5-linux-x86_64.tar.gz"
   },
   "limits": [
     "Synthetic HTTP/TLS/public event admission, not live account/backend/WSS",
@@ -388,5 +388,6 @@
     "visualOnlySourceReadyProps": true,
     "outgoingUuidAndCiphertextUnmatched": true,
     "fullPixelParity": false
-  }
+  },
+  "publishedAcceptanceReference": "linux-published-0.1.5-upgrade-checks.json"
 }

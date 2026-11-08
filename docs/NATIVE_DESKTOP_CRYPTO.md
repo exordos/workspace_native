@@ -537,6 +537,6 @@ runtime warnings, stderr or skips; Controller (837 cases) passed separately.
 
 This uses synthetic HTTP and public event admission, not live WSS/backend or a
 full Source UI session. The peer reconstructs typed public request input; full
-transport-DTO parsing and pixel parity are not claimed. The whole current E2EE core passed 274 cases. Whole Window285 and encrypted UI141 passed. Public package delivery and
-installed 0.1.5 acceptance remain pending. Distinct earlier
+transport-DTO parsing and pixel parity are not claimed. The whole current E2EE core passed 274 cases. Whole Window285 and encrypted UI141 passed. Public package delivery and the anonymous installed 0.1.4 to 0.1.5 upgrade also
+passed; live account, authenticated history and credential preservation remain open. Distinct earlier
 failures and causal limits are retained in [candidate checks](provenance/linux-0.1.5-candidate-checks.json).
