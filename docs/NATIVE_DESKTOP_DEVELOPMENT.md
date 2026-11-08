@@ -5,6 +5,32 @@ Qt Quick, and CMake 3.24 or later. It does not run the React application or load
 Workspace in a WebView. The current scope and remaining acceptance work are in
 [Native desktop parity](NATIVE_DESKTOP_PARITY.md).
 
+## Versioning and releases
+
+Use numeric `MAJOR.MINOR.PATCH` versions and tags without a `v` prefix, including
+while the application is a development preview:
+
+- Increase MAJOR for an incompatible public-interface change or a very large
+  architectural rework; reset MINOR and PATCH to zero.
+- Increase MINOR when a release adds a new feature; reset PATCH to zero.
+- Increase PATCH for bug fixes and corrections to existing functionality.
+- A release containing a new feature and fixes uses a MINOR increase. Internal
+  refactoring alone does not require a MAJOR increase unless it is the substantial
+  architectural rework described above.
+
+After the published 0.1.6, the next feature release is 0.2.0. Corrections to that
+release use 0.2.1, 0.2.2 and so on; the next feature release uses 0.3.0. Published
+tags and immutable package contents keep their original versions. Update the
+CMake project version with the implemented release scope before building and
+tagging it; a documentation-only change does not itself publish a product release.
+The [next ten releases](CURRENT_DEVELOPMENT.md#next-ten-linux-releases) use this
+policy. Bug-fix releases may be delivered between the listed feature releases.
+
+The updater compares all three numeric components and selects the exact matching
+archive name. Its transport tests cover patch, minor, two-digit and major
+transitions with actual metadata and verified archive transfers. The existing
+workflow and packaging version checks accept the same numeric format.
+
 ## Build and run
 
 Install a matching Qt development kit for the target operating system, including

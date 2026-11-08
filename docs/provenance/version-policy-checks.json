@@ -1,0 +1,33 @@
+{
+  "policy": "MAJOR incompatible public interface or very large architecture change; MINOR new feature; PATCH correction to existing functionality",
+  "tags": "Numeric MAJOR.MINOR.PATCH without v; reset lower components after MAJOR/MINOR increase",
+  "nextFeatureVersion": "0.2.0",
+  "plannedFeatureVersions": [
+    "0.2.0",
+    "0.3.0",
+    "0.4.0",
+    "0.5.0",
+    "0.6.0",
+    "0.7.0",
+    "0.8.0",
+    "0.9.0",
+    "0.10.0",
+    "0.11.0"
+  ],
+  "runtimeCodeChanged": false,
+  "localUpdater": {
+    "status": "PASS",
+    "qtCasesPassed": 55,
+    "failuresWarningsSkips": 0,
+    "additionalTransitionRows": 6,
+    "actualMetadataAndVerifiedStreamingDownloads": true,
+    "wholeExistingRegisteredCommandAndTimeout": true,
+    "rawLogSha256": "f1838b5b6d85545cbbe4c8c85f2ec78149e3b6dbe0310f46a7e0669865b56ee0",
+    "rootReviewSha256": "7a42fc621b7a9444e3790e286d311dba5c3a4a2be18aab181537cc497dbc8c62"
+  },
+  "workflowAndPackager": "Existing numeric tag/asset/version validation inspected; no workflow or product version change required",
+  "limits": [
+    "No product release is made by this documentation/test-only change",
+    "Actual installed minor-version upgrade will be checked after the corresponding feature release is published"
+  ]
+}

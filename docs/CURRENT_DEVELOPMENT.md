@@ -785,10 +785,23 @@ history or credential preservation. Real primary-account sign-in/send/read
 acceptance remains on 0.1.5, and remembered-session restoration remains open.
 See [published 0.1.6 checks](provenance/linux-published-0.1.6-upgrade-checks.json).
 
+## Version policy check
+
+The next feature release is 0.2.0; corrections to existing behavior increment
+PATCH. The complete current updater suite passed 55 Qt cases, including six
+added actual metadata/download transitions across patch, minor, two-digit and
+major versions. Existing oracles, registered command and timeout remain intact.
+The runtime version comparator already handles these transitions; product code,
+published tags and package versions are unchanged by this policy/test update.
+See [version policy checks](provenance/version-policy-checks.json).
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting
-after 0.1.6. Each row is planned work, not a claim of implementation or acceptance.
+after 0.1.6. New features increase MINOR; corrections to existing functionality
+increase PATCH, following the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases).
+Bug-fix releases can appear between these ten feature releases. Each row is
+planned work, not a claim of implementation or acceptance.
 Release results will include the next ten priorities and their planned versions.
 Daily use and delivery through the existing updater come first. Each release
 keeps the configurable 10 GB disk-cache default and verifies affected API/cache
@@ -798,13 +811,13 @@ full parity matrix or resume other platforms.
 
 | Priority | Planned version | Main capability and acceptance target |
 | --- | --- | --- |
-| 1 | 0.1.7 | Remembered sign-in: restore the verified account/project and last conversation through the existing OS credential service; verify a real restart. |
-| 2 | 0.1.8 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
-| 3 | 0.1.9 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
-| 4 | 0.1.10 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
-| 5 | 0.1.11 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
-| 6 | 0.1.12 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
-| 7 | 0.1.13 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
-| 8 | 0.1.14 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
-| 9 | 0.1.15 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
-| 10 | 0.1.16 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |
+| 1 | 0.2.0 | Remembered sign-in: restore the verified account/project and last conversation through the existing OS credential service; verify a real restart. |
+| 2 | 0.3.0 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
+| 3 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
+| 4 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
+| 5 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
+| 6 | 0.7.0 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
+| 7 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
+| 8 | 0.9.0 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
+| 9 | 0.10.0 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
+| 10 | 0.11.0 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |

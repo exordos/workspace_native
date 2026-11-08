@@ -165,6 +165,7 @@ class NativeUpdaterTest final : public QObject {
 private slots:
     void init() { QTest::failOnWarning(QRegularExpression(QStringLiteral(".*"))); }
     void explicitCheckAndVerifiedStreamingDownload();
+    void plainNumericReleaseTagAndVerifiedStreamingDownload_data();
     void plainNumericReleaseTagAndVerifiedStreamingDownload();
     void nonNewerRelease_data();
     void nonNewerRelease();
@@ -232,14 +233,33 @@ void NativeUpdaterTest::explicitCheckAndVerifiedStreamingDownload()
     QVERIFY(!QFileInfo::exists(verified));
 }
 
+void NativeUpdaterTest::plainNumericReleaseTagAndVerifiedStreamingDownload_data()
+{
+    QTest::addColumn<QString>("currentVersion");
+    QTest::addColumn<QString>("releaseVersion");
+    QTest::newRow("existing-patch") << QStringLiteral("1.2.3") << QStringLiteral("1.2.4");
+    QTest::newRow("preview-bugfix") << QStringLiteral("0.1.6") << QStringLiteral("0.1.7");
+    QTest::newRow("preview-feature") << QStringLiteral("0.1.6") << QStringLiteral("0.2.0");
+    QTest::newRow("feature-bugfix") << QStringLiteral("0.2.0") << QStringLiteral("0.2.1");
+    QTest::newRow("two-digit-patch") << QStringLiteral("0.2.9") << QStringLiteral("0.2.10");
+    QTest::newRow("two-digit-minor") << QStringLiteral("0.9.9") << QStringLiteral("0.10.0");
+    QTest::newRow("major-interface-change") << QStringLiteral("0.99.99") << QStringLiteral("1.0.0");
+}
+
 void NativeUpdaterTest::plainNumericReleaseTagAndVerifiedStreamingDownload()
 {
+    QFETCH(QString, currentVersion);
+    QFETCH(QString, releaseVersion);
     Server server;
     QVERIFY(server.listening);
     QTemporaryDir cache;
     QVERIFY(cache.isValid());
-    const auto release = server.release(QStringLiteral("1.2.4"));
-    QCOMPARE(release.value(QStringLiteral("tag_name")).toString(), QStringLiteral("1.2.4"));
+    auto release = server.release(releaseVersion);
+    auto asset = release.value(QStringLiteral("assets")).toArray().first().toObject();
+    asset.insert(QStringLiteral("name"),
+        QStringLiteral("Exordos-Workspace-Native-%1-linux-x86_64.tar.gz").arg(releaseVersion));
+    release.insert(QStringLiteral("assets"), QJsonArray{asset});
+    QCOMPARE(release.value(QStringLiteral("tag_name")).toString(), releaseVersion);
     QPointer<QTcpSocket> binary;
     server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
         if (request.startsWith("GET /latest ")) Server::reply(socket, json(release));
@@ -249,10 +269,10 @@ void NativeUpdaterTest::plainNumericReleaseTagAndVerifiedStreamingDownload()
                 + "\r\nConnection: close\r\n\r\n" + Archive.left(5));
         }
     };
-    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), cache.path());
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), currentVersion, cache.path());
     updater.check();
     QTRY_COMPARE(updater.state(), QStringLiteral("available"));
-    QCOMPARE(updater.availableVersion(), QStringLiteral("1.2.4"));
+    QCOMPARE(updater.availableVersion(), releaseVersion);
     QVERIFY(updater.error().isEmpty());
     QCOMPARE(server.requests.size(), 1);
     updater.download();
