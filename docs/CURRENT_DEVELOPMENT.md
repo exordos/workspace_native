@@ -845,9 +845,10 @@ its cause is not established and no archive runtime fix is claimed. All 55 produ
 inputs match the accepted controller run; the subsequent change adds Main coverage
 and test observations. Owned gate processes and private XDG state were removed.
 
-A real executable saved-account restart, primary desktop credential persistence,
-public package/installed update and live0.2.0 acceptance remain open. Complete
-functional/pixel parity is not established. See [last-conversation checks](provenance/last-conversation-checks.json).
+These local checks do not establish real executable restoration or installed
+update acceptance; those are recorded separately below. Permanent desktop
+credential configuration and complete functional/pixel parity remain open. See
+[last-conversation checks](provenance/last-conversation-checks.json).
 
 ## Packaged 0.2.0 session-restoration check
 
@@ -881,23 +882,44 @@ temporary profiles and encrypted test keys were removed; clipboard-history and
 screenshot settings were restored. The primary default profile was untouched.
 
 The 55 product inputs remain identical to the accepted local checks above.
-Public release, installed 0.1.6→0.2.0 update and authenticated upgrade preservation
-remain separate pending gates. See [packaged session-restoration checks](provenance/linux-session-restore-0.2.0-checks.json).
+Public-package and installed-update acceptance are recorded separately below;
+authenticated upgrade preservation remains open. See
+[packaged session-restoration checks](provenance/linux-session-restore-0.2.0-checks.json).
 
 ## Version policy check
 
-The next feature release is 0.2.0; corrections to existing behavior increment
-PATCH. The complete current updater suite passed 55 Qt cases, including six
+The feature release after 0.1.6 is 0.2.0; corrections to existing behavior
+increment PATCH. The complete current updater suite passed 55 Qt cases, including six
 added actual metadata/download transitions across patch, minor, two-digit and
 major versions. Existing oracles, registered command and timeout remain intact.
 The runtime version comparator already handles these transitions; product code,
 published tags and package versions are unchanged by this policy/test update.
 See [version policy checks](provenance/version-policy-checks.json).
 
+## Published 0.2.0 and installed update
+
+The exact published Linux 0.2.0 archive passed its GitHub/checksum manifest,
+installed ten-module/image/TLS probe and live mapping checks. Primary OTP sign-in
+and automatic account/project/last-conversation restoration passed again in the
+public binary, using the same real isolated OS credential service across two
+fresh processes. Both exited normally; one native send was uniquely confirmed
+by canonical API read-back. This public binary is distinct from the earlier
+candidate, so its acceptance is recorded separately.
+
+An actual anonymous installed 0.1.6 to 0.2.0 update passed automatic download,
+one visible Install and restart click, normal old/new exits, same-primary
+activation and repeat update check. One synthetic production History-cache row
+retained the exact logical content and reopened successfully. All eight visible
+checkpoints were observed through native CUA. Tray commands used the public
+D-Bus menu API; the physical tray icon was not accepted. Temporary application,
+credential-provider and update profiles were removed. Authenticated upgrade
+preservation, permanent desktop credential-provider configuration and complete
+feature/pixel parity remain open. See [current restoration and update coverage](provenance/linux-session-restore-0.2.0-checks.json).
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting
-after 0.1.6. New features increase MINOR; corrections to existing functionality
+after the published 0.2.0. New features increase MINOR; corrections to existing functionality
 increase PATCH, following the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases).
 Bug-fix releases can appear between these ten feature releases. Each row is
 planned work, not a claim of implementation or acceptance.
@@ -910,13 +932,13 @@ full parity matrix or resume other platforms.
 
 | Priority | Planned version | Main capability and acceptance target |
 | --- | --- | --- |
-| 1 | 0.2.0 | Remembered sign-in: restore the verified account/project and last conversation through the existing OS credential service; verify a real restart. |
-| 2 | 0.3.0 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
-| 3 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
-| 4 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
-| 5 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
-| 6 | 0.7.0 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
-| 7 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
-| 8 | 0.9.0 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
-| 9 | 0.10.0 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
-| 10 | 0.11.0 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |
+| 1 | 0.3.0 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
+| 2 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
+| 3 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
+| 4 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
+| 5 | 0.7.0 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
+| 6 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
+| 7 | 0.9.0 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
+| 8 | 0.10.0 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
+| 9 | 0.11.0 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |
+| 10 | 0.12.0 | Durable outgoing messages: retain pending sends across restart, reconcile uncertain results by stable identity and recover without duplicates. |

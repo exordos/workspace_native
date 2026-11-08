@@ -1,6 +1,6 @@
 {
   "version": "0.2.0",
-  "status": "PACKAGED_PRIMARY_SESSION_RESTORE_AND_ORDINARY_MESSAGES_PASS_PUBLIC_RELEASE_PENDING",
+  "status": "PUBLIC_0_2_0_PRIMARY_SESSION_RESTORE_AND_INSTALLED_UPDATE_PASS_WITH_SCOPED_LIMITS",
   "candidate": {
     "sourceCommit": "35f8a573978926db9a02c04a7c09aef8e0c363a2",
     "ciRunId": 42530969026,
@@ -83,7 +83,43 @@
     "The OS provider was temporary and isolated; permanent desktop credential-provider setup remains unaccepted",
     "Initial observer interruption retained privately; the completed observation verified two restored processes and their normal exits",
     "The earlier intermittent archive-input test failure remains without an established cause",
-    "Public package, installed0.1.6-to0.2.0 upgrade and authenticated upgrade preservation remain pending",
-    "Full feature/pixel parity and other operating systems remain open"
-  ]
+    "Full feature/pixel parity and other operating systems remain open",
+    "The installed update used an anonymous profile and one synthetic cache row; authenticated upgrade preservation remains open"
+  ],
+  "published": {
+    "tag": "0.2.0",
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.2.0",
+    "archiveSha256": "4e1f423e94014a0d3fed900e3a239892ce621c0d1e16dcaa806765b37272a362",
+    "binarySha256": "759aec34422f4772081bd1f53db81c69fcfa9e9984b61edf0acccbcaca695cc3",
+    "publicChecksumAndManifestVerified": true,
+    "exactPublicBinaryPrimaryOtpLogin": true,
+    "automaticNewProcessRestores": 1,
+    "manualLoginProjectAndRouteInputsInRestoredProcess": 0,
+    "observedNormalAppExitCodes": [
+      0,
+      0
+    ],
+    "nativeSendCanonicalReadback": true,
+    "liveMappedLibrariesInsidePrefix": 54,
+    "rootReviewSha256": "4d59af94b7b22e0cf1e2cf725d454eeff97e955f2262a2e615272389e4c0b77f"
+  },
+  "installedUpdate": {
+    "from": "0.1.6",
+    "to": "0.2.0",
+    "automaticDownload": true,
+    "installAndRestartClicks": 1,
+    "actualCuaCheckpoints": 8,
+    "oldAndNewNormalExitCodes": [
+      0,
+      0
+    ],
+    "samePrimaryAfterSecondaryLaunch": true,
+    "repeatCheckUpToDate": true,
+    "syntheticActualHistoryRowsBeforeAndAfter": 1,
+    "logicalContentHashUnchangedAndProductionReopenPassed": true,
+    "newMappedLibrariesInsidePrefix": 53,
+    "trayCommandMode": "Public D-Bus menu API; physical tray icon not accepted",
+    "temporaryProfileAndProcessesRemoved": true,
+    "rootReviewSha256": "0265706954be4eee0533469f0288b174828789a79e5281aed65dd99a27d92825"
+  }
 }

@@ -18,6 +18,13 @@ unedited source/native frames retain the remaining visual differences. These
 checks do not establish permanent credential-provider setup on other desktops,
 authenticated upgrade preservation or complete application parity.
 
+The downloaded public 0.2.0 package also passed primary OTP sign-in and a fresh
+process restored the account, project and conversation without manual input.
+An actual installed 0.1.6 to 0.2.0 update passed automatic download, one
+**Install and restart** click, normal process exits, same-primary activation
+and preservation/reopen of one synthetic history-cache row. Both checks used
+the exact published binary; authenticated upgrade preservation remains open.
+
 Existing installations download available updates automatically and offer
 **Install and restart**. Download and extract the archive, then run `bash install.sh`
 for a new per-user installation. This preview targets Ubuntu 26.04 x86_64 /
