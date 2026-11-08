@@ -783,6 +783,179 @@ private slots:
             QVERIFY(!request.target.path().contains("/files/"));
     }
 
+    void accountDisplayEmailUsesOwnedUsersBeforeIamWithoutChangingIdentity_data()
+    {
+        QTest::addColumn<QJsonValue>("usersEmail");
+        QTest::addColumn<QString>("iamEmail");
+        QTest::addColumn<QString>("expected");
+        const auto canonical = QString(QChar(0xfeff)) + "  cassi@example.invalid \t" + QChar(0xfeff);
+        QTest::newRow("owned-users-over-iam") << QJsonValue(canonical) << QString("iam@example.invalid")
+            << QString("cassi@example.invalid");
+        QTest::newRow("owned-users-with-empty-iam") << QJsonValue(canonical) << QString{}
+            << QString("cassi@example.invalid");
+        QTest::newRow("blank-users-falls-back-to-iam") << QJsonValue(" \t\n")
+            << QString("iam@example.invalid") << QString("iam@example.invalid");
+        QTest::newRow("null-users-falls-back-to-iam") << QJsonValue(QJsonValue::Null)
+            << QString("iam@example.invalid") << QString("iam@example.invalid");
+        QTest::newRow("missing-users-email-falls-back-to-iam") << QJsonValue(QJsonValue::Undefined)
+            << QString("iam@example.invalid") << QString("iam@example.invalid");
+    }
+
+    void accountDisplayEmailUsesOwnedUsersBeforeIamWithoutChangingIdentity()
+    {
+        QFETCH(QJsonValue, usersEmail); QFETCH(QString, iamEmail); QFETCH(QString, expected);
+        AvatarReferenceFixture test{QJsonValue(avatarReferenceA)};
+        auto &f = test.direct.fixture; auto &c = f.controller;
+        auto own = test.directory[0].toObject();
+        if (usersEmail.isUndefined()) own.remove("email"); else own["email"] = usersEmail;
+        test.directory[0] = own;
+        const auto authentication = f.authentication;
+        f.authentication = [authentication, iamEmail](const Request &request) {
+            auto response = authentication(request);
+            if (request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject(), user = raw.value("user_info").toObject();
+                user["email"] = iamEmail; raw["user_info"] = user; response.data = raw;
+            }
+            return response;
+        };
+        QVERIFY(test.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(test.direct.usersGets, 1); QCOMPARE(test.direct.posts, 0);
+        const auto identity = f.session.publicProfile();
+        QCOMPARE(identity.value("email").toString(), iamEmail);
+        QVERIFY(!identity.contains("displayEmail"));
+        QCOMPARE(c.account().value("uuid").toString(), userId);
+        QCOMPARE(c.account().value("avatar").toString(), avatarReferenceA);
+        // Actual Users HTTP/owned profile is ready before the new display-only oracle.
+        QCOMPARE(c.account().value("displayEmail").toString(), expected);
+        QCOMPARE(c.account().value("email").toString(), iamEmail);
+        QCOMPARE(f.session.publicProfile(), identity);
+    }
+
+    void ownRealtimeEmailNotifiesAndForeignEmailNeverReplacesTheViewer()
+    {
+        AvatarReferenceFixture test{QJsonValue(avatarReferenceA)};
+        auto &f = test.direct.fixture; auto &c = f.controller;
+        QVERIFY(test.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto identity = f.session.publicProfile(); const auto accounts = c.savedAccounts();
+        const int usersBefore = test.direct.usersGets;
+        const auto nameBefore = c.viewerDisplayName();
+        const auto avatarBefore = c.account().value("avatar");
+        auto own = test.directory[0].toObject(); own["email"] = " \tupdated@example.invalid\n";
+        own["updated_at"] = "2026-01-02T10:01:00Z";
+        QSignalSpy changed(&c, &NativeController::stateChanged); QVERIFY(changed.isValid());
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", own, 200)));
+        QVERIFY(!changed.isEmpty());
+        QCOMPARE(c.account().value("displayEmail").toString(), QString("updated@example.invalid"));
+        auto foreign = test.directory[1].toObject(); foreign["email"] = "foreign@example.invalid";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", foreign, 201)));
+        QCOMPARE(c.account().value("displayEmail").toString(), QString("updated@example.invalid"));
+        own["email"] = QJsonValue::Null; own["updated_at"] = "2026-01-02T10:02:00Z";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", own, 202)));
+        QCOMPARE(c.account().value("displayEmail").toString(), identity.value("email").toString());
+        QCOMPARE(c.account().value("email"), identity.value("email"));
+        QCOMPARE(f.session.publicProfile(), identity); QCOMPARE(c.savedAccounts(), accounts);
+        QCOMPARE(c.viewerDisplayName(), nameBefore); QCOMPARE(c.account().value("avatar"), avatarBefore);
+        QCOMPARE(test.direct.usersGets, usersBefore); QCOMPARE(test.direct.posts, 0);
+    }
+
+    void ownedCachedEmailRemainsDisplayMetadataUntilTheActualUsersReply()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        bool hold = false; std::function<void()> release;
+        NativeCacheService initial(directory.path(), {}, true);
+        AvatarReferenceFixture test{QJsonValue(avatarReferenceA)};
+        auto &f = test.direct.fixture; auto &c = f.controller;
+        auto own = test.directory[0].toObject(); own["email"] = " cached@example.invalid ";
+        test.directory[0] = own;
+        f.users = [&](const Request &) {
+            Response response{test.directory};
+            if (hold) response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        c.useCache(&initial); QVERIFY(test.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto identity = f.session.publicProfile();
+        QVERIFY(flushCache(initial));
+        const auto saved = cacheEntry(initial, initial.lease(), {NativeCache::Kind::Users, {}, {}, {}});
+        QVERIFY(saved);
+        bool ownedEmailPersisted = false;
+        for (const auto &value : saved->rows) {
+            const auto row = value.toObject();
+            if (row.value("uuid").toString() == userId)
+                ownedEmailPersisted = row.value("email").toString() == " cached@example.invalid ";
+        }
+        QVERIFY(ownedEmailPersisted);
+        c.setRealtimeMode(true);
+        c.useCache(nullptr); initial.shutdown(); QTRY_VERIFY(initial.stopped());
+        // Reopen the actual SQLite profile entry, with a current Users reply held.
+        own["email"] = QJsonValue::Null; test.directory[0] = own;
+        hold = true; const int before = test.direct.usersGets;
+        NativeCacheService reopened(directory.path(), {}, true);
+        NativeController restored(&f.api, &f.session);
+        auto releaseOnExit = qScopeGuard([&] { if (release) release(); });
+        restored.useCache(&reopened);
+        QTRY_COMPARE(test.direct.usersGets, before + 1); QTRY_VERIFY(bool(release));
+        QTRY_COMPARE(restored.account().value("avatar").toString(), avatarReferenceA);
+        QTRY_VERIFY(restored.cacheStale());
+        QPointer<QNetworkReply> pending;
+        for (auto *reply : f.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path() == "/api/workspace/v1/users/") pending = reply;
+        QVERIFY(pending && !pending->isFinished());
+        QCOMPARE(restored.account().value("displayEmail").toString(), QString("cached@example.invalid"));
+        QCOMPARE(restored.account().value("email"), identity.value("email"));
+        auto send = std::move(release); release = {}; hold = false; send();
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_COMPARE(restored.account().value("displayEmail").toString(), identity.value("email").toString());
+        QCOMPARE(f.session.publicProfile(), identity);
+        QCOMPARE(test.direct.usersGets, before + 1); QCOMPARE(test.direct.posts, 0);
+    }
+
+    void oldOwnerEmailCannotReturnAfterLogoutNewOwnerOrALateUsersReply()
+    {
+        bool newOwner = false, holdNext = false; int usersGets = 0;
+        std::function<void()> releaseOld;
+        Fixture f;
+        f.users = [&](const Request &) {
+            ++usersGets;
+            auto oldUser = avatarReferencePerson(userId, "old-viewer");
+            oldUser["email"] = "old-users@example.invalid";
+            Response response{QJsonArray{oldUser}}; // Deliberately no Users row for the new owner.
+            if (holdNext) { holdNext = false; response.defer = [&](std::function<void()> send) { releaseOld = std::move(send); }; }
+            return response;
+        };
+        f.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject(), user = raw.value("user_info").toObject();
+                user["uuid"] = newOwner ? returnedId : userId;
+                user["email"] = newOwner ? "new-iam@example.invalid" : "old-iam@example.invalid";
+                raw["user_info"] = user; response.data = raw;
+            }
+            return response;
+        };
+        auto releaseOnExit = qScopeGuard([&] { if (releaseOld) releaseOld(); });
+        QVERIFY(f.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.controller.account().value("displayEmail").toString(), QString("old-users@example.invalid"));
+        holdNext = true; f.controller.refresh(); QTRY_COMPARE(usersGets, 2); QTRY_VERIFY(bool(releaseOld));
+        QPointer<QNetworkReply> pending;
+        for (auto *reply : f.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path() == "/api/workspace/v1/users/") pending = reply;
+        QVERIFY(pending && !pending->isFinished());
+        const auto generation = f.api.generation(); f.controller.logout();
+        QVERIFY(f.controller.account().isEmpty()); QVERIFY(f.session.publicProfile().isEmpty());
+        QTRY_VERIFY(pending.isNull() || pending->isFinished());
+        newOwner = true; QVERIFY(f.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(f.api.generation() > generation); QCOMPARE(usersGets, 3);
+        QCOMPARE(f.controller.account().value("uuid").toString(), returnedId);
+        QCOMPARE(f.controller.account().value("displayEmail").toString(), QString("new-iam@example.invalid"));
+        QCOMPARE(f.controller.account().value("email").toString(), QString("new-iam@example.invalid"));
+        auto send = std::move(releaseOld); releaseOld = {}; send();
+        QCOMPARE(f.controller.account().value("displayEmail").toString(), QString("new-iam@example.invalid"));
+        auto oldEvent = controllerEvent("user.updated", avatarReferencePerson(userId, "old-viewer"), 240);
+        QVERIFY(!f.controller.applyRealtimeEvent(oldEvent));
+        QCOMPARE(f.controller.account().value("displayEmail").toString(), QString("new-iam@example.invalid"));
+        f.controller.logout(); QVERIFY(f.controller.account().isEmpty());
+    }
+
     void presenceUsesActualUsersAndPreservesIndependentPresentation_data()
     {
         QTest::addColumn<QJsonValue>("wireStatus"); QTest::addColumn<QString>("expected");

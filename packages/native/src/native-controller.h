@@ -698,6 +698,7 @@ private:
     struct UserPresentation {
         QString name, avatar, presence, statusLabel;
         std::optional<qint64> presenceUpdatedAt;
+        QString email;
     };
     static UserPresentation makeUserPresentation(const QString &name, const QJsonObject &row,
         bool authoritative, const UserPresentation &previous);

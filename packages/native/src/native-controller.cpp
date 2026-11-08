@@ -2205,7 +2205,8 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
     const QString &name, const QJsonObject &row, bool authoritative,
     const UserPresentation &previous)
 {
-    UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {}};
+    UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {},
+        sourceTrimmed(row.value("email").toString())};
     if (!authoritative) {
         // Source persists profiles, never live presence/status decorations.
         result.presence = "offline";
@@ -2275,6 +2276,12 @@ QVariantMap NativeController::account() const
         profile.insert("avatar", userAvatar(m_session->user()));
         profile.insert("presence", userPresence(m_session->user()));
         profile.insert("statusLabel", userStatusLabel(m_session->user()));
+        auto displayEmail = sourceTrimmed(profile.value("email").toString());
+        if (authenticated() && m_channelDirectoryOwner == creationOwnerKey()) {
+            const auto user = m_names.constFind(m_session->user());
+            if (user != m_names.cend() && !user->email.isEmpty()) displayEmail = user->email;
+        }
+        profile.insert("displayEmail", displayEmail);
     }
     return profile;
 }

@@ -151,6 +151,16 @@ stderr or skips. Existing test lines are preserved. These are local synthetic
 data checks; QML presence, profile email and complete visual acceptance follow
 separately. See [user presentation checks](provenance/user-presentation-checks.json).
 
+The account projection now offers a separate displayEmail: the current owned
+Workspace user email, including saved profile metadata, precedes the unchanged
+IAM email fallback. It does not alter Session identity, credentials or saved
+accounts. One actual HTTP regression reproduced the missing display field; ten
+focused cases then passed, including own/foreign public updates, actual SQLite
+reopen, held reply, logout, new owner and late old reply. Controller800 above
+precedes this small field and is not claimed rerun as Controller808. The Main
+binding is checked separately. See
+[display email checks](provenance/account-display-email-checks.json).
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS

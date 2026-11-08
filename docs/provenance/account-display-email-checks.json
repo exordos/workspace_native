@@ -1,0 +1,40 @@
+{
+  "schema": "native-account-display-email-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceManifestSha256": "b92119c8a70f78b361add4579b73c9fc0ddf9f82f7b798c3d7fb1938bf41b7c4",
+  "productAndTestFiles": {
+    "packages/native/src/native-controller.h": "196f3d90a87b65feef7a5c5ae5e96dc89793f28107f50124858eacea53114448",
+    "packages/native/src/native-controller.cpp": "0905b33b3066f4dfea553db7840a228706946dc97cfd2f9682a82afe65ed7b76",
+    "packages/native/tests/native-controller-test.cpp": "79997b3a356b2c5a697cf59a9bd0a69a4b09f00dfb200026766f2dac64c04e08"
+  },
+  "rootReviewSha256": "952bed545d6700c53cc813630995b3b79ed68459f64ce3c939937a265030a417",
+  "actualHttpRed": {
+    "totals": [
+      "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 639ms"
+    ],
+    "stdoutSha256": "b2c1b9850b4766f592aecd3d1a8b78cb8d6c1ff682e8d4cde8fde1f6cbcc983a",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "intendedRedOnly": true
+  },
+  "focused10": {
+    "totals": [
+      "Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 5649ms"
+    ],
+    "stdoutSha256": "ac864987c6986d03fc7657f7f0e7ec006023094c51f2bca3f2f42ac9e103e1e5",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wallSeconds": 5.732
+  },
+  "existingTestLinesPreserved": true,
+  "identitySessionIamEmailCredentialsSavedAccountsCacheSchemaUnchanged": true,
+  "wholeController800": "Accepted immediately before this minimal display-only email field; not rerun or claimed whole808 here.",
+  "scope": "Existing owned Users presentation keeps Source-trimmed email as view-only metadata. account.displayEmail prefers current-owned own row, including cached profile, then unchanged IAM email. HTTP/own+foreign RT/actual SQLite reopen/held reply/logout/new-owner/late callback controls passed. QML binding accepted separately.",
+  "cleanup": {
+    "allOwnedGroupsGone": true,
+    "privateXdgRemoved": true
+  },
+  "remaining": [
+    "QML profile email binding and new visual comparison",
+    "Full shell/live account/latest installed Linux/other OS acceptance"
+  ]
+}
