@@ -400,3 +400,13 @@ Locale14 passed. Six matched local Source/Qt states have equal outer dialog
 rectangles: 448x332, or 448x670 with the picker. This does not accept whole-frame
 or glyph parity; picker rows/preview/focus and remaining paint are separate work.
 See [status editor checks](provenance/own-status-editor-checks.json).
+
+
+Clear status now keeps the pinned Source text brightness while a save is pending,
+with the action still disabled. Two actual same-region pixel REDs observed about
+0.5 contrast ratio; the unchanged tests now observe exactly 1 in both themes.
+Clear4, status functional7 and geometry10 passed without runtime warnings.
+Whole Window252 after this small paint delta is not claimed; the prior accepted
+Window250 is separate. The responsive-picker candidate and its unresolved full257
+initial-opening failure are not included in this change. See
+[Clear paint checks](provenance/clear-status-paint-checks.json).

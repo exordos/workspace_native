@@ -1,0 +1,104 @@
+{
+  "schema": "native-clear-status-paint-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "productAndTestFiles": {
+    "packages/native/qml/Main.qml": "109e94d0190f49ab6187e1e4d7e19bf90ca359e30c917ff2483063baf459695a",
+    "packages/native/tests/native-window-test.cpp": "c78564a85711d208068d7dc6a0f93ddf58367e52de6bf6f0eb022c0a98118d18"
+  },
+  "allOldWindow250TestBytesPreserved": true,
+  "allOtherCurrentPackageAndLicenseBytesUnchanged": true,
+  "actualRedReviewSha256": "22dc1088ff92947e69d95f5462df7829511e19381d06696c150badf5ed265cc7",
+  "actualRedClearWitnesses": [
+    {
+      "actualHeldPost": true,
+      "beforeContrast": 56491,
+      "heldContrast": 28256,
+      "heldRatio": 0.5001858703156254,
+      "inkPixels": 354,
+      "locale": "en",
+      "mode": "light",
+      "posts": 1,
+      "sameBox": true,
+      "sameCaptionAndFont": true,
+      "unhoveredUnfocusedBoth": true
+    },
+    {
+      "actualHeldPost": true,
+      "beforeContrast": 51458,
+      "heldContrast": 25729,
+      "heldRatio": 0.5,
+      "inkPixels": 402,
+      "locale": "ru",
+      "mode": "dark",
+      "posts": 1,
+      "sameBox": true,
+      "sameCaptionAndFont": true,
+      "unhoveredUnfocusedBoth": true
+    }
+  ],
+  "actualGreenReviewSha256": "0b416a71c2fd8466b96a34de2c54116cb1976fa4c01093b3a2bb594147ec2c69",
+  "actualGreenClearWitnesses": [
+    {
+      "actualHeldPost": true,
+      "beforeContrast": 56488,
+      "heldContrast": 56488,
+      "heldRatio": 1,
+      "inkPixels": 354,
+      "locale": "en",
+      "mode": "light",
+      "posts": 1,
+      "sameBox": true,
+      "sameCaptionAndFont": true,
+      "unhoveredUnfocusedBoth": true
+    },
+    {
+      "actualHeldPost": true,
+      "beforeContrast": 51463,
+      "heldContrast": 51463,
+      "heldRatio": 1,
+      "inkPixels": 402,
+      "locale": "ru",
+      "mode": "dark",
+      "posts": 1,
+      "sameBox": true,
+      "sameCaptionAndFont": true,
+      "unhoveredUnfocusedBoth": true
+    }
+  ],
+  "focusedRows": [
+    {
+      "label": "actual-clear-paint4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 3656ms"
+      ],
+      "wallSeconds": 3.774,
+      "stdoutSha256": "c10b24e72025afb14ddea40adc971eaae415fa61e259de88ddf502150767d022",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "prior-status-functional7",
+      "totals": [
+        "Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 6973ms"
+      ],
+      "wallSeconds": 7.084,
+      "stdoutSha256": "1bd1f72b98a265e8f63522c7c1e3c62badea016c9cc4138bbd468ce966ca11be",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "prior-status-geometry10",
+      "totals": [
+        "Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 11735ms"
+      ],
+      "wallSeconds": 11.844,
+      "stdoutSha256": "2a8dbb1da9780331f853434f36ac3d2166b7f2762776eda34ea0bff66ed5e80f",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "sourceManifestSha256": "ba474e39bbabbadbd2b60573b900fe9594140df70ae60ccc760f2d5caf085be3",
+  "scope": "Clear content text alone preserves disabled opacity1 from pinned Source; default StatusActionButton disabled text remains.5. Button stays disabled while one real owned presence POST is held. Actual same-region glyph ink ratio changes from~.5 RED to1 in both themes; no cross-client glyph equality inferred.",
+  "wholeWindow252AfterThisDelta": "NOT RUN; prior accepted Window250 and these focused4/7/10 are qualified separately",
+  "notIncluded": "Unaccepted responsive-picker candidate and its full257 initial-open failure; shadow calibration/test; glyph/search raster or focus changes.",
+  "remaining": "The later picker variant full257 failed one RU initial Status opening. Cause unknown; passive prefix diagnostic in progress. Full application/Linux/live/other OS acceptance remains open.",
+  "cleanup": "Accepted source/raw/binary hashes and reaped groups/private XDG removal independently reviewed."
+}

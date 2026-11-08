@@ -853,6 +853,77 @@ public:
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void ownStatusClearKeepsItsRenderedInkWhileSaveIsPending_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light")<<QString("en")<<QString("light");
+        QTest::newRow("ru-dark")<<QString("ru")<<QString("dark");
+    }
+    void ownStatusClearKeepsItsRenderedInkWhileSaveIsPending()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);
+        WindowOwnStatusFixture fixture;fixture.held=true;
+        QTemporaryDir directory;QVERIFY(directory.isValid());NativePreferences preferences(directory.filePath("status-clear-paint.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Clear paint teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        preferences.setLocale(locale);preferences.setMode(mode);QCOMPARE(preferences.paletteId(),QString("blue-cold"));
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        const auto profile=controller.account();
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        QSignalSpy firstFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!firstFrame.isEmpty());
+        QCOMPARE(window->size(),QSize(1440,900));QCOMPARE(window->devicePixelRatio(),qreal(1));
+        auto *clear=visibleItem("ownStatusClear");QVERIFY(clear&&clear->isEnabled());
+        QVERIFY(!clear->property("hovered").toBool());QVERIFY(!clear->property("visualFocus").toBool());
+        const auto box=QRectF(clear->mapToScene(QPointF{}),clear->size());
+        const auto crop=box.toAlignedRect();const auto caption=clear->property("text").toString();
+        const auto beforeFont=clear->property("font").value<QFont>();
+        const auto before=window->grabWindow();QVERIFY(!before.isNull());QVERIFY(before.rect().contains(crop));
+        const auto bgPoint=(box.topLeft()+QPointF(4,box.height()/2)).toPoint();
+        const auto background=before.pixelColor(bgPoint);
+        const auto contrast=[background](const QColor &color){return qAbs(color.red()-background.red())
+            +qAbs(color.green()-background.green())+qAbs(color.blue()-background.blue());};
+        // The mask comes from actual baseline glyph ink, not a requested font
+        // metric or a product opacity property. Caption/box/font remain identical.
+        QVector<QPoint> ink; qint64 beforeInk=0;
+        for(int y=crop.top();y<=crop.bottom();++y)for(int x=crop.left();x<=crop.right();++x) {
+            const QPoint point(x,y);const auto weight=contrast(before.pixelColor(point));
+            if(weight>=48){ink.append(point);beforeInk+=weight;}
+        }
+        QVERIFY(ink.size()>=20);QVERIFY(beforeInk>0);QCOMPARE(fixture.posts,0);
+        click(window,visibleItem("ownStatusPreset-1"));
+        click(window,visibleItem("ownStatusText"));QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);
+        for(const auto key:QByteArray("  Focusing  "))QTest::keyClick(window,key);
+        click(window,visibleItem("ownStatusAway"));click(window,visibleItem("ownStatusSave"));
+        QTRY_COMPARE(fixture.posts,1);QTRY_VERIFY(bool(fixture.release));QTRY_VERIFY(fixture.pending(api));
+        QCOMPARE(fixture.posted,QJsonObject({{"status","idle"},{"emoji","🏠"},{"text","Focusing"}}));
+        QVERIFY(controller.ownStatus().value("pending").toBool());QCOMPARE(controller.account(),profile);
+        QSignalSpy heldFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!heldFrame.isEmpty());
+        clear=visibleItem("ownStatusClear");QVERIFY(clear&&!clear->isEnabled());
+        QVERIFY(!clear->property("hovered").toBool());QVERIFY(!clear->property("visualFocus").toBool());
+        QCOMPARE(QRectF(clear->mapToScene(QPointF{}),clear->size()),box);
+        QCOMPARE(clear->property("text").toString(),caption);QCOMPARE(clear->property("font").value<QFont>(),beforeFont);
+        const auto held=window->grabWindow();QVERIFY(!held.isNull());QCOMPARE(held.pixelColor(bgPoint),background);
+        qint64 heldInk=0;for(const auto &point:ink)heldInk+=contrast(held.pixelColor(point));
+        const QJsonObject facts{{"locale",locale},{"mode",mode},{"inkPixels",int(ink.size())},
+            {"beforeContrast",beforeInk},{"heldContrast",heldInk},{"heldRatio",double(heldInk)/double(beforeInk)},
+            {"sameBox",true},{"sameCaptionAndFont",true},{"unhoveredUnfocusedBoth",true},
+            {"actualHeldPost",bool(fixture.pending(api))},{"posts",fixture.posts}};
+        qInfo().noquote()<<"OWN_STATUS_CLEAR_PAINT "<<QJsonDocument(facts).toJson(QJsonDocument::Compact);
+        // Source Clear has no disabled opacity utility; identical ink should
+        // remain. 5% tolerates integer RGB/AA noise, and rejects the old ~50% fade.
+        QVERIFY2(qAbs(heldInk-beforeInk)*100<=beforeInk*5,"Same actual Clear glyph ink faded during the held POST");
+        auto send=std::move(fixture.release);fixture.release={};send();
+        QTRY_VERIFY(!visibleItem("ownStatusText"));QTRY_COMPARE(controller.ownStatus().value("text").toString(),QString("Focusing"));
+        QCOMPARE(fixture.posts,1);QCOMPARE(fixture.usersGets,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
     void ownStatusUsesMeasuredSourceGeometry_data()
     {
         QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");

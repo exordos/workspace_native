@@ -1411,6 +1411,7 @@ ApplicationWindow {
         property bool primary: false
         property bool outlined: false
         property bool selected: false
+        property real disabledTextOpacity: 0.5
         implicitHeight: 36
         implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
         horizontalPadding: 12
@@ -1428,7 +1429,7 @@ ApplicationWindow {
             color: statusButton.primary ? root.colors["on-accent"] : statusButton.outlined ? root.colors["text-primary"] : root.colors["text-muted"]
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-            opacity: statusButton.enabled ? 1 : 0.5
+            opacity: statusButton.enabled ? 1 : statusButton.disabledTextOpacity
         }
         background: Rectangle {
             radius: 6
@@ -1654,6 +1655,7 @@ ApplicationWindow {
                 spacing: 8
                 StatusActionButton {
                     objectName: "ownStatusClear"
+                    disabledTextOpacity: 1
                     text: qsTr("Clear status")
                     enabled: !ownStatusDialog.pending
                     onClicked: { ownStatusText.text = ""; ownStatusDialog.emojiDraft = ""; ownStatusAway.checked = false; ownStatusDialog.emojiPickerOpen = false; }

@@ -825,3 +825,13 @@ checks and full Window250 are bound in
 [status editor checks](provenance/own-status-editor-checks.json). Remaining picker,
 shadow/focus/raster and full Linux/live acceptance are explicitly outside this
 milestone.
+
+
+Clear alone sets the local `disabledTextOpacity` to 1, matching the pinned plain
+Clear button. Other status buttons retain their default 0.5 disabled text. The
+regression derives glyph pixels from the actual baseline frame and compares the
+same box, caption, font and background during one real held presence POST. It
+also requires Clear to be disabled and unhovered/unfocused in both frames. This
+is a paint check, not an opacity-property inference or complete glyph comparison.
+The actual RED/GREEN witnesses and focused scope are in
+[Clear paint checks](provenance/clear-status-paint-checks.json).
