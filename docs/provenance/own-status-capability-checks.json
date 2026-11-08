@@ -1,0 +1,79 @@
+{
+  "schema": "native-own-status-capability-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "backendPin": "32d21ab35fe136c49882c85b3d5e9c49ecc5b0d4",
+  "productAndTestFiles": {
+    "packages/native/src/native-app.cpp": "6230a047fbe33dc3a774fb378542d52f3114155a281b9fb37e687ac55cc55194",
+    "packages/native/src/native-controller.cpp": "2c48484874cecfa5b2bb4b63278b14e358eae7d73ab6143be0a071c59cffb149",
+    "packages/native/src/native-controller.h": "342d468dd726de44b0c5cdd1f3ac653e04e24dcecc76868aadc8e839a0e359c2",
+    "packages/native/src/native-preferences.cpp": "4957ae0360250c1b8b653841d542bff6d0eaa45d043dcdad13ba64f203b1741e",
+    "packages/native/src/native-preferences.h": "2c1259c753d2b37d943684587442d3555c162e7420c68497342472c4f2f3ae25",
+    "packages/native/tests/native-controller-test.cpp": "2e06d710c8856ae12b85d1b369d6fc26276588c29b057f9374ba9904cd7d415c",
+    "packages/native/translations/workspace_ru.ts": "648d02b6a579fc39a61a471aebcdd06aad82efb196e40437357d0bf50911400f"
+  },
+  "allOldControllerTestBytesPreserved": true,
+  "capabilityManifestSha256": "35ecb20ebc3c7b7bb9f793ba55be090c836338033d74aef5c49b2969d4680683",
+  "contextManifestSha256": "7c846ec9762b9bbcccfeb2db214ab6e7f449a11d72fb36bf3575790ca6f2335e",
+  "actualCapabilityFocused": [
+    {
+      "label": "actual-own-status14",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 5825ms"
+      ],
+      "stdoutSha256": "2a57f6c2f00c735cd04da36aba6d8c072cda12e3b655fb326c62ae446880a2ac",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 5.934
+    },
+    {
+      "label": "whole-preferences",
+      "totals": [
+        "Totals: 19 passed, 0 failed, 0 skipped, 0 blacklisted, 475ms"
+      ],
+      "stdoutSha256": "d75aace51dd92c18726a49e4a9f773cb2b320307803160eb96ac7ed2bd85674c",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 0.566
+    },
+    {
+      "label": "whole-locale14",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 109ms"
+      ],
+      "stdoutSha256": "0b25b7ad07b0da57117e61fb6f03dd531e39b633f8b4cd44af8c9b128bab01c3",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 0.215
+    }
+  ],
+  "wholeController820BeforePureContextGetter": {
+    "label": "whole-controller820",
+    "totals": [
+      "Totals: 820 passed, 0 failed, 0 skipped, 0 blacklisted, 517241ms"
+    ],
+    "wallSeconds": 517.356,
+    "stdoutSha256": "a99b8c760e5e05539f0021244498f79da418ecb85c864c288dd4aa0eb2f4ba15",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "contextFocused3AfterGetter": {
+    "label": "actual-status-context3",
+    "totals": [
+      "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 909ms"
+    ],
+    "wallSeconds": 1.018,
+    "stdoutSha256": "76b7677c531654e5d7150aae80963db9b4773b5ff607e077592d55e3eefbbf3b",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "whole821AfterContextGetter": "NOT RUN; not claimed",
+  "scope": [
+    "One explicit ownUUID presence POST with canonical response; no optimistic status or automatic retry",
+    "Raw text/Unicode emoji/manual Away draft, deliberate Away persisted under exact owned NativePreferences namespace",
+    "Cached public account projection, pending/error facts and cancellation after owner, logout, real transport generation and reauthentication",
+    "New context key hashes current authenticated owner and actual API generation; independent of chat/catalog/profile state and HTTPS Vault ownerKey",
+    "New malformed UTF16 truncation boundary fails locally instead of malformed wire; not byte-identical to Source surrogate split"
+  ],
+  "sourceOnlyProposalSha256": "9bc970cc9126871e4e2611a3e192b934853bfcc5588095d0f21f978f78d779c2",
+  "contextProposalSha256": "ad866a12cea6f997348f4df5741e5c42b888e386b3ed5e7de06bbd7d8a490bd3",
+  "noFakeCompileStubRedClaim": true,
+  "MainEditorNotYetAdopted": true,
+  "cleanup": "Every accepted gate reaped own groups and removed private XDG directories; source/raw/binary hashes independently checked.",
+  "remaining": "Rendered editor/pixel comparison, presence reporter/typing, full drawer/profile, live account, full Linux and other OS acceptance remain open."
+}

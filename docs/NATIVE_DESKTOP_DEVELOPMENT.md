@@ -788,3 +788,20 @@ are in [profile geometry checks](provenance/profile-geometry-checks.json).
 The full Window237 passed on the visible Wayland/default OpenGL desktop.
 Font glyph width/raster, body wrapping, full shell/runtime state and platform
 acceptance remain separate work.
+
+
+## Own status action boundary
+
+`ownStatus` exposes confirmed raw text/Unicode emoji, deliberate Away and the
+current explicit update's pending/error facts. `saveOwnStatus` makes one owned
+presence action; canonical User admission precedes confirmed publication. It
+does not synthesize realtime envelopes or optimistically replace profile data.
+The existing preferences store holds deliberate Away per creation owner; pure
+QML getters perform no settings/network/disk work. `ownStatusContextKey` covers
+authenticated owner plus actual transport generation, independently of the HTTPS
+Vault key and ordinary chat navigation. HTTP, response identity, older/newer
+presence, reentrant cancellation, real reauthentication/logout and owner reuse
+are covered locally. The malformed UTF16 truncation boundary fails locally and
+does not claim Source wire equivalence for an isolated surrogate.
+The editor and complete live/platform acceptance remain separate from these
+[C++ capability checks](provenance/own-status-capability-checks.json).

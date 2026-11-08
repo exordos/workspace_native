@@ -379,3 +379,13 @@ oracles now pass; the full actual Window237 passed in 256.969 s. Comparison42
 contains four unedited Source/Qt frames with 16 matched public DTO responses.
 This accepts these local profile dimensions, not full-frame pixels or complete
 Linux behavior. See [profile geometry checks](provenance/profile-geometry-checks.json).
+
+
+The C++ own-status capability now performs one explicit canonical presence action,
+exposes raw draft/pending/error facts and cancels on owner/session/API-generation
+loss. Deliberate Away uses the existing owned preferences; measured idle is not
+treated as manual Away. The complete Controller820 passed in 517.241 s, plus
+focused status14, Preferences19 and Locale14. A subsequent pure context getter
+passed three real lifecycle cases; the complete821 inventory after that addition
+has not been rerun. The rendered editor is still separate work in this checkout.
+See [own status capability checks](provenance/own-status-capability-checks.json).

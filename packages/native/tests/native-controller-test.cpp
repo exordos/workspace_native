@@ -1,4 +1,6 @@
 #include "native-controller.h"
+#include "native-preferences.h"
+#include <QNetworkRequest>
 #include "file-client.h"
 #include "native-markdown.h"
 #include "realtime-client.h"
@@ -726,6 +728,60 @@ static QJsonObject presencePerson(const QString &id, const QString &username, co
     return row;
 }
 
+class OwnStatusFixture {
+public:
+    QTemporaryDir storage;
+    NativePreferences preferences{storage.filePath("own-status.ini")};
+    QJsonObject own = avatarReferencePerson(userId, "cassi", avatarReferenceA);
+    QJsonObject posted, returned;
+    int posts = 0, usersGets = 0, responseStatus = 200;
+    bool held = false, differentOwner = false;
+    std::function<void()> release;
+    Fixture fixture; // All captured transport/settings facts outlive Controller/server.
+    OwnStatusFixture()
+    {
+        own["status"] = "active"; own["status_text"] = "Before"; own["status_emoji"] = "☕";
+        fixture.users = [this](const Request &) { ++usersGets; return Response{QJsonArray{own}}; };
+        fixture.authentication = [this](const Request &request) {
+            auto response = sessionResponse(request);
+            if (differentOwner && request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject(), user = raw.value("user_info").toObject();
+                user["uuid"] = returnedId; raw["user_info"] = user; response.data = raw;
+            }
+            return response;
+        };
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [this, fallback](const Request &request) {
+            if (request.target.path() != "/api/workspace/v1/users/" + userId + "/actions/presence/invoke")
+                return fallback(request);
+            ++posts; posted = request.body;
+            auto row = returned.isEmpty() ? own : returned;
+            if (returned.isEmpty()) {
+                row["status"] = posted.value("status"); row["status_text"] = posted.value("text");
+                row["status_emoji"] = posted.value("emoji"); row["updated_at"] = "2026-01-02T10:01:00Z";
+                row["last_ping_at"] = "2026-01-02T10:01:00Z";
+            }
+            Response response{row, responseStatus};
+            if (held) response.defer = [this](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        fixture.controller.usePreferences(&preferences);
+    }
+    bool start()
+    {
+        return storage.isValid() && fixture.start()
+            && QTest::qWaitFor([this] { return fixture.api.findChildren<QNetworkReply *>().isEmpty(); }, 2000);
+    }
+    QPointer<QNetworkReply> pending() const
+    {
+        for (auto *reply : fixture.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path() == "/api/workspace/v1/users/" + userId + "/actions/presence/invoke"
+                && reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray() == "POST") return reply;
+        return {};
+    }
+    ~OwnStatusFixture() { if (release) release(); }
+};
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -781,6 +837,206 @@ private slots:
         QCOMPARE(displayed.value("author").toString(), expectedAuthor);
         for (const auto &request : test.direct.fixture.server.requests)
             QVERIFY(!request.target.path().contains("/files/"));
+    }
+
+    void ownStatusContextTracksOnlyAuthenticatedOwnerAndTransportGeneration()
+    {
+        OwnStatusFixture test; auto &f = test.fixture; auto &c = f.controller;
+        QVERIFY(c.metaObject()->indexOfProperty("ownStatusContextKey") >= 0);
+        const auto context = [&] { return c.property("ownStatusContextKey").toString(); };
+        QVERIFY(context().isEmpty());
+        QVERIFY(test.start());
+        QVERIFY(c.authenticated()); QVERIFY(c.ownerKey().isEmpty()); // Real loopback, no HTTPS Vault owner.
+        const auto original = context();
+        QCOMPARE(original.size(), 64);
+        QCOMPARE(QByteArray::fromHex(original.toLatin1()).toHex(), original.toLatin1());
+        const auto generation = f.api.generation();
+
+        // Actual public route changes do not own this account-level editor.
+        c.selectTopic({}); QCOMPARE(c.selectedTopic(), QString{}); QCOMPARE(context(), original);
+        c.selectTopic(topicId); QTRY_VERIFY(!c.busy()); QCOMPARE(context(), original);
+        c.refresh(); QTRY_COMPARE(test.usersGets, 2);
+        QTRY_VERIFY(!c.busy() && f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.api.generation(), generation); QCOMPARE(context(), original);
+
+        // Actual Users/presence admission publishes state without replacing the editor context.
+        auto live = test.own;
+        live["first_name"] = "Live"; live["email"] = "live@example.invalid";
+        live["status"] = "do_not_disturb"; live["status_text"] = "Live metadata";
+        live["updated_at"] = "2026-01-02T10:02:00Z";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", live, 286)));
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Live metadata"));
+        QCOMPARE(c.account().value("displayEmail").toString(), QString("live@example.invalid"));
+        QCOMPARE(context(), original); QCOMPARE(f.api.generation(), generation);
+
+        QSignalSpy changed(&c, &NativeController::stateChanged); QVERIFY(changed.isValid());
+        f.api.setAccessToken("synthetic-status-context-generation");
+        QVERIFY(f.api.generation() > generation); QVERIFY(c.authenticated());
+        QVERIFY(!context().isEmpty()); QVERIFY(context() != original); QVERIFY(changed.count() > 0);
+        const auto replacement = context();
+        const auto replacementGeneration = f.api.generation();
+        f.api.setAccessToken("synthetic-status-context-generation");
+        QCOMPARE(f.api.generation(), replacementGeneration); QCOMPARE(context(), replacement);
+        c.logout(); QVERIFY(!c.authenticated()); QVERIFY(context().isEmpty());
+
+        test.differentOwner = true; test.own["uuid"] = returnedId;
+        QVERIFY(test.start()); QVERIFY(c.authenticated()); QCOMPARE(f.session.user(), returnedId);
+        QVERIFY(!context().isEmpty()); QVERIFY(context() != original); QVERIFY(context() != replacement);
+        QCOMPARE(test.posts, 0);
+    }
+
+    void ownStatusDraftDistinguishesMeasuredIdleFromDnd_data()
+    {
+        QTest::addColumn<QString>("status"); QTest::addColumn<bool>("away");
+        QTest::newRow("measured-idle-is-not-deliberate-away") << QString("idle") << false;
+        QTest::newRow("received-dnd-seeds-away") << QString("do_not_disturb") << true;
+    }
+    void ownStatusDraftDistinguishesMeasuredIdleFromDnd()
+    {
+        QFETCH(QString, status); QFETCH(bool, away);
+        OwnStatusFixture test; test.own["status"] = status;
+        test.own["status_text"] = " Focus "; test.own["status_emoji"] = "☕";
+        QVERIFY(test.start()); auto &c = test.fixture.controller;
+        QCOMPARE(test.usersGets, 1); QCOMPARE(c.account().value("presence").toString(), QString("idle"));
+        const auto identity = test.fixture.session.publicProfile();
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Focus"));
+        QCOMPARE(c.ownStatus().value("emoji").toString(), QString("☕"));
+        QCOMPARE(c.ownStatus().value("away").toBool(), away);
+        for (int i = 0; i < 20; ++i) QVERIFY(!c.ownStatus().value("pending").toBool());
+        QCOMPARE(test.posts, 0); QCOMPARE(test.usersGets, 1);
+        QCOMPARE(test.fixture.session.publicProfile(), identity);
+    }
+
+    void ownStatusPublishesOnlyTheCanonicalResponseAndRemembersTheChoice_data()
+    {
+        QTest::addColumn<bool>("away");
+        QTest::newRow("save-deliberate-away") << true;
+        QTest::newRow("save-cleared-active") << false;
+    }
+    void ownStatusPublishesOnlyTheCanonicalResponseAndRemembersTheChoice()
+    {
+        QFETCH(bool, away); OwnStatusFixture test; QVERIFY(test.start()); test.held = true;
+        auto &f = test.fixture; auto &c = f.controller;
+        const auto identity = f.session.publicProfile(), before = c.account();
+        const auto beforeDraft = c.ownStatus();
+        c.saveOwnStatus(away ? "  Focus \t" : " \n", away ? " ☕ " : " ", away);
+        QTRY_COMPARE(test.posts, 1); QTRY_VERIFY(bool(test.release)); QTRY_VERIFY(test.pending());
+        QCOMPARE(test.posted.value("status").toString(), away ? QString("idle") : QString("active"));
+        if (away) {
+            QCOMPARE(test.posted.value("text").toString(), QString("Focus"));
+            QCOMPARE(test.posted.value("emoji").toString(), QString("☕"));
+        } else { QVERIFY(test.posted.value("text").isNull()); QVERIFY(test.posted.value("emoji").isNull()); }
+        QVERIFY(c.ownStatus().value("pending").toBool());
+        QCOMPARE(c.ownStatus().value("text"), beforeDraft.value("text"));
+        QCOMPARE(c.account(), before); // No optimistic display/presence, identity or avatar mutation.
+        c.saveOwnStatus("Forbidden duplicate", "", !away); QCOMPARE(test.posts, 1);
+        auto send = std::move(test.release); test.release = {}; send();
+        QTRY_VERIFY(!c.ownStatus().value("pending").toBool());
+        QVERIFY(c.ownStatus().value("error").toString().isEmpty());
+        QCOMPARE(c.ownStatus().value("text").toString(), away ? QString("Focus") : QString{});
+        QCOMPARE(c.ownStatus().value("away").toBool(), away);
+        QCOMPARE(c.account().value("presence").toString(), away ? QString("idle") : QString("active"));
+        QCOMPARE(c.account().value("email"), before.value("email"));
+        QCOMPARE(c.account().value("avatar"), before.value("avatar"));
+        QCOMPARE(f.session.publicProfile(), identity); QCOMPARE(test.posts, 1); QCOMPARE(test.usersGets, 1);
+        // New preferences object + new Controller, same process/session: persisted manual witness,
+        // not a claimed OS/process restart. No model or private setting is injected.
+        NativePreferences reopened(test.storage.filePath("own-status.ini"));
+        NativeController restored(&f.api, &f.session); restored.usePreferences(&reopened);
+        QCOMPARE(restored.ownStatus().value("away").toBool(), away);
+    }
+
+    void ownStatusFailureCannotPublishOrRememberAnUnconfirmedChoice_data()
+    {
+        QTest::addColumn<bool>("wrongUser");
+        QTest::newRow("transport-503") << false;
+        QTest::newRow("successful-other-user-dto") << true;
+    }
+    void ownStatusFailureCannotPublishOrRememberAnUnconfirmedChoice()
+    {
+        QFETCH(bool, wrongUser); OwnStatusFixture test; QVERIFY(test.start());
+        auto &c = test.fixture.controller;
+        if (wrongUser) { test.returned = test.own; test.returned["uuid"] = returnedId; }
+        else test.responseStatus = 503;
+        const auto before = c.account();
+        c.saveOwnStatus("Unconfirmed", "☕", true);
+        QTRY_COMPARE(test.posts, 1); QTRY_VERIFY(!c.ownStatus().value("pending").toBool());
+        QVERIFY(!c.ownStatus().value("error").toString().isEmpty());
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Before"));
+        QVERIFY(!c.ownStatus().value("away").toBool()); QCOMPARE(c.account(), before);
+        NativePreferences reopened(test.storage.filePath("own-status.ini"));
+        NativeController restored(&test.fixture.api, &test.fixture.session); restored.usePreferences(&reopened);
+        QVERIFY(!restored.ownStatus().value("away").toBool()); QCOMPARE(test.posts, 1);
+    }
+
+    void ownStatusAcknowledgedReplyIsRetiredByCancelApiOrOwnerReplacement_data()
+    {
+        QTest::addColumn<QString>("change");
+        for (const auto *s : {"cancel", "api-generation", "same-project-reauth", "logout-new-owner"})
+            QTest::newRow(s) << QString::fromLatin1(s);
+    }
+    void ownStatusAcknowledgedReplyIsRetiredByCancelApiOrOwnerReplacement()
+    {
+        QFETCH(QString, change); OwnStatusFixture test; QVERIFY(test.start()); test.held = true;
+        auto &f = test.fixture; auto &c = f.controller;
+        c.saveOwnStatus("Retired", "☕", true);
+        QTRY_COMPARE(test.posts, 1); QTRY_VERIFY(bool(test.release)); QTRY_VERIFY(test.pending());
+        const auto pending = test.pending(); QVERIFY(pending && !pending->isFinished());
+        if (change == "cancel") c.cancelOwnStatusUpdate();
+        else if (change == "api-generation") f.api.setAccessToken("synthetic-own-status-replacement");
+        else if (change == "same-project-reauth") f.session.selectProject(projectId);
+        else {
+            c.logout(); QVERIFY(c.account().isEmpty());
+            test.differentOwner = true; test.own["uuid"] = returnedId;
+            QVERIFY(f.start());
+        }
+        QTRY_VERIFY(pending.isNull() || pending->isFinished());
+        QVERIFY(!c.ownStatus().value("pending").toBool());
+        auto send = std::move(test.release); test.release = {}; send();
+        QVERIFY(!c.ownStatus().value("pending").toBool());
+        QVERIFY(c.ownStatus().value("text").toString() != "Retired");
+        QVERIFY(!c.ownStatus().value("away").toBool()); QCOMPARE(test.posts, 1);
+    }
+
+    void ownStatusAdmissionCanBeCanceledReentrantlyBeforeAnyPost()
+    {
+        OwnStatusFixture test; QVERIFY(test.start()); auto &c = test.fixture.controller;
+        bool armed = true; int interrupted = 0;
+        const auto connection = connect(&c, &NativeController::stateChanged, this, [&] {
+            if (armed && c.ownStatus().value("pending").toBool()) {
+                armed = false; ++interrupted; c.cancelOwnStatusUpdate();
+            }
+        });
+        auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
+        c.saveOwnStatus("Not admitted", "☕", true);
+        QCOMPARE(interrupted, 1); QCOMPARE(test.posts, 0);
+        QVERIFY(!c.ownStatus().value("pending").toBool());
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Before"));
+        QVERIFY(!c.ownStatus().value("away").toBool());
+    }
+
+    void ownStatusHttpResponseKeepsNewerRawStatusAndExistingNameAvatarOrdering()
+    {
+        OwnStatusFixture test; QVERIFY(test.start()); test.held = true;
+        auto &c = test.fixture.controller;
+        c.saveOwnStatus("Older HTTP", "☕", false);
+        QTRY_COMPARE(test.posts, 1); QTRY_VERIFY(bool(test.release)); QTRY_VERIFY(test.pending());
+        auto live = test.own;
+        live["first_name"] = "Live"; live["last_name"] = "Viewer"; live["avatar"] = avatarReferenceB;
+        live["status"] = "do_not_disturb"; live["status_text"] = "Newer live"; live["status_emoji"] = "🌙";
+        live["updated_at"] = "2026-01-02T10:02:00Z";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", live, 280)));
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Newer live"));
+        QCOMPARE(c.account().value("avatar").toString(), avatarReferenceB);
+        auto send = std::move(test.release); test.release = {}; send();
+        QTRY_VERIFY(!c.ownStatus().value("pending").toBool());
+        QCOMPARE(c.ownStatus().value("text").toString(), QString("Newer live"));
+        QCOMPARE(c.ownStatus().value("emoji").toString(), QString("🌙"));
+        QVERIFY(c.ownStatus().value("away").toBool()); // Received DND, not inferred idle.
+        QCOMPARE(c.account().value("presence").toString(), QString("idle"));
+        QCOMPARE(c.account().value("avatar").toString(), avatarReferenceA); // Existing unversioned profile replacement stays independent.
+        QCOMPARE(c.viewerDisplayName(), QString("cassi"));
+        QCOMPARE(test.posts, 1); QCOMPARE(test.usersGets, 1);
     }
 
     void accountDisplayEmailUsesOwnedUsersBeforeIamWithoutChangingIdentity_data()

@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "native-preferences.h"
 #include "native-markdown.h"
 #include "native-chat-key-vault.h"
 #include "native-chat-crypto.h"
@@ -2206,13 +2207,16 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
     const UserPresentation &previous)
 {
     UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {},
-        sourceTrimmed(row.value("email").toString())};
+        sourceTrimmed(row.value("email").toString()), {}, {}, {}};
     if (!authoritative) {
         // Source persists profiles, never live presence/status decorations.
         result.presence = "offline";
         result.presenceUpdatedAt = 0;
         return result;
     }
+    result.status = row.value("status").toString();
+    result.statusText = sourceTrimmed(row.value("status_text").toString());
+    result.statusEmoji = sourceTrimmed(row.value("status_emoji").toString());
     qint64 updatedAt = 0; // Source user.model getTimestamp: invalid/missing date is zero.
     if (row.value("updated_at").isString()) {
         const auto date = QDateTime::fromString(row.value("updated_at").toString(), Qt::ISODateWithMs);
@@ -2224,6 +2228,9 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
         result.presence = previous.presence;
         result.statusLabel = previous.statusLabel;
         result.presenceUpdatedAt = previous.presenceUpdatedAt;
+        result.status = previous.status;
+        result.statusText = previous.statusText;
+        result.statusEmoji = previous.statusEmoji;
         return result;
     }
     result.presenceUpdatedAt = updatedAt;
@@ -2284,6 +2291,146 @@ QVariantMap NativeController::account() const
         profile.insert("displayEmail", displayEmail);
     }
     return profile;
+}
+
+void NativeController::usePreferences(NativePreferences *preferences)
+{
+    if (m_statusPreferences == preferences) return;
+    const QPointer<NativeController> guard(this);
+    interruptOwnStatusUpdate();
+    if (!guard) return;
+    m_statusPreferences = preferences;
+    m_statusPreferenceOwner.clear();
+    prepareOwnStatusPreferences();
+    emit stateChanged();
+}
+
+void NativeController::prepareOwnStatusPreferences()
+{
+    const auto owner = creationOwnerKey();
+    if (owner == m_statusPreferenceOwner) return;
+    m_statusPreferenceOwner = owner;
+    m_statusManualAway = m_statusPreferences && !owner.isEmpty()
+        ? m_statusPreferences->loadOwnStatusAway(owner) : false;
+}
+
+QString NativeController::ownStatusContextKey() const
+{
+    if (!authenticated()) return {};
+    const auto context = QJsonDocument(QJsonArray{creationOwnerKey(),
+        QString::number(m_api->generation())}).toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(QCryptographicHash::hash(context, QCryptographicHash::Sha256).toHex());
+}
+
+QVariantMap NativeController::ownStatus() const
+{
+    if (!authenticated()) return {};
+    const auto owner = creationOwnerKey();
+    const auto user = m_channelDirectoryOwner == owner ? m_names.value(m_session->user()) : UserPresentation{};
+    const bool current = m_ownStatusOwner == owner && m_ownStatusGeneration == m_api->generation();
+    return {{"text", user.statusText}, {"emoji", user.statusEmoji},
+        {"away", (m_statusPreferenceOwner == owner && m_statusManualAway) || user.status == "do_not_disturb"},
+        {"pending", current && m_ownStatusPending}, {"error", current ? m_ownStatusError : QString{}}};
+}
+
+void NativeController::interruptOwnStatusUpdate()
+{
+    const auto handle = m_ownStatusRequest;
+    ++m_ownStatusTicket;
+    m_ownStatusRequest = {};
+    m_ownStatusPending = false;
+    m_ownStatusOwner.clear();
+    m_ownStatusError.clear();
+    // Invalidate first: cancelRequest may call an observer synchronously.
+    if (handle.isValid()) m_api->cancelRequest(handle);
+}
+
+void NativeController::cancelOwnStatusUpdate()
+{
+    const QPointer<NativeController> guard(this);
+    interruptOwnStatusUpdate();
+    if (guard) emit stateChanged();
+}
+
+void NativeController::saveOwnStatus(const QString &text, const QString &emoji, bool away)
+{
+    if (!authenticated() || m_ownStatusPending) return;
+    prepareOwnStatusPreferences();
+    const auto owner = creationOwnerKey(), user = m_session->user();
+    if (owner.isEmpty() || !isUuid(user)) return;
+    const auto generation = m_api->generation(), ticket = ++m_ownStatusTicket;
+    const auto statusText = sourceTrimmed(text).left(256), statusEmoji = sourceTrimmed(emoji).left(64);
+    m_ownStatusOwner = owner;
+    m_ownStatusGeneration = generation;
+    m_ownStatusError.clear();
+    if (!boundedText(statusText, 256) || !boundedText(statusEmoji, 64)) {
+        m_ownStatusError = tr("Failed to update status");
+        emit stateChanged();
+        return;
+    }
+    const QJsonObject body{{"status", away ? "idle" : "active"},
+        {"text", statusText.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(statusText)},
+        {"emoji", statusEmoji.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(statusEmoji)}};
+    const QPointer<NativeController> guard(this);
+    const auto current = [this, guard, owner, generation, ticket] {
+        return guard && authenticated() && owner == creationOwnerKey()
+            && generation == m_api->generation() && ticket == m_ownStatusTicket;
+    };
+    m_ownStatusPending = true;
+    emit stateChanged();
+    if (!current()) return;
+    const auto handle = request("POST", "/api/workspace/v1/users/" + user + "/actions/presence/invoke", body, {},
+        [this, current, owner, user, ticket, away](const ApiResult &result) {
+        if (!current() || !m_ownStatusPending) return;
+        const auto row = result.data.toObject();
+        bool valid = result.ok() && result.data.isObject() && row.value("uuid").toString() == user
+            && channelDirectoryChoice(row, m_session->project()).has_value()
+            && QStringList{"iam", "zulip"}.contains(row.value("source").toString())
+            && QStringList{"active", "idle", "offline", "do_not_disturb"}.contains(row.value("status").toString())
+            && (row.value("avatar").isNull() || row.value("avatar").isUndefined() || row.value("avatar").isString());
+        for (const auto *field : {"status_text", "status_emoji"}) {
+            const auto value = row.value(field);
+            valid = valid && (value.isNull() || value.isUndefined() || (value.isString()
+                && boundedText(value.toString(), QString::fromLatin1(field) == "status_text" ? 256 : 64)));
+        }
+        for (const auto *field : {"last_ping_at", "created_at", "updated_at"}) valid = valid && validCreationDate(row.value(field));
+        // Settle bookkeeping before cache/Qt notifications can admit a new operation.
+        m_ownStatusPending = false;
+        m_ownStatusRequest = {};
+        if (!valid) {
+            m_ownStatusError = tr("Failed to update status");
+            emit stateChanged();
+            return;
+        }
+        m_statusPreferenceOwner = owner;
+        m_statusManualAway = away;
+        if (m_statusPreferences) m_statusPreferences->recordOwnStatusAway(owner, away);
+        const auto name = directoryViewerName(row);
+        // A single owned canonical response cannot adopt somebody else's directory.
+        if (m_channelDirectoryOwner != owner) {
+            m_names.clear(); m_channelChoices.clear(); m_channelDirectoryValid = false;
+            m_channelDirectoryOwner = owner;
+        }
+        m_names.insert(user, makeUserPresentation(name, row, true, m_names.value(user)));
+        if (m_usersVerified) {
+            m_viewerDirectoryName = name;
+            m_viewerDirectoryOwner = owner;
+        }
+        const bool selfDirect = std::any_of(m_streams.cbegin(), m_streams.cend(), [&user](const Stream &stream) {
+            return stream.privateStream && stream.directUser == user;
+        });
+        // HTTP response is reduced directly, never wrapped in a fabricated RT event.
+        staleCache(NativeCache::Kind::Users);
+        if (!current()) return;
+        if (selfDirect) emit streamsChanged();
+        if (!current()) return;
+        emit messagesChanged();
+        if (!current()) return;
+        emit stateChanged();
+    });
+    if (!guard) return;
+    if (current() && m_ownStatusPending) m_ownStatusRequest = handle;
+    else m_api->cancelRequest(handle);
 }
 
 QString NativeController::viewerDisplayName() const
@@ -4097,12 +4244,20 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     });
     connect(session, &Session::savedAccountsChanged, this, &NativeController::savedAccountsChanged);
     connect(session, &Session::busyChanged, this, [this](bool busy) {
+        const QPointer<NativeController> guard(this);
+        if (!authenticated()) {
+            interruptOwnStatusUpdate();
+            if (!guard) return;
+        }
         m_busy = busy;
         emit stateChanged();
     });
     connect(session, &Session::projectsAvailable, this, &NativeController::stateChanged);
     connect(api, &ApiClient::sessionChanged, this, [this] {
         const QPointer<NativeController> lookupGuard(this);
+        interruptOwnStatusUpdate();
+        if (!lookupGuard) return;
+        m_statusPreferenceOwner.clear(); m_statusManualAway = false;
         interruptChatRequestLookups();
         if (!lookupGuard) return;
         const QPointer<NativeController> guard(this);
@@ -4127,6 +4282,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     });
     connect(session, &Session::authenticated, this, [this] {
         const QPointer<NativeController> guard(this);
+        prepareOwnStatusPreferences();
         interruptTopicOpening();
         if (!guard) return;
         interruptChannelCreations();
@@ -4164,6 +4320,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
 
 NativeController::~NativeController()
 {
+    interruptOwnStatusUpdate();
     interruptChatRequestLookups();
     interruptTopicOpening();
     cancelFileTransfers();
@@ -4471,6 +4628,9 @@ void NativeController::logout()
 void NativeController::reset()
 {
     const QPointer<NativeController> guard(this);
+    interruptOwnStatusUpdate();
+    if (!guard) return;
+    m_statusPreferenceOwner.clear(); m_statusManualAway = false;
     cancelFileTransfers();
     if (!guard) return;
     closeCache();

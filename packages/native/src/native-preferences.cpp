@@ -143,6 +143,22 @@ void NativePreferences::setOwner(const QString &owner)
     if (!valid) setError(tr("The appearance preference scope is invalid."));
 }
 
+bool NativePreferences::loadOwnStatusAway(const QString &owner)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()) return false;
+    return m_settings.value("presence/owners/" + owner + "/manualAway", false).toBool();
+}
+
+void NativePreferences::recordOwnStatusAway(const QString &owner, bool away)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()) return;
+    const auto key = "presence/owners/" + owner + "/manualAway";
+    if (away) m_settings.setValue(key, true); else m_settings.remove(key);
+    m_settings.sync(); // Source writeManualStatus is best effort after a successful response.
+}
+
 void NativePreferences::persist()
 {
     const auto group = appearanceGroup();

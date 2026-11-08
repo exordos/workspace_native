@@ -124,6 +124,10 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
 {
     initializeNativeResources();
     if (!preferences) preferences = new NativePreferences({}, &engine);
+    const QPointer<NativeController> controllerGuard(controller);
+    const QPointer<NativePreferences> preferencesGuard(preferences);
+    controller->usePreferences(preferences);
+    if (!controllerGuard || !preferencesGuard) return;
     preferences->setOwner(controller->ownerKey());
     bindNativeLocale(engine, preferences);
     QObject::connect(controller, &NativeController::stateChanged, preferences, [controller, preferences] {

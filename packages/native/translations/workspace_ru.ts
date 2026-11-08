@@ -1167,6 +1167,10 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Failed to update status</source>
+            <translation>Не удалось обновить статус</translation>
+        </message>
+        <message>
             <source>Could not create the topic. %1</source>
             <translation>Не удалось создать тему. %1</translation>
         </message>

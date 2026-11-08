@@ -48,6 +48,9 @@ public:
     QVariantList suggestedReactions() const;
     QVariantMap quickReactionUsage() const;
     void setOwner(const QString &owner);
+    // Explicit settings I/O actions; never called from a QML/read-only getter.
+    bool loadOwnStatusAway(const QString &owner);
+    void recordOwnStatusAway(const QString &owner, bool away);
     void setPaletteId(const QString &palette);
     void setMode(const QString &mode);
     void setLocale(const QString &locale);

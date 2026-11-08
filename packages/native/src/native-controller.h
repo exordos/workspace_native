@@ -14,6 +14,7 @@
 
 namespace workspace {
 
+class NativePreferences;
 class RealtimeClient;
 class FileClient;
 class NativeChatKeyVault;
@@ -27,6 +28,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList projects READ projects NOTIFY stateChanged)
     Q_PROPERTY(QVariantList savedAccounts READ savedAccounts NOTIFY savedAccountsChanged)
     Q_PROPERTY(QVariantMap account READ account NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap ownStatus READ ownStatus NOTIFY stateChanged)
+    Q_PROPERTY(QString ownStatusContextKey READ ownStatusContextKey NOTIFY stateChanged)
     Q_PROPERTY(QString viewerDisplayName READ viewerDisplayName NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap encryption READ encryption NOTIFY stateChanged)
     Q_PROPERTY(QVariantList directChatChoices READ directChatChoices NOTIFY stateChanged)
@@ -101,6 +104,11 @@ public:
     void useRealtime(RealtimeClient *client);
     void useFiles(FileClient *client);
     void useCache(NativeCacheService *cache);
+    void usePreferences(NativePreferences *preferences);
+    QVariantMap ownStatus() const;
+    QString ownStatusContextKey() const;
+    Q_INVOKABLE void saveOwnStatus(const QString &text, const QString &emoji, bool away);
+    Q_INVOKABLE void cancelOwnStatusUpdate();
     void useChatKeys(NativeChatKeyVault *vault);
     QVariantMap encryption() const;
     Q_INVOKABLE void requestChatKey(const QString &keyUuid = {});
@@ -699,6 +707,7 @@ private:
         QString name, avatar, presence, statusLabel;
         std::optional<qint64> presenceUpdatedAt;
         QString email;
+        QString status, statusText, statusEmoji;
     };
     static UserPresentation makeUserPresentation(const QString &name, const QJsonObject &row,
         bool authoritative, const UserPresentation &previous);
@@ -708,6 +717,13 @@ private:
     QString userStatusLabel(const QString &id) const;
     QHash<QString, UserPresentation> m_names;
     QString m_viewerDirectoryName, m_viewerDirectoryOwner;
+    QPointer<NativePreferences> m_statusPreferences;
+    QString m_statusPreferenceOwner, m_ownStatusOwner, m_ownStatusError;
+    bool m_statusManualAway = false, m_ownStatusPending = false;
+    quint64 m_ownStatusTicket = 0, m_ownStatusGeneration = 0;
+    ApiClient::RequestId m_ownStatusRequest;
+    void prepareOwnStatusPreferences();
+    void interruptOwnStatusUpdate();
     QMap<QString, QVariantMap> m_channelChoices;
     QString m_channelDirectoryOwner;
     bool m_channelDirectoryValid = false;
