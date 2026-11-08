@@ -158,6 +158,37 @@ ApplicationWindow {
         return root.keyServiceResponseLabel(grant ? qsTr("%1 sent a security key to %2 for device “%3”")
                       : qsTr("%1 rejected the security key request from %2 for device “%3”"), [sender, recipient, device]);
     }
+    function presenceLabel(presence) {
+        if (presence === "active") return qsTr("online");
+        if (presence === "idle") return qsTr("away");
+        if (presence === "offline") return qsTr("offline");
+        return "";
+    }
+    component PresenceBadge: Item {
+        id: badge
+        property string presence: ""
+        width: 12; height: 12
+        x: parent ? parent.width * 0.8535 - 6 : 0
+        y: parent ? parent.height * 0.8535 - 6 : 0
+        z: 1
+        visible: presence === "active" || presence === "idle" || presence === "offline"
+        Accessible.role: Accessible.StatusBar
+        Accessible.name: root.presenceLabel(presence)
+        Accessible.ignored: !visible
+        Rectangle {
+            anchors.fill: parent
+            radius: 6
+            color: root.colors.bg
+            Accessible.ignored: true
+        }
+        Rectangle {
+            objectName: "presence-fill"
+            x: 2; y: 2; width: 8; height: 8; radius: 4
+            color: root.colors[badge.presence === "active" ? "indicator-green"
+                    : badge.presence === "idle" ? "indicator-orange" : "text-muted"]
+            Accessible.ignored: true
+        }
+    }
     component InlineKeyRequestAction: NativeButton {
         id: serviceAction
         colors: root.colors
@@ -1177,14 +1208,19 @@ ApplicationWindow {
                 id: profileControl
                 objectName: "accountMenuButton"
                 readonly property string displayName: root.controller.viewerDisplayName || root.controller.account.displayName || qsTr("Profile")
-                readonly property string email: root.controller.account.email || ""
-                implicitWidth: Math.min(320, 36 + 8 + Math.max(profileNameText.implicitWidth, profileEmailText.visible ? profileEmailText.implicitWidth : 0) + 8 + 16 + 12)
+                readonly property string email: root.controller.account.displayEmail || root.controller.account.email || ""
+                readonly property string presence: root.controller.authenticated ? String(root.controller.account.presence || "") : ""
+                readonly property string statusLabel: root.controller.authenticated
+                    ? String(root.controller.account.statusLabel || "") || root.presenceLabel(presence) : ""
+                implicitWidth: Math.min(320, 36 + 8 + Math.max(profileNameText.implicitWidth,
+                    profileEmailText.visible ? profileEmailText.implicitWidth : 0,
+                    profileStatusText.visible ? Math.min(profileStatusText.implicitWidth, profileStatusMetrics.advanceWidth("0") * 32) : 0) + 8 + 16 + 12)
                 width: Math.min(implicitWidth, Math.max(96, root.width * 0.3))
-                height: 48
+                height: Math.max(48, profileTextColumn.implicitHeight + topPadding + bottomPadding)
                 padding: 6
                 hoverEnabled: true
                 Accessible.name: qsTr("Profile")
-                Accessible.description: displayName + (email.length ? ", " + email : "")
+                Accessible.description: displayName + (statusLabel.length ? ", " + statusLabel : "") + (email.length ? ", " + email : "")
                 background: Rectangle {
                     radius: 6
                     color: profileControl.hovered || profileControl.down ? root.colors["card-bg-active"] : "transparent"
@@ -1206,6 +1242,10 @@ ApplicationWindow {
                             reference: String(root.controller.account.avatar || "")
                             loadActive: root.visible && root.controller.authenticated
                         }
+                        PresenceBadge {
+                            objectName: "presence-viewer"
+                            presence: profileControl.presence
+                        }
                         Text {
                             visible: !profilePhoto.replacesFallback
                             objectName: "profileInitial"
@@ -1220,6 +1260,7 @@ ApplicationWindow {
                         Accessible.ignored: true
                     }
                     ColumnLayout {
+                        id: profileTextColumn
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         spacing: 0
@@ -1236,6 +1277,28 @@ ApplicationWindow {
                             font.weight: Font.Medium
                             lineHeightMode: Text.FixedHeight
                             lineHeight: 17.5
+                        }
+                        FontMetrics {
+                            id: profileStatusMetrics
+                            font: profileStatusText.font
+                        }
+                        Text {
+                            id: profileStatusText
+                            objectName: "profilePresenceStatus"
+                            visible: profileControl.statusLabel.length > 0
+                            text: profileControl.statusLabel
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: profileStatusMetrics.advanceWidth("0") * 32
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
+                            color: root.colors["text-secondary"]
+                            font.pixelSize: 11
+                            lineHeightMode: Text.FixedHeight
+                            lineHeight: 13.75
+                            HoverHandler { id: profileStatusHover }
+                            ToolTip.visible: profileStatusHover.hovered && profileControl.statusLabel.length > 32
+                            ToolTip.text: profileControl.statusLabel
                         }
                         Text {
                             id: profileEmailText
@@ -1784,6 +1847,11 @@ ApplicationWindow {
                                     reference: streamDelegate.modelData.isDirect ? String(streamDelegate.modelData.avatar || "") : ""
                                     loadActive: root.visible && root.controller.authenticated
                                 }
+                                PresenceBadge {
+                                    objectName: "presence-stream-" + streamDelegate.modelData.id
+                                    presence: root.controller.authenticated && Boolean(streamDelegate.modelData.isDirect)
+                                        ? String(streamDelegate.modelData.presence || "") : ""
+                                }
                                 NativeIconButton {
                                     anchors.centerIn: parent
                                     visible: Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
@@ -2063,6 +2131,10 @@ ApplicationWindow {
                             reference: String(root.controller.directPeer.avatar || "")
                             loadActive: root.visible && root.controller.authenticated
                         }
+                        PresenceBadge {
+                            objectName: "presence-direct-header"
+                            presence: root.controller.authenticated ? String(root.controller.directPeer.presence || "") : ""
+                        }
                         Text {
                             visible: !directHeaderPhoto.replacesFallback
                             anchors.centerIn: parent
@@ -2072,15 +2144,33 @@ ApplicationWindow {
                             font.pixelSize: 16
                         }
                     }
-                    Text {
-                        objectName: "directConversationName"
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        text: String(root.controller.directPeer.displayName || "")
-                        textFormat: Text.PlainText
-                        color: root.colors["text-primary"]
-                        font.pixelSize: 14
-                        font.weight: Font.DemiBold
-                        elide: Text.ElideRight
+                        Layout.minimumWidth: 0
+                        spacing: 0
+                        Text {
+                            objectName: "directConversationName"
+                            Layout.fillWidth: true
+                            text: String(root.controller.directPeer.displayName || "")
+                            textFormat: Text.PlainText
+                            color: root.colors["text-primary"]
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                        }
+                        Text {
+                            objectName: "directPresenceStatus"
+                            Layout.fillWidth: true
+                            // An unknown user has no dot; Source's actual header
+                            // still displays its offline caption, not online.
+                            text: root.presenceLabel(String(root.controller.directPeer.presence || "")) || qsTr("offline")
+                            textFormat: Text.PlainText
+                            color: root.colors["text-muted"]
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                            lineHeightMode: Text.FixedHeight; lineHeight: 16
+                        }
                     }
                 }
                 Row {
@@ -3055,6 +3145,10 @@ ApplicationWindow {
                             anchors.fill: parent
                             reference: String(messageRow.modelData.authorAvatar || "")
                             loadActive: root.visible && root.controller.authenticated
+                        }
+                        PresenceBadge {
+                            objectName: "presence-author-" + messageRow.modelData.id
+                            presence: root.controller.authenticated ? String(messageRow.modelData.authorPresence || "") : ""
                         }
                         Text {
                             visible: !messagePhoto.replacesFallback

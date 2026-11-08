@@ -162,7 +162,9 @@ avatar rails and actual avatar images still require acceptance.
   A secure-store warning does not cancel a verified session or an in-flight
   realtime snapshot. The profile trigger exposes only verified public IAM identity
   fields, uses plain text/elision and a 36px initial avatar, and clears on new
-  sign-in or sign-out. Profile images, presence and profile editing remain open.
+  sign-in or sign-out. Later owned Users projections add uploaded profile images,
+  static normalized presence, own status labels and display email; profile editing,
+  manual status/reporting and complete geometry remain open.
   Idle timeout, background-account operation, migration and
   actual OS keychain behavior remain outside this initial implementation.
 - The Markdown boundary includes native bold/italic, code, lists and other

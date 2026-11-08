@@ -268,7 +268,8 @@ name does not change the account UUID or credential identity. New sign-ins and
 sign-out clear the previous profile; identity mismatches never publish the
 rejected metadata. The source-sized 36px avatar retains its initial fallback;
 name/email labels use plain text and elision. Uploaded profile images are rendered
-through the bounded avatar service below. Presence, profile navigation and editing
+through the bounded avatar service below. Static normalized presence and own status
+labels now appear; manual status editing/reporting, profile navigation and editing
 remain open.
 
 [NativePreferences](../packages/native/src/native-preferences.cpp) stores the four
@@ -628,7 +629,9 @@ peer-message images, retaining existing initial/lock fallbacks and circle sizes.
 The child releases its exact lease on reference/scope/visibility changes and
 reads URLs only on revisions. It disables Qt's separate URL cache. Static PNG,
 JPEG, GIF and WebP are supported; animation, external avatar URNs, complete loading
-phase/failure recovery, presence and full shell remain open. Local real-window
+phase/failure recovery and full shell remain open. Static presence/view-only
+profile labels are checked in [presence view checks](provenance/presence-main-checks.json);
+manual editing/reporting and typing remain open. Local real-window
 checks and raw matched Source captures are recorded in
 [rendered-avatar checks](provenance/avatar-main-checks.json).
 

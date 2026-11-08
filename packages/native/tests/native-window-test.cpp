@@ -776,9 +776,277 @@ static bool avatarProbeMatchesPixels(QQuickWindow *window, QQuickItem *face, boo
     return close(sample(QPointF(2,2)), sample(QPointF(-2,2)));
 }
 
+static bool presenceProbeMatchesPixels(QQuickWindow *window, QQuickItem *badge,
+                                      const QColor &fill, const QColor &ring)
+{
+    if (!window || !badge || !badge->isVisible()) return false;
+    const auto pixels=window->grabWindow();
+    if(pixels.isNull()) return false;
+    const auto sample=[&](QPointF local) {
+        const auto point=badge->mapToScene(local)*window->devicePixelRatio();
+        const QPoint pixel(qFloor(point.x()),qFloor(point.y()));
+        return pixels.rect().contains(pixel)?pixels.pixelColor(pixel):QColor{};
+    };
+    const auto close=[](const QColor &actual,const QColor &expected) {
+        return actual.isValid()&&qAbs(actual.red()-expected.red())<=3
+            &&qAbs(actual.green()-expected.green())<=3&&qAbs(actual.blue()-expected.blue())<=3;
+    };
+    // Stable interiors only; no cross-renderer antialiasing or exact edge claim.
+    return close(sample({6,6}),fill)&&close(sample({11,6}),ring);
+}
+
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("encryptedDirect");
+        QTest::newRow("en-light-direct")<<QString("en")<<QString("light")<<false;
+        QTest::newRow("ru-dark-protected-direct")<<QString("ru")<<QString("dark")<<true;
+    }
+
+    void actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos()
+    {
+        QFETCH(QString,locale); QFETCH(QString,mode); QFETCH(bool,encryptedDirect);
+        QMap<QString,int> metadataGets,binaryGets;
+        const QMap<QString,QByteArray> images{{ViewerAvatarFile,avatarProbePng(false)},
+                                              {PeerAvatarFile,avatarProbePng(true)}};
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.created["encryption"]=encryptedDirect;
+        fixture.created["current_encryption_key_uuid"]=QJsonValue::Null;
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar","urn:image:"+ViewerAvatarFile},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar","urn:image:"+PeerAvatarFile},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        auto peerMessage=message("The actual peer rail retains its photo while presence changes.",messageId,channelDefault);
+        peerMessage["stream_uuid"]=windowDirectId(); peerMessage["author_uuid"]=channelPeer;
+        peerMessage["user_uuid"]=userId; peerMessage["is_own"]=false; peerMessage["pinned"]=false;
+        peerMessage["reactions"]=QJsonObject{}; peerMessage["reaction_users"]=QJsonObject{};
+        peerMessage["updated_at"]=peerMessage.value("created_at");
+        const auto original=fixture.server.handler;
+        fixture.server.handler=[&,original,peerMessage](const Request &request)->Response {
+            const auto path=request.target.path();
+            for(auto it=images.cbegin();it!=images.cend();++it) {
+                const auto file="/api/workspace/v1/messenger/files/"+it.key();
+                if(request.method=="GET"&&path==file) { ++metadataGets[it.key()];return {avatarProbeMetadata(it.key(),it.value())}; }
+                if(request.method=="GET"&&path==file+"/actions/download") {
+                    ++binaryGets[it.key()];Response response;response.rawBody=it.value();response.rawContentType="image/png";return response;
+                }
+            }
+            auto response=original(request);
+            if(request.method=="GET"&&path.endsWith("/messages/")
+                &&QUrlQuery(request.target).queryItemValue("stream_uuid")==windowDirectId())
+                response.data=QJsonArray{peerMessage};
+            return response;
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("presence.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session); FileClient files(&api);controller.useFiles(&files);
+        AvatarImages avatars(&api,&session,&files);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences,&avatars);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Presence window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900);QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(window->devicePixelRatio(),qreal(1));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setLocale(locale);preferences.setMode(mode);
+        QCOMPARE(preferences.locale(),locale);QCOMPARE(preferences.mode(),mode);
+        QTRY_COMPARE(controller.account().value("presence").toString(),QString("active"));
+        // Actual Users email supplies the visible profile line; the IAM identity
+        // property remains empty. This requires Root's independent displayEmail
+        // projection overlay, not an invented Session/IAM fixture value.
+        QTRY_COMPARE(controller.account().value("displayEmail").toString(),QString("cassi@example.invalid"));
+        QVERIFY(controller.account().value("email").toString().isEmpty());
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());QVERIFY(controller.selectedTopic().isEmpty());
+        QTRY_VERIFY(!controller.busy());QTRY_COMPARE(controller.messages().size(),1);
+        const auto authorHasPresence=[&](const QString &expected) {
+            const auto rows=controller.messages();
+            return rows.size()==1&&rows.first().toMap().value("authorPresence").toString()==expected;
+        };
+        QTRY_COMPARE(controller.directPeer().value("presence").toString(),QString("active"));
+        QTRY_VERIFY(authorHasPresence("active"));
+        const auto viewer=[&] {return visibleItem("profileAvatar");};
+        const auto sidebar=[&] {return avatarProbeCircle(visibleItem("stream-"+windowDirectId()),40);};
+        const auto header=[&] {return avatarProbeCircle(visibleItem("directConversationHeader"),40);};
+        const auto rail=[&] {return visibleItem("message-avatar-"+messageId);};
+        const auto faces=[&] {return QList<QQuickItem *>{viewer(),sidebar(),header(),rail()};};
+        QTRY_VERIFY(viewer()&&sidebar()&&header()&&rail());
+        // Positive actual photos and their unchanged cover/mask are established
+        // BEFORE the first intended old-Main presence assertion.
+        QTRY_VERIFY(avatarProbeMatchesPixels(window,viewer(),false));
+        QTRY_VERIFY(avatarProbeMatchesPixels(window,sidebar(),true));
+        QTRY_VERIFY(avatarProbeMatchesPixels(window,header(),true));
+        QTRY_VERIFY(avatarProbeMatchesPixels(window,rail(),true));
+        const QList<QSizeF> sizes{{36,36},{40,40},{40,40},{48,48}};
+        const auto initialFaces=faces();
+        for(qsizetype index=0;index<initialFaces.size();++index) {
+            auto *face=initialFaces[index];QVERIFY(face);QCOMPARE(face->size(),sizes[index]);
+            auto *image=avatarProbeReadyImage(face);QVERIFY(image);
+            QCOMPARE(image->mapRectToItem(face,{QPointF{},image->size()}),QRectF(1,1,face->width()-2,face->height()-2));
+            QCOMPARE(QQmlProperty(face,"border.width").read().toReal(),qreal(1));
+            QCOMPARE(face->property("radius").toReal(),face->width()/2);
+        }
+        QTRY_COMPARE(avatars.stats().leases,4);QTRY_COMPARE(avatars.stats().pipelineJobs,0);
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}) {
+            QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+        }
+        if(encryptedDirect) {QTRY_VERIFY(visibleItem("encryptedReadStatus"));QVERIFY(!visibleItem("streamTopicPrompt"));}
+        else {QTRY_VERIFY(visibleItem("streamTopicPrompt"));QVERIFY(!visibleItem("encryptedReadStatus"));}
+        QVERIFY(!controller.canSend());QVERIFY(!controller.canAttach());
+        QCOMPARE(visibleItem("conversationHeader")->height(),qreal(56));
+        const auto scope=avatars.scopeRevision(),generation=api.generation();
+        const auto viewerUrl=avatars.imageUrl("urn:image:"+ViewerAvatarFile);
+        const auto peerUrl=avatars.imageUrl("urn:image:"+PeerAvatarFile);
+        QVERIFY(!viewerUrl.isEmpty()&&!peerUrl.isEmpty());
+        const auto usersBeforeRealtime=fixture.usersGets;
+        const QStringList badgeNames{"presence-viewer","presence-stream-"+windowDirectId(),
+            "presence-direct-header","presence-author-"+messageId};
+        const auto caption=[&](const QString &presence) {
+            if(presence=="active") return locale=="ru"?QString("В сети"):QString("online");
+            if(presence=="idle") return locale=="ru"?QString("Отошёл"):QString("away");
+            return locale=="ru"?QString("Не в сети"):QString("offline");
+        };
+        const QColor ring(mode=="dark"?"#141517":"#e4ecf3");
+        const QStringList statuses{"active","idle","do_not_disturb","offline"};
+        for(qsizetype phase=0;phase<statuses.size();++phase) {
+            const auto normalized=statuses[phase]=="do_not_disturb"?QString("idle"):statuses[phase];
+            const auto ownLabel=phase==1?QString::fromUtf8("💬 <b>Focus</b>"):caption(normalized);
+            if(phase>0) {
+                for(int who=0;who<2;++who) {
+                    auto updated=fixture.users[who].toObject();updated["status"]=statuses[phase];
+                    updated["updated_at"]=QDateTime::fromString("2026-01-02T10:00:00Z",Qt::ISODate)
+                        .addSecs(phase*10+who).toString(Qt::ISODate);
+                    updated["status_text"]=who==0&&phase==1?QString("  <b>Focus</b>  "):QString{};
+                    updated["status_emoji"]=who==0&&phase==1?QString("speech_balloon"):QString{};
+                    fixture.users[who]=updated;updated["kind"]="user.updated";
+                    const int serial=int(phase)*2+who;
+                    QVERIFY(controller.applyRealtimeEvent({{"schema_version",1},{"epoch_version",100+serial},
+                        {"uuid",QString("a4800000-0000-4000-8000-%1").arg(serial,12,10,QLatin1Char('0'))},
+                        {"project_id",projectId},{"user_uuid",userId},{"object_type","user"},{"action","updated"},
+                        {"payload",updated},{"created_at",updated.value("updated_at")},{"updated_at",updated.value("updated_at")}}));
+                }
+            }
+            auto *viewport=item(window->contentItem(),"messageList");QVERIFY(viewport);
+            if(phase>0) {
+                // Actual public user events schedule the existing viewport
+                // restoration; one frame is not a readiness contract for it.
+                QVERIFY(viewport->property("positioning").toBool());
+            }
+            QTRY_VERIFY(!viewport->property("positioning").toBool());
+            for(const auto &name:badgeNames) QTRY_VERIFY(visibleItem(name));
+            QTRY_VERIFY(viewer()&&sidebar()&&header()&&rail());
+            QTRY_COMPARE(controller.account().value("presence").toString(),normalized);
+            QTRY_COMPARE(controller.directPeer().value("presence").toString(),normalized);
+            QTRY_VERIFY(authorHasPresence(normalized));
+            // First old-Main RED: no presence-viewer despite real public data and
+            // four positively rendered native image surfaces above.
+            QTRY_VERIFY(visibleItem(badgeNames.first()));
+            QTRY_VERIFY(visibleItem("directPresenceStatus"));
+            QTRY_COMPARE(visibleItem("directPresenceStatus")->property("text").toString(),caption(normalized));
+            QTRY_VERIFY(visibleItem("profilePresenceStatus"));
+            QTRY_COMPARE(visibleItem("profilePresenceStatus")->property("text").toString(),ownLabel);
+            QCOMPARE(visibleItem("profilePresenceStatus")->property("textFormat").toInt(),0); // Text.PlainText.
+            QCOMPARE(visibleItem("directPresenceStatus")->property("textFormat").toInt(),0);
+            QCOMPARE(QQmlProperty(visibleItem("directPresenceStatus"),"font.pixelSize").read().toInt(),12);
+            QCOMPARE(visibleItem("directPresenceStatus")->property("lineHeight").toReal(),qreal(16));
+            QCOMPARE(visibleItem("directConversationName")->property("lineHeight").toReal(),qreal(20));
+            QCOMPARE(QQmlProperty(visibleItem("profilePresenceStatus"),"font.pixelSize").read().toInt(),11);
+            QCOMPARE(visibleItem("profilePresenceStatus")->property("lineHeight").toReal(),qreal(13.75));
+            QSignalSpy painted(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!painted.isEmpty());
+            const QColor fill(normalized=="active"?"#26c038":normalized=="idle"?"#ff8900"
+                :mode=="dark"?"#707070":"#989898");
+            const auto currentFaces=faces();
+            for(qsizetype index=0;index<badgeNames.size();++index) {
+                auto *badge=visibleItem(badgeNames[index]);auto *face=currentFaces[index];QVERIFY(badge&&face);
+                QCOMPARE(badge->parentItem(),face);QCOMPARE(badge->size(),QSizeF(12,12));
+                QCOMPARE(badge->position(),QPointF(face->width()*.8535-6,face->height()*.8535-6));
+                QVERIFY(!face->clip());
+                auto *dot=item(badge,"presence-fill");QVERIFY(dot);
+                QCOMPARE(dot->size(),QSizeF(8,8));QCOMPARE(dot->position(),QPointF(2,2));
+                QCOMPARE(dot->property("color").value<QColor>(),fill);
+                auto *accessible=QAccessible::queryAccessibleInterface(badge);QVERIFY(accessible);
+                QCOMPARE(accessible->role(),QAccessible::StatusBar);QCOMPARE(accessible->text(QAccessible::Name),caption(normalized));
+                QVERIFY(!badge->activeFocusOnTab());QVERIFY(!badge->hasActiveFocus());
+                QVERIFY(presenceProbeMatchesPixels(window,badge,fill,ring));
+            }
+            // The caption fits inside the existing topbar; photos keep their
+            // dimensions and leases. This does not claim full-shell equivalence.
+            auto *profile=visibleItem("accountMenuButton");auto *bar=visibleItem("topBar");QVERIFY(profile&&bar);
+            const auto profileRect=profile->mapRectToItem(bar,{QPointF{},profile->size()});
+            QVERIFY(QRectF(QPointF{},bar->size()).contains(profileRect));
+            const auto profileStatusRect=visibleItem("profilePresenceStatus")->mapRectToItem(profile,{QPointF{},visibleItem("profilePresenceStatus")->size()});
+            QVERIFY(QRectF(QPointF{},profile->size()).contains(profileStatusRect));
+            QCOMPARE(visibleItem("profileEmail")->property("text").toString(),QString("cassi@example.invalid"));
+            QCOMPARE(visibleItem("profileDisplayName")->property("text").toString(),QString("Cassi Synthetic"));
+            QCOMPARE(visibleItem("directConversationName")->property("text").toString(),QString("Alice Synthetic"));
+            QVERIFY(avatarProbeMatchesPixels(window,viewer(),false));
+            QVERIFY(avatarProbeMatchesPixels(window,sidebar(),true));
+            QVERIFY(avatarProbeMatchesPixels(window,header(),true));
+            QVERIFY(avatarProbeMatchesPixels(window,rail(),true));
+            QCOMPARE(avatars.scopeRevision(),scope);QCOMPARE(api.generation(),generation);
+            QCOMPARE(avatars.imageUrl("urn:image:"+ViewerAvatarFile),viewerUrl);
+            QCOMPARE(avatars.imageUrl("urn:image:"+PeerAvatarFile),peerUrl);
+            QTRY_COMPARE(avatars.stats().leases,4);QCOMPARE(avatars.stats().pipelineJobs,0);
+            for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}) {
+                QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+            }
+            QCOMPARE(fixture.usersGets,usersBeforeRealtime);QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        }
+        const auto knownUsers=fixture.users;
+        const auto usersBeforeMissing=fixture.usersGets;fixture.users=QJsonArray{};controller.refresh();
+        QTRY_VERIFY(fixture.usersGets>usersBeforeMissing);QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.account().value("presence").toString().isEmpty());
+        QTRY_VERIFY(controller.directPeer().value("presence").toString().isEmpty());
+        QTRY_COMPARE(controller.messages().size(),1);
+        QTRY_VERIFY(authorHasPresence({}));
+        QTRY_VERIFY(!visibleItem("profilePresenceStatus"));
+        for(const auto &name:badgeNames) QTRY_VERIFY(!visibleItem(name));
+        QTRY_VERIFY(visibleItem("directPresenceStatus"));
+        QCOMPARE(visibleItem("directPresenceStatus")->property("text").toString(),caption("offline"));
+        // Restore a positive actual HTTP snapshot before testing owner loss, so
+        // hidden badges after sign-out cannot pass vacuously from missing users.
+        const auto usersBeforeRestore=fixture.usersGets;fixture.users=knownUsers;controller.refresh();
+        QTRY_VERIFY(fixture.usersGets>usersBeforeRestore);QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.directPeer().value("presence").toString(),QString("offline"));
+        for(const auto &name:badgeNames) QTRY_VERIFY(visibleItem(name));
+        QTRY_COMPARE(avatars.stats().leases,4);QTRY_COMPARE(avatars.stats().pipelineJobs,0);
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}) {
+            QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+        }
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("signOutButton"));
+        QSignalSpy menuFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!menuFrame.isEmpty());
+        auto *signOut=visibleItem("signOutButton");QVERIFY(signOut);
+        QVERIFY(QRectF(QPointF{},window->size()).contains(signOut->mapRectToScene({QPointF{},signOut->size()})));
+        QSignalSpy signedOutClick(signOut,SIGNAL(clicked()));QVERIFY(signedOutClick.isValid());click(window,signOut);
+        QTRY_COMPARE(signedOutClick.size(),1);QTRY_VERIFY(!controller.authenticated());
+        for(const auto &name:badgeNames) QTRY_VERIFY(!visibleItem(name));
+        QVERIFY(!visibleItem("profilePresenceStatus"));QVERIFY(!visibleItem("directPresenceStatus"));
+        QTRY_COMPARE(avatars.stats().leases,0);QCOMPARE(avatars.stats().pipelineJobs,0);
+        QVERIFY(controller.account().value("presence").toString().isEmpty());
+        QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        for(const auto &uuid:{ViewerAvatarFile,PeerAvatarFile}) {
+            QCOMPARE(metadataGets.value(uuid),1);QCOMPARE(binaryGets.value(uuid),1);
+        }
+        const bool closed=closeIncubatedTestWindow(engine,window);
+        if(closed) closeBeforeEngine.dismiss();QVERIFY(closed);
+    }
+
     void avatarHttpFailureKeepsFallbackAndRealtimeReplacementUpdatesPeerFaces()
     {
         const QString recoveredFile="a4300000-0000-4000-8000-000000000003";

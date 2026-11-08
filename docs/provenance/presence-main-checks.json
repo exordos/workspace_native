@@ -1,0 +1,99 @@
+{
+  "schema": "native-presence-main-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourceManifestSha256": "c25c5807e9645dee9e55820c9ef007b1ca749ade55e40094acd98d47497fbe1e",
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "productAndTestFiles": {
+    "packages/native/qml/Main.qml": "c33671231c840043d3684edc3433c8bfb73ce0d66b715dbd12378b283c32823e",
+    "packages/native/tests/native-window-test.cpp": "0eeb06cb1139d8101125719daf8594ce3ae753f59c1b30113776afd8b332dbd8",
+    "packages/native/translations/workspace_ru.ts": "e7a3c1142e641690076e7bdff49657e4e11dfdb3ea450251998899c217a9e4e1"
+  },
+  "precedingTestsAndTranslationsPreserved": true,
+  "focused": [
+    {
+      "label": "actual-main-presence4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 4327ms"
+      ],
+      "stdoutSha256": "e84df22c3afc9b1be03025b74d716b88b1130c94dda6b6e5fccd705f54844829",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 4.482
+    },
+    {
+      "label": "actual-main-photo-recovery-and-name9",
+      "totals": [
+        "Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 5446ms"
+      ],
+      "stdoutSha256": "1dcebfb867d7aa19ec11736769bc700a7bde96a03a2e14717ce9822239b1b37e",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 5.581
+    },
+    {
+      "label": "whole-locale14",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 113ms"
+      ],
+      "stdoutSha256": "a99e668085956433ac20491ff066633ba0c67b89b3dc4bef91a3cb64caf36248",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wallSeconds": 0.215
+    }
+  ],
+  "actualSourceVsCurrentNativeDtoEqualitySha256": "06cd533fbf0280db05b03597f5fa0bde7d85d9232396882323c77ffbe61e9c61",
+  "matchedPublicDtoResponses": 16,
+  "rawNativeFrames": {
+    "en-light-direct": {
+      ".png": "79992affe270ecd7bec28b9186b4046d993387c50df0a1ba6bcf4cd116fcd0d2",
+      "-metrics.json": "66a6b285caf9bfa10a195a30405a0a6a7f47672ada1106f5da0eb101d7ea489c"
+    },
+    "en-light-protected-direct": {
+      ".png": "e2df57458dba67521f4b0158bfbcaa3c0fdb34132e35fd983e4f6dc62bfcbf3f",
+      "-metrics.json": "dcc056a3fb7b27950964567206599c6a3319443627dbc81b0b0eb9d0fa2d663b"
+    },
+    "ru-dark-direct": {
+      ".png": "4cf364bfef3abc2a2bf99e6c46c3f986da556e74335154af67d08da35dcf73dd",
+      "-metrics.json": "f8c25d4dbc98cfbcf11c8d376db2bab08c20bd5b65fac14275751b84fefeeae4"
+    },
+    "ru-dark-protected-direct": {
+      ".png": "dcf3db7f4b3ca964f990ad5a5f92503127090d1c673fb28e409a8904ae41b125",
+      "-metrics.json": "cebe0f81214d5747ad4f157811fc9dc2a84bf07a1111d3669259d22af95bc921"
+    }
+  },
+  "sourceRawCaptureReviewSha256": "baecf3630f072198e331ce3245dbe8ebbd564ca87960c6ad0c058bafd1864253",
+  "sourceActualProfileObservationSha256": "bd031e91140529e4f542dcf14dfcc03887e8b7062c80d30bd8abc9facf42932b",
+  "preservedFirstGreenFailure": {
+    "rawSha256": "c23b6bc52191e5fd5487afa0d816a3ee89fd42c90f282c4c6a63cefccc9c7eeb",
+    "scope": "EN passed; RU first update missed visible rail after one frame. Probe1 repeated absence with incubation0/leases3; exact positioning at that failed assertion was not recorded."
+  },
+  "diagnostic1Sha256": "f3a8df7cb56fe2768cf51be42d5a9d8efb115773c41ab68118c980b55718bfcd",
+  "diagnostic2Sha256": "95bd7540a1ba0faa357d1147d2ebd1a5385908c9cf95d7e3e8c9effea53faa49",
+  "readinessCorrection": "Product unchanged. Probe2 observed six actual existing rails hidden during viewport positioning with3leases and then naturally restored with4; it did not repeat postframe failure and its expected-repeat gate is not accepted as GREEN. New test additionally witnesses actual RT positioning admission and waits existing restoration/all4live faces+badges before original pixel/color/count/accessibility/owner checks. Default waits/graphics/values unchanged; no product defect/cause certainty claimed.",
+  "scope": [
+    "Static Source8px dot+2px ring on existing4avatars; own custom status or localized presence and display-only owned email; Direct caption including unknown/offline distinction.",
+    "Actual HTTP Users/photos plus admitted public RT active/idle/DND/offline updates, no duplicate image GET, unchanged URLs/scope, missing/restored Users and real Main sign-out.",
+    "Reviewed Main RU online/away/offline labels; actual lupdate extraction and wholeLocale14, preserved existing tr() extraction notice."
+  ],
+  "wholeWindow235": {
+    "totals": [
+      "Totals: 235 passed, 0 failed, 0 skipped, 0 blacklisted, 245438ms"
+    ],
+    "stdoutSha256": "ef24bd32807706c1f889cfabb132adbcd54a449d56359c2f5f8670cd88e6ade5",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wallSeconds": 245.644
+  },
+  "cleanup": {
+    "allOwnedNativeGroupsAndPrivateDirsGone": true,
+    "observerBrowserProfileServerPortCleaned": true
+  },
+  "remaining": [
+    "Source-measured topbar/profile geometry and visible email elision",
+    "Text wrapping/font/full shell/navigation/footer differences",
+    "Own status editing/reporting/typing/profile navigation and remaining features",
+    "Real wire-WebSocket/live account/latest installed Linux/other OS acceptance"
+  ],
+  "wholeWindowRootReviewSha256": "2148cb67d66b000d801860917743d1ebb81a08283a88c60428b2014442b65cc6",
+  "comparison41": {
+    "resultSha256": "a7de4de00986ee18aac696b2519517883e88221ee6dd2d4821adb18da2c7b288",
+    "messageUuid": "dfa3e2be-b320-5855-bc47-55f961ab6b98",
+    "rawFourAttachmentsDownloadHashAndReadbackVerified": true
+  }
+}

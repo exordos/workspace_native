@@ -161,6 +161,35 @@ precedes this small field and is not claimed rerun as Controller808. The Main
 binding is checked separately. See
 [display email checks](provenance/account-display-email-checks.json).
 
+The existing four avatar circles now show static normalized presence with the
+Source 8px dot and 2px background ring. The own profile displays custom status
+or localized presence plus the owned display email; Direct adds its presence
+caption. Unknown presence has no dot, while the Direct caller retains its offline
+caption. Photos, leases, transports and credentials are unchanged.
+
+Actual Users/PNG/Main checks cover both locales, themes, protected Direct,
+active/idle/DND/offline public updates, zero additional file GET, missing/restored
+users and real sign-out. Focused Presence4, preceding photo/recovery/name9 and
+Locale14 passed without runtime warnings, stderr or skips. Every preceding test
+and translation line remains intact.
+
+The first focused run passed EN but missed the visible rail after one frame in
+RU. A passive probe repeated that absence with zero incubating objects; another
+observed an existing rail hidden during viewport restoration and then naturally
+visible again. That second probe did not repeat the postframe failure and is not
+accepted as a successful expected-repeat gate. Product code stayed unchanged;
+the new test now observes actual restoration admission and waits its completion
+and all four surfaces before the original oracles. All failed/probe evidence is
+retained. The complete Window235 then passed in 245.438 seconds, without
+runtime warnings, stderr or skips.
+
+Fresh raw Qt captures match all16 actual public DTO responses used by the frozen
+Source captures. Name/status/email visibility improved; topbar/profile geometry,
+email elision, text wrapping, navigation and locked-footer differences remain.
+The Source profile/topbar dimensions were measured in a fresh visible browser;
+that browser, profile, loopback server and port were cleaned. See
+[presence view checks](provenance/presence-main-checks.json).
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS

@@ -4,6 +4,18 @@
     <context>
         <name>Main</name>
         <message>
+            <source>online</source>
+            <translation>В сети</translation>
+        </message>
+        <message>
+            <source>away</source>
+            <translation>Отошёл</translation>
+        </message>
+        <message>
+            <source>offline</source>
+            <translation>Не в сети</translation>
+        </message>
+        <message>
             <source>Select topic:</source>
             <translation>Выберите тему:</translation>
         </message>
