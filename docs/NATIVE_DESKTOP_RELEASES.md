@@ -10,7 +10,8 @@ retain the first whole-window failure and outstanding release acceptance.
 
 `.github/workflows/linux-release.yml` builds on master pushes, `vX.Y.Z` tags
 and manual dispatch. It uses an Ubuntu 26.04 container on an Ubuntu 24.04 runner,
-installs the documented Qt kit, checks installer/package regressions, builds
+installs the documented Qt kit and Node.js for test-target configuration, checks
+installer/package regressions, builds
 Release, deploys the actual QML runtime, exercises the packaged five-codec
 (including SVG), encryption and TLS probe, and uploads the archive and checksums.
 Tag runs also publish those files in this repository's GitHub Releases using
