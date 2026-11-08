@@ -1063,6 +1063,12 @@ static QVariant serviceUiEvaluate(QQuickItem *list, const QString &expression)
     }
     return value.metaType() == QMetaType::fromType<QJSValue>() ? value.value<QJSValue>().toVariant() : value;
 }
+// One lookup per evaluation; absence is neither expanded nor collapsed.
+static bool serviceUiExpansionMatches(QQuickWindow *window, const QString &id, bool expanded)
+{
+    auto *item = encryptedUiItem(window, "serviceGroupToggle-" + id);
+    return item && item->property("expanded").toBool() == expanded;
+}
 static void expandInitialServiceGroup(QQuickWindow *window, const QString &id)
 {
     // Existing R/G/J assertions stay intact; reveal their real initial header.
@@ -5842,7 +5848,7 @@ private slots:
             const QString id="20000000-0000-4000-8000-000000000008";
             QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingAnnouncement(id,1))));
             QTRY_VERIFY(encryptedUiItem(window,"serviceGroupToggle-"+id));
-            QTRY_VERIFY(encryptedUiItem(window,"serviceGroupToggle-"+id)->property("expanded").toBool());
+            QTRY_VERIFY(serviceUiExpansionMatches(window, id, true));
             QCOMPARE(f.controller.property("historyCommitRevision").toULongLong(),revision); QCOMPARE(f.posts,0);
             return;
         }
@@ -5852,12 +5858,12 @@ private slots:
         useGroupingHistory(f, QJsonArray{groupingMessage("History", messageId, 0), groupingAnnouncement(historical, 1)});
         QTRY_VERIFY(f.controller.property("historyCommitRevision").toULongLong() > revision);
         QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + historical));
-        QVERIFY(!encryptedUiItem(window, "serviceGroupToggle-" + historical)->property("expanded").toBool());
+        QVERIFY(serviceUiExpansionMatches(window, historical, false));
         const auto committed = f.controller.property("historyCommitRevision").toULongLong();
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingAnnouncement(continuation, 2))));
         QTRY_COMPARE(f.controller.messages().size(), 3);
         QCOMPARE(f.controller.property("historyCommitRevision").toULongLong(), committed);
-        QVERIFY(!encryptedUiItem(window, "serviceGroupToggle-" + historical)->property("expanded").toBool());
+        QVERIFY(serviceUiExpansionMatches(window, historical, false));
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingMessage("Live separator", separator, 3))));
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingAnnouncement(live, 4))));
         // No event pump between separate live runs: ordinary queued positioning
@@ -5866,20 +5872,89 @@ private slots:
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingMessage("Second separator", "20000000-0000-4000-8000-000000000007", 5))));
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(groupingAnnouncement(secondLive, 6))));
         QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + live));
-        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + live)->property("expanded").toBool());
+        QTRY_VERIFY(serviceUiExpansionMatches(window, live, true));
         QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + secondLive));
-        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + secondLive)->property("expanded").toBool());
+        QTRY_VERIFY(serviceUiExpansionMatches(window, secondLive, true));
         QVERIFY(encryptedUiItem(window, "keyAnnouncementService-" + live));
         QCOMPARE(f.controller.property("historyCommitRevision").toULongLong(), committed);
         const auto posts = f.posts, gets = exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/");
-        auto *toggle = encryptedUiItem(window, "serviceGroupToggle-" + live);
+        auto *toggle = encryptedUiItem(window, "serviceGroupToggle-" + live); QVERIFY(toggle);
         QSignalSpy clicked(toggle, SIGNAL(clicked())); QVERIFY(clicked.isValid()); encryptedUiClick(toggle); QTRY_COMPARE(clicked.size(), 1);
-        QTRY_VERIFY(!toggle->property("expanded").toBool());
+        QTRY_VERIFY(serviceUiExpansionMatches(window, live, false));
         auto next = groupingAnnouncement("20000000-0000-4000-8000-000000000005", 4);
         next["created_at"] = "2026-01-02T10:04:30.000Z";
         QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(next))); QTRY_COMPARE(f.controller.messages().size(), 8);
-        QVERIFY(!toggle->property("expanded").toBool()); // Explicit choice beats continuation.
+        QVERIFY(serviceUiExpansionMatches(window, live, false)); // Explicit choice beats continuation.
         QCOMPARE(f.posts, posts); QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/"), gets);
+    }
+
+    void uiServiceExpansionPredicateRejectsAnActuallyAbsentDelegate() {
+        Fixture f; f.stream = fullEncryptedStream(); QVERIFY(f.start());
+        const QString a = "90000000-0000-4000-8000-000000000001";
+        const QString b = "90000000-0000-4000-8000-000000000002";
+        const QString separator = "90000000-0000-4000-8000-000000000003";
+        auto first = groupingAnnouncement(a, 1), second = groupingAnnouncement(b, 3);
+        auto middle = groupingMessage("Predicate witness separator", separator, 2);
+        useGroupingHistory(f, QJsonArray{first, middle, second});
+        QTRY_COMPARE(f.controller.messages().size(), 3);
+        QTRY_VERIFY(f.controller.property("messageHistoryReady").toBool());
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!displayed(f.controller, a).isEmpty());
+        QVERIFY(!displayed(f.controller, b).isEmpty());
+        QVERIFY(!displayed(f.controller, separator).isEmpty());
+        NativePreferences preferences(f.directory.filePath("service-predicate.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeIncubatedEncryptedVisualWindow(window.data()))
+                QTest::qFail("Service predicate window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        auto *list = encryptedUiItem(window, "messageList"); QVERIFY(list);
+        QTRY_COMPARE(list->property("count").toInt(), 3);
+        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + a));
+        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + b));
+        QVERIFY(serviceUiExpansionMatches(window, a, false));
+        QVERIFY(serviceUiExpansionMatches(window, b, false));
+        const QPointer<QQuickItem> originalB(encryptedUiItem(window, "serviceGroupToggle-" + b));
+        const auto posts = f.posts;
+        // The same real deletion/merge path as the retained split/merge UI test.
+        auto deletion = cryptoEvent(middle);
+        auto payload = deletion.value("payload").toObject(); payload["kind"] = "message.deleted"; deletion["payload"] = payload;
+        QVERIFY(f.controller.applyRealtimeEvent(deletion));
+        QTRY_COMPARE(f.controller.messages().size(), 2);
+        QVERIFY(displayed(f.controller, separator).isEmpty());
+        QVERIFY(!displayed(f.controller, a).isEmpty()); QVERIFY(!displayed(f.controller, b).isEmpty());
+        QTRY_COMPARE(list->property("count").toInt(), 1);
+        QSignalSpy mergedFrame(window, &QQuickWindow::frameSwapped); QVERIFY(mergedFrame.isValid());
+        window->update(); QTRY_VERIFY(!mergedFrame.isEmpty());
+        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + a));
+        QTRY_VERIFY(!encryptedUiItem(window, "serviceGroupToggle-" + b));
+        QVERIFY(serviceUiExpansionMatches(window, a, false));
+        qInfo().noquote() << "SERVICE_PREDICATE_ABSENT_BOUNDARY" << QJsonDocument(QJsonObject{
+            {"separatorDeleted", displayed(f.controller, separator).isEmpty()},
+            {"coreRows", f.controller.messages().size()}, {"viewRows", list->property("count").toInt()},
+            {"frames", mergedFrame.size()}, {"aPresent", bool(encryptedUiItem(window, "serviceGroupToggle-" + a))},
+            {"bAbsent", !encryptedUiItem(window, "serviceGroupToggle-" + b)}, {"originalBAlive", bool(originalB)}}).toJson(QJsonDocument::Compact);
+        // OLD helper faults here only after the actual positive absence witness.
+        // Missing is neither expanded nor collapsed; it must satisfy neither wait.
+        QVERIFY(!serviceUiExpansionMatches(window, b, true));
+        QVERIFY(!serviceUiExpansionMatches(window, b, false));
+        // Reuse the actual accepted message.updated path to split the run again.
+        // The same B UUID becomes a visible first/header row in the other topic.
+        second["topic_uuid"] = secondTopicId;
+        auto move = cryptoEvent(second); payload = move.value("payload").toObject(); payload["kind"] = "message.updated"; move["payload"] = payload;
+        QVERIFY(f.controller.applyRealtimeEvent(move));
+        QTRY_COMPARE(list->property("count").toInt(), 2);
+        QSignalSpy splitFrame(window, &QQuickWindow::frameSwapped); QVERIFY(splitFrame.isValid());
+        window->update(); QTRY_VERIFY(!splitFrame.isEmpty());
+        QTRY_VERIFY(encryptedUiItem(window, "serviceGroupToggle-" + b));
+        QTRY_VERIFY(serviceUiExpansionMatches(window, b, false));
+        QVERIFY(!serviceUiExpansionMatches(window, b, true));
+        QCOMPARE(displayed(f.controller, b).value("topicId").toString(), secondTopicId);
+        QCOMPARE(f.controller.messages().size(), 2); QCOMPARE(f.posts, posts);
     }
 
     void uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch() {

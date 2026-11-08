@@ -1,0 +1,35 @@
+{
+  "schema": "service-predicate-checks-v1",
+  "scope": "Test harness only. Null-safe one-lookup expansion predicate; missing satisfies neither expanded nor collapsed; reacquire same UUID after realtime changes. All7 original property oracles and16QTRY/default waits retained.",
+  "productionChanged": false,
+  "controlledRed": {
+    "sourceManifestSha256": "ba9ccdfe636f454e013d2b499c7f3d28459faedcbe8c9b45fc41085ccc5a4b3e",
+    "exitCode": -11,
+    "stdoutSha256": "45fa5cff9e989aa9bbd0acbc6b28f2b0f57b31d5afbe5dc827617fb2ee83a7d4",
+    "witness": "Real admitted separator deletion; Core2/View1; natural frame; A present; B absent and originalB destroyed.",
+    "controlledStackSha256": "3df5a57e1a7577d92f7aef9ab04278fd0f1f2d739341989457b807e6ba1d7a87",
+    "controlledStack": "QObject::property ->serviceUiExpansionMatches1069 ->actual absent-delegate regression5942"
+  },
+  "green": {
+    "sourceManifestSha256": "0915158560d8e1621e8d57ce7cbd196779b3317bfd3fe38d392d23118ffeb8bf",
+    "totals": [
+      "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 1885ms"
+    ],
+    "stdoutSha256": "305864cb5bfed13ff0520d52ba2aebc2a4d593c6e1608704815215ae528b9770",
+    "stderrBytes": 0,
+    "warnings": []
+  },
+  "otherFocusedFailure": {
+    "sourceManifestSha256": "f86cb5e984be47c9d570fdc6794bbf1a5ecca9ed080c213afd13415384064078",
+    "totals": [
+      "Totals: 10 passed, 1 failed, 0 skipped, 0 blacklisted, 37928ms"
+    ],
+    "failures": [
+      "FAIL!  : NativeE2eeReadTest::uiServiceHistoryCommitAndRealtimeHaveDifferentExpansion(accepted-newer-history-then-consecutive-live) 'serviceUiExpansionMatches(window, live, true)' returned FALSE. ()"
+    ],
+    "stdoutSha256": "25caeaf5401ef8f2a0d921ccd739b73c1630ca2d31131c718dfab9e7a4180a9b",
+    "cause": "UNKNOWN. Safe predicate now fails normally when the original live expansion expectation is not met. Passive model/readiness trace pending."
+  },
+  "originalFullUiCrash": "UNKNOWN cause. Controlled same-pattern fault is not an original stack; no fullUI/crash fix acceptance.",
+  "allSourceBinaryRawCleanupVerified": true
+}

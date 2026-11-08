@@ -89,6 +89,18 @@ role/crypto/dispatch parity. [Holder checks](provenance/ordinary-holder-checks.j
 retain the actual REDs, intermediate failed scope run, accepted groups and exact
 presentation boundary. Historical warning causes below remain open.
 
+A controlled real-window merge reproduced an unsafe test-side delegate lookup:
+after deleting the separator, Core retained two service messages while the view
+merged them into one header and destroyed the other. The old property predicate
+crashed; its captured stack points to that null lookup. The test helper now
+requires a present item for either expected state and reacquires the UUID after
+realtime updates. The actual merge/absence/remount regression passes. All seven
+original expansion oracles and sixteen QTRY calls remain. A separate focused
+run still failed one original live-expansion expectation (10 passes, one failure),
+now as a normal assertion; its model/readiness cause is under investigation.
+This does not establish the cause or resolution of the earlier full-run crash.
+[Predicate checks](provenance/service-predicate-checks.json) retain both results.
+
 The first full UI run passed 124 cases and failed four obsolete full-UUID author
 lookups in the locked-message geometry test. Its lookup now requires the accepted
 Source `#` plus eight UUID characters and checks that exact controller caption;
