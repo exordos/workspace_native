@@ -1,21 +1,22 @@
-# Workspace Native 0.1.5 — candidate, not published
+# Workspace Native 0.1.5 — Linux development preview
 
-New chat can open an existing active encrypted Direct conversation, including
-one created by the other participant. Identity/default-topic checks remain, and
-missing keys keep sending and attachments locked. A local actual Main scenario
-covers Request key, Source grant/read and encrypted Send on that canonical Direct.
-Creating encrypted pairs and bootstrap remain open.
+New chat now opens existing active encrypted Direct conversations, including
+those started by the other participant. Requesting a key, reading and sending
+use the existing encrypted workflow. Missing keys keep Send and Attach locked;
+creating new encrypted pairs and bootstrap remain unfinished.
 
-Update metadata checks can make one fresh request after a specific HTTP/2 failure
-before any status, headers or body. The original total deadline and archive/error
-policies remain; 18 local TLS/HTTP/2 controls passed. This does not establish the
-cause of earlier public network failures.
+Update checks recover once from an HTTP/2 connection that fails before any
+response status, headers or body arrive. The original total timeout and download
+rules remain unchanged.
 
-Focused Direct Main (3 Qt cases), default peer/composer controls (3/8 Qt cases) and separate Controller (837 cases) passed.
-The coherent build, actual Main Source3, updater49 and locale14 passed.
-Full Window (285 cases) and E2EE suites, CI, packaged runtime, publication and
-installed upgrade are pending. This remains a Linux development preview; live
-account, full functional/pixel parity and other platforms remain open.
+The complete local window and encrypted workflow suites passed, together with
+controller, updater, transport, installer and packaged runtime checks. GitHub
+packaging CI passed. Public download and an actual installed 0.1.4 to 0.1.5
+upgrade are the next separate verification steps.
+
+This remains a development preview for Ubuntu 26.04 x86_64 / glibc 2.43 or newer.
+The configurable disk cache defaults to 10 GB. Live-account acceptance, full
+feature/pixel parity, other distributions, Windows and macOS remain open.
 
 ---
 

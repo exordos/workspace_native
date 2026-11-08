@@ -145,8 +145,8 @@
   },
   "pendingForCandidate": {
     "completeExistingNativeUpdaterQtTestSuite": "PASS_49",
-    "finalPackageRuntimeProbe": "pending",
-    "githubCIAndPublishedAssetDelivery": "pending",
+    "finalPackageRuntimeProbe": "LOCAL_PASS_PUBLIC_PREFIX_PENDING",
+    "githubCIAndPublishedAssetDelivery": "CHECKPOINT_CI_PASS_TAG_CI_AND_PUBLIC_PENDING",
     "actualInstalledUpgradeAndCachePreservation": "pending"
   },
   "limits": [

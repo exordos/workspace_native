@@ -1,6 +1,6 @@
 {
   "schema": "native-linux-0.1.5-candidate-v1",
-  "status": "PRIVATE_DRAFT_FOCUSED_ACCEPTED_FULL_RELEASE_PENDING",
+  "status": "LOCAL_RELEASE_GATES_ACCEPTED_PUBLIC_AND_INSTALLED_PENDING",
   "version": "0.1.5",
   "sourceReference": {
     "repository": "exordos/workspace_ui",
@@ -275,10 +275,10 @@
   },
   "pending": {
     "coherentBuild": "PASS_WITH_RETAINED_25_CMAKE_IMPORT_WARNINGS",
-    "wholeWindow285": "PENDING",
+    "wholeWindow285": "PASS_285",
     "wholeE2eeCore": "PASS_274",
-    "wholeEncryptedUi": "PENDING",
-    "ci": "PENDING",
+    "wholeEncryptedUi": "PASS_141",
+    "ci": "CHECKPOINT_PACKAGE_CI_PASS_TAG_CI_PENDING",
     "packagedRuntime": "LOCAL_PACKAGE_AND_DEPLOYED_PROBE_PASS_PUBLIC_PENDING",
     "publication": "PENDING",
     "installedUpgrade": "PENDING",
@@ -332,6 +332,61 @@
     "originalFailureCauses": "UNKNOWN",
     "cleanScopedInputReadinessAndClickedRouteControlsAdded": true,
     "originalResultAssertionsPreserved": true,
-    "finalFullRun": "PENDING"
+    "finalFullRun": "PASS_285"
+  },
+  "completeEncryptedUi": {
+    "qtPassed": 141,
+    "qtMilliseconds": 338802,
+    "failed": 0,
+    "skipped": 0,
+    "runtimeWarnings": 0,
+    "stderrBytes": 0,
+    "rawSha256": "ee45825f2ed74cd18e933fceeada138196b32d262ef888bcfd87d15fb7ba0acf",
+    "resultSha256": "800783bfd28a6f81448da7b51b86917c6de46344fde72fbf1bc4ddec52b57ba8",
+    "rootReviewSha256": "0aabb782eed700be9e0f0582073de908454036eb03a3523b0e7f65118dfdefec"
+  },
+  "completeWindow": {
+    "qtPassed": 285,
+    "qtMilliseconds": 310713,
+    "failed": 0,
+    "skipped": 0,
+    "runtimeWarnings": 0,
+    "stderrBytes": 0,
+    "resultSha256": "8e00c46db91551e2938a95ba8e69b16cfa8fe3ce515894a506476ffbb5da26b0",
+    "rootReviewSha256": "07657a80f192e35a4054fd1cc4c788235340b6f55621d39e6ad6da41fafea31a"
+  },
+  "localPackageAndProbe": {
+    "installerPassed": 6,
+    "versionGuardPassed": 1,
+    "packageResultSha256": "b9828034feb93819e9f2eac2509717c4125aa756ec88f3349742bf93e050176f",
+    "deployedProbeResultSha256": "712a8ee1cd6af7a81fd749d177b0d2ad2e60b021021be51e4f484e2ec43b6759",
+    "qmlModules": 10,
+    "imageFormats": [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "svg"
+    ],
+    "messageGrantTlsPassed": true,
+    "actualMappingsInsidePrefix": 28
+  },
+  "integratedTransportControls": {
+    "passed": 18,
+    "resultSha256": "525a97b6bff5e1fc416d30d9e448c029e3bb1eabdee988759efc511fb16f5fef"
+  },
+  "checkpointCI": {
+    "conclusion": "success",
+    "databaseId": 42510540927,
+    "headSha": "3cb44bc3314fe07a9ecb1e319dd3713a313a2c8b",
+    "status": "completed",
+    "url": "https://github.com/exordos/workspace_native/actions/runs/42510540927"
+  },
+  "rawVisualComparison52": {
+    "sourcePngSha256": "2d6facbcc787109515d6fac68013221df23e4d4f9605a074399949f5eba5dcb2",
+    "nativePngSha256": "c4358cb12274eff9731ae0d40f3f9e12d73d0931d16d805897323f60644f3efd",
+    "visualOnlySourceReadyProps": true,
+    "outgoingUuidAndCiphertextUnmatched": true,
+    "fullPixelParity": false
   }
 }

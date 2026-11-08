@@ -683,3 +683,18 @@ passed 25 cases without reproducing them. Their causes remain unknown. Scoped
 input readiness and actual click/route controls now precede the original oracles.
 Clean full Window/encrypted UI, CI, publication and installed 0.1.5 remain pending. Live-account/WSS, full Source/pixel parity and other
 platforms remain open. See [candidate checks](provenance/linux-0.1.5-candidate-checks.json).
+
+## 0.1.5 local release verification
+
+The clean full Window285 and registered encrypted UI141 suites passed with no
+runtime warnings, stderr, failures or skips. Controller837 and E2EE core274 had
+passed separately on the unchanged applicable product/test inputs. Updater49,
+locale14, integrated real-wire transport18, installer6, version1 and the local
+packaged image/crypto/TLS probe passed. Checkpoint GitHub packaging CI passed.
+The original two Window failures remain recorded as unresolved observations;
+passive focus did not reproduce them, and clean tests now require semantic input
+placement, a rendered frame and actual click/route receipts before old oracles.
+Raw comparison52 shows the same two displayed messages using Source visual
+components and actual Native Main; outgoing UUID/ciphertext equality, full-shell
+pixel parity and live service acceptance are not claimed. Public tag/assets and
+the installed 0.1.4 to 0.1.5 upgrade remain separate pending gates.

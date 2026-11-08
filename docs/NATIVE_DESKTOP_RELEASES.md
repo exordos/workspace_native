@@ -108,7 +108,7 @@ files. Installer cancellation first allows shell cleanup before a bounded hard
 stop. Restart waits for cache/key shutdown and releases the primary-instance
 lock before starting the selected binary.
 
-### Metadata check recovery (0.1.5 candidate)
+### Metadata check recovery (0.1.5)
 
 The development candidate permits one automatic metadata GET when an HTTP/2
 connection fails before any response status, headers or JSON bytes arrive. It
@@ -123,8 +123,8 @@ The owned local TLS/h2 regression failed before this change and recovered after
 it without a third manual Check. Eighteen independent transport/lifecycle controls
 also passed using the published 0.1.4 Qt/OpenSSL runtime. These establish the
 bounded recovery behavior, not the cause of earlier intermittent public errors.
-The complete existing updater suite passed 49 cases. Final package, public
-delivery and installed upgrade for this candidate are still pending. See the
+The complete existing updater suite passed 49 cases. The local package/runtime probe and checkpoint GitHub packaging CI also passed.
+Public tag/assets and the installed upgrade remain pending. See the
 [sanitized recovery checks](provenance/updater-http2-recovery-checks.json).
 
 The Source-shaped About dock and toolbar indicator share the app-scoped updater.
