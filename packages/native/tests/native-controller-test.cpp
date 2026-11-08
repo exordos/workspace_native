@@ -1352,6 +1352,60 @@ private slots:
         }
         QCOMPARE(fixture.totalHistoryGets(),gets);
     }
+    void liveMoveRetainsIndexedHistoryBodyOutsideSavedDestination_data()
+    {
+        QTest::addColumn<bool>("destinationWindow");
+        QTest::newRow("no-destination-window") << false;
+        QTest::newRow("outside-older-bound") << true;
+    }
+
+    void liveMoveRetainsIndexedHistoryBodyOutsideSavedDestination()
+    {
+        QFETCH(bool, destinationWindow);
+        auto served = message("Known history body"); served["user_uuid"] = userId;
+        QTemporaryDir directory; NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture; fixture.controller.useCache(&cache);
+        fixture.messages = [served](const Request &) { return Response{QJsonArray{served}}; };
+        QVERIFY(fixture.start()); QTRY_VERIFY(cache.available()); QVERIFY(flushCache(cache));
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        const auto lease = cache.lease();
+        const NativeCache::Key source{NativeCache::Kind::History, streamId, topicId, {}};
+        const NativeCache::Key destination{NativeCache::Kind::History, otherArchiveId, secondTopicId, {}};
+        const NativeCache::Key destinationAggregate{NativeCache::Kind::History, otherArchiveId, {}, {}};
+        const NativeCache::Key bodyKey{NativeCache::Kind::MessageBody, {}, {}, messageId.toUtf8()};
+        const auto savedSource = cacheEntry(cache, lease, source); QVERIFY(savedSource);
+        QCOMPARE(savedSource->rows, QJsonArray{served});
+        QVERIFY(!cacheEntry(cache, lease, bodyKey)); // The normal History response did not seed a standalone Body.
+        const auto readBody = [&](std::optional<NativeCache::MessageBody> &result) {
+            struct Read { bool done = false; std::optional<NativeCache::MessageBody> value; };
+            const auto state = std::make_shared<Read>();
+            cache.getMessageBody(lease, messageId, &cache, [state](auto value) { state->value = std::move(value); state->done = true; });
+            const bool done = QTest::qWaitFor([state] { return state->done; }, 2000);
+            result = state->value; return done;
+        };
+        std::optional<NativeCache::MessageBody> before;
+        QVERIFY(readBody(before)); QVERIFY(before); QCOMPARE(before->row, served);
+        auto latest = message("Destination newer row", returnedId, secondTopicId);
+        latest["stream_uuid"] = otherArchiveId; latest["user_uuid"] = userId;
+        latest["created_at"] = "2026-01-02T10:01:00.000Z";
+        if (destinationWindow) { QVERIFY(cache.put(lease, destination, {latest}, "destination-older")); QVERIFY(flushCache(cache)); }
+        auto moved = served; moved["stream_uuid"] = otherArchiveId; moved["topic_uuid"] = secondTopicId;
+        moved["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Canonical moved body"}};
+        const auto gets = fixture.totalHistoryGets();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated", moved)));
+        QCOMPARE(fixture.controller.selectedStream(), streamId); QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QVERIFY(modelMessage(fixture.controller, messageId).isEmpty());
+        QCOMPARE(fixture.totalHistoryGets(), gets); QVERIFY(flushCache(cache));
+        const auto previousPage = cacheEntry(cache, lease, source); QVERIFY(previousPage); QVERIFY(previousPage->rows.isEmpty());
+        const auto target = cacheEntry(cache, lease, destination); QCOMPARE(target.has_value(), destinationWindow);
+        if (target) { QCOMPARE(target->rows, QJsonArray{latest}); QCOMPARE(target->nextMarker, QByteArray("destination-older")); }
+        QVERIFY(!cacheEntry(cache, lease, destinationAggregate));
+        std::optional<NativeCache::MessageBody> retained;
+        QVERIFY(readBody(retained));
+        QVERIFY2(retained.has_value(), "The real Controller move must retain the owned body without loading a destination page");
+        QCOMPARE(retained->row, moved);
+    }
+
     void delayedOldHistoryCannotResurrectMovedPlacement() {
         Fixture fixture; auto row=message("Current placement"); int reads=0;
         fixture.messages=[&](const Request &request)->Response {

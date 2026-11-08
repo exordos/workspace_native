@@ -280,6 +280,174 @@ private slots:
         }
     }
 
+    void movedIndexedHistoryRetainsBodyOutsideDestinationWindow_data()
+    {
+        QTest::addColumn<bool>("destinationWindow");
+        QTest::addColumn<bool>("standaloneBody");
+        QTest::newRow("no-destination-window") << false << false;
+        QTest::newRow("outside-older-bound") << true << false;
+        QTest::newRow("existing-body-control") << true << true;
+    }
+
+    void movedIndexedHistoryRetainsBodyOutsideDestinationWindow()
+    {
+        QFETCH(bool, destinationWindow); QFETCH(bool, standaloneBody);
+        QTemporaryDir directory; NativeCache cache(directory.path());
+        auto original = message("Known only in history"); original["user_uuid"] = User; original["read"] = true;
+        const auto id = original.value("uuid").toString();
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        const NativeCache::Key sourceAggregate{NativeCache::Kind::History, Stream, {}, {}};
+        const NativeCache::Key destination{NativeCache::Kind::History, UserB, User, {}};
+        const NativeCache::Key destinationAggregate{NativeCache::Kind::History, UserB, {}, {}};
+        const NativeCache::Key exactBody{NativeCache::Kind::MessageBody, {}, {}, id.toLower().toUtf8()};
+        QVERIFY(cache.put(lease, History, {original}, "source-older"));
+        QVERIFY(cache.put(lease, sourceAggregate, {original}, "aggregate-older"));
+        if (standaloneBody) QVERIFY(cache.putMessageBody(lease, original));
+        QCOMPARE(cache.get(lease, exactBody).has_value(), standaloneBody);
+        const auto previouslyReadable = cache.getMessageBody(lease, id); QVERIFY(previouslyReadable);
+        QCOMPARE(previouslyReadable->row, original);
+        auto latest = original; latest["uuid"] = "88888888-8888-4888-8888-000000000099";
+        latest["stream_uuid"] = UserB; latest["topic_uuid"] = User;
+        latest["created_at"] = "2026-11-06T12:35:56.123456Z";
+        if (destinationWindow) QVERIFY(cache.put(lease, destination, {latest}, "destination-older"));
+        auto moved = original; moved["stream_uuid"] = UserB; moved["topic_uuid"] = User;
+        moved["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Canonical moved body"}};
+        QVERIFY(cache.projectMessage(lease, moved, NativeCache::Projection::Insert | NativeCache::Projection::Payload | NativeCache::Projection::Star));
+        const auto source = cache.get(lease, History); QVERIFY(source); QVERIFY(source->rows.isEmpty());
+        QCOMPARE(source->nextMarker, QByteArray("source-older")); QVERIFY(!source->fresh);
+        const auto aggregate = cache.get(lease, sourceAggregate); QVERIFY(aggregate); QVERIFY(aggregate->rows.isEmpty());
+        const auto target = cache.get(lease, destination);
+        QCOMPARE(target.has_value(), destinationWindow);
+        if (target) { QCOMPARE(target->rows, QJsonArray{latest}); QCOMPARE(target->nextMarker, QByteArray("destination-older")); }
+        QVERIFY(!cache.get(lease, destinationAggregate)); // No invented destination window.
+        const auto retained = cache.getMessageBody(lease, id);
+        QVERIFY2(retained.has_value(), "A moved known body must remain UUID-readable even outside every destination window");
+        QCOMPARE(retained->row, moved);
+        // Reopening proves this is retained on disk, not an in-memory copy.
+        cache.close(); QVERIFY(cache.open(Server, Project, User));
+        const auto reopened = cache.getMessageBody(cache.lease(), id); QVERIFY(reopened);
+        QCOMPARE(reopened->row, moved);
+        QVERIFY(cache.removeMessageBodyAndHistory(cache.lease(), id));
+        QVERIFY(cache.projectMessage(cache.lease(), moved, NativeCache::Projection::Insert | NativeCache::Projection::Payload));
+        QVERIFY(!cache.getMessageBody(cache.lease(), id)); // No resurrection after actual erasure.
+    }
+
+    void movedHistoryBodyRetentionKeepsOwnershipMasksAndExistingAge_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"new-owned", "existing-body", "partial-mask", "foreign-history-viewer", "foreign-history-owned-dto",
+                                "foreign-dto-viewer", "legacy-dto-without-viewer", "erased-before-move", "unknown-uuid",
+                                "entry-pressure"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void movedHistoryBodyRetentionKeepsOwnershipMasksAndExistingAge()
+    {
+        QFETCH(QString, scenario);
+        QTemporaryDir directory; qint64 now = 10000;
+        NativeCache::Policy policy; policy.maxEntries = scenario == "entry-pressure" ? 2 : 0;
+        NativeCache cache(directory.path(), policy, false, [&] { return now; });
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        auto original = message("Previously indexed body"); original["user_uuid"] = scenario.startsWith("foreign-history") ? UserB : User;
+        original["read"] = true; original["starred"] = true;
+        original["reactions"] = QJsonObject{{QString::fromUtf8("👍"), 1}};
+        const auto id = original.value("uuid").toString();
+        const NativeCache::Key body{NativeCache::Kind::MessageBody, {}, {}, id.toUtf8()};
+        if (scenario != "unknown-uuid") QVERIFY(cache.put(lease, History, {original}, "source-older"));
+        if (scenario == "entry-pressure")
+            QVERIFY(cache.put(lease, {NativeCache::Kind::History, Stream, {}, {}}, {original}, "aggregate-older"));
+        if (scenario == "existing-body") QVERIFY(cache.putMessageBody(lease, original));
+        QCOMPARE(cache.get(lease, body).has_value(), scenario == "existing-body");
+        if (scenario == "erased-before-move") QVERIFY(cache.removeMessageBodyAndHistory(lease, id));
+        now += 5000; // A new Body may record this canonical event; an existing Body must keep its age.
+        auto moved = original; moved["stream_uuid"] = UserB; moved["topic_uuid"] = User;
+        moved["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Canonical moved body"}};
+        moved["read"] = false; moved["starred"] = false;
+        moved["reactions"] = QJsonObject{{QString::fromUtf8("👍"), 9}};
+        if (scenario == "foreign-history-owned-dto") moved["user_uuid"] = User;
+        if (scenario == "foreign-dto-viewer") moved["user_uuid"] = UserB;
+        if (scenario == "legacy-dto-without-viewer") moved.remove("user_uuid");
+        const auto fields = scenario == "partial-mask" ? NativeCache::ProjectionFields(NativeCache::Projection::Star)
+            : NativeCache::Projection::Insert | NativeCache::Projection::Payload;
+        QVERIFY(cache.projectMessage(lease, moved, fields));
+        const bool retained = scenario == "new-owned" || scenario == "existing-body" || scenario == "entry-pressure";
+        const auto saved = cache.get(lease, body); QCOMPARE(saved.has_value(), retained);
+        if (saved) {
+            auto expected = original; expected["stream_uuid"] = UserB; expected["topic_uuid"] = User;
+            expected["payload"] = moved.value("payload");
+            QCOMPARE(saved->rows, QJsonArray{expected}); // Read is monotonic; unmasked star/reactions are preserved.
+            QCOMPARE(saved->savedAt, scenario == "existing-body" ? qint64(10000) : now);
+        }
+        if (const auto page = cache.get(lease, History)) {
+            QCOMPARE(page->savedAt, qint64(10000)); QCOMPARE(page->nextMarker, QByteArray("source-older"));
+            QCOMPARE(page->rows, scenario == "partial-mask" ? QJsonArray{original} : QJsonArray{});
+        }
+        if (scenario == "entry-pressure") QVERIFY(cache.stats().entries <= 2);
+    }
+
+    void movedHistoryBodyUsesNewestUnmaskedFieldsAndAllKnownReadFlags_data()
+    {
+        QTest::addColumn<bool>("reverseKeys");
+        QTest::newRow("first-key-newer") << false;
+        QTest::newRow("second-key-newer") << true;
+    }
+
+    void movedHistoryBodyUsesNewestUnmaskedFieldsAndAllKnownReadFlags()
+    {
+        QFETCH(bool, reverseKeys);
+        QTemporaryDir directory; qint64 now = 10000;
+        NativeCache cache(directory.path(), {}, false, [&] { return now; });
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        auto older = message("Older cached body"); older["user_uuid"] = User; older["read"] = true;
+        older["reactions"] = QJsonObject{{QString::fromUtf8("👍"), 1}};
+        auto newer = older; newer["read"] = false; newer["starred"] = true;
+        newer["reactions"] = QJsonObject{{QString::fromUtf8("👍"), 2}};
+        auto oldKey = History, newKey = History;
+        oldKey.marker = reverseKeys ? "a" : "b"; newKey.marker = reverseKeys ? "b" : "a";
+        QVERIFY(cache.put(lease, oldKey, {older}, "older-cursor"));
+        now = 20000; QVERIFY(cache.put(lease, newKey, {newer}, "newer-cursor"));
+        const auto id = older.value("uuid").toString();
+        QVERIFY(!cache.get(lease, {NativeCache::Kind::MessageBody, {}, {}, id.toUtf8()}));
+        now = 30000;
+        auto moved = older; moved["stream_uuid"] = UserB; moved["topic_uuid"] = User;
+        moved["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Canonical moved body"}};
+        moved["read"] = false; moved["starred"] = false;
+        moved["reactions"] = QJsonObject{{QString::fromUtf8("👍"), 9}};
+        QVERIFY(cache.projectMessage(lease, moved, NativeCache::Projection::Insert | NativeCache::Projection::Payload));
+        auto expected = newer; expected["stream_uuid"] = UserB; expected["topic_uuid"] = User;
+        expected["payload"] = moved.value("payload"); expected["read"] = true;
+        const auto retained = cache.getMessageBody(lease, id); QVERIFY(retained);
+        QCOMPARE(retained->row, expected); QCOMPARE(retained->savedAt, now);
+        for (const auto &entry : {std::make_pair(oldKey, qint64(10000)), std::make_pair(newKey, qint64(20000))}) {
+            const auto page = cache.get(lease, entry.first); QVERIFY(page); QVERIFY(page->rows.isEmpty());
+            QCOMPARE(page->savedAt, entry.second); QVERIFY(!page->fresh);
+            QCOMPARE(page->nextMarker, entry.second == 10000 ? QByteArray("older-cursor") : QByteArray("newer-cursor"));
+        }
+        cache.close(); QVERIFY(cache.open(Server, Project, User));
+        const auto reopened = cache.getMessageBody(cache.lease(), id); QVERIFY(reopened);
+        QCOMPARE(reopened->row, expected); QCOMPARE(reopened->savedAt, now);
+    }
+
+    void declinedMovedBodyCannotBypassTheEntryBudget()
+    {
+        QTemporaryDir directory; NativeCache::Policy policy; policy.maxEntryBytes = 2048;
+        NativeCache cache(directory.path(), policy, false);
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        auto original = message("Known small body"); original["user_uuid"] = User;
+        QVERIFY(cache.put(lease, History, {original}, "source-older"));
+        auto moved = original; moved["stream_uuid"] = UserB; moved["topic_uuid"] = User;
+        moved["payload"] = QJsonObject{{"kind", "markdown"}, {"content", QString(4096, 'x')}};
+        QVERIFY(!cache.projectMessage(lease, moved, NativeCache::Projection::Insert | NativeCache::Projection::Payload));
+        const auto id = original.value("uuid").toString();
+        QVERIFY(!cache.getMessageBody(lease, id)); QVERIFY(cache.available());
+        const auto source = cache.get(lease, History); QVERIFY(source); QVERIFY(source->rows.isEmpty());
+        QCOMPARE(source->nextMarker, QByteArray("source-older")); QVERIFY(!source->fresh);
+        QVERIFY(!cache.get(lease, {NativeCache::Kind::History, UserB, User, {}}));
+        QVERIFY(cache.stats().bytes <= policy.maxEntryBytes);
+        cache.close(); QVERIFY(cache.open(Server, Project, User));
+        QVERIFY(!cache.getMessageBody(cache.lease(), id));
+    }
+
     void messageBodyProjectionOwnsFullPlacementButNotPartialPlacementOrAge()
     {
         QTemporaryDir directory; NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));

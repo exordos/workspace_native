@@ -1,0 +1,66 @@
+{
+  "schema": "workspace-native-moved-body-checks-v1",
+  "upstreamBehaviorReference": "61dacef78dab2f5d0be76f283bebf49fe29b84af",
+  "visualPinUnchanged": "95495b10b828f853c9e770b47216073eb973fa95",
+  "productionSha256": "c16ffd75b6cfd55f4fabd9ed19e36b7db7e4c5932e0824fbedbca78981fd8503",
+  "originalRedFunctionsUnchanged": true,
+  "wholeCacheQtCount": 99,
+  "wholeServiceQtCount": 53,
+  "wholeControllerQtCount": 748,
+  "checks": [
+    {
+      "check": "cacheRed",
+      "rawSha256": "ca0052f43b129854af8c8bdedcd397263eacd416548f5d6dbce96f6e2f189358",
+      "qtTotals": "Totals: 3 passed, 2 failed, 0 skipped, 0 blacklisted, 120ms"
+    },
+    {
+      "check": "controllerRed",
+      "rawSha256": "01a96fc3789319d129ba68688d6d55038aba4589e831df752cf28b691f579134",
+      "qtTotals": "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 1769ms"
+    },
+    {
+      "check": "cacheGreen",
+      "rawSha256": "2502cba7d7af1b1c5ab456f77cdfd7dbfa45d3a5a98716242277405284202b70",
+      "qtTotals": "Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 182ms"
+    },
+    {
+      "check": "controllerGreen",
+      "rawSha256": "a882657d08ab4829075da8d7c550ebe9ead84b5363741280a9c8e44312a2c213",
+      "qtTotals": "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 1805ms"
+    },
+    {
+      "check": "wholeCache",
+      "rawSha256": "93cd93d975ec0c598227eb2465ea8b6a26aac6caabeb27d5802f5a4aad5cf8e0",
+      "qtTotals": "Totals: 99 passed, 0 failed, 0 skipped, 0 blacklisted, 40639ms"
+    },
+    {
+      "check": "wholeService",
+      "rawSha256": "def9acc76841e2f69b30c98b5f16b2ccb2ba2b9eb8bc7834bfbe1ff0ff7161c6",
+      "qtTotals": "Totals: 53 passed, 0 failed, 0 skipped, 0 blacklisted, 12952ms"
+    },
+    {
+      "check": "wholeController",
+      "rawSha256": "819c7fe68532dec5dba67444eda287d8ea2b6bfb7e621f31fc4f15b5be4c4fa9",
+      "qtTotals": "Totals: 748 passed, 0 failed, 0 skipped, 0 blacklisted, 473601ms"
+    }
+  ],
+  "extraCacheControls": [
+    "positive scripted-clock advance for existing/new Body ages",
+    "partial masks and unmasked newest metadata",
+    "independent cached/incoming viewer conditions",
+    "monotonic read flag across reversed source-key ordering",
+    "explicit erasure and unknown UUID",
+    "entry pressure and declined oversized Body",
+    "disk reopen"
+  ],
+  "freshStandaloneAppBuilt": true,
+  "standaloneAppSha256": "0a923b08313cf71fef23c7289ffc5ae147a38d0825c48a4e3d1ca45a04600821",
+  "temporaryDirectoriesRemoved": true,
+  "remainingOwnedProcesses": 0,
+  "limits": "Ordinary LRU eviction and cancellable per-entry partial failure remain allowed; no global multi-page atomicity claim.",
+  "fullLatestCoreUiAccepted": false,
+  "originalWindowWarningsResolved": false,
+  "liveServiceAccepted": false,
+  "completeSource61RoutingAccepted": false,
+  "fullLinuxParity": false
+}

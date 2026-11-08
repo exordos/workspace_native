@@ -32,6 +32,9 @@ merges, plus message placement updates in loaded and cached conversations.
 The matched creation-dialog references below still use the pinned baseline.
 This later behavior must enter the native routing/cache acceptance before full
 parity can be claimed; no current creation-dialog result establishes it.
+The known indexed-body retention case after a move is now covered separately in
+[current development](CURRENT_DEVELOPMENT.md). This does not establish all of the
+newer global topic catalog, browser-location and routing behavior.
 
 The inventory comes from routes, callers, implementation, and tests. Historical
 feature lists in `USE_CASES.md` do not establish that a feature is available in the

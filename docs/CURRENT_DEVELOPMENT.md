@@ -1,51 +1,52 @@
 # Current native development
 
-The accepted imported baseline remains recorded in `docs/provenance/import-v34.json`.
-This branch adds the ordinary native channel owner/administrator Reject action for
-a current-member foreign key request without the requested local generation key.
-The current stream key can be null. Grant remains unavailable in this slice.
-Existing typed control payloads, canonical placement, exact default-topic target,
-request/device binding and retained Check/Retry rules are reused.
+The imported baseline remains recorded in `docs/provenance/import-v34.json`.
+This branch adds the ordinary native channel owner/administrator Reject action
+for a current-member foreign key request without the requested local key. The
+current stream key can be null. Grant remains unavailable in this slice. Typed
+payloads, canonical placement, exact default-topic target, request/device binding
+and retained Check/Retry rules reuse the existing protocol.
 
-Focused protocol controls, both real Main actions in English/light and Russian/dark,
-and their synthetic captures passed. The applicable general Controller739,
-Window221, Runtime10, locale14 and Markdown21 checks also passed before extraction.
-The final UI capture closure preserves the same product bytes and effective Core
-logic, with failure-only numeric startup diagnostics and optional UI-only public
-capture export. Public export contains synthetic transport facts, never private keys.
+Ordinary plaintext windows skip shared issuer-authority preparation when they
+contain no service controls. An unfinished owned response remains an exception,
+so explicit Retry can recover after a trust reset. Actual no-work and real WSS
+regressions passed after reproducing both the extra reads and the problem with
+a naive empty-window guard. The complete Core261 run passed on that earlier
+authority snapshot; [authority checks](provenance/ordinary-authority-checks.json)
+preserve its scope and an unexplained historical cache-fixture startup failure.
 
-Ordinary plaintext windows now skip shared issuer-authority preparation when they
-contain no service controls. An existing unfinished owned response is an exception:
-it still needs fresh authority before explicit Retry after a trust reset. The
-existing pure ownership predicate supplies this exception without new state.
-The no-work regression reproduced the former extra detail/binding reads. A second
-real HTTP/WSS regression demonstrated that simply skipping every empty window
-would strand retained Retry after same-route history replacement and reconnect.
-Both tests pass with the minimal guard, as do existing ordinary send, role/member,
-Check/Retry and prefilter controls. No assertion or timeout was weakened.
+Missing foreign users have the pinned desktop's `#` plus first eight UUID
+characters as their generic message author label. Known names, username fallbacks
+and existing own-message behavior are preserved. Controller and actual visible
+Main regressions reproduced the difference and passed after the one-line change.
 
-The complete Core suite passed all 261 Qt cases in 579.428 seconds on this exact
-source snapshot; see [authority checks](provenance/ordinary-authority-checks.json).
-An earlier cache-fixture startup failure remains unexplained. It passed in this
-run; this is not evidence that the authority guard caused or fixed that earlier
-startup observation. The previous complete UI126 run predates this guard. A full
-current UI acceptance, live service and complete Linux parity are still open.
+A full message move now retains an already-known owned History body even when no
+saved destination window accepts it. The existing indexed traversal supplies one
+candidate; the existing bounded Body storage saves its canonical projection.
+Partial masks, viewer ownership, deletion, monotonic reads and unmasked metadata
+are preserved. Existing Body ages and History ages/cursors remain unchanged;
+a newly materialized Body records the current canonical event. This addresses one
+cache behavior from upstream `61dacef`, without claiming all of its routing changes.
 
-Missing foreign users now have the pinned desktop's `#` plus first eight UUID
-characters as their generic message author label. This changes only the missing
-directory-entry fallback. Known names, optional-name/username fallbacks and the
-existing own-message behavior are preserved. Seven controller and three visible
-Main cases reproduced the difference before the change and passed afterward.
-The complete Controller suite passed all 746 Qt cases in 466.723 seconds.
+Latest local checks passed Cache99, Cache Service53 and Controller748, without
+warnings or skips. The standalone application also built. The original Cache and
+Controller move regressions failed before the fix and passed afterward, including
+disk reopen and no invented destination page. Scripted-clock, independent viewer,
+read/mask and entry-budget controls passed; see
+[moved-body checks](provenance/moved-body-checks.json). Full Core/UI on this latest
+cache snapshot, sanitizer checks and live-service acceptance remain open.
 
-The complete Window run passed its 224 functional cases in 235.153 seconds, but
-its quality gate is **not accepted**: one test sent a mouse event outside a 700px
-window. Separately, an ordinary owner Main capture reported `QMutex: destroying
-locked mutex`. One diagnostic run passed both Main cases without that warning,
-so no emitting stack or cause was established. Neither warning is suppressed or
-claimed fixed. See [author checks](provenance/message-author-checks.json).
+The earlier Window run passed 224 functional cases, but its quality gate remains
+**not accepted**: one test sent a mouse event outside a 700px window. Isolated
+archive and original-order prefix diagnostics passed without reproducing it.
+Separately, one ordinary owner Main capture reported `QMutex: destroying locked
+mutex`; a diagnostic run passed without an emitting stack. Neither warning is
+suppressed or claimed fixed. [Author checks](provenance/message-author-checks.json)
+retain the failed observations. The previous complete UI126 run predates the
+authority, author-label and moved-body fixes.
 
-Current screenshots compare the service row and show the author-label change.
-Full shell, presence/counts, Source crypto/role and action dispatch, live service,
-complete Linux and other platforms remain open. Full acceptance is recorded only
-when the required complete groups and warning checks pass.
+Screenshots compare the service row and the author-label change. Full shell,
+presence/counts, Source runtime role/action acceptance, live service, packaging,
+complete Linux and other platforms remain open. Linux comes first, with a
+configurable 10 GB disk-cache default. Full acceptance requires the complete
+relevant groups and warning checks.

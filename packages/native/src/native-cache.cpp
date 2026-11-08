@@ -886,16 +886,40 @@ bool NativeCache::projectMessage(const Lease &lease, const QJsonObject &canonica
         return fail();
     if (!refreshTotals())
         return fail();
+    const auto projectedRow = [&](QJsonObject row, Kind kind) {
+        if (fields.testFlag(Projection::Payload)) {
+            row["stream_uuid"] = raw.value("stream_uuid");
+            row["topic_uuid"] = raw.value("topic_uuid");
+            row["payload"] = raw.value("payload");
+            if (kind == Kind::MessageBody)
+                for (const auto *field : {"user_uuid", "author_uuid", "created_at", "is_own"})
+                    if (raw.contains(field)) row[field] = raw.value(field);
+        }
+        if (fields.testFlag(Projection::Star))
+            row["starred"] = raw.value("starred");
+        if (fields.testFlag(Projection::Reactions)) {
+            row["reactions"] = raw.value("reactions");
+            if (raw.contains("reaction_users"))
+                row["reaction_users"] = raw.value("reaction_users");
+            else
+                row.remove("reaction_users");
+        }
+        if (confirmedRead)
+            row["read"] = true;
+        return row;
+    };
+    std::optional<MessageBody> removedHistory;
     const auto update = [&](const QByteArray &hash, bool insert) -> bool {
         if (shouldCancel())
             return fail();
         Key key{Kind::History, {}, {}, {}};
         QByteArray bytes, next;
+        qint64 savedAt = 0;
         {
             QSqlQuery query(m_database);
             // Do not materialize an arbitrarily modified local blob.
             query.prepare(
-                "SELECT stream,topic,marker,CASE WHEN LENGTH(payload)<=? THEN payload END,next_marker,kind"
+                "SELECT stream,topic,marker,CASE WHEN LENGTH(payload)<=? THEN payload END,next_marker,kind,saved_at"
                 " FROM entries WHERE owner=? AND key=? AND kind IN (4,5)");
             query.addBindValue(m_policy.maxEntryBytes);
             query.addBindValue(m_owner);
@@ -910,6 +934,7 @@ bool NativeCache::projectMessage(const Lease &lease, const QJsonObject &canonica
             bytes = query.value(3).toByteArray();
             next = query.value(4).toByteArray();
             key.kind = static_cast<Kind>(query.value(5).toInt());
+            savedAt = query.value(6).toLongLong();
         }
         if (keyHash(key) != hash || !validMarker(next) ||
             bytes.size() + key.marker.size() + next.size() + 256 > m_policy.maxEntryBytes)
@@ -930,29 +955,14 @@ bool NativeCache::projectMessage(const Lease &lease, const QJsonObject &canonica
             found = true;
             confirmedRead |= row.value("read").toBool();
             if (!belongs && key.kind == Kind::History) {
+                if (!viewerMismatch && row.value("user_uuid").toString().compare(m_user, Qt::CaseInsensitive) == 0
+                    && (!removedHistory || savedAt > removedHistory->savedAt))
+                    removedHistory = MessageBody{row, savedAt};
                 rows.removeAt(i--);
                 changed = true;
                 continue;
             }
-            if (fields.testFlag(Projection::Payload)) {
-                row["stream_uuid"] = raw.value("stream_uuid");
-                row["topic_uuid"] = raw.value("topic_uuid");
-                row["payload"] = raw.value("payload");
-                if (key.kind == Kind::MessageBody)
-                    for (const auto *field : {"user_uuid", "author_uuid", "created_at", "is_own"})
-                        if (raw.contains(field)) row[field] = raw.value(field);
-            }
-            if (fields.testFlag(Projection::Star))
-                row["starred"] = raw.value("starred");
-            if (fields.testFlag(Projection::Reactions)) {
-                row["reactions"] = raw.value("reactions");
-                if (raw.contains("reaction_users"))
-                    row["reaction_users"] = raw.value("reaction_users");
-                else
-                    row.remove("reaction_users");
-            }
-            if (confirmedRead)
-                row["read"] = true;
+            row = projectedRow(row, key.kind);
             changed = changed || row != rows.at(i).toObject();
             rows.replace(i, row);
         }
@@ -1069,6 +1079,12 @@ bool NativeCache::projectMessage(const Lease &lease, const QJsonObject &canonica
     if (fields.testFlag(Projection::Insert))
         for (const auto &hash : heads)
             if (!update(hash, true)) return false;
+    // A full move may leave no saved destination window. Retain a body only
+    // when an owned History row was actually removed; erasure still wins.
+    const Key body{Kind::MessageBody, {}, {}, message->uuid.toLower().toUtf8()};
+    if (removedHistory && !get(lease, body)) {
+        if (!accepts(lease) || !putMessageBody(lease, projectedRow(removedHistory->row, Kind::MessageBody))) return false;
+    }
     // A known read flag follows identity across placement. Earlier destination
     // pages may have been visited before the old source supplied that fact.
     if (confirmedRead && !incomingRead)

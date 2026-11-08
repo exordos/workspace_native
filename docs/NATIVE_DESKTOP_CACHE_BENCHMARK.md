@@ -97,6 +97,18 @@ earlier layout measurements do not establish its complete application cost. Exis
 and shrinkable, with a dedicated restart/physical-bound regression; they are not
 automatically rebuilt, and their large-BLOB performance is not claimed fixed.
 
+Full message moves now preserve an already-known owned body when the destination
+has no saved page or excludes the row through its pagination bound. The existing
+membership walk captures at most one removed owned History row, and only that
+case needs an exact Body lookup. It adds no four-page candidate search, schema or
+separate reservoir. The ordinary Body write uses the same disk, entry and LRU
+limits. Existing Body ages and History ages/cursors are preserved; a new canonical
+Body records the event's current cache time. Partial masks and viewer/deletion
+rules remain in force. Failed projection can leave earlier pages stale/changed;
+the multi-page operation does not promise a global transaction. Current logical
+checks are recorded in [moved-body checks](provenance/moved-body-checks.json),
+separately from the earlier resource measurements below.
+
 The updated storage suite passed **54/54** cases normally and under
 ASan/UBSan/LSan. Its unchanged worker service passed **44/44** against the new
 layout in both runs, without sanitizer suppressions or diagnostics.
