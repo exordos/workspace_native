@@ -821,6 +821,7 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onStateChanged() {
+            root.settleOwnStatusUi();
             root.validateStreamUi();
             root.validateChannelUi();
             root.validateGlobalTopicUi();
@@ -1347,6 +1348,393 @@ ApplicationWindow {
         }
     }
 
+    function openOwnStatus() {
+        if (!root.controller.authenticated)
+            return;
+        const contextKey = String(root.controller.ownStatusContextKey || "");
+        const facts = root.controller.ownStatus;
+        if (!contextKey.length || facts.pending)
+            return;
+        ownStatusDialog.contextKey = contextKey;
+        ownStatusText.text = String(facts.text || "");
+        ownStatusDialog.emojiDraft = String(facts.emoji || "");
+        ownStatusAway.checked = Boolean(facts.away);
+        ownStatusDialog.submitted = false;
+        ownStatusDialog.emojiPickerOpen = false;
+        accountPopup.close();
+        ownStatusDialog.open();
+    }
+
+    function settleOwnStatusUi() {
+        const contextKey = String(root.controller.ownStatusContextKey || "");
+        if (!root.controller.authenticated || !contextKey.length
+                || (ownStatusDialog.contextKey.length && ownStatusDialog.contextKey !== contextKey)) {
+            ownStatusDialog.contextKey = "";
+            ownStatusDialog.submitted = false;
+            ownStatusDialog.emojiPickerOpen = false;
+            ownStatusText.text = "";
+            ownStatusDialog.emojiDraft = "";
+            ownStatusAway.checked = false;
+            ownStatusDialog.close();
+            ownStatusErrorToast.close();
+            return;
+        }
+        if (!ownStatusDialog.visible)
+            return;
+        const facts = root.controller.ownStatus;
+        if (ownStatusDialog.submitted && !facts.pending) {
+            ownStatusDialog.submitted = false;
+            if (String(facts.error || "").length)
+                ownStatusErrorToast.open();
+            else
+                ownStatusDialog.close();
+        }
+    }
+
+    component StatusSpinner: Canvas {
+        width: 14; height: 14
+        Accessible.ignored: true
+        onPaint: {
+            const c = getContext("2d"); c.reset(); c.lineWidth = 2;
+            c.strokeStyle = root.colors["on-accent"]; c.globalAlpha = 0.25;
+            c.beginPath(); c.arc(7, 7, 6, 0, Math.PI * 2); c.stroke();
+            c.globalAlpha = 1; c.beginPath(); c.arc(7, 7, 6, 0, Math.PI / 2); c.stroke();
+        }
+        RotationAnimator on rotation {
+            from: 0; to: 360; duration: 1000; loops: Animation.Infinite
+            running: ownStatusDialog.visible && ownStatusDialog.pending
+        }
+    }
+
+    component StatusActionButton: Button {
+        id: statusButton
+        property bool primary: false
+        property bool outlined: false
+        property bool selected: false
+        implicitHeight: 36
+        implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
+        horizontalPadding: 12
+        verticalPadding: 8
+        hoverEnabled: true
+        font.pixelSize: 14
+        font.weight: primary ? Font.Medium : Font.Normal
+        contentItem: Text {
+            text: statusButton.text
+            textFormat: Text.PlainText
+            font.pixelSize: statusButton.font.pixelSize
+            lineHeightMode: Text.FixedHeight
+            lineHeight: statusButton.font.pixelSize === 12 ? 16 : 20
+            font.weight: statusButton.font.weight
+            color: statusButton.primary ? root.colors["on-accent"] : statusButton.outlined ? root.colors["text-primary"] : root.colors["text-muted"]
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            opacity: statusButton.enabled ? 1 : 0.5
+        }
+        background: Rectangle {
+            radius: 6
+            color: statusButton.primary ? root.colors.accent
+                : statusButton.outlined && statusButton.selected ? Qt.rgba(root.colors.accent.r, root.colors.accent.g, root.colors.accent.b, 0.15)
+                : statusButton.outlined ? (statusButton.hovered ? root.colors["bg-elevated"] : root.colors.bg)
+                : statusButton.hovered ? root.colors.bg : "transparent"
+            opacity: statusButton.enabled ? 1 : 0.5
+            border.width: statusButton.outlined ? 1 : statusButton.visualFocus ? 2 : 0
+            border.color: statusButton.selected || statusButton.visualFocus ? root.colors.accent : root.colors["border-subtle"]
+        }
+    }
+
+    Dialog {
+        id: ownStatusDialog
+        objectName: "ownStatusDialog"
+        title: qsTr("Status")
+        header: null
+        footer: null
+        property string contextKey: ""
+        property string emojiDraft: ""
+        property bool emojiPickerOpen: false
+        property bool submitted: false
+        readonly property bool pending: Boolean(root.controller.ownStatus.pending)
+        readonly property color accentColor: root.colors.accent
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(448, root.width - 32)
+        padding: 1 // The CSS border encloses, rather than overlays, the content box.
+        modal: true
+        dim: true
+        focus: true
+        closePolicy: pending ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#80000000" }
+        background: Rectangle {
+            radius: 10
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        onOpened: {
+            const first = statusPresets.itemAt(0);
+            if (first) first.forceActiveFocus(Qt.PopupFocusReason);
+        }
+        onClosed: {
+            submitted = false;
+            emojiPickerOpen = false;
+            if (root.controller.authenticated) profileControl.forceActiveFocus(Qt.PopupFocusReason);
+        }
+        contentItem: ColumnLayout {
+            spacing: 0
+            ColumnLayout {
+                spacing: 4
+                Layout.fillWidth: true
+                Layout.margins: 20
+                Layout.topMargin: 16
+                Layout.bottomMargin: 16
+                Text {
+                    text: qsTr("Status"); textFormat: Text.PlainText
+                    font.pixelSize: 16; font.weight: Font.DemiBold
+                    lineHeightMode: Text.FixedHeight; lineHeight: 24
+                    color: root.colors["text-primary"]
+                    Layout.fillWidth: true
+                }
+                Text {
+                    text: qsTr("Add an emoji and text to show your current availability.")
+                    textFormat: Text.PlainText; wrapMode: Text.Wrap
+                    color: root.colors["text-muted"]; font.pixelSize: 14
+                    lineHeightMode: Text.FixedHeight; lineHeight: 20
+                    Layout.fillWidth: true
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.colors["border-subtle"] }
+            ColumnLayout {
+                spacing: 16
+                Layout.fillWidth: true
+                Layout.margins: 20
+                Layout.topMargin: 16
+                Layout.bottomMargin: 16
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Repeater {
+                        id: statusPresets
+                        model: ["💬", "🏠", "🌴", "🍽️", "⛑️", "🗓️"]
+                        delegate: Button {
+                            id: preset
+                            required property string modelData
+                            required property int index
+                            objectName: "ownStatusPreset-" + index
+                            width: 36; height: 36; padding: 0
+                            Accessible.name: qsTr("Status") + " " + modelData
+                            background: Rectangle {
+                                radius: 6
+                                color: ownStatusDialog.emojiDraft === preset.modelData
+                                    ? Qt.rgba(ownStatusDialog.accentColor.r, ownStatusDialog.accentColor.g, ownStatusDialog.accentColor.b, 0.15)
+                                    : root.colors.bg
+                                border.color: preset.visualFocus || ownStatusDialog.emojiDraft === preset.modelData
+                                    ? root.colors.accent : root.colors["border-subtle"]
+                            }
+                            contentItem: Text { text: preset.modelData; font.pixelSize: 16; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: { ownStatusDialog.emojiDraft = modelData; ownStatusDialog.emojiPickerOpen = false; }
+                        }
+                    }
+                    StatusActionButton {
+                        objectName: "ownStatusChooseEmoji"
+                        text: qsTr("Choose emoji")
+                        font.pixelSize: 12; font.weight: Font.Medium
+                        outlined: true
+                        selected: ownStatusDialog.emojiPickerOpen
+                        // 10px CSS padding plus the 1px border on each side.
+                        horizontalPadding: 11
+                        verticalPadding: 0
+                        onClicked: ownStatusDialog.emojiPickerOpen = !ownStatusDialog.emojiPickerOpen
+                    }
+                }
+                Rectangle {
+                    id: statusPickerFrame
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 320 + 2 * border.width
+                    visible: ownStatusDialog.visible && ownStatusDialog.emojiPickerOpen
+                    radius: 8; color: "transparent"
+                    border.width: 1; border.color: root.colors["border-subtle"]
+                    clip: true
+                    Loader {
+                        anchors.fill: parent; anchors.margins: statusPickerFrame.border.width
+                        active: statusPickerFrame.visible
+                        sourceComponent: Component {
+                            NativeReactionPicker {
+                                objectName: "ownStatusEmojiPicker"
+                                choices: root.controller.reactionChoices
+                                suggested: []
+                                dark: theme.dark
+                                skinTonesEnabled: false
+                                active: true
+                                onChosen: emojiName => {
+                                    const rows = root.controller.reactionChoices;
+                                    for (let i = 0; i < rows.length; ++i) {
+                                        if (rows[i].emojiName === emojiName) {
+                                            const value = String(rows[i].pickerUnicode || "").trim();
+                                            if (value.length) ownStatusDialog.emojiDraft = value.slice(0, 64);
+                                            break;
+                                        }
+                                    }
+                                    ownStatusDialog.emojiPickerOpen = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                ColumnLayout {
+                    spacing: 6
+                    Layout.fillWidth: true
+                    Text {
+                        text: qsTr("Status"); textFormat: Text.PlainText
+                        color: root.colors["text-muted"]; font.pixelSize: 14
+                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                        Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: Math.max(statusDraftEmoji.implicitHeight, ownStatusText.implicitHeight) + 2 * (8 + border.width)
+                        radius: 6; color: root.colors.bg; border.color: root.colors["border-subtle"]
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 13; anchors.rightMargin: 13
+                            anchors.topMargin: 9; anchors.bottomMargin: 9
+                            spacing: 8
+                            Text {
+                                id: statusDraftEmoji
+                                objectName: "ownStatusEmojiDraft"
+                                text: ownStatusDialog.emojiDraft || "🙂"
+                                textFormat: Text.PlainText; font.pixelSize: 16
+                                lineHeightMode: Text.FixedHeight; lineHeight: 24
+                                horizontalAlignment: Text.AlignHCenter
+                                Layout.minimumWidth: 20
+                            }
+                            TextField {
+                                id: ownStatusText
+                                objectName: "ownStatusText"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: font.pixelSize * 10 / 7
+                                padding: 0
+                                leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                                maximumLength: 256
+                                selectByMouse: true
+                                color: root.colors["text-primary"]
+                                placeholderTextColor: root.colors["text-muted"]
+                                placeholderText: qsTr("Set your status")
+                                // Pinned global input rule wins over text-sm.
+                                font.pixelSize: 16
+                                background: Item {}
+                                Accessible.name: qsTr("Status")
+                            }
+                        }
+                    }
+                }
+                CheckBox {
+                    id: ownStatusAway
+                    objectName: "ownStatusAway"
+                    text: qsTr("Mark me as away")
+                    Layout.fillWidth: true
+                    implicitHeight: 20
+                    padding: 0
+                    indicator: Rectangle {
+                        width: 16; height: 16; radius: 3
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: ownStatusAway.checked ? root.colors.accent : root.colors.bg
+                        border.color: ownStatusAway.checked ? root.colors.accent : root.colors["border-subtle"]
+                        Text { anchors.centerIn: parent; text: "✓"; font.pixelSize: 12; color: root.colors["on-accent"]; visible: ownStatusAway.checked }
+                    }
+                    contentItem: Text {
+                        text: ownStatusAway.text; textFormat: Text.PlainText
+                        leftPadding: 24; verticalAlignment: Text.AlignVCenter
+                        color: root.colors["text-primary"]; font.pixelSize: 14
+                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                    }
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.colors["border-subtle"] }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.margins: 20; Layout.topMargin: 12; Layout.bottomMargin: 12
+                spacing: 8
+                StatusActionButton {
+                    objectName: "ownStatusClear"
+                    text: qsTr("Clear status")
+                    enabled: !ownStatusDialog.pending
+                    onClicked: { ownStatusText.text = ""; ownStatusDialog.emojiDraft = ""; ownStatusAway.checked = false; ownStatusDialog.emojiPickerOpen = false; }
+                }
+                Item { Layout.fillWidth: true }
+                StatusActionButton {
+                    objectName: "ownStatusCancel"
+                    horizontalPadding: 16
+                    text: qsTr("Cancel")
+                    enabled: !ownStatusDialog.pending
+                    onClicked: ownStatusDialog.close()
+                }
+                StatusActionButton {
+                    id: statusSaveButton
+                    objectName: "ownStatusSave"
+                    horizontalPadding: 16
+                    text: qsTr("Save")
+                    contentItem: RowLayout {
+                        spacing: 8
+                        opacity: statusSaveButton.enabled ? 1 : 0.5
+                        StatusSpinner { visible: ownStatusDialog.pending; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
+                        Text {
+                            text: statusSaveButton.text; textFormat: Text.PlainText
+                            color: root.colors["on-accent"]; font.pixelSize: 14; font.weight: Font.Medium
+                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                        }
+                    }
+                    primary: true
+                    enabled: !ownStatusDialog.pending
+                    onClicked: {
+                        if (!root.controller.authenticated || ownStatusDialog.pending) return;
+                        ownStatusDialog.submitted = true;
+                        root.controller.saveOwnStatus(ownStatusText.text, ownStatusDialog.emojiDraft, ownStatusAway.checked);
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: ownStatusErrorToast
+        objectName: "ownStatusErrorToast"
+        readonly property color noticeColor: root.colors["notice-base"]
+        parent: Overlay.overlay
+        x: root.width - width - 16
+        y: 16
+        z: 10000
+        width: Math.min(384, root.width - 32)
+        leftPadding: 16; rightPadding: 16; topPadding: 12; bottomPadding: 12
+        closePolicy: Popup.NoAutoClose
+        modal: false
+        focus: false
+        background: Rectangle {
+            radius: 8
+            color: Qt.rgba(ownStatusErrorToast.noticeColor.r, ownStatusErrorToast.noticeColor.g, ownStatusErrorToast.noticeColor.b, 0.1)
+            border.color: Qt.rgba(ownStatusErrorToast.noticeColor.r, ownStatusErrorToast.noticeColor.g, ownStatusErrorToast.noticeColor.b, 0.4)
+        }
+        contentItem: RowLayout {
+            spacing: 8
+            Text {
+                objectName: "ownStatusErrorText"
+                text: qsTr("Failed to update status")
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                color: root.colors["notice-base"]; font.pixelSize: 14
+                Layout.fillWidth: true
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: text
+            }
+            NativeIconButton {
+                objectName: "ownStatusDismissError"
+                colors: root.colors; asset: "close.svg"
+                implicitWidth: 20; implicitHeight: 20
+                help: qsTr("Dismiss")
+                glyphSize: 16
+                iconColor: ownStatusErrorToast.noticeColor
+                onClicked: ownStatusErrorToast.close()
+            }
+        }
+        Timer { interval: 5000; running: ownStatusErrorToast.visible; onTriggered: ownStatusErrorToast.close() }
+    }
+
     Popup {
         id: accountPopup
         x: root.width - width - 16
@@ -1361,6 +1749,14 @@ ApplicationWindow {
         }
         contentItem: ColumnLayout {
             spacing: 8
+            NativeButton {
+                objectName: "ownStatusAction"
+                colors: root.colors
+                Layout.fillWidth: true
+                text: qsTr("Status")
+                enabled: root.controller.authenticated && String(root.controller.ownStatusContextKey || "").length > 0
+                onClicked: root.openOwnStatus()
+            }
             NativeButton {
                 colors: root.colors
                 Layout.fillWidth: true
@@ -2601,7 +2997,7 @@ ApplicationWindow {
                 property int layoutTicket: 0
                 property bool positioning: false
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
+                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
                 function routeKey() {
                     return serviceScope();
                 }

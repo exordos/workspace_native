@@ -11,6 +11,7 @@ Item {
     property bool active: false
     property bool allowed: true
     property string skin: "neutral"
+    property bool skinTonesEnabled: true
     readonly property int emojiCount: presentation.emojiCount
     readonly property string searchAnnouncement: emojiCount === 0 ? qsTr("No results found") : emojiCount === 1 ? qsTr("1 result found. Use up and down arrow keys to navigate.") : qsTr("%1 results found. Use up and down arrow keys to navigate.").arg(emojiCount)
     onEmojiCountChanged: if (active && search.text.length > 0)
@@ -184,6 +185,7 @@ Item {
     }
 
     function openVariations(base, anchor) {
+        if (!skinTonesEnabled) return false;
         const parent = byName[base.pickerBase];
         if (!parent || !parent.pickerVariants.length)
             return false;
@@ -217,7 +219,7 @@ Item {
             TextField {
                 id: search
                 objectName: "reactionSearch"
-                width: parent.width - (picker.skinsExpanded ? 168 : 28)
+                width: parent.width - (picker.skinTonesEnabled ? (picker.skinsExpanded ? 168 : 28) : 0)
                 height: 40
                 leftPadding: 30
                 rightPadding: 30
@@ -281,6 +283,7 @@ Item {
             }
             ToolButton {
                 objectName: "reactionSkinToneToggle"
+                visible: picker.skinTonesEnabled
                 x: parent.width - 28
                 y: 6
                 width: 28
@@ -304,7 +307,7 @@ Item {
                 onClicked: picker.skinsExpanded = !picker.skinsExpanded
             }
             Rectangle {
-                visible: picker.skinsExpanded
+                visible: picker.skinTonesEnabled && picker.skinsExpanded
                 width: 168
                 height: 28
                 x: parent.width - width

@@ -1,0 +1,130 @@
+{
+  "schema": "native-own-status-editor-local-checks-v1",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "productAndTestFiles": {
+    "packages/native/qml/Main.qml": "cf432525ebbb55c6bffe2e2e66e81a406547fa7f99f70d97047dc2ccf1732927",
+    "packages/native/qml/NativeReactionPicker.qml": "98d269874d5c99ce2cea25ebc43cef91fa2c916ee7375e4ef0723719baa906b7",
+    "packages/native/tests/native-window-test.cpp": "692489295967f5885ecb6d0943e30660f6375836ccf4d6976c8f133deb9843ba",
+    "packages/native/translations/workspace_ru.ts": "c701b350ce6031c4e3e1d799c30960cab8a3d86779458614240f7eaa39fed192"
+  },
+  "allOldWindowTestBytesPreserved": true,
+  "allOldTranslationEntriesPreserved": true,
+  "allOtherCurrentPackageAndLicenseBytesUnchanged": true,
+  "sourceManifestSha256": "29e23c95dd51e6292f8923a36b16e231f665b19eb9886e99baa47741a14122c5",
+  "reviewProofSha256": {
+    "firstUiRed": "69ef19a73e8c9596ad7d84b9b49542108eaa2c9e0193fc09db1d73d1ec739897",
+    "firstQmlLoadFailure": "31dd3cc4fa562d6e4294f0556666c119a0ed4f65d9ad7edb40fceada8714e9d1",
+    "uiAndLocaleFocused": "2a266dfbc13963eafe9bfe638f2e861ab6cb6a3559ced67bf33090449d988ef1",
+    "geometryRedMetadataCorrection": "a21217ed58316967a80199d71e4fa45c8b215b71c3b8eaf2795890d9b2eeb893",
+    "geometryAndFunctionalFocused": "d19ed30ffb98f2b8327fc34e501026889a002470484790269f91aefab967f9e9",
+    "wholeWindow250": "7fe89c4ecde6bce54c9836cd0093288e9614e7b4826420ca320b1995f34c6186",
+    "sixFrameCapture": "74db7cd61345db53a04c2325c323a786b3a2b1235fbfdf44bb2ce07ccee3a87d",
+    "sixStateInputComparison": "c387a8fd7de84b873dca97fec8e41fdb7597099c6ca56aa7a3be00b7cdca8fa2"
+  },
+  "wholeWindow250": {
+    "label": "whole-window250",
+    "totals": [
+      "Totals: 250 passed, 0 failed, 0 skipped, 0 blacklisted, 271485ms"
+    ],
+    "wallSeconds": 271.698,
+    "stdoutSha256": "4bbd4999b678f73aff84940ea5558c8b894e7986b655c2c56150b8fdf5f44870",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "capture4": {
+    "label": "actual-matched-status-captures4",
+    "totals": [
+      "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 4580ms"
+    ],
+    "wallSeconds": 4.691,
+    "stdoutSha256": "a83e1c3106bebd2f242fafedc5d44f17462dacec66cea1d6d8807cc32e2e9ccc",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "geometryFocused10AndFunctional7": [
+    {
+      "label": "actual-status-geometry10",
+      "totals": [
+        "Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 12985ms"
+      ],
+      "wallSeconds": 13.107,
+      "stdoutSha256": "f4550bc8c6aa336e3fee0dbe6457b22ff8528736308723a0729767e5d0bec4f0",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-status-functional7",
+      "totals": [
+        "Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 7097ms"
+      ],
+      "wallSeconds": 7.238,
+      "stdoutSha256": "22d254ad215275e1707594777014aac33b7da8b9667da882bda7357c6225caa7",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "sixMatchedSourceAndNativeStates": [
+    {
+      "tag": "en-light",
+      "phase": "normal",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "bbc4c51805027f855c061599ade55000be41d779b9b724d8060583b0ffb5dcb9",
+      "nativeMetricsSha256": "7dfb0723046eac1b457f95967a8f30340d9a0fc44d42eb837a12d63b546300f0",
+      "nativePngSha256": "c5d78ba679e82ec1cf429f775fd81651f9540566264599d5124b5b281640ba44"
+    },
+    {
+      "tag": "en-light",
+      "phase": "picker",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "63c9a4ae4ff5ee878f91f970692957c0b822f07056e7735be5963c55d74c237b",
+      "nativeMetricsSha256": "e0cc616a7dd60fcabd7e1ff3c8206ebc25bee3727a9b12d8d044308ba481574f",
+      "nativePngSha256": "ee3d489a0475db0e3936cee3c4eb10bcecf6039f1e2ee3d0bd0ac5d00d30c4d2"
+    },
+    {
+      "tag": "en-light",
+      "phase": "submitting",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "2c499a6678788491e40d1add3e0e998c3a775289719800f147e46f96bc382391",
+      "nativeMetricsSha256": "c94d0b32f33c90a79f9adfa88d37e091ec08ad297f11e998df9da4b0d9e75d83",
+      "nativePngSha256": "ef58578c39f3603c069fec5c25b23e3d7dc1acbe92ec8276cd88578b220881a2"
+    },
+    {
+      "tag": "ru-dark",
+      "phase": "normal",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "7a58dbdea74a374946bf0f4e6fccf67a69994a781f200a926709c9b6521bff44",
+      "nativeMetricsSha256": "89a017e037e8e8634ecdc61f0e7593f695104ded75fb8ac501f7b74579564106",
+      "nativePngSha256": "88d0c8e04395990bb069e13025a4eb1ecc1d855dc9d6f4176789b09901fc4600"
+    },
+    {
+      "tag": "ru-dark",
+      "phase": "picker",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "987c72fd7b17dd9d8bbd2cd640d34b60c6288baedee6114df01ba3b20ed7ce5f",
+      "nativeMetricsSha256": "25f63976dc118bb18bfe88d27ad4a888efc6733667f66cbaa32924ea8cb1c1a3",
+      "nativePngSha256": "7d56de43c1d2066834008a185b0d310f7421963f6ad3f5715dd6c2d3d718a0cd"
+    },
+    {
+      "tag": "ru-dark",
+      "phase": "submitting",
+      "canonicalOwnUserEqual": true,
+      "rawDraftEqual": true,
+      "sourceMetricsSha256": "61895a91b3b0efe2b7c535b484ca5d30ed118cc23c2a32a323ece4030120424a",
+      "nativeMetricsSha256": "f416ffb8e388a9ac219a9a91a5a33e2750846266a1d21ba20dc5cd89c07a81e9",
+      "nativePngSha256": "5280820888b8071b4b5b4139c349bbc35419af904454ad6c84f7f8005cb2d5fa"
+    }
+  ],
+  "comparisonPreflightSha256": "076421cc6bfab8cac02087e6c34e976c1f73149df4153c72dc18d8c41de28a4d",
+  "actualRedPreserved": [
+    "Missing Status action in old actual Main",
+    "First proposed QML load failed at readonly Flow.implicitHeight; five new rows reproduce load failure",
+    "Eight measured old geometry failures; Root corrected values/doubles observer metadata without rerun"
+  ],
+  "scope": "Owned status editor, preset and arbitrary emoji draft, clear/cancel/save, pending, retained error draft, owner/session cancellation; derived 448x332/448x670 geometry at matched1440x900/DPR1. No fixed production dialog heights.",
+  "captureAuthority": "Source actual unchanged component with supported controlled submitting prop; Native real local Users GET and held ownUUID presence POST. Canonical public ownUser/raw drafts/theme/viewport equal. Source blank background and Native shell differ.",
+  "privateObserverNotShipped": true,
+  "remaining": "Picker responsive rows/preview/autofocus; shadow, disabled Clear paint, focus interaction and glyph raster; full drawer/global toast queue, live account/full Linux/other OS acceptance. Whole Controller821 after pure context getter NOT RUN; earlier820 is separately qualified.",
+  "cleanup": "Accepted gates independently checked source/raw/binary hashes, reaped own process groups and removed private XDG directories."
+}

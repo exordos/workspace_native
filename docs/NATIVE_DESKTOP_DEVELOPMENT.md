@@ -805,3 +805,23 @@ are covered locally. The malformed UTF16 truncation boundary fails locally and
 does not claim Source wire equivalence for an isolated surrogate.
 The editor and complete live/platform acceptance remain separate from these
 [C++ capability checks](provenance/own-status-capability-checks.json).
+
+
+## Rendered own status editor
+
+The account menu opens an owned modal status editor. The dialog keeps raw draft
+text/emoji and deliberate Away locally until one explicit save. A held request
+disables duplicate save, cancel and clear; a failed response retains the draft
+and exposes an accessible, dismissible notice. Context loss closes both dialog
+and notice, resets the draft and releases the picker. The status modal also
+suppresses visible history read markers.
+
+Content-derived geometry reproduces the pinned component's border inset, line
+boxes, input size and footer padding. The inactive picker frame leaves no layout
+gap. The existing reaction picker keeps skin tones enabled by default; the status
+caller disables them. The private six-state capture harness is not shipped.
+Actual initial REDs, first QML load failure, eight measured geometry REDs, focused
+checks and full Window250 are bound in
+[status editor checks](provenance/own-status-editor-checks.json). Remaining picker,
+shadow/focus/raster and full Linux/live acceptance are explicitly outside this
+milestone.

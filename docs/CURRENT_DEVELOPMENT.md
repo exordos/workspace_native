@@ -389,3 +389,14 @@ focused status14, Preferences19 and Locale14. A subsequent pure context getter
 passed three real lifecycle cases; the complete821 inventory after that addition
 has not been rerun. The rendered editor is still separate work in this checkout.
 See [own status capability checks](provenance/own-status-capability-checks.json).
+
+
+The rendered own-status editor now uses confirmed C++ status facts and performs
+explicit save/cancel/clear actions, preset or arbitrary emoji selection, held
+submission and local error display without losing the draft. Owner or transport
+context loss closes the editor and discards its old draft. Window250 passed on
+visible Wayland/default OpenGL in 271.485 s; focused geometry10, functional7 and
+Locale14 passed. Six matched local Source/Qt states have equal outer dialog
+rectangles: 448x332, or 448x670 with the picker. This does not accept whole-frame
+or glyph parity; picker rows/preview/focus and remaining paint are separate work.
+See [status editor checks](provenance/own-status-editor-checks.json).

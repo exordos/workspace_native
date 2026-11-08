@@ -811,6 +811,42 @@
             <source>Request the key to read the messages</source>
             <translation>Запросите ключ для просмотра сообщений</translation>
         </message>
+        <message>
+            <source>Add an emoji and text to show your current availability.</source>
+            <translation>Добавьте эмодзи и текст, чтобы показать текущую занятость.</translation>
+        </message>
+        <message>
+            <source>Choose emoji</source>
+            <translation>Выбрать эмодзи</translation>
+        </message>
+        <message>
+            <source>Clear status</source>
+            <translation>Очистить статус</translation>
+        </message>
+        <message>
+            <source>Dismiss</source>
+            <translation>Скрыть</translation>
+        </message>
+        <message>
+            <source>Failed to update status</source>
+            <translation>Не удалось обновить статус</translation>
+        </message>
+        <message>
+            <source>Mark me as away</source>
+            <translation>Отметить меня как отсутствующего</translation>
+        </message>
+        <message>
+            <source>Save</source>
+            <translation>Сохранить</translation>
+        </message>
+        <message>
+            <source>Set your status</source>
+            <translation>Укажите статус</translation>
+        </message>
+        <message>
+            <source>Status</source>
+            <translation>Статус</translation>
+        </message>
     </context>
     <context>
         <name>NativeQuickReactions</name>

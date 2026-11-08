@@ -22,6 +22,7 @@
 #include <QJsonDocument>
 #include <QMimeDatabase>
 #include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QOperatingSystemVersion>
 #include <QPlatformSurfaceEvent>
 #include <QLocale>
@@ -796,9 +797,385 @@ static bool presenceProbeMatchesPixels(QQuickWindow *window, QQuickItem *badge,
 }
 
 
+class WindowOwnStatusFixture {
+public:
+    QJsonObject own{{"uuid",userId},{"project_id",projectId},{"username","cassi"},
+        {"first_name","Cassi"},{"last_name","Synthetic"},{"email","cassi@example.invalid"},
+        {"avatar",QJsonValue::Null},{"source","iam"},{"status","active"},
+        {"status_text","Before"},{"status_emoji","💬"},
+        {"last_ping_at","2026-01-02T10:00:00Z"},{"created_at","2026-01-02T10:00:00Z"},
+        {"updated_at","2026-01-02T10:00:00Z"}};
+    QJsonObject posted;
+    int posts=0,usersGets=0,status=200;
+    bool held=false;
+    std::function<void()> release;
+    MockServer server; // Captured facts outlive server/request callbacks.
+    WindowOwnStatusFixture() {
+        server.handler=[this](const Request &request)->Response {
+            const auto path=request.target.path();
+            if(path=="/api/workspace/v1/users/"+userId+"/actions/presence/invoke") {
+                ++posts;posted=request.body;
+                auto row=own;row["status"]=posted.value("status");row["status_text"]=posted.value("text");
+                row["status_emoji"]=posted.value("emoji");row["updated_at"]="2026-01-02T10:01:00Z";
+                row["last_ping_at"]="2026-01-02T10:01:00Z";
+                Response response{row,status};
+                if(held)response.defer=[this](std::function<void()> send){release=std::move(send);};
+                return response;
+            }
+            if(path=="/api/workspace/v1/users/"){++usersGets;return {QJsonArray{own}};}
+            if(path=="/api/workspace/v1/messenger/streams/")return {QJsonArray{windowChannel(streamId,"Status workspace")}};
+            if(path=="/api/workspace/v1/messenger/streams/"+streamId)return {windowChannel(streamId,"Status workspace")};
+            if(path=="/api/workspace/v1/messenger/stream_topics/")return {QJsonArray{windowChannelTopic(topicId,streamId,"General")}};
+            if(path=="/api/workspace/v1/messenger/stream_topics/"+topicId)return {windowChannelTopic(topicId,streamId,"General")};
+            if(path.endsWith("/messages/"))return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+    }
+    bool start(NativeController &controller) {
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        if(!QTest::qWaitFor([&]{return controller.projects().size()==1;},2000))return false;
+        controller.openProject(projectId);
+        if(!QTest::qWaitFor([&]{return controller.streams().size()==1;},2000))return false;
+        controller.selectStream(streamId);
+        if(!QTest::qWaitFor([&]{return controller.topics().size()==1;},2000))return false;
+        controller.selectTopic(topicId);
+        return QTest::qWaitFor([&]{return !controller.busy()&&usersGets==1;},2000);
+    }
+    QPointer<QNetworkReply> pending(ApiClient &api) const {
+        for(auto *reply:api.findChildren<QNetworkReply *>())
+            if(!reply->isFinished()&&reply->url().path()=="/api/workspace/v1/users/"+userId+"/actions/presence/invoke"
+                &&reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray()=="POST")return reply;
+        return {};
+    }
+    ~WindowOwnStatusFixture(){if(release)release();}
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void ownStatusUsesMeasuredSourceGeometry_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("firstOracle");
+        for(const auto &entry:{QString("box"),QString("input"),QString("chooser"),QString("picker")}) {
+            const auto en=("en-light-"+entry).toUtf8(),ru=("ru-dark-"+entry).toUtf8();
+            QTest::newRow(en.constData())<<QString("en")<<QString("light")<<entry;
+            QTest::newRow(ru.constData())<<QString("ru")<<QString("dark")<<entry;
+        }
+    }
+    void ownStatusUsesMeasuredSourceGeometry()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);QFETCH(QString,firstOracle);
+        WindowOwnStatusFixture fixture;fixture.held=true;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("status-geometry.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Status geometry teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        preferences.setLocale(locale);preferences.setMode(mode);
+        QCOMPARE(preferences.paletteId(),QString("blue-cold"));
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));
+        QVERIFY(!controller.ownStatus().value("away").toBool());
+        QCOMPARE(controller.account().value("displayEmail").toString(),QString("cassi@example.invalid"));
+        const auto profile=controller.account(),identity=session.publicProfile();
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        auto *dialog=window->findChild<QObject *>("ownStatusDialog");QVERIFY(dialog&&dialog->property("visible").toBool());
+        QSignalSpy frame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!frame.isEmpty());
+        QCOMPARE(window->size(),QSize(1440,900));QCOMPARE(window->devicePixelRatio(),qreal(1));
+        auto *input=visibleItem("ownStatusText"),*away=visibleItem("ownStatusAway");QVERIFY(input&&away);
+        auto *content=dialog->property("contentItem").value<QQuickItem *>();QVERIFY(content);
+        const auto rect=[](QQuickItem *entry){return QRectF(entry->mapToScene(QPointF{}),entry->size());};
+        const auto near=[](qreal a,qreal b){return qAbs(a-b)<=0.01;};
+        const auto titleText=locale=="ru"?QString("Статус"):QString("Status");
+        QList<QQuickItem *> labels;
+        std::function<void(QQuickItem *)> collect=[&](QQuickItem *entry){
+            if(entry->isVisible()&&entry->property("text").toString()==titleText)labels.append(entry);
+            for(auto *child:entry->childItems())collect(child);
+        };
+        collect(content);
+        QCOMPARE(labels.size(),2);
+        if(rect(labels.first()).top()>rect(labels.last()).top())labels.swapItemsAt(0,1);
+        auto *title=labels.first(),*fieldLabel=labels.last();
+        auto *background=dialog->property("background").value<QQuickItem *>();QVERIFY(background);
+        auto *choose=visibleItem("ownStatusChooseEmoji");QVERIFY(choose);
+        if(firstOracle=="box") {
+            // Actual six Source frames: normal/held 448x332 at y284, not a mockup.
+            QCOMPARE(dialog->property("height").toReal(),qreal(332)); // old335 intended RED
+            QCOMPARE(dialog->property("width").toReal(),qreal(448));
+            QCOMPARE(dialog->property("x").toReal(),qreal(496));QCOMPARE(dialog->property("y").toReal(),qreal(284));
+            QCOMPARE(background->property("radius").toReal(),qreal(10));
+            QCOMPARE(dialog->property("padding").toReal(),qreal(1));
+            QCOMPARE(content->width(),qreal(446));
+            QCOMPARE(title->height(),qreal(24));QCOMPARE(title->property("lineHeight").toReal(),qreal(24));
+            QCOMPARE(title->property("font").value<QFont>().pixelSize(),16);
+            QVERIFY(near(rect(title).left(),517)&&near(rect(title).top(),301));
+            QVERIFY(near(rect(fieldLabel).top(),434));QCOMPARE(fieldLabel->height(),qreal(20));
+            QCOMPARE(fixture.posts,0);
+        } else if(firstOracle=="input") {
+            // Pinned global input max(16px,1em) wins over local text-sm14.
+            QCOMPARE(input->property("font").value<QFont>().pixelSize(),16); // old14 intended RED
+            auto *field=input->parentItem()->parentItem();QVERIFY(field);
+            QCOMPARE(field->size(),QSizeF(406,42));
+            QCOMPARE(input->property("leftPadding").toReal(),qreal(0));
+            QCOMPARE(input->property("rightPadding").toReal(),qreal(0));
+            QVERIFY(near(rect(input).left(),558));QCOMPARE(input->width(),qreal(352));
+            // CSS layout is 22.84375px; Qt Layout can round its 22.8571 hint.
+            QVERIFY(qAbs(input->height()-qreal(22.84375))<=0.25);
+            auto *indicator=away->property("indicator").value<QQuickItem *>();QVERIFY(indicator);
+            QCOMPARE(indicator->size(),QSizeF(16,16));
+            auto *awayText=away->property("contentItem").value<QQuickItem *>();QVERIFY(awayText);
+            QCOMPARE(awayText->property("leftPadding").toReal(),qreal(24));
+            QCOMPARE(awayText->property("lineHeight").toReal(),qreal(20));
+            for(const auto *id:{"ownStatusCancel","ownStatusSave"}) {
+                auto *button=visibleItem(id);QVERIFY(button);
+                QCOMPARE(button->property("leftPadding").toReal(),qreal(16));
+                QCOMPARE(button->property("rightPadding").toReal(),qreal(16));
+                QCOMPARE(button->property("topPadding").toReal(),qreal(8));
+                QCOMPARE(button->height(),qreal(36));
+                auto *paint=button->property("background").value<QQuickItem *>();QVERIFY(paint);
+                QCOMPARE(paint->property("radius").toReal(),qreal(6));
+            }
+            auto *clear=visibleItem("ownStatusClear");QVERIFY(clear);
+            QCOMPARE(clear->property("leftPadding").toReal(),qreal(12));
+        } else if(firstOracle=="chooser") {
+            QCOMPARE(int(choose->property("font").value<QFont>().weight()),int(QFont::Medium)); // old400 RED
+            auto *paint=choose->property("background").value<QQuickItem *>();QVERIFY(paint);
+            QCOMPARE(paint->property("radius").toReal(),qreal(6));
+            QCOMPARE(QQmlProperty(paint,"border.width").read().toReal(),qreal(1));
+            auto *label=choose->property("contentItem").value<QQuickItem *>();QVERIFY(label);
+            QCOMPARE(label->property("font").value<QFont>().pixelSize(),12);
+            QCOMPARE(label->property("lineHeight").toReal(),qreal(16));
+            QCOMPARE(label->property("color").value<QColor>(),preferences.dark()?QColor("#ffffff"):QColor("#1b1b1d"));
+            QVERIFY(near(choose->width()-label->implicitWidth(),22)); // border2 + horizontal padding20
+            QVERIFY(!choose->property("hovered").toBool());
+            const auto expected=preferences.dark()?QColor("#141517"):QColor("#e4ecf3");
+            QCOMPARE(paint->property("color").value<QColor>(),expected);
+            const auto pixels=window->grabWindow();QVERIFY(!pixels.isNull());
+            const auto point=choose->mapToScene(QPointF(4,choose->height()/2)).toPoint();
+            QVERIFY(pixels.rect().contains(point));const auto actual=pixels.pixelColor(point);
+            QVERIFY(qAbs(actual.red()-expected.red())<=3&&qAbs(actual.green()-expected.green())<=3&&qAbs(actual.blue()-expected.blue())<=3);
+            click(window,choose);QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
+            choose=visibleItem("ownStatusChooseEmoji");QVERIFY(choose);
+            paint=choose->property("background").value<QQuickItem *>();QVERIFY(paint);
+            const auto selected=paint->property("color").value<QColor>();
+            QVERIFY(qAbs(selected.alphaF()-0.15)<=1.0/255);
+            QCOMPARE(QQmlProperty(paint,"border.color").read().value<QColor>(),QColor("#7087ff"));
+            click(window,choose);QTRY_VERIFY(!visibleItem("ownStatusEmojiPicker"));
+        } else {
+            QCOMPARE(firstOracle,QString("picker"));
+            click(window,choose);QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
+            QSignalSpy pickerFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!pickerFrame.isEmpty());
+            auto *picker=visibleItem("ownStatusEmojiPicker");QVERIFY(picker);
+            QCOMPARE(dialog->property("height").toReal(),qreal(670)); // old655 intended RED
+            QCOMPARE(dialog->property("y").toReal(),qreal(115));
+            QCOMPARE(picker->size(),QSizeF(404,320));
+            QVERIFY(near(rect(picker).left(),518)&&near(rect(picker).top(),266));
+            auto *wrapper=picker->parentItem()->parentItem();QVERIFY(wrapper);
+            QCOMPARE(wrapper->size(),QSizeF(406,322));
+            QCOMPARE(wrapper->property("radius").toReal(),qreal(8));
+            QCOMPARE(QQmlProperty(wrapper,"border.width").read().toReal(),qreal(1));
+            QVERIFY(!visibleItem(picker,"reactionSkinToneToggle"));QCOMPARE(fixture.posts,0);
+            click(window,visibleItem("ownStatusChooseEmoji"));QTRY_VERIFY(!visibleItem("ownStatusEmojiPicker"));
+        }
+        // Same actual held HTTP stage as existing functional tests; no fake busy.
+        click(window,visibleItem("ownStatusPreset-1"));
+        click(window,visibleItem("ownStatusText"));QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);
+        for(const auto key:QByteArray("  Focusing  "))QTest::keyClick(window,key);
+        click(window,visibleItem("ownStatusAway"));click(window,visibleItem("ownStatusSave"));
+        QTRY_COMPARE(fixture.posts,1);QTRY_VERIFY(bool(fixture.release));QTRY_VERIFY(fixture.pending(api));
+        QCOMPARE(fixture.posted,QJsonObject({{"status","idle"},{"emoji","🏠"},{"text","Focusing"}}));
+        QVERIFY(controller.ownStatus().value("pending").toBool());QCOMPARE(controller.account(),profile);
+        QSignalSpy heldFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!heldFrame.isEmpty());
+        QCOMPARE(dialog->property("height").toReal(),qreal(332));
+        for(const auto *id:{"ownStatusSave","ownStatusCancel","ownStatusClear"}) {
+            auto *button=visibleItem(id);QVERIFY(button&&!button->isEnabled());QCOMPARE(button->height(),qreal(36));
+        }
+        QVERIFY(visibleItem("ownStatusText")->isEnabled());QVERIFY(visibleItem("ownStatusAway")->isEnabled());
+        QVERIFY(visibleItem("ownStatusPreset-1")->isEnabled());
+        auto send=std::move(fixture.release);fixture.release={};send();
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(controller.ownStatus().value("text").toString(),QString("Focusing"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("🏠"));QVERIFY(controller.ownStatus().value("away").toBool());
+        QCOMPARE(session.publicProfile(),identity);QCOMPARE(fixture.posts,1);QCOMPARE(fixture.usersGets,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+    void ownStatusActualMainSavesOneHeldCanonicalResponse_data()
+    {
+        QTest::addColumn<QString>("locale");QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light")<<QString("en")<<QString("light");
+        QTest::newRow("ru-dark")<<QString("ru")<<QString("dark");
+    }
+    void ownStatusActualMainSavesOneHeldCanonicalResponse()
+    {
+        QFETCH(QString,locale);QFETCH(QString,mode);
+        WindowOwnStatusFixture fixture;fixture.held=true;
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("status-ui.ini"));
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Own status window did not settle",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        preferences.setLocale(locale);preferences.setMode(mode);
+        // Mandatory actual C++ capability prerequisites; failure here is NOT missing-editor UI RED.
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("💬"));
+        QVERIFY(!controller.ownStatus().value("away").toBool());
+        QCOMPARE(controller.account().value("displayEmail").toString(),QString("cassi@example.invalid"));
+        const auto identity=session.publicProfile(),profile=controller.account();
+        click(window,visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("ownStatusAction")); // First intended old-Main missing-editor RED.
+        click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        auto *dialog=window->findChild<QObject *>("ownStatusDialog");QVERIFY(dialog&&dialog->property("visible").toBool());
+        QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
+        QCOMPARE(visibleItem("ownStatusSave")->property("text").toString(),locale=="ru"?QString("Сохранить"):QString("Save"));
+        const auto inside=[&](QQuickItem *entry){
+            if(!entry||!entry->isVisible())return false;
+            return QRectF(0,0,window->width(),window->height()).contains(QRectF(entry->mapToScene(QPointF{}),QSizeF(entry->width(),entry->height())));
+        };
+        QVERIFY(inside(visibleItem("ownStatusSave")));QVERIFY(inside(visibleItem("ownStatusCancel")));
+        click(window,visibleItem("ownStatusPreset-1"));
+        QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("🏠"));
+        click(window,visibleItem("ownStatusText"));QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);
+        for(const auto key:QByteArray("  Focusing  "))QTest::keyClick(window,key);
+        click(window,visibleItem("ownStatusAway"));
+        QVERIFY(visibleItem("ownStatusAway")->property("checked").toBool());
+        click(window,visibleItem("ownStatusSave"));
+        QTRY_COMPARE(fixture.posts,1);QTRY_VERIFY(bool(fixture.release));QTRY_VERIFY(fixture.pending(api));
+        QCOMPARE(fixture.posted,QJsonObject({{"status","idle"},{"emoji","🏠"},{"text","Focusing"}}));
+        QVERIFY(controller.ownStatus().value("pending").toBool());QCOMPARE(controller.account(),profile);
+        for(const auto *id:{"ownStatusSave","ownStatusCancel","ownStatusClear"}) {
+            auto *button=visibleItem(id);QVERIFY(button&&!button->isEnabled());
+            QTest::mouseClick(window,Qt::LeftButton,{},button->mapToScene(QPointF(button->width()/2,button->height()/2)).toPoint());
+        }
+        QTest::keyClick(window,Qt::Key_Escape);QVERIFY(dialog->property("visible").toBool());QCOMPARE(fixture.posts,1);
+        auto send=std::move(fixture.release);fixture.release={};send();
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(controller.ownStatus().value("text").toString(),QString("Focusing"));
+        QCOMPARE(controller.ownStatus().value("emoji").toString(),QString("🏠"));
+        QVERIFY(controller.ownStatus().value("away").toBool());
+        const auto savedLabel=[&] {auto *label=visibleItem("profilePresenceStatus");return label&&label->property("text").toString()=="🏠 Focusing";};
+        QTRY_VERIFY(savedLabel());
+        QCOMPARE(session.publicProfile(),identity);QCOMPARE(controller.account().value("email"),profile.value("email"));
+        QCOMPARE(fixture.posts,1);QCOMPARE(fixture.usersGets,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+    void ownStatusActualMainClearCancelPickerAndFailurePreserveTheDraft()
+    {
+        WindowOwnStatusFixture fixture;fixture.status=503;
+        QTemporaryDir directory;NativePreferences preferences(directory.filePath("status-failure.ini"));preferences.setLocale("en");
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Status failure window teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        const auto profile=controller.account();
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusText"));click(window,visibleItem("ownStatusClear"));
+        QVERIFY(visibleItem("ownStatusText")->property("text").toString().isEmpty());
+        QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("🙂"));
+        QVERIFY(!visibleItem("ownStatusAway")->property("checked").toBool());QCOMPARE(fixture.posts,0);
+        click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(controller.account(),profile);
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
+        click(window,visibleItem("ownStatusChooseEmoji"));QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
+        auto *picker=visibleItem("ownStatusEmojiPicker");QVERIFY(picker);
+        QVERIFY(!visibleItem(picker,"reactionSkinToneToggle"));
+        auto *search=visibleItem(picker,"reactionSearch");QVERIFY(search);click(window,search);
+        for(const auto key:QByteArray("coffee"))QTest::keyClick(window,key);
+        QTRY_VERIFY(visibleItem(picker,"emoji-choice-coffee"));click(window,visibleItem(picker,"emoji-choice-coffee"));
+        QTRY_VERIFY(!visibleItem("ownStatusEmojiPicker"));
+        QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("☕"));QCOMPARE(fixture.posts,0);
+        click(window,visibleItem("ownStatusText"));QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);
+        for(const auto key:QByteArray("Retained draft"))QTest::keyClick(window,key);
+        click(window,visibleItem("ownStatusSave"));QTRY_COMPARE(fixture.posts,1);
+        QTRY_VERIFY(!controller.ownStatus().value("pending").toBool());QTRY_VERIFY(visibleItem("ownStatusErrorText"));
+        QCOMPARE(visibleItem("ownStatusErrorText")->property("text").toString(),QString("Failed to update status"));
+        QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Retained draft"));
+        QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("☕"));
+        for(const auto *id:{"ownStatusSave","ownStatusClear","ownStatusCancel"}){auto *button=visibleItem(id);QVERIFY(button&&button->isEnabled());}
+        QCOMPARE(controller.account(),profile);QCOMPARE(fixture.posts,1);
+        click(window,visibleItem("ownStatusDismissError"));QTRY_VERIFY(!visibleItem("ownStatusErrorText"));
+        click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(fixture.posts,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+    void ownStatusActualMainOwnerLossClosesThePendingEditor()
+    {
+        WindowOwnStatusFixture fixture;fixture.held=true;
+        QTemporaryDir directory;NativePreferences preferences(directory.filePath("status-owner.ini"));preferences.setLocale("en");
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Status owner window teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusText"));click(window,visibleItem("ownStatusSave"));
+        QTRY_COMPARE(fixture.posts,1);QTRY_VERIFY(bool(fixture.release));QTRY_VERIFY(fixture.pending(api));
+        const auto pending=fixture.pending(api);QVERIFY(pending&&!pending->isFinished());
+        controller.logout(); // Real public ownership/lifecycle action, not a QML/private readiness setter.
+        QTRY_VERIFY(pending.isNull()||pending->isFinished());QTRY_VERIFY(!visibleItem("ownStatusText"));
+        QVERIFY(controller.ownStatus().isEmpty());QTRY_VERIFY(visibleItem("userInput"));
+        auto send=std::move(fixture.release);fixture.release={};send();
+        QVERIFY(!visibleItem("ownStatusText"));QVERIFY(!visibleItem("ownStatusErrorText"));QCOMPARE(fixture.posts,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+
+    void ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor()
+    {
+        WindowOwnStatusFixture fixture;fixture.held=true;
+        QTemporaryDir directory;NativePreferences preferences(directory.filePath("status-generation.ini"));preferences.setLocale("en");
+        ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);
+        QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Status generation window teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const auto context=controller.ownStatusContextKey();QVERIFY(!context.isEmpty());QVERIFY(controller.ownerKey().isEmpty());
+        QCOMPARE(controller.ownStatus().value("text").toString(),QString("Before"));
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusText"));
+        QPointer<QQuickItem> input=visibleItem("ownStatusText");QVERIFY(input);
+        click(window,input.data());QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);
+        for(const auto key:QByteArray("Retired draft"))QTest::keyClick(window,key);
+        click(window,visibleItem("ownStatusSave"));QTRY_COMPARE(fixture.posts,1);
+        QTRY_VERIFY(bool(fixture.release));QTRY_VERIFY(fixture.pending(api));
+        const auto pending=fixture.pending(api);QVERIFY(pending&&!pending->isFinished());
+        const auto generation=api.generation();api.setAccessToken("synthetic-status-ui-new-generation");
+        QVERIFY(api.generation()>generation);QVERIFY(controller.authenticated());
+        QVERIFY(!controller.ownStatusContextKey().isEmpty());QVERIFY(controller.ownStatusContextKey()!=context);
+        QTRY_VERIFY(pending.isNull()||pending->isFinished());QTRY_VERIFY(!visibleItem("ownStatusText"));
+        QVERIFY(input);QVERIFY(input->property("text").toString().isEmpty());
+        QVERIFY(!controller.ownStatus().value("pending").toBool());
+        auto send=std::move(fixture.release);fixture.release={};send();
+        QVERIFY(!visibleItem("ownStatusText"));QVERIFY(!visibleItem("ownStatusErrorText"));QCOMPARE(fixture.posts,1);
+        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        QTRY_VERIFY(visibleItem("ownStatusText"));
+        QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
+        click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(fixture.posts,1);
+        const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
     void profileAndTopbarUseMeasuredThreeLineGeometry_data()
     {
         QTest::addColumn<QString>("firstOracle");
