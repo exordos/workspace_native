@@ -7860,6 +7860,108 @@ private slots:
         QCOMPARE(started, 3);
     }
 
+    void uploadedImageParagraphBoundariesAndLegacyFileVideo_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("initialDraft");
+        QTest::addColumn<QString>("typedAfterFirst");
+        QTest::addColumn<bool>("secondImage");
+        QTest::addColumn<QString>("expectedPattern");
+        QTest::newRow("image-empty") << QString("image") << QString() << QString() << false << QString("@FIRST@\n\n");
+        QTest::newRow("image-caption") << QString("image") << QString("Caption") << QString() << false << QString("Caption\n\n@FIRST@\n\n");
+        QTest::newRow("image-trailing-one") << QString("image") << QString("Caption\n") << QString() << false << QString("Caption\n\n@FIRST@\n\n");
+        QTest::newRow("image-trailing-two") << QString("image") << QString("Caption\n\n") << QString() << false << QString("Caption\n\n@FIRST@\n\n");
+        QTest::newRow("image-subsequent-caption") << QString("image") << QString() << QString("Later caption") << false << QString("@FIRST@\n\nLater caption");
+        QTest::newRow("image-subsequent-image") << QString("image") << QString() << QString() << true << QString("@FIRST@\n\n@SECOND@\n\n");
+        QTest::newRow("image-subsequent-caption-and-image") << QString("image") << QString() << QString("Later caption") << true << QString("@FIRST@\n\nLater caption\n\n@SECOND@\n\n");
+        QTest::newRow("file-legacy-two-newlines") << QString("file") << QString("Caption\n\n") << QString() << false << QString("Caption\n\n@FIRST@\n");
+        QTest::newRow("video-legacy-one-newline") << QString("video") << QString("Caption") << QString() << false << QString("Caption\n@FIRST@\n");
+    }
+
+    void uploadedImageParagraphBoundariesAndLegacyFileVideo()
+    {
+        QFETCH(QString, kind); QFETCH(QString, initialDraft); QFETCH(QString, typedAfterFirst);
+        QFETCH(bool, secondImage); QFETCH(QString, expectedPattern);
+        // Same public PNG as the actual Main received/upload test. The MP4
+        // sample is a synthetic MIME signature only, not playback acceptance.
+        const QByteArray png = QByteArray::fromHex("89504e470d0a1a0a0000000d4948445200000060000000400806000000e534720e000000ad4944415478daedd1310d80301440c19a68d28d818da4766a017d4c18a8061430b023004474f81d6e7806dea5be5ddf48f75243cb470b6df45f02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000260058f727b4f72ca1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001300fc64110b8532ff49270000000049454e44ae426082");
+        const QByteArray bytes = kind == "image" ? png : kind == "video"
+            ? QByteArray::fromHex("000000186674797069736f6d0000000069736f6d6d703432") : QByteArray("plain fixture\n");
+        const QString name = kind == "image" ? "image.png" : kind == "video" ? "video.mp4" : "report.txt";
+        const QString mime = kind == "image" ? "image/png" : kind == "video" ? "video/mp4" : "text/plain";
+        const QString firstId = returnedId, secondId = "99999999-9999-4999-8999-999999999994";
+        const auto linkFor = [&](const QString &id) {
+            const auto prefix = kind == "file" ? QString{} : QString("!");
+            return prefix + '[' + name + "](<urn:" + kind + ':' + id + "?name=" + name
+                + "&content_type=" + QString::fromLatin1(QUrl::toPercentEncoding(mime))
+                + "&size=" + QString::number(bytes.size()) + ">)";
+        };
+        const auto expected = expectedPattern.replace("@FIRST@", linkFor(firstId)).replace("@SECOND@", linkFor(secondId));
+        int uploads = 0, unexpected = 0;
+        bool headersOkay = true;
+        Fixture fixture;
+        FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile input(directory.filePath(name)); QVERIFY(input.open(QIODevice::WriteOnly));
+        QCOMPARE(input.write(bytes), qint64(bytes.size())); input.close();
+        if (kind == "image") {
+            QCOMPARE(bytes.size(), qsizetype(230));
+            QCOMPARE(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+                QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9"));
+        }
+        fixture.files = [&](const Request &request) -> Response {
+            if (request.method != "POST" || request.target.path() != "/api/workspace/v1/messenger/files/") {
+                ++unexpected; return Response{QJsonObject{}, 405};
+            }
+            ++uploads;
+            headersOkay = headersOkay
+                && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
+                && request.headers.value("cookie").isEmpty()
+                && request.headers.value("content-type").startsWith("multipart/form-data;")
+                && request.headers.value("content-length").toLongLong() > bytes.size();
+            return Response{QJsonObject{{"uuid", uploads == 1 ? firstId : secondId}, {"stream_uuid", streamId},
+                {"name", name}, {"content_type", mime}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.selectedStream(), streamId); QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QVERIFY(fixture.controller.canAttach());
+        fixture.controller.setDraft(initialDraft);
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QVERIFY(fixture.controller.fileBusy()); QVERIFY(!fixture.controller.canSend());
+        QTRY_COMPARE(uploads, 1); QTRY_VERIFY(!fixture.controller.fileBusy());
+        QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
+        QVERIFY(headersOkay); QCOMPARE(unexpected, 0);
+        QVERIFY(fixture.controller.draft().contains(linkFor(firstId)));
+        // Public draft input, after a real first upload. No completion signal,
+        // private state or fabricated upload result is injected.
+        if (!typedAfterFirst.isEmpty()) fixture.controller.setDraft(fixture.controller.draft() + typedAfterFirst);
+        if (secondImage) {
+            fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+            QVERIFY(fixture.controller.fileBusy()); QVERIFY(!fixture.controller.canSend());
+            QTRY_COMPARE(uploads, 2); QTRY_VERIFY(!fixture.controller.fileBusy());
+            QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
+            QVERIFY(fixture.controller.draft().contains(linkFor(secondId)));
+        }
+        QCOMPARE(uploads, secondImage ? 2 : 1); QVERIFY(headersOkay); QCOMPARE(unexpected, 0);
+        QCOMPARE(fixture.controller.selectedStream(), streamId); QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QVERIFY(fixture.controller.canSend());
+        qInfo().noquote() << "IMAGE_UPLOAD_BOUNDARY" << QJsonDocument(QJsonObject{
+            {"row", QString::fromLatin1(QTest::currentDataTag())}, {"uploads", uploads},
+            {"headersOkay", headersOkay}, {"actualDraft", fixture.controller.draft()}, {"expectedDraft", expected}
+        }).toJson(QJsonDocument::Compact);
+        // Image rows discriminate occupied-side blank paragraphs. File/video
+        // rows assert their old serialized bytes, including the video ! prefix.
+        QCOMPARE(fixture.controller.draft(), expected);
+        NativeMarkdown markdown;
+        const auto parts = markdown.render(fixture.controller.draft()).value("parts").toList();
+        QStringList imageIds;
+        for (const auto &part : parts)
+            if (part.toMap().value("kind") == "image") imageIds.append(part.toMap().value("id").toString());
+        QCOMPARE(imageIds, kind == "image" ? (secondImage ? QStringList{firstId, secondId} : QStringList{firstId}) : QStringList{});
+        QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
+    }
+
     void attachmentUploadKeepsItsConversationAndEscapesMarkdown()
     {
         Fixture fixture;

@@ -27,6 +27,7 @@ struct Request {
     QUrl target;
     QHash<QByteArray, QByteArray> headers;
     QJsonObject body;
+    QByteArray rawBody; // Exact synthetic request bytes for multipart assertions.
 };
 
 struct Response {
@@ -75,7 +76,8 @@ public:
                     const auto size = request.headers.value("content-length").toInt();
                     if (buffer->size() < end + 4 + size)
                         return;
-                    request.body = QJsonDocument::fromJson(buffer->mid(end + 4, size)).object();
+                    request.rawBody = buffer->mid(end + 4, size);
+                    request.body = QJsonDocument::fromJson(request.rawBody).object();
                     socket->setProperty("handled", true);
                     requests.append(request);
                     const auto response = handler ? handler(request) : Response{};

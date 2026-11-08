@@ -1,0 +1,181 @@
+{
+  "schema": "native-picked-caption-image-repair-v1",
+  "status": "LOCAL_ACCEPTED_PUBLICATION_AND_INSTALLED_UPGRADE_PENDING",
+  "targetVersion": "0.1.4",
+  "releasePublishedClaimed": false,
+  "reviewScope": "Root reviewed the actual regression, current complete runtime suites, Source/Qt raw frames and local packaged runtime; separate publication/installed upgrade remain pending",
+  "repair": {
+    "trigger": "Pick a PNG with an existing caption, then Send from the real Main file dialog",
+    "priorFailure": "Exact multipart upload, canonical own message and draft clearing succeeded, but no image transfer or pixels followed",
+    "change": "Only successful image uploads gain blank paragraph boundaries before and after the appended image reference",
+    "markdownParserChanged": false,
+    "fileAndVideoSerializationChanged": false,
+    "sourceImageFirstComposerOrderingCompleted": false
+  },
+  "actualRegression": {
+    "baselineProductVersion": "0.1.3",
+    "qtPassed": 2,
+    "qtFailed": 1,
+    "failure": "Rendered own-image pixel predicate",
+    "multipartPngBytesAndSha256Verified": true,
+    "selectedPngSha256": "9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9",
+    "uploads": 1,
+    "messagePosts": 1,
+    "canonicalGets": 1,
+    "ownProjection": true,
+    "draftCleared": true,
+    "metadataGets": 0,
+    "binaryGets": 0,
+    "matchingPixels": 0,
+    "excludedV97Observer": "MIME header-name case observation rejected the initial run; that run is retained and is not accepted as the product regression"
+  },
+  "localPassed": {
+    "sameMainQtCases": 3,
+    "oldWindowControlsQtCases": 7,
+    "boundaryQtCases": 11,
+    "boundaryLogicalRows": 9,
+    "ownershipQtCases": 7,
+    "wholeControllerQtCases": 830,
+    "wholeControllerQtSeconds": 520.103,
+    "currentMainQtCases": 3,
+    "runtimeFailuresWarningsStderrSkips": 0,
+    "currentPngPreview": {
+      "size": [
+        96,
+        64
+      ],
+      "matchingPixels": 5948,
+      "sixPixelProbesPassed": true,
+      "metadataGets": 1,
+      "binaryGets": 1,
+      "messagePosts": 1,
+      "canonicalGets": 1
+    },
+    "wholeWindowQtCases": 283,
+    "wholeWindowQtSeconds": 304.487,
+    "sourceEncryptedWorkflowQtCases": 8
+  },
+  "buildDiagnostics": {
+    "v101BuildExitCode": 0,
+    "v101ConfigureWarnings": 25,
+    "v101GateAccepted": false,
+    "v101TestsRun": false,
+    "classification": "Retained Root-reviewed Qt static-import CMake diagnostics",
+    "v102": "Already successfully built current binaries executed with strict runtime warning/stderr checks; no warning suppression",
+    "warningFreeBuildClaimed": false
+  },
+  "sourceBodyReference": {
+    "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+    "sameUntouchedCanonicalNativeDto": true,
+    "syntheticOwnReceivedBodyOnly": true,
+    "consoleWarnings": 0,
+    "pageErrors": 0,
+    "unexpectedBlockedRequests": 0,
+    "beforeLazyBandBinaryGets": 0,
+    "afterRealWheelBinaryGets": 1,
+    "blobSha256AndSixProbesPassed": true,
+    "bubbleSize": [
+      165,
+      152
+    ],
+    "imageSize": [
+      96,
+      64
+    ],
+    "imageOffsetInBubble": [
+      13,
+      51
+    ],
+    "sourceAndNativeRasterDimensionsEqual": true,
+    "sourceBuildDiagnosticsRetained": true,
+    "sourceBuildStaticDiagnosticsBytes": 4070,
+    "nativeMetadataPlusBinaryVersusSourceDirectBinaryDifferenceRetained": true,
+    "cleanupConfirmedByRoot": true
+  },
+  "comparison51": {
+    "apiMessageReadbackVerified": true,
+    "twoAttachmentDownloadHashesVerified": true,
+    "externalDeliveryClaimed": false,
+    "fullApplicationAcceptanceClaimed": false
+  },
+  "pending": {
+    "publicRelease": {
+      "status": "NOT_PUBLISHED_AT_DRAFT_HANDOFF",
+      "releaseId": null,
+      "assetId": null
+    },
+    "installedUpgrade0_1_3To0_1_4": {
+      "status": "NOT_RUN",
+      "resultSha256": null
+    },
+    "commitAndFinalAcceptance": "ROOT_LOCAL_ACCEPTED_READY_FOR_COMMIT"
+  },
+  "cleanup": {
+    "completedNativeGateGroupsReaped": true,
+    "completedNativePrivateXdgRemoved": true,
+    "sourceServerPortProfileClosed": true,
+    "currentlyRunningRootGatesExcluded": false,
+    "freshProcessProbeByThisReviewer": false
+  },
+  "evidenceSha256": {
+    "excludedV97ObserverResult": "8952d067659cb87ed79bc815154a322aae69c3ba8fba3476b97bad2b529bfd52",
+    "actualMainRedResult": "983ef2620c228b1cb1b84ddf9bcd590b62561d53b38936c7b64d2a0e851abd43",
+    "actualMainRedLog": "47fbe71895f710759d016e150c8da944e1874e3e0b55140a9415582fc350f89d",
+    "sameMainGreenLog": "109ac703d83ec69575e7be66e7f55295a48495304647b39868b147b097f70d86",
+    "oldWindowControlsLog": "66e970238317cae9a8032c91f568148cf32ebc44e673ef2975c663c0e404f546",
+    "nativeCaptureResult": "a54a34b2ea435fbe5e4691c32c80b318449fda15367a9eca8d87bad5e6535338",
+    "nativeCaptureLog": "685806d310047427044a768ba0503c2a9a5792ecf625cd7777ddcfd1023137e0",
+    "nativeRawPng": "e78f7a69fdfd15e1206ecf0cf0efb84c857b5980c5f7f3f925f24fbafa5d5f9a",
+    "actualCanonicalNativeDto": "efae5068083e378c0809567b0974445dce75208e185189d7a6bdfd9d64795cfa",
+    "buildStoppedResult": "357616463bc68a83ab4a977842e85bc02d44e601178395a04406624eecd58e02",
+    "buildStderr": "712a1bf6a6ea06181100be7420f405ea64bdcd7b833c5202c2c539b615d0680c",
+    "buildDiagnosticReview": "8c06e00915ea8fa2e47cba38e28851aa343f66a9eededa4b2a0a70c610e80c23",
+    "runtimeResult": "eff30d30413b292b67bc56503238ac7082a85c2b94b4dc27d82443487de8b06c",
+    "boundaryLog": "adc5fca935c949c1bba27bda489dcc516cde517f52b11aa0bad1379c19220dbe",
+    "ownershipLog": "be63e70c23edeb11505574fcd22f014511cc29d68ff6560c57146132dde78587",
+    "sameCurrentMainLog": "c9b059521bf896379a85784ccb9f9c48ac3055d4faa7dc748c3fbd73080391c9",
+    "wholeControllerLog": "6ddaeb22fe645f0e6ac9df58c3c2d0369ad0118c93b71ae6f447cb8707439f71",
+    "wholeControllerReview": "38097e3900391a16b6647c9880025b74a93fa1e5903c5e5e0620a824c2a1a8b9",
+    "sourceCaptureProof": "42a5353ae6c8f3b3976d64108698c700b72153b874ced7a5fbbf9da40ddb7495",
+    "sourceRootReview": "d464ee6c974067c680684a19160b7d9ecd545c5d3f78ba32dddc427421daebb9",
+    "sourceRawPng": "413d4b6cff0fe4e2d3a33ec2e498916cc054d4a8a3d41276458f9688304ce375",
+    "sourceMetrics": "4b7db996e7afd0eb21fb20594e4c89537b2ccb1a06a5c8b2f2a05981720c1907",
+    "rawRasterComparison": "8264864c264e1f41b176d20b39248728894362aa9463cb07c51dfb96583cb296",
+    "sourceCleanupReview": "c0e2fa7111f9c400302f7d86bdfc9801452f34608e10d001bf258f594080e4c3",
+    "comparison51Preflight": "ca8635c4f02f0a1486e18be1db4384e828c0ef839c6cf1a35594ccfa47dbe0fd",
+    "comparison51ReadbackResult": "aa82c3450233897f4cf45e0c382477f4ccd4477e72e2bdeb4b222bf1e7afc409",
+    "comparison51SourceAttachmentReceipt": "7e3ac1e128db43f5019f20cfe05e2a0a8cdaedea6657980574a0022a26e9bfbe",
+    "comparison51NativeAttachmentReceipt": "de4f89ba49a53c824d54c1ba70a00e6e5d44c577573ceb8a4be9321c3230e2eb",
+    "wholeWindowAndEncryptedResult": "047abeeb7a9c8ab3a131cfb6d7c62fe7b25948681adeb62710b6e87e159866fa",
+    "wholeWindowLog": "aa39f957bd7c3c884e7ecf163b778c6ba08e303f64ab615faec6dea7d4216a55",
+    "sourceEncryptedWorkflowLog": "edeaae4a7a94a45de60e09c5fffef63b9e8958679f8e53a824bdcadbdc7859cc",
+    "wholeWindowRootReview": "726f99839a8e475522ec42ef877b149b87c9e3545d9f9dce41897d724f981f8d",
+    "localPackageResult": "c3eef576671a42a2e99cc21fefcb61f946a0b43c2c516765c0229d0b7d6addcc",
+    "localPackageProbeLog": "c26b1a0ec398e3b696ad0d1109126b2b6dec0fde202e5ba7dd09f91ec31c1ce7"
+  },
+  "limits": [
+    "Synthetic ordinary route with one picked PNG and one existing caption; no live account or real server upload acceptance",
+    "Source received-body presentation only; Source image-first composer/upload ordering remains open",
+    "Full shell, glyph parity, animation, mixed/multiple-image composition and complete media viewer remain open",
+    "Public archive and actual installed-upgrade acceptance are separate from the accepted local package",
+    "Retained configure and Source build diagnostics prevent a warning-free build claim"
+  ],
+  "localPackage": {
+    "installerTests": 6,
+    "configuredVersionTests": 1,
+    "qmlModules": 10,
+    "decodedImageCodecs": [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "svg"
+    ],
+    "messageAndGrantRoundTrips": true,
+    "tlsBackend": "openssl",
+    "selectedProbeLibrariesInsidePrefix": 28,
+    "bytes": 71217394,
+    "sha256": "c621b14e5ff75059069a6f66d7e4887f10a08685d0401a4473352850a383c32a",
+    "scope": "Locally built package only; published artifact is verified independently"
+  }
+}

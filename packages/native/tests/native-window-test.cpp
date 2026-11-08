@@ -8822,6 +8822,237 @@ mv -Tf "$root/.current-new" "$root/current"
         if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void captionAndPickedImageSendThenPaintOwnInlinePixels()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileId = "99999999-9999-4999-8999-999999999993";
+        const auto source = directory.filePath("upload.png");
+        const auto png = avatarProbePng(false);
+        QCOMPARE(png.size(), qsizetype(230));
+        QCOMPARE(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex(),
+            QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9"));
+        const auto expected = QImage::fromData(png, "PNG");
+        QVERIFY(!expected.isNull()); QCOMPARE(expected.size(), QSize(96, 64));
+        {
+            QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(png), qint64(png.size()));
+        }
+        auto metadata = avatarProbeMetadata(fileId, png);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "upload.png";
+        const QString caption = "Caption before upload";
+        QString uploadedDraft;
+        QJsonObject postedRequest, canonical;
+        int uploads = 0, messagePosts = 0, canonicalGets = 0, historyGets = 0;
+        int metadataGets = 0, binaryGets = 0, fileWrites = 0;
+        bool uploadHeadersOkay = true, fileHeadersOkay = true, postContractOkay = true;
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QString filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (path == "/api/workspace/v1/messenger/files/" && request.method == "POST") {
+                ++uploads;
+                uploadHeadersOkay = uploadHeadersOkay
+                    && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
+                    && request.headers.value("cookie").isEmpty()
+                    && request.headers.value("content-type").startsWith("multipart/form-data;")
+                    && request.headers.value("content-length").toLongLong() == request.rawBody.size();
+                const auto contentType = request.headers.value("content-type");
+                auto boundary = contentType.mid(contentType.indexOf("boundary=") + 9).trimmed();
+                if (boundary.startsWith('"') && boundary.endsWith('"')) boundary = boundary.mid(1, boundary.size() - 2);
+                const auto fileAt = request.rawBody.indexOf("filename=\"upload.png\"");
+                const auto headerEnd = request.rawBody.indexOf("\r\n\r\n", fileAt);
+                const auto bodyEnd = request.rawBody.indexOf("\r\n--" + boundary, headerEnd + 4);
+                const auto uploadedBytes = request.rawBody.mid(headerEnd + 4, bodyEnd - headerEnd - 4);
+                uploadHeadersOkay = uploadHeadersOkay && contentType.contains("boundary=") && !boundary.isEmpty()
+                    && fileAt >= 0 && headerEnd > fileAt && bodyEnd > headerEnd
+                    && request.rawBody.count("filename=\"upload.png\"") == 1
+                    && request.rawBody.left(headerEnd).contains("name=\"file\"")
+                    && request.rawBody.left(headerEnd).toLower().contains("content-type: image/png")
+                    && uploadedBytes == png
+                    && QCryptographicHash::hash(uploadedBytes, QCryptographicHash::Sha256).toHex()
+                        == QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9")
+                    && request.rawBody.contains("name=\"stream_uuid\"\r\n\r\n" + streamId.toUtf8() + "\r\n")
+                    && request.rawBody.contains("name=\"name\"\r\n\r\nupload.png\r\n");
+                qInfo().noquote() << "UPLOAD_MULTIPART_OBSERVER" << QJsonDocument(QJsonObject{
+                    {"contentType", QString::fromLatin1(contentType)}, {"bytes", request.rawBody.size()},
+                    {"fileAt", fileAt}, {"headerEnd", headerEnd}, {"bodyEnd", bodyEnd},
+                    {"fileHeaders", QString::fromLatin1(request.rawBody.left(headerEnd))},
+                    {"selectedPngEqual", uploadedBytes == png}, {"contractOkay", uploadHeadersOkay}
+                }).toJson(QJsonDocument::Compact);
+                // The complete multipart body contains the exact selected PNG
+                // and intended stream; no raw credential-bearing headers are logged.
+                return Response{metadata, 201};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/")) {
+                fileHeadersOkay = fileHeadersOkay
+                    && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
+                    && request.headers.value("cookie").isEmpty();
+                if (request.method != "GET") { ++fileWrites; return Response{QJsonObject{}, 405}; }
+                if (path == filePath) { ++metadataGets; return Response{metadata}; }
+                if (path == filePath + "/actions/download") {
+                    ++binaryGets; Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path == "/api/workspace/v1/messenger/messages/" && request.method == "POST") {
+                ++messagePosts; postedRequest = request.body;
+                const auto payload = request.body.value("payload").toObject();
+                const auto id = request.body.value("uuid").toString();
+                postContractOkay = postContractOkay && !QUuid(id).isNull()
+                    && request.body.value("stream_uuid").toString() == streamId
+                    && request.body.value("topic_uuid").toString() == topicId
+                    && payload.value("kind").toString() == "markdown"
+                    && payload.value("content").toString() == uploadedDraft;
+                if (!postContractOkay) return Response{QJsonObject{}, 400};
+                canonical = message(payload.value("content").toString(), id);
+                canonical["user_uuid"] = userId; canonical["author_uuid"] = userId; canonical["is_own"] = true;
+                canonical["pinned"] = false; canonical["reactions"] = QJsonObject{};
+                canonical["reaction_users"] = QJsonObject{}; canonical["updated_at"] = canonical.value("created_at");
+                return Response{canonical, 201};
+            }
+            if (!canonical.isEmpty() && path == "/api/workspace/v1/messenger/messages/" + canonical.value("uuid").toString()
+                && request.method == "GET") { ++canonicalGets; return Response{canonical}; }
+            if (path == "/api/workspace/v1/messenger/messages/" && request.method == "GET") {
+                ++historyGets;
+                const QUrlQuery query(request.target);
+                return query.queryItemValue("stream_uuid") == streamId && query.queryItemValue("topic_uuid") == topicId
+                    && !canonical.isEmpty() ? Response{QJsonArray{canonical}} : Response{QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("upload-caption-image.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Uploaded image window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(window->devicePixelRatio(), qreal(1)); QCOMPARE(window->size(), QSize(1440, 900));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(historyGets > 0); QVERIFY(controller.messages().isEmpty());
+        QVERIFY(controller.canAttach());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
+        click(window, visibleItem(window->contentItem(), "messageComposer"));
+        for (const auto key : caption.toLatin1()) QTest::keyClick(window, key);
+        QTRY_COMPARE(controller.draft(), caption);
+        auto *picker = window->findChild<QObject *>("attachmentPicker"); QVERIFY(picker);
+        QVERIFY(picker->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
+        QSignalSpy accepted(picker, SIGNAL(accepted())); QVERIFY(accepted.isValid());
+        click(window, visibleItem(window->contentItem(), "attachButton"));
+        QTRY_VERIFY(picker->property("visible").toBool());
+        QCOMPARE(window->property("pickerOwner").toString(), controller.ownerKey());
+        QCOMPARE(window->property("pickerStream").toString(), streamId);
+        QCOMPARE(window->property("pickerTopic").toString(), topicId);
+        QTRY_VERIFY(fileEntry(QUrl::fromLocalFile(source)));
+        auto *entry = fileEntry(QUrl::fromLocalFile(source)); QVERIFY(entry && entry->window());
+        const auto filePoint = entry->mapToScene(QPointF(entry->width() / 2, entry->height() / 2)).toPoint();
+        QVERIFY(QRect(QPoint{}, entry->window()->size()).contains(filePoint));
+        QTest::mouseDClick(entry->window(), Qt::LeftButton, {}, filePoint);
+        QTRY_COMPARE(accepted.size(), 1); QTRY_COMPARE(uploads, 1); QVERIFY(uploadHeadersOkay);
+        QTRY_VERIFY(!controller.fileBusy());
+        QTRY_VERIFY(controller.draft().contains("![upload.png](") && controller.draft().contains("urn:image:" + fileId));
+        QVERIFY(controller.draft().contains(caption)); QVERIFY(controller.error().isEmpty());
+        uploadedDraft = controller.draft();
+        QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
+        QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), uploadedDraft);
+        QVERIFY(controller.canSend());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "sendButton")
+            && visibleItem(window->contentItem(), "sendButton")->isEnabled());
+        click(window, visibleItem(window->contentItem(), "sendButton"));
+        QTRY_COMPARE(messagePosts, 1); QTRY_COMPARE(canonicalGets, 1); QVERIFY(postContractOkay);
+        QCOMPARE(postedRequest.value("payload").toObject().value("content").toString(), uploadedDraft);
+        QCOMPARE(canonical.value("payload").toObject().value("content").toString(), uploadedDraft);
+        QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(controller.draft().isEmpty());
+        const auto canonicalLoaded = [&] {
+            const auto rows = controller.messages();
+            if (canonical.isEmpty() || rows.size() != 1) return false;
+            const auto row = rows.first().toMap();
+            return row.value("id").toString() == canonical.value("uuid").toString()
+                && row.value("content").toString() == uploadedDraft
+                && row.value("authorId").toString() == userId && row.value("own").toBool();
+        };
+        QTRY_VERIFY(canonicalLoaded());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
+        QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), QString{});
+        const auto ownId = canonical.value("uuid").toString();
+        QTRY_VERIFY(visibleItem(window->contentItem(), "message-content-" + ownId));
+        auto *viewport = item(window->contentItem(), "messageList"); QVERIFY(viewport);
+        QTRY_VERIFY(!viewport->property("positioning").toBool());
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid());
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QRect paintedImage, sampledBubble; int matchingPixels = 0;
+        const QVector<QPoint> probes{{8, 8}, {24, 16}, {72, 16}, {24, 48}, {72, 48}, {88, 56}};
+        const auto closeColor = [](const QColor &a, const QColor &b) {
+            return qAbs(a.red() - b.red()) <= 3 && qAbs(a.green() - b.green()) <= 3 && qAbs(a.blue() - b.blue()) <= 3;
+        };
+        const auto pixelsPainted = [&] {
+            paintedImage = {}; sampledBubble = {}; matchingPixels = 0;
+            auto *bubble = visibleItem(window->contentItem(), "message-" + ownId);
+            if (!bubble || bubble->window() != window) return false;
+            const auto pixels = window->grabWindow(); if (pixels.isNull()) return false;
+            sampledBubble = QRectF(bubble->mapToScene(QPointF{}), bubble->size()).toAlignedRect();
+            if (!pixels.rect().contains(sampledBubble)) return false;
+            for (int y = sampledBubble.top(); y <= sampledBubble.bottom(); ++y)
+                for (int x = sampledBubble.left(); x <= sampledBubble.right(); ++x) {
+                    const auto color = pixels.pixelColor(x, y); bool known = false;
+                    for (const auto &point : probes) if (closeColor(color, expected.pixelColor(point))) { known = true; break; }
+                    if (known) { paintedImage |= QRect(x, y, 1, 1); ++matchingPixels; }
+                }
+            if (qAbs(paintedImage.width() - 96) > 1 || qAbs(paintedImage.height() - 64) > 1 || matchingPixels < 5500) return false;
+            for (const auto &point : probes) {
+                const QPoint at(paintedImage.left() + qFloor((point.x() + .5) * paintedImage.width() / 96),
+                    paintedImage.top() + qFloor((point.y() + .5) * paintedImage.height() / 64));
+                if (!closeColor(pixels.pixelColor(at), expected.pixelColor(point))) return false;
+            }
+            return true;
+        };
+        const auto evidence = [&](const char *phase) {
+            qInfo().noquote() << "UPLOADED_OWN_IMAGE" << QJsonDocument(QJsonObject{
+                {"phase", QString::fromLatin1(phase)}, {"uploadAccepted", uploads == 1 && uploadHeadersOkay},
+                {"messagePosts", messagePosts}, {"canonicalGets", canonicalGets}, {"canonicalLoaded", canonicalLoaded()},
+                {"draftCleared", controller.draft().isEmpty()}, {"metadataGets", metadataGets}, {"binaryGets", binaryGets},
+                {"matchingPixels", matchingPixels}, {"imagePixels", QJsonArray{paintedImage.x(), paintedImage.y(), paintedImage.width(), paintedImage.height()}},
+                {"uploadedDraft", uploadedDraft}
+            }).toJson(QJsonDocument::Compact);
+        };
+        pixelsPainted(); evidence("before-pixel-oracle");
+        auto failureEvidence = qScopeGuard([&] { if (QTest::currentTestFailed()) evidence("failed-case"); });
+        // Upload, canonical message admission, own-row projection and draft
+        // clearing are all positive before the first intended product failure.
+        QTRY_VERIFY2(pixelsPainted(), "The PNG selected with its caption must paint in the canonical own message after successful Send");
+        QCOMPARE(uploads, 1); QCOMPARE(messagePosts, 1); QCOMPARE(canonicalGets, 1);
+        QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1); QVERIFY(fileHeadersOkay);
+        QCOMPARE(fileWrites, 0); QCOMPARE(fixture.posts + fixture.memberPosts, 0);
+        QVERIFY(canonicalLoaded()); QVERIFY(controller.draft().isEmpty()); evidence("own-image-painted");
+        const auto captureDirectory = qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY");
+        if (!captureDirectory.isEmpty()) {
+            QVERIFY(QDir().mkpath(captureDirectory));
+            QVERIFY(window->grabWindow().save(captureDirectory + "/uploaded-caption-image-en-light.png"));
+            QFile dto(captureDirectory + "/uploaded-caption-image-handler-dto.json");
+            QVERIFY(dto.open(QIODevice::WriteOnly));
+            const auto bytes = QJsonDocument(canonical).toJson(QJsonDocument::Indented);
+            QCOMPARE(dto.write(bytes), qint64(bytes.size()));
+        }
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
     void quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()
     {
         QTemporaryDir directory;

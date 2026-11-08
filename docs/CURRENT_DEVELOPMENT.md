@@ -602,3 +602,26 @@ current host, not authenticated history, credential preservation or full parity.
 Portal registration and AT-SPI inspection diagnostics are retained; the earlier
 intermittent metadata errors remain unexplained. See
 [published 0.1.3 update checks](provenance/linux-published-0.1.3-upgrade-checks.json).
+
+## Picked image with an existing caption
+
+Choosing a PNG with existing caption text uploaded the exact bytes and confirmed
+the own message, but its preview did not appear. Successful image uploads now
+add blank paragraph boundaries around their reference. The Markdown parser and
+ordinary file/video serialization remain unchanged.
+
+The same real file-dialog/send/readback/pixel regression passes after first
+reproducing the missing preview on 0.1.3. Nine boundary rows, the existing owner
+controls, complete Controller830 and Window283 suites, and eight independent
+Source encrypted workflow cases pass without runtime failures, warnings or skips.
+The local 0.1.4 package passes installer/version checks, ten QML modules and
+PNG/JPEG/GIF/WebP/SVG, crypto and TLS probes. Public archive and actual installed
+0.1.3 → 0.1.4 upgrade are checked separately after publication.
+
+A received-body comparison uses the exact actual Native DTO. Both raw frames
+show a 165×152 bubble, 96×64 image and image offset 13,51; the comparison and
+attachments were read back through the API. These are synthetic component/Main
+observations. Source image-first composer ordering, live account, full shell,
+glyph parity and complete media functionality remain open. The 25 Qt configure
+static-import warnings and Source build diagnostics are retained; a warning-free
+build is not claimed. See [picked-caption checks](provenance/picked-caption-image-repair.json).

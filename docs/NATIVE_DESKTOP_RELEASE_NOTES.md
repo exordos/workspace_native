@@ -1,3 +1,21 @@
+# Workspace Native 0.1.4 — Linux development preview
+
+A picked image now displays after Send when the draft already contains a caption.
+Previously, upload and message confirmation could succeed while its preview
+remained missing. The fix keeps the image reference in its own Markdown
+paragraph. Ordinary file/video attachments retain their serialized behavior.
+
+The actual file-dialog/send/readback/pixel regression, complete Controller830
+and Window283 suites, eight Source encrypted workflow cases, installer/version
+checks and local packaged image/crypto/TLS probes passed. The public archive and
+actual installed 0.1.3 → 0.1.4 update are verified separately after publication.
+
+This remains a Linux development preview. Full feature/pixel parity, Source
+image-first composer ordering, live-account acceptance, the complete media
+viewer, Windows and macOS remain unfinished.
+
+---
+
 # Workspace Native 0.1.3 — Linux development preview
 
 Standalone image paragraphs now show static previews between surrounding text

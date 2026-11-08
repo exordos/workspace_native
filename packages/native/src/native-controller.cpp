@@ -4451,9 +4451,14 @@ void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 
         const auto prefix = result.metadata.kind() == FileKind::File ? QString{} : QStringLiteral("!");
         const auto attachment = prefix + '[' + label + "](<" + result.metadata.urn() + ">)";
         auto draft = m_drafts.value(conversation);
-        if (!draft.isEmpty() && !draft.endsWith('\n'))
-            draft += '\n';
-        m_drafts.insert(conversation, draft + attachment + '\n');
+        const bool imageParagraph = result.metadata.kind() == FileKind::Image;
+        if (!draft.isEmpty()) {
+            if (!draft.endsWith('\n'))
+                draft += '\n';
+            if (imageParagraph && !draft.endsWith("\n\n"))
+                draft += '\n';
+        }
+        m_drafts.insert(conversation, draft + attachment + (imageParagraph ? "\n\n" : "\n"));
         m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
             ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
         if (conversation == conversationKey())
