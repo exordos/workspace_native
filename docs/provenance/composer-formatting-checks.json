@@ -1,6 +1,6 @@
 {
   "version": "0.1.6",
-  "status": "COHERENT_016_LOCAL_WHOLE_AND_PACKAGE_PASS_CHECKPOINT_CI_PASS_PUBLIC_PENDING",
+  "status": "COHERENT_016_LOCAL_WHOLE_PACKAGE_CI_PUBLIC_RUNTIME_AND_INSTALLED_UPGRADE_PASS",
   "sourceReferenceCommit": "95495b10b828f853c9e770b47216073eb973fa95",
   "implementation": "Four window-context composer-only Shortcut defaults, existing draft binding and owner/API/route guards; no transport/cache schema change",
   "markers": {
@@ -113,10 +113,21 @@
     "checkpointMaster": "success",
     "runId": 42521044601,
     "url": "https://github.com/exordos/workspace_native/actions/runs/42521044601",
-    "tagAndFinalMaster": "PENDING"
+    "tagAndFinalMaster": "success",
+    "finalMasterRunId": 42521924861,
+    "tagRunId": 42521927180
   },
-  "published": "PENDING",
-  "installedUpdate": "PENDING",
+  "published": {
+    "status": "PASS",
+    "checks": "linux-published-0.1.6-upgrade-checks.json"
+  },
+  "installedUpdate": {
+    "status": "PASS",
+    "from": "0.1.5",
+    "to": "0.1.6",
+    "anonymousOnly": true,
+    "checks": "linux-published-0.1.6-upgrade-checks.json"
+  },
   "limits": [
     "Formatting toolbar and remappable shortcut settings remain open",
     "Full composer/feature/pixel parity remains open",

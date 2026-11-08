@@ -764,3 +764,47 @@ full Window293/encrypted UI142 and locale14 suites passed with their original
 and no retries. Checkpoint GitHub packaging CI passed. Public tag/assets and
 the installed 0.1.5 to 0.1.6 update remain separate pending gates. Toolbar, shortcut remapping, full composer/pixel parity and other
 platforms remain open. See [formatting checks](provenance/composer-formatting-checks.json).
+
+## Published 0.1.6 Linux upgrade check
+
+The final master and numeric tag CI runs passed. The downloaded public archive
+matched its GitHub digest and SHA256SUMS and passed the deployed ten-module,
+image/message/grant/TLS probe, with 28 relevant mappings inside its prefix.
+An actual installed 0.1.5 to 0.1.6 update passed eight Root native CUA checkpoints:
+automatic download, one Install and restart click, normal old/new exits, the
+exact new executable and same-primary activation after a secondary launch.
+Both installed processes mapped 53 selected libraries inside their own prefixes.
+One synthetic NativeCache History row retained its logical digest and reopened
+through the production cache helper after quit. No manual metadata retry was
+needed. The log retains 234 AT-SPI inspection diagnostics and no other lines;
+warning-free desktop operation is not claimed. All owned processes, the instance
+lock and private HOME/XDG tree were removed.
+
+This anonymous private-HOME update check does not establish authenticated
+history or credential preservation. Real primary-account sign-in/send/read
+acceptance remains on 0.1.5, and remembered-session restoration remains open.
+See [published 0.1.6 checks](provenance/linux-published-0.1.6-upgrade-checks.json).
+
+## Next ten Linux releases
+
+The following is the current delivery order requested by the user, starting
+after 0.1.6. Each row is planned work, not a claim of implementation or acceptance.
+Release results will include the next ten priorities and their planned versions.
+Daily use and delivery through the existing updater come first. Each release
+keeps the configurable 10 GB disk-cache default and verifies affected API/cache
+costs, regression coverage and the installed update. Matched raw Source/Native
+screenshots accompany visual changes. These ten releases do not complete the
+full parity matrix or resume other platforms.
+
+| Priority | Planned version | Main capability and acceptance target |
+| --- | --- | --- |
+| 1 | 0.1.7 | Remembered sign-in: restore the verified account/project and last conversation through the existing OS credential service; verify a real restart. |
+| 2 | 0.1.8 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
+| 3 | 0.1.9 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
+| 4 | 0.1.10 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
+| 5 | 0.1.11 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
+| 6 | 0.1.12 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
+| 7 | 0.1.13 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
+| 8 | 0.1.14 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
+| 9 | 0.1.15 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
+| 10 | 0.1.16 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |

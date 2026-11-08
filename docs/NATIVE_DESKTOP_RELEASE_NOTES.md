@@ -8,8 +8,13 @@ shortcut settings remain unfinished.
 
 The complete local Window293 and encrypted UI142 suites, locale14, independent
 encrypted-message checks and Linux package/runtime checks passed. Representative
-physical Ctrl+B passed in English and Russian keyboard layouts. Publication and
-the installed update are verified separately.
+physical Ctrl+B passed in English and Russian keyboard layouts. Final master and
+tag packaging CI passed. The downloaded public archive passed checksum and
+deployed runtime checks. An actual installed 0.1.5 to 0.1.6 update passed automatic
+download, one Install and restart click, normal exits into the exact new binary,
+same-primary activation and preservation/reopen of one synthetic cache row.
+No manual update-check retry was needed. AT-SPI inspection diagnostics remain;
+authenticated history and credential preservation are separate acceptance work.
 
 This remains a development preview for Ubuntu 26.04 x86_64 / glibc 2.43 or newer.
 The configurable disk cache defaults to 10 GB. Full feature/pixel parity, other

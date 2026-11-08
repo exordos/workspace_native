@@ -1,0 +1,83 @@
+{
+  "version": "0.1.6",
+  "status": "PUBLISHED_DOWNLOAD_RUNTIME_AND_INSTALLED_UPGRADE_PASS",
+  "tagCommit": "a65e3e2740492a3e2bfeeccc44997320cb7cace2",
+  "published": {
+    "tag": "0.1.6",
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.1.6",
+    "publishedAt": "2026-11-08T20:51:02Z",
+    "releaseId": 438513256,
+    "assetId": 725160539,
+    "asset": "Exordos-Workspace-Native-0.1.6-linux-x86_64.tar.gz",
+    "bytes": 63630771,
+    "sha256": "10e46ed237c2bf89158d932d069cce5793483fa3d4efbaf0c2e7f8f00fd0dcf9",
+    "binarySha256": "4c7def2f69e224097970e73d192e7b1d77b98aeae835bbfd75cd64973face5b0",
+    "gitHubDigestAndSha256sumsVerified": true,
+    "releaseNotesReadBack": "EXACT",
+    "releaseNotesSha256": "4d843b3ddc59bab2c904d98f71cb3a0c8c72e8b30e6ca3ec7d19de1148386768"
+  },
+  "ci": {
+    "master": {
+      "conclusion": "success",
+      "runId": 42521924861,
+      "headSha": "a65e3e2740492a3e2bfeeccc44997320cb7cace2",
+      "url": "https://github.com/exordos/workspace_native/actions/runs/42521924861"
+    },
+    "tag": {
+      "conclusion": "success",
+      "runId": 42521927180,
+      "headSha": "a65e3e2740492a3e2bfeeccc44997320cb7cace2",
+      "url": "https://github.com/exordos/workspace_native/actions/runs/42521927180"
+    }
+  },
+  "installedUpgrade": {
+    "from": "0.1.5",
+    "to": "0.1.6",
+    "rootNativeCuaCheckpoints": 8,
+    "physicalInstallAndRestartClicks": 1,
+    "manualMetadataRetryClicks": 0,
+    "oldExitCode": 0,
+    "newExitCode": 0,
+    "samePrimaryAfterSecondaryLaunch": true,
+    "mappedLibrariesInsideEachInstalledPrefix": 53,
+    "syntheticCacheBefore": {
+      "rows": 1,
+      "logicalSha256": "dd855390dd7b0e2d656e40edac1d8b8d9303f6b3f08b28939886fa30830d4d03"
+    },
+    "syntheticCacheAfter": {
+      "rows": 1,
+      "logicalSha256": "dd855390dd7b0e2d656e40edac1d8b8d9303f6b3f08b28939886fa30830d4d03"
+    },
+    "nativeCacheReopenRowsSha256": "bb23bd412e182ff0a3273b8da24d2644649b84de9c3b69f3beaaeb66318abcaf",
+    "resultSha256": "7be33a53eac9e728eca69fd4f0807e6b9b99694e1bc62b2b3531bec2e0921f4e",
+    "rootReviewSha256": "0a972f2e96946b7bbd5f6afca298a5161097593635b876a12a198a2dd47adb7d",
+    "workerExitSha256": "9f70817e6a3e32adc6a4830d4f64ab402bcfc8eaf8dd2c5ac147d3d94b7c5228",
+    "diagnostics": {
+      "portal": 0,
+      "atSpi": 234,
+      "http2": 0,
+      "other": 0
+    },
+    "allOwnedResourcesRemoved": true
+  },
+  "publicRuntime": {
+    "actualInsidePrefixMappings": 28,
+    "qmlModules": 10,
+    "imageFormats": [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "svg"
+    ],
+    "messageGrantTlsPassed": true,
+    "resultSha256": "7762cc3adde2b8470adde23495a40863f89dbb1ab4652741d641022a3eeb4e7d",
+    "rootReviewSha256": "7a94065ef5533edaa7f06db175ab1c0c689948bd062c330fdab74771562b38e8"
+  },
+  "limits": [
+    "Anonymous private-HOME installed upgrade and one synthetic persisted row; not authenticated account/history/credential preservation",
+    "Real primary-account send/read acceptance remains on 0.1.5; remembered-session restoration remains unaccepted",
+    "AT-SPI inspection diagnostics remain; no warning-free desktop claim",
+    "Full application/pixel parity and other platforms remain unfinished"
+  ]
+}
