@@ -1,0 +1,87 @@
+{
+  "scope": "Actual public Linux0.1.1→0.1.2 anonymous installed upgrade on current Ubuntu26.04/Wayland host; separate from feature/live-account parity",
+  "publicRelease": {
+    "tag": "0.1.2",
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.1.2",
+    "publishedAt": "2026-11-08T13:53:58Z",
+    "assetUrl": "https://github.com/exordos/workspace_native/releases/download/0.1.2/Exordos-Workspace-Native-0.1.2-linux-x86_64.tar.gz",
+    "bytes": 63560140,
+    "sha256": "6549d1d48627459e41fde699a4f4252a28e04e45341825fd680e5b309a49b349",
+    "gitHubDigestAndSha256sumsVerified": true,
+    "binarySha256": "3bcba4a201844cbc205b717235443001f90053967eceef3c35fe1febe8403ca4",
+    "actualInstalledUpgradePending": false
+  },
+  "ci": {
+    "masterRun": 42486791609,
+    "tagRun": 42486791631,
+    "bothPassed": true
+  },
+  "runtimeProbe": {
+    "passed": true,
+    "tenQmlModules": true,
+    "fiveImageCodecs": true,
+    "messageGrantCryptoAndTls": true,
+    "relevantMappedLibraries": 28,
+    "allInsideActualReleasedPrefix": true,
+    "resultSha256": "079a85bd39d51e8c6276c995d661b065e5009bdec4cf85c11712b94f4008a640"
+  },
+  "upgrade": {
+    "status": "ROOT_REVIEWED_ACTUAL_RELEASED_UPGRADE_PASS_WITH_ONE_MANUAL_METADATA_RETRY",
+    "source": "0.1.1 → 0.1.2 actual public release archives",
+    "rootObservedCuaReceipts": 8,
+    "oldAutoDownloadedWithoutManualDownload": true,
+    "oneInstallAndRestartClick": true,
+    "oldNormalExit": 0,
+    "newNormalExit": 0,
+    "samePrimaryAfterSecondary": true,
+    "preservedSyntheticNativeCacheHistoryRows": 1,
+    "cacheLogicalDigestEqual": true,
+    "productionCacheReopenEqual": true,
+    "authenticatedHistoryOrSecureCredentialUpgradeAccepted": false,
+    "fullFeatureOrVisualParityAccepted": false,
+    "newVersionFirstObservedMetadataStateFailed": true,
+    "oneActualManualCheckRecovered": true,
+    "networkRequestCountClaimed": false,
+    "knownIntermittentMetadataCauseResolved": false,
+    "actualNetworkDiagnostics": [
+      "qt.network.http2: stream 3 error: \"Connection closed\"",
+      "qt.network.http2: stream 3 finished with error: \"HTTP/2 protocol error\""
+    ],
+    "rawPngSaved": false,
+    "privateHomeRemoved": true
+  },
+  "rootUpgradeReviewSha256": "84d949a8c5e47c1b4eb2eddb0cbed1a1a633429f246eb8ece96f25dd8cd06394",
+  "raw": {
+    "root-action-002.json": "e9e4841563e2ec0872a3a45d08aac0eb893ebc2ae0d93006125d530f4d8c1696",
+    "initial-install.log": "50abd011a21937590635dbd14072aff7d7cbd7d47d04a674af16550126debadb",
+    "old-runtime.log": "6f94518f60a4e8b707007515e5db5655347f9ad67e1fc33810ebfd3811e78569",
+    "cache-seed.log": "56bbd691f079812be4e34ded24b58722ef97ed06b490ca2c505d1c351a049e42",
+    "ROOT-WORKER-EXIT.json": "e5e8c0d7f05758f05c29a0de989b9adfabf85609af21f7a1714ea8f90db884de",
+    "root-action-007.json": "0dd5d8f0799bb51581858eea5a50807016297cb8a038f71a65a77ab35aee45c9",
+    "secondary.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "github-latest.json": "d01e5f2dc8f4c14b694bd546fd25b600f2da3ee824cee539b8ab02f61f2c1581",
+    "old-available-process.json": "c5d6f05e932b38c46c4bfed749ea7931f4b3d9454ea1d990829d435fb35bdae7",
+    "new-runtime.log": "6f94518f60a4e8b707007515e5db5655347f9ad67e1fc33810ebfd3811e78569",
+    "root-action-001.json": "60bf5604734e5c32cc3276a6c8d3d1cf6fa60035909aacf641be45ea07b2fbd5",
+    "root-action-005.json": "9d9c2d23ca2ec6e23003d232b0a31ead2d9802fa17bb0652e0102e55c603645b",
+    "root-action-004.json": "70547e940d9e015f4cceecc2c46be0989963169aa1ae1c7a36fce56bbf6a51e5",
+    "root-action-006.json": "011388faff8914396f9443561281c9a4224738aae7d52f0abbc2d78ce92771f1",
+    "cache-reopen.log": "56bbd691f079812be4e34ded24b58722ef97ed06b490ca2c505d1c351a049e42",
+    "root-action-008.json": "64c221ca791d86872704d07d2cc19b6f19d9a50bce251edcb96544221d017572",
+    "new-version-process.json": "1d800683dd99409db3a25b61ccd646f4e1a97e94d75a1e91f80b7137baab6238",
+    "ROOT-NEW-METADATA-FAILURE-AND-MANUAL-RETRY.json": "26653c48bd0b37b9cc5d94e0f2515956fe530efef8c3e0552258dd8208d16318",
+    "root-action-003.json": "924b746e722f2e2ff5b39d40874a732b5bf2fd0f1e10b7c381ab1473206b0360",
+    "repository.json": "752578d502fb17362e3bf6acf9a22c016788b6e9a3bcb4a7bd5bae524740357c",
+    "application.log": "78a195bc5c1f3162c85bacf030a6f6492b25a152da4bf050eb52d399978b17c5",
+    "RESULT.json": "fad985d03f96c319b8de7410f6542dcaf70958c33b448f249910d71a457d63ed",
+    "github-old-release.json": "5a1ca743d482f2365bec1c306122b766fc9df08b4961e8c5d171221fa8f7b38b",
+    "downloaded-process.json": "c5d6f05e932b38c46c4bfed749ea7931f4b3d9454ea1d990829d435fb35bdae7"
+  },
+  "limits": [
+    "One synthetic public schema4 History row preserved and reopened; no authenticated history or secure credential upgrade claimed",
+    "Actual visible native CUA observations; raw PNG files were not saved",
+    "PID-owned public DBus Check/Quit actions; no physical tray-icon claim",
+    "New-version metadata error recovered after one real manual Check; underlying cause remains unknown",
+    "Portal/app-ID and AT-SPI inspection diagnostics retained; not a warning-free installed runtime claim"
+  ]
+}

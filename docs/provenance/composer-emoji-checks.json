@@ -198,7 +198,7 @@
     "Source captures are real component with synthetic anchor, not full composer dispatch or account",
     "Native send tests use owned loopback/TLS fixtures, not live Workspace account",
     "Historical intermittent whole-window failures remain unexplained despite current full278pass",
-    "Actual public0.1.1\u21920.1.2 install/restart follows publication; not claimed yet"
+    "Actual public0.1.1→0.1.2 install/restart is recorded separately in linux-published-0.1.2-upgrade-checks.json, including one manual metadata retry"
   ],
   "localPackage": {
     "reviewSha256": "76155780bbcca84c414c06f82461d2570356f8c26904c5c8287e0a6b3eea9447",

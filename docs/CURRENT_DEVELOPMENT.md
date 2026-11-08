@@ -498,9 +498,9 @@ interrupted attempts are retained. Intermittent public metadata-check errors
 remain unexplained; no transport fix is claimed. See
 [published update checks](provenance/linux-published-0.1.1-upgrade-checks.json).
 
-The next delivery priority is everyday usage: composer emoji selection, then
-inline received-image previews, using the existing draft/send and bounded file
-transport. Smaller tested releases take precedence over licenses-page or
+The next delivery priority is everyday usage: inline received-image previews,
+using the existing bounded file transport. Composer Unicode emoji selection is
+now delivered in 0.1.2. Smaller tested releases take precedence over licenses-page or
 secondary presentation work. Full Linux parity remains the overall goal.
 
 
@@ -528,3 +528,20 @@ its Sticker tab; this small native slice supports Unicode emoji only. Wrapper,
 outside-pointer consumption, full glyph/shell and live-account acceptance remain
 open. Earlier intermittent failures retain unknown causes despite current278pass.
 See [composer emoji checks](provenance/composer-emoji-checks.json).
+
+[0.1.2](https://github.com/exordos/workspace_native/releases/tag/0.1.2) is public.
+Both master and tag CI passed. The actual 63,560,140-byte archive matched its
+GitHub digest and SHA256SUMS; ten QML modules, all five image codecs and the
+crypto/TLS probe passed with 28 relevant mappings inside that released prefix.
+A real installed 0.1.1 downloaded it automatically. One actual Install and restart
+click ended the old process normally and launched the exact 0.1.2 binary. Eight
+actual native CUA checkpoints covered both windows. Secondary launch retained
+the same new primary; normal Quit and cleanup passed. One synthetic schema4
+History row kept its logical digest and reopened through production NativeCache.
+
+The new version's first observed metadata state was a failed request. One real
+manual Check for updates recovered to You're up to date. Raw Qt HTTP/2 stream
+closure/protocol diagnostics are retained; this does not identify the underlying
+cause or establish a transport fix. This is anonymous installed-update acceptance,
+not authenticated history, credential preservation or full application parity.
+See [published 0.1.2 update checks](provenance/linux-published-0.1.2-upgrade-checks.json).
