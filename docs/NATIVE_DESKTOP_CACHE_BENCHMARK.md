@@ -5,9 +5,9 @@ settings. These Linux/Qt 6.10.2 measurements distinguish cache-component costs
 from complete application costs. They do not establish full functional parity,
 live-server savings or clean-machine acceptance.
 
-## Current schema-4 public-worker measurement
+## D12 schema-4 public-worker measurement
 
-The current cache sources (routing/response candidate D12) were measured through
+The D12 cache sources (routing/response candidate) were measured through
 `NativeCacheService` in three fresh processes against one regular-disk database.
 The workload submitted 11,000 pages of 50 large synthetic markdown messages,
 11.260 GB of input JSON, and one owned Body supplement every 32 pages. These are

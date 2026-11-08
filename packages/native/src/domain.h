@@ -12,6 +12,10 @@
 namespace workspace {
 
 bool isUuid(const QString &value);
+// ECMAScript String.trim whitespace, shared with existing Source name semantics.
+QString sourceTrimmed(const QString &value);
+// Display reference only: no URL/credential, no IO, no authority capability.
+QString imageAvatarReference(const QJsonValue &value);
 
 struct Project {
     QString uuid;

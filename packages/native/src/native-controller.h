@@ -122,7 +122,7 @@ public:
     QString error() const { return m_error; }
     QVariantList projects() const;
     QVariantList savedAccounts() const;
-    QVariantMap account() const { return m_session->publicProfile(); }
+    QVariantMap account() const;
     QString viewerDisplayName() const;
     QVariantList directChatChoices() const { return channelMemberChoices(); }
     bool directChatDirectoryVerified() const { return channelMembersVerified(); }
@@ -695,7 +695,10 @@ private:
     QVector<Stream> m_streams;
     QVector<Topic> m_topics;
     QVector<Message> m_messages;
-    QHash<QString, QString> m_names;
+    struct UserPresentation { QString name, avatar; };
+    QString userDisplayName(const QString &id, const QString &fallback = {}) const;
+    QString userAvatar(const QString &id) const;
+    QHash<QString, UserPresentation> m_names;
     QString m_viewerDirectoryName, m_viewerDirectoryOwner;
     QMap<QString, QVariantMap> m_channelChoices;
     QString m_channelDirectoryOwner;

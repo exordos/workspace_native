@@ -1516,7 +1516,7 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
         const bool pending = m_chatKeyResponse && m_chatKeyResponse->request == id && m_chatKeyResponse->busy;
         const auto status = fact.outcome.isEmpty() ? QStringLiteral("pending") : fact.outcome;
         rows.append(QVariantMap{{"id", id}, {"authorId", fact.author},
-            {"name", m_names.value(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name},
+            {"name", userDisplayName(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name},
             {"keyUuid", fact.key}, {"status", status}, {"pending", pending},
             {"ownCurrentDevice", fact.author == m_session->user() && fact.device == localDevice},
             {"canManageKeys", ordinary ? ordinaryEligible : manager}, {"hasRequestedKey", key.state == ChatKeyAvailability::Present},
@@ -2045,20 +2045,6 @@ bool boundedText(const QString &text, int maximum)
     return true;
 }
 
-QString sourceTrimmed(const QString &text)
-{
-    const auto space = [](QChar c) {
-        const auto u = c.unicode();
-        return (u >= 9 && u <= 13) || u == 0x20 || u == 0xa0 || u == 0x1680
-            || (u >= 0x2000 && u <= 0x200a) || u == 0x2028 || u == 0x2029
-            || u == 0x202f || u == 0x205f || u == 0x3000 || u == 0xfeff;
-    };
-    qsizetype begin = 0, end = text.size();
-    while (begin < end && space(text[begin])) ++begin;
-    while (end > begin && space(text[end - 1])) --end;
-    return text.mid(begin, end - begin);
-}
-
 QString directoryViewerName(const QJsonObject &row)
 {
     QStringList parts;
@@ -2209,6 +2195,25 @@ QString NativeController::creationOwnerKey() const
     return QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
 }
 
+QString NativeController::userDisplayName(const QString &id, const QString &fallback) const
+{
+    const auto found = m_names.constFind(id);
+    return found == m_names.cend() ? fallback : found->name;
+}
+
+QString NativeController::userAvatar(const QString &id) const
+{
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
+    return m_names.value(id).avatar;
+}
+
+QVariantMap NativeController::account() const
+{
+    auto profile = m_session->publicProfile();
+    if (!profile.isEmpty()) profile.insert("avatar", userAvatar(m_session->user()));
+    return profile;
+}
+
 QString NativeController::viewerDisplayName() const
 {
     if (!authenticated()) return {};
@@ -2283,7 +2288,7 @@ QString NativeController::peerDisplayName(const QString &id, const QString &fall
 {
     const auto name = m_channelDirectoryOwner == creationOwnerKey()
         ? m_channelChoices.value(id).value("displayName").toString() : QString{};
-    return name.isEmpty() ? m_names.value(id, fallback.isEmpty() ? "#" + id.left(8) : fallback) : name;
+    return name.isEmpty() ? userDisplayName(id, fallback.isEmpty() ? "#" + id.left(8) : fallback) : name;
 }
 
 QVariantMap NativeController::directPeer() const
@@ -2293,6 +2298,7 @@ QVariantMap NativeController::directPeer() const
     auto choice = m_channelDirectoryOwner == creationOwnerKey() ? m_channelChoices.value(id) : QVariantMap{};
     choice["id"] = id;
     choice["displayName"] = peerDisplayName(id);
+    choice["avatar"] = userAvatar(id);
     return choice;
 }
 
@@ -5028,7 +5034,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto username = payload.value("username").toString();
         if (!isUuid(id) || username.isEmpty())
             return false;
-        const auto previousName = peerDisplayName(id);
+        const QPointer<NativeController> guard(this);
+        const auto owner = creationOwnerKey();
+        const auto generation = m_api->generation(), catalog = m_catalog;
+        const auto current = [&] { return guard && owner == creationOwnerKey()
+            && generation == m_api->generation() && catalog == m_catalog; };
+        const auto previousName = peerDisplayName(id), previousAvatar = userAvatar(id);
         const bool directPeerVisible = std::any_of(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &stream) {
             return stream.privateStream && stream.directUser == id;
         });
@@ -5037,20 +5048,18 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         else if (m_channelDirectoryOwner == creationOwnerKey() && m_channelDirectoryValid && id != m_session->user())
             m_channelChoices.insert(id.toLower(), *choice);
         staleCache(NativeCache::Kind::Users);
+        if (!current()) return true;
         if (id == m_session->user() && m_usersVerified) {
             m_viewerDirectoryName = directoryViewerName(payload);
             m_viewerDirectoryOwner = creationOwnerKey();
         }
         auto name = (payload.value("first_name").toString() + " "
                      + payload.value("last_name").toString()).trimmed();
-        m_names.insert(id, name.isEmpty() ? username : name);
-        const QPointer<NativeController> guard(this);
-        const auto owner = creationOwnerKey();
-        const auto generation = m_api->generation();
-        if (directPeerVisible && peerDisplayName(id) != previousName) emit streamsChanged();
-        if (!guard || owner != creationOwnerKey() || generation != m_api->generation()) return true;
+        m_names.insert(id, {name.isEmpty() ? username : name, imageAvatarReference(payload.value("avatar"))});
+        if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar)) emit streamsChanged();
+        if (!current()) return true;
         emit messagesChanged();
-        if (!guard || owner != creationOwnerKey() || generation != m_api->generation()) return true;
+        if (!current()) return true;
     }
     if (kind == "message.created" || kind == "message.updated") {
         const QPointer<NativeController> guard(this);
@@ -5312,6 +5321,7 @@ void NativeController::persistStreams()
 
 QVariantList NativeController::streams() const
 {
+    const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
     QVariantList result;
     for (const auto &stream : m_streams) {
         if (stream.archived) continue;
@@ -5322,6 +5332,8 @@ QVariantList NativeController::streams() const
             {"peerId", stream.privateStream ? stream.directUser : QString{}},
             {"displayName", stream.privateStream && isUuid(stream.directUser)
                 ? peerDisplayName(stream.directUser) : stream.name},
+            {"avatar", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
+                ? m_names.value(stream.directUser).avatar : QString{}},
             {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}});
     }
     return result;
@@ -5353,6 +5365,7 @@ QVariantList NativeController::topics() const
 
 QVariantList NativeController::messages() const
 {
+    const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
     const bool canReadChat = chatReadAllowed();
     const auto chat = encryption();
     const bool canRequestKey = chat.value("canRequest").toBool();
@@ -5371,7 +5384,7 @@ QVariantList NativeController::messages() const
     const bool authorityCurrent = chatContext(m_chatEpoch, m_selection) && m_chatAuthority.ready
         && m_chatAuthority.epoch == m_chatEpoch && m_chatAuthority.owner == ownerKey() && m_chatAuthority.stream == m_stream;
     const auto displayName = [this](const QString &id) {
-        const auto name = m_names.value(id);
+        const auto name = userDisplayName(id);
         return name.trimmed().isEmpty() ? QStringLiteral("#") + id.left(8) : name;
     };
     const auto responseMetadata = [&](const Message &message) -> QVariantMap {
@@ -5475,7 +5488,7 @@ QVariantList NativeController::messages() const
             const auto users = message.reactionUsers.value(name);
             QVariantList participants;
             for (const auto &id : users) {
-                auto displayName = m_names.value(id);
+                auto displayName = userDisplayName(id);
                 if (displayName.isEmpty()) displayName = '#' + id.left(8);
                 participants.append(QVariantMap{{"id", id}, {"name", displayName}});
             }
@@ -5493,7 +5506,8 @@ QVariantList NativeController::messages() const
         const auto announcement = announcementMetadata(message);
         result.append(QVariantMap{{"id", message.uuid}, {"authorId", message.author},
             {"topicId", message.topic}, {"topicName", topicName},
-            {"author", m_names.value(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
+            {"author", userDisplayName(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
+            {"authorAvatar", avatarsOwned ? m_names.value(message.author).avatar : QString{}},
             {"content", content}, {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
@@ -6017,10 +6031,10 @@ void NativeController::reloadSnapshot()
         [this, catalog](const QJsonArray &rows, bool authoritative) {
         if (catalog != m_catalog) return false;
         if (!authoritative && !m_names.isEmpty()) return true;
-        QMap<QString, QString> previousDirectNames;
+        QMap<QString, QPair<QString, QString>> previousDirectPresentation;
         for (const auto &stream : m_streams)
             if (stream.privateStream && isUuid(stream.directUser))
-                previousDirectNames.insert(stream.directUser, peerDisplayName(stream.directUser));
+                previousDirectPresentation.insert(stream.directUser, qMakePair(peerDisplayName(stream.directUser), userAvatar(stream.directUser)));
         updateChannelDirectory(rows, authoritative);
         m_names.clear();
         if (authoritative) {
@@ -6037,12 +6051,12 @@ void NativeController::reloadSnapshot()
             if (name.isEmpty())
                 name = json.value("username").toString();
             if (isUuid(id) && !name.isEmpty())
-                m_names.insert(id, name);
+                m_names.insert(id, {name, imageAvatarReference(json.value("avatar"))});
         }
         m_usersVerified = authoritative;
         bool labelsChanged = false;
-        for (auto it = previousDirectNames.cbegin(); it != previousDirectNames.cend(); ++it)
-            if (it.value() != peerDisplayName(it.key())) { labelsChanged = true; break; }
+        for (auto it = previousDirectPresentation.cbegin(); it != previousDirectPresentation.cend(); ++it)
+            if (it.value() != qMakePair(peerDisplayName(it.key()), userAvatar(it.key()))) { labelsChanged = true; break; }
         const QPointer<NativeController> guard(this);
         const auto owner = creationOwnerKey();
         const auto generation = m_api->generation();

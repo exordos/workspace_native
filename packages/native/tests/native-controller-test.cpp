@@ -647,9 +647,259 @@ public:
     }
 };
 
+// Private additive test fixture only. Actual existing Users HTTP collection and
+// canonical existing-direct GET flow; no controller/QML directory injection.
+static const QString avatarReferenceA = "urn:image:aaaaaaaa-0000-4000-8000-000000000001";
+static const QString avatarReferenceB = "urn:image:bbbbbbbb-0000-4000-8000-000000000002";
+
+static QJsonObject avatarReferencePerson(const QString &id, const QString &username,
+                                        const QJsonValue &avatar = QJsonValue(QJsonValue::Undefined))
+{
+    QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"username", username},
+        {"source", "iam"}, {"status", "offline"}, {"first_name", QJsonValue::Null},
+        {"last_name", QJsonValue::Null}, {"email", username + "@example.invalid"},
+        {"last_ping_at", "2026-01-02T10:00:00Z"}, {"created_at", "2026-01-02T10:00:00Z"},
+        {"updated_at", "2026-01-02T10:00:00Z"}};
+    if (!avatar.isUndefined()) row.insert("avatar", avatar);
+    return row;
+}
+
+class AvatarReferenceFixture {
+public:
+    // Captured data outlives DirectChatFixture's server/controller callbacks.
+    QJsonArray directory;
+    DirectChatFixture direct;
+    explicit AvatarReferenceFixture(const QJsonValue &avatar)
+    {
+        directory = {avatarReferencePerson(userId, "avatar-self", avatar),
+            avatarReferencePerson(channelMemberA, "avatar-peer", avatar),
+            avatarReferencePerson(channelMemberB, "other-peer")};
+        direct.seed();
+        direct.fixture.authentication = [](const Request &request) {
+            auto response = sessionResponse(request);
+            if (request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject(); auto profile = raw.value("user_info").toObject();
+                profile["avatar"] = avatarReferenceB; raw["user_info"] = profile; response.data = raw;
+            }
+            return response;
+        }; // Decoy IAM field cannot replace the actual Workspace Users source.
+        direct.fixture.users = [this](const Request &) { return Response{directory}; };
+        direct.fixture.messages = [](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("stream_uuid") != directId
+                || query.queryItemValue("topic_uuid") != channelDefault) return Response{QJsonArray{}};
+            auto own = message("Actual own image-reference witness", messageId, channelDefault);
+            own["stream_uuid"] = directId;
+            auto peer = message("Actual peer image-reference witness", returnedId, channelDefault);
+            peer["stream_uuid"] = directId; peer["author_uuid"] = channelMemberA; peer["is_own"] = false;
+            return Response{QJsonArray{own, peer}};
+        };
+    }
+    bool start()
+    {
+        auto &c = direct.fixture.controller;
+        if (!direct.fixture.start()
+            || !QTest::qWaitFor([&] { return c.directChatDirectoryVerified(); }, 2000)) return false;
+        c.startDirectChat(channelMemberA);
+        if (!QTest::qWaitFor([&] { return c.directChatPhase() == "ready"
+            && c.selectedStream() == directId; }, 2000)) return false;
+        c.selectTopic(channelDefault);
+        return QTest::qWaitFor([&] { return !c.busy() && c.messages().size() == 2; }, 2000);
+    }
+    QVariantMap sidebar() const
+    {
+        for (const auto &row : direct.fixture.controller.streams())
+            if (row.toMap().value("id").toString() == directId) return row.toMap();
+        return {};
+    }
+};
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void avatarImageReferencesUseTheActualUsersCollectionAcrossPublicProjections_data()
+    {
+        QTest::addColumn<QJsonValue>("wireAvatar");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("image") << QJsonValue(avatarReferenceA) << avatarReferenceA;
+        QTest::newRow("feff-trim") << QJsonValue(QString(QChar(0xfeff)) + avatarReferenceA + QChar(0xfeff)) << avatarReferenceA;
+        QTest::newRow("nel-not-trimmed") << QJsonValue(QString(QChar(0x85)) + avatarReferenceA + QChar(0x85)) << QString{};
+        QTest::newRow("nonstring-object") << QJsonValue(QJsonObject{{"image", avatarReferenceA}}) << QString{};
+        QTest::newRow("extra-suffix") << QJsonValue(avatarReferenceA + "/extra") << QString{};
+        QTest::newRow("nil-uuid-reference") << QJsonValue("urn:image:00000000-0000-0000-0000-000000000000")
+            << QString("urn:image:00000000-0000-0000-0000-000000000000");
+        const QString upperUuid = "urn:image:" + avatarReferenceA.mid(10).toUpper();
+        QTest::newRow("uppercase-uuid") << QJsonValue(upperUuid) << upperUuid;
+        QTest::newRow("outer-whitespace") << QJsonValue("  " + avatarReferenceA + "\n") << avatarReferenceA;
+        QTest::newRow("absent") << QJsonValue(QJsonValue::Undefined) << QString{};
+        QTest::newRow("null") << QJsonValue(QJsonValue::Null) << QString{};
+        QTest::newRow("invalid-image-id") << QJsonValue("urn:image:not-a-uuid") << QString{};
+        QTest::newRow("other-source-urn") << QJsonValue("urn:url:https://images.example.invalid/avatar.png") << QString{};
+    }
+    void avatarImageReferencesUseTheActualUsersCollectionAcrossPublicProjections()
+    {
+        QFETCH(QJsonValue, wireAvatar); QFETCH(QString, expected);
+        AvatarReferenceFixture test(wireAvatar); auto &c = test.direct.fixture.controller;
+        QVERIFY2(test.start(), "Actual Users/direct GET/topic history fixture must settle before avatar oracles");
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(test.direct.usersGets, 1); QCOMPARE(test.direct.gets, 1); QCOMPARE(test.direct.posts, 0);
+        QVERIFY(c.directChatDirectoryVerified()); QVERIFY(c.isDirectConversation());
+        QCOMPARE(c.selectedStream(), directId); QCOMPARE(c.selectedTopic(), channelDefault);
+        QCOMPARE(c.directPeer().value("id").toString(), channelMemberA);
+        QCOMPARE(c.directPeer().value("displayName").toString(), QString("avatar-peer"));
+        QCOMPARE(c.viewerDisplayName(), QString("avatar-self"));
+        const auto sidebar = test.sidebar(); QVERIFY(!sidebar.isEmpty());
+        QCOMPARE(sidebar.value("peerId").toString(), channelMemberA);
+        QCOMPARE(sidebar.value("displayName").toString(), QString("avatar-peer"));
+        QCOMPARE(c.channelMemberChoices().first().toMap(), QVariantMap({{"id", channelMemberA},
+            {"displayName", "avatar-peer"}, {"username", "avatar-peer"}, {"email", "avatar-peer@example.invalid"}}));
+        const auto peer = modelMessage(c, returnedId), own = modelMessage(c, messageId);
+        QCOMPARE(peer.value("authorId").toString(), channelMemberA);
+        QCOMPARE(peer.value("author").toString(), QString("avatar-peer"));
+        QVERIFY(!peer.value("own").toBool()); QVERIFY(own.value("own").toBool());
+        QCOMPARE(peer.value("content").toString(), QString("Actual peer image-reference witness"));
+        QCOMPARE(c.account().value("uuid").toString(), userId);
+        // Proposed additive public display contract; no loader invocation.
+        QCOMPARE(c.account().value("avatar").toString(), expected);
+        QCOMPARE(c.directPeer().value("avatar").toString(), expected);
+        QCOMPARE(sidebar.value("avatar").toString(), expected);
+        QCOMPARE(peer.value("authorAvatar").toString(), expected);
+        QCOMPARE(own.value("authorAvatar").toString(), expected);
+        for (const auto &request : test.direct.fixture.server.requests)
+            QVERIFY(!request.target.path().contains("/files/"));
+    }
+
+    void avatarOnlyRealtimeUpdatesNotifyEveryAffectedProjectionAndClearOldReferences()
+    {
+        AvatarReferenceFixture test(QJsonValue::Null); auto &c = test.direct.fixture.controller;
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto accountBefore = c.account();
+        const auto context = c.directChatContextKey();
+        const auto names = qMakePair(c.directPeer().value("displayName"), modelMessage(c, returnedId).value("author"));
+        QSignalSpy state(&c, &NativeController::stateChanged), streams(&c, &NativeController::streamsChanged),
+            messages(&c, &NativeController::messagesChanged);
+        QVERIFY(state.isValid() && streams.isValid() && messages.isValid());
+        const QList<QJsonValue> values{QJsonValue(avatarReferenceA), QJsonValue(avatarReferenceB),
+            QJsonValue::Null, QJsonValue("urn:image:not-a-uuid"), QJsonValue(avatarReferenceA)};
+        const QStringList expected{avatarReferenceA, avatarReferenceB, {}, {}, avatarReferenceA};
+        int epoch = 30;
+        for (qsizetype i = 0; i < values.size(); ++i) {
+            const auto beforePeer = c.directPeer().value("avatar").toString();
+            const auto beforeViewer = c.account().value("avatar").toString();
+            state.clear(); streams.clear(); messages.clear();
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                avatarReferencePerson(channelMemberA, "avatar-peer", values[i]), epoch++)));
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                avatarReferencePerson(userId, "avatar-self", values[i]), epoch++)));
+            QCOMPARE(c.directPeer().value("avatar").toString(), expected[i]);
+            QCOMPARE(test.sidebar().value("avatar").toString(), expected[i]);
+            QCOMPARE(modelMessage(c, returnedId).value("authorAvatar").toString(), expected[i]);
+            QCOMPARE(modelMessage(c, messageId).value("authorAvatar").toString(), expected[i]);
+            QCOMPARE(c.account().value("avatar").toString(), expected[i]);
+            if (beforePeer != expected[i]) { QVERIFY(streams.size() > 0); QVERIFY(messages.size() > 0); }
+            if (beforeViewer != expected[i]) QVERIFY(state.size() > 0);
+            QCOMPARE(c.directPeer().value("displayName"), names.first);
+            QCOMPARE(modelMessage(c, returnedId).value("author"), names.second);
+            QCOMPARE(c.account().value("displayName"), accountBefore.value("displayName"));
+            QVERIFY(c.directChatDirectoryVerified()); // Malformed avatar is not malformed creator identity.
+            QCOMPARE(c.directChatContextKey(), context);
+            QCOMPARE(c.selectedStream(), directId); QCOMPARE(c.selectedTopic(), channelDefault);
+        }
+        auto foreign = controllerEvent("user.updated", avatarReferencePerson(channelMemberA, "avatar-peer", avatarReferenceB), epoch++);
+        foreign["user_uuid"] = channelMemberB;
+        state.clear(); streams.clear(); messages.clear();
+        QVERIFY(!c.applyRealtimeEvent(foreign));
+        QCOMPARE(c.directPeer().value("avatar").toString(), avatarReferenceA);
+        QCOMPARE(state.size(), 0); QCOMPARE(streams.size(), 0); QCOMPARE(messages.size(), 0);
+        QCOMPARE(test.direct.posts, 0); QCOMPARE(test.direct.usersGets, 1);
+        for (const auto &request : test.direct.fixture.server.requests)
+            QVERIFY(!request.target.path().contains("/files/"));
+        c.logout(); QVERIFY(c.account().isEmpty()); QVERIFY(c.directPeer().isEmpty());
+        QVERIFY(c.streams().isEmpty()); QVERIFY(c.messages().isEmpty());
+    }
+
+    void avatarDisplayDoesNotInheritAnUnrelatedCreatorChoiceFailure()
+    {
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(c.directChatDirectoryVerified());
+        auto unrelated = test.directory.at(2).toObject();
+        unrelated["first_name"] = QString(129, 'x'); // Existing creator bound; unrelated valid peers remain named.
+        test.directory.replace(2, unrelated);
+        const auto before = test.direct.usersGets;
+        c.refresh(); QTRY_COMPARE(test.direct.usersGets, before + 1);
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_VERIFY(!c.busy());
+        QVERIFY(!c.directChatDirectoryVerified()); QVERIFY(!c.channelMembersVerified());
+        QVERIFY(!c.canStartDirectChatWith(channelMemberA)); QVERIFY(c.channelMemberChoices().isEmpty());
+        QVERIFY(c.isDirectConversation()); QCOMPARE(c.directPeer().value("id").toString(), channelMemberA);
+        QCOMPARE(c.directPeer().value("displayName").toString(), QString("avatar-peer"));
+        QCOMPARE(c.viewerDisplayName(), QString("avatar-self"));
+        QCOMPARE(modelMessage(c, returnedId).value("author").toString(), QString("avatar-peer"));
+        QCOMPARE(c.account().value("avatar").toString(), avatarReferenceA);
+        QCOMPARE(c.directPeer().value("avatar").toString(), avatarReferenceA);
+        QCOMPARE(test.sidebar().value("avatar").toString(), avatarReferenceA);
+        QCOMPARE(modelMessage(c, returnedId).value("authorAvatar").toString(), avatarReferenceA);
+        QCOMPARE(test.direct.posts, 0); // Display data did not restore creation authority.
+    }
+
+    void delayedUsersFromThePreviousOwnerCannotPublishAvatarReferences()
+    {
+        // All references captured by HTTP callbacks outlive Fixture destruction.
+        bool newOwner = false, holdNext = false;
+        int usersGets = 0;
+        std::function<void()> releaseOld;
+        Fixture f;
+        f.users = [&](const Request &) {
+            ++usersGets;
+            Response response{QJsonArray{avatarReferencePerson(newOwner ? returnedId : userId,
+                newOwner ? "new-viewer" : "old-viewer", newOwner ? avatarReferenceB : avatarReferenceA),
+                avatarReferencePerson(channelMemberA, newOwner ? "new-peer" : "old-peer",
+                    newOwner ? avatarReferenceB : avatarReferenceA)}};
+            if (holdNext) { holdNext = false; response.defer = [&](std::function<void()> send) { releaseOld = std::move(send); }; }
+            return response;
+        };
+        f.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (newOwner && request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject(); auto user = raw.value("user_info").toObject();
+                user["uuid"] = returnedId; raw["user_info"] = user; response.data = raw;
+            }
+            return response;
+        };
+        f.messages = [](const Request &) {
+            auto row = message("Actual owner-bound history"); row["author_uuid"] = channelMemberA; row["is_own"] = false;
+            return Response{QJsonArray{row}};
+        };
+        QVERIFY(f.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.controller.viewerDisplayName(), QString("old-viewer")); QCOMPARE(usersGets, 1);
+        holdNext = true; f.controller.refresh(); QTRY_COMPARE(usersGets, 2); QTRY_VERIFY(bool(releaseOld));
+        QPointer<QNetworkReply> oldReply;
+        for (auto *reply : f.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path() == "/api/workspace/v1/users/") oldReply = reply;
+        QVERIFY(oldReply); QVERIFY(!oldReply->isFinished());
+        const auto oldGeneration = f.api.generation();
+        f.controller.logout();
+        QVERIFY(f.controller.account().isEmpty()); QVERIFY(f.controller.messages().isEmpty());
+        QTRY_VERIFY(oldReply.isNull() || oldReply->isFinished());
+        newOwner = true; QVERIFY(f.start());
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.controller.account().value("uuid").toString(), returnedId);
+        QCOMPARE(f.controller.viewerDisplayName(), QString("new-viewer")); QCOMPARE(usersGets, 3);
+        QCOMPARE(modelMessage(f.controller, messageId).value("author").toString(), QString("new-peer"));
+        QVERIFY(f.api.generation() > oldGeneration);
+        QCOMPARE(f.controller.account().value("avatar").toString(), avatarReferenceB);
+        QCOMPARE(modelMessage(f.controller, messageId).value("authorAvatar").toString(), avatarReferenceB);
+        releaseOld(); releaseOld = {}; // Existing defer writer guards cancelled socket; no raw pointer access.
+        QVERIFY(oldReply.isNull() || oldReply->isFinished());
+        QCOMPARE(f.controller.viewerDisplayName(), QString("new-viewer"));
+        QCOMPARE(f.controller.account().value("avatar").toString(), avatarReferenceB);
+        QCOMPARE(modelMessage(f.controller, messageId).value("authorAvatar").toString(), avatarReferenceB);
+        auto oldEvent = controllerEvent("user.updated", avatarReferencePerson(channelMemberA, "old-peer", avatarReferenceA), 90);
+        QVERIFY(!f.controller.applyRealtimeEvent(oldEvent)); // Envelope belongs to old userId.
+        QCOMPARE(modelMessage(f.controller, messageId).value("authorAvatar").toString(), avatarReferenceB);
+    }
+
     void genericMessageAuthorUsesSourceUnknownFallback_data()
     {
         QTest::addColumn<QString>("scenario");

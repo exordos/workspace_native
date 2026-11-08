@@ -23,14 +23,14 @@ inspection messages remain in the raw logs. This accepts the anonymous lifecycle
 on this host; keyring/live account, desktop registration, installer and full
 Linux parity remain open. See [current Linux runtime checks](provenance/current-linux-runtime-checks.json).
 
-The unchanged current schema-4 cache also completed a fresh 11,000-page public
+The D12 schema-4 cache completed a fresh 11,000-page public
 worker fill, physical default-budget overflow, 10 GB to 1 GB reduction and two
 process restarts with exact newest-page/Body/fallback retention. Fill took
 275.145 s and the reduction operation 257.376 s; helper peak RSS was 30,752 KiB.
 All source/raw hashes, process cleanup and synthetic database removal were
 verified. These are component measurements; several-minute maintenance and the
 pre-existing huge-freelist case remain performance work. See
-[current cache measurements](NATIVE_DESKTOP_CACHE_BENCHMARK.md#current-schema-4-public-worker-measurement).
+[current cache measurements](NATIVE_DESKTOP_CACHE_BENCHMARK.md#d12-schema-4-public-worker-measurement).
 
 FileClient now has an additive in-memory download mode for the upcoming user
 images. It reuses the existing exact UUID metadata/download pipeline and enforces
@@ -40,6 +40,23 @@ passed 57 Qt cases (29 new logical rows plus unchanged old attachment coverage)
 and Locale14 passed with two reviewed Russian messages. This accepts the C++
 transfer capability; image decoding, bounded shared demand and rendered avatars
 remain separate work. See [memory transfer checks](provenance/avatar-memory-transfer-checks.json).
+
+Uploaded-image references now survive the actual Users collection, avatar-only
+realtime updates, the existing owned response cache and the four public display
+projections. The existing name directory carries the extra optional fact; creator
+choice maps, authority and name fallbacks remain unchanged. Invalid/unsupported
+references fall back independently of valid user identity. The shared parser uses
+the source avatar UUID shape and exact ECMAScript trimming.
+
+A distinct regression reproduced Users-cache rejection of valid null first_name,
+last_name or email. Only those three Source-optional fields now allow null;
+nonstrings, strict name/display_name and other cache kinds retain their policy.
+Actual missing-reference and nullable-admission REDs became green; complete
+Cache129, Service53, Domain34 and Controller770 passed with no runtime warnings or
+skips. The original runner expected obsolete Domain13 metadata and stopped after
+actual Domain34 PASS; a fresh exact-source continuation ran only Controller770.
+[Avatar reference checks](provenance/avatar-reference-checks.json) retain both
+segments and the preserved REDs. Main image rendering remains the next gate.
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,

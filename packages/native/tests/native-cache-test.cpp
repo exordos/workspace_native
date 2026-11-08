@@ -82,6 +82,130 @@ bool legacyWithoutRowidCache(const QString &directory)
 class NativeCacheTest final : public QObject {
     Q_OBJECT
 private slots:
+    void nullableSourceUserFieldsDoNotPreventAvatarReferencePersistence_data()
+    {
+        QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("accepted");
+        for (const auto *field : {"first_name", "last_name", "email", "all-null"})
+            QTest::newRow(field) << QString::fromLatin1(field) << true;
+        for (const auto *field : {"first_name", "last_name", "email"})
+            for (const auto *type : {"number", "object", "array"}) {
+                const auto label = QString::fromLatin1(field) + "-" + QString::fromLatin1(type);
+                QTest::newRow(qPrintable(label)) << label << false;
+            }
+        QTest::newRow("name-null-stays-invalid") << QString("name-null") << false;
+        QTest::newRow("display-name-null-stays-invalid") << QString("display_name-null") << false;
+    }
+    void nullableSourceUserFieldsDoNotPreventAvatarReferencePersistence()
+    {
+        QFETCH(QString, scenario); QFETCH(bool, accepted);
+        const QString avatar = "urn:image:aaaaaaaa-0000-4000-8000-000000000001";
+        const NativeCache::Key users{NativeCache::Kind::Users, {}, {}, {}};
+        QJsonObject person{{"uuid", User}, {"project_id", Project}, {"username", "nullable-source-user"},
+            {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "nullable@example.invalid"}, {"avatar", avatar}};
+        if (scenario == "all-null") {
+            for (const auto *field : {"first_name", "last_name", "email"}) person[field] = QJsonValue::Null;
+        } else if (accepted) person[scenario] = QJsonValue::Null;
+        else if (scenario.endsWith("-null")) person[scenario.left(scenario.size() - 5)] = QJsonValue::Null;
+        else {
+            const auto separator = scenario.lastIndexOf('-');
+            const auto field = scenario.left(separator), type = scenario.mid(separator + 1);
+            person[field] = type == "number" ? QJsonValue(7) : type == "object"
+                ? QJsonValue(QJsonObject{{"nested", "not-a-string"}}) : QJsonValue(QJsonArray{"not-a-string"});
+        }
+        QTemporaryDir directory;
+        {
+            NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
+            if (!accepted) {
+                QVERIFY(!cache.put(cache.lease(), users, {person}));
+                QVERIFY(!cache.get(cache.lease(), users)); QVERIFY(cache.available());
+                QCOMPARE(cache.stats().entries, 0); return;
+            }
+            QVERIFY(cache.put(cache.lease(), users, {person})); // Distinct original nullable-DTO admission RED.
+        }
+        NativeCache reopened(directory.path()); QVERIFY(reopened.open(Server, Project, User));
+        const auto saved = reopened.get(reopened.lease(), users); QVERIFY(saved); QCOMPARE(saved->rows.size(), 1);
+        const auto actual = saved->rows.first().toObject();
+        for (const auto *field : {"uuid", "project_id", "username", "first_name", "last_name", "email"}) {
+            QVERIFY(actual.contains(field)); QCOMPARE(actual.value(field), person.value(field));
+        }
+        QCOMPARE(actual.value("avatar").toString(), avatar);
+        QVERIFY(!saved->fresh); QVERIFY(reopened.diskUsageBytes() <= reopened.diskLimitBytes());
+    }
+
+    void optionalImageAvatarReferenceSurvivesOwnedUsersCacheReopen_data()
+    {
+        QTest::addColumn<QJsonValue>("wireAvatar"); QTest::addColumn<QString>("expected");
+        const QString image = "urn:image:aaaaaaaa-0000-4000-8000-000000000001";
+        QTest::newRow("image") << QJsonValue(image) << image;
+        QTest::newRow("feff-trim") << QJsonValue(QString(QChar(0xfeff)) + image + QChar(0xfeff)) << image;
+        QTest::newRow("nel-not-trimmed") << QJsonValue(QString(QChar(0x85)) + image + QChar(0x85)) << QString{};
+        QTest::newRow("nonstring-object") << QJsonValue(QJsonObject{{"image", image}}) << QString{};
+        QTest::newRow("extra-suffix") << QJsonValue(image + "/extra") << QString{};
+        QTest::newRow("nil-uuid-reference") << QJsonValue("urn:image:00000000-0000-0000-0000-000000000000")
+            << QString("urn:image:00000000-0000-0000-0000-000000000000");
+        const QString upperUuid = "urn:image:" + image.mid(10).toUpper();
+        QTest::newRow("uppercase-uuid") << QJsonValue(upperUuid) << upperUuid;
+        QTest::newRow("outer-whitespace") << QJsonValue(" " + image + "\n") << image;
+        QTest::newRow("absent") << QJsonValue(QJsonValue::Undefined) << QString{};
+        QTest::newRow("null") << QJsonValue(QJsonValue::Null) << QString{};
+        QTest::newRow("invalid-id") << QJsonValue("urn:image:not-a-uuid") << QString{};
+        QTest::newRow("image-query") << QJsonValue(image + "?url=https://outside.example.invalid") << QString{};
+        QTest::newRow("wrong-prefix-case") << QJsonValue("URN:image:aaaaaaaa-0000-4000-8000-000000000001") << QString{};
+        QTest::newRow("other-source-urn") << QJsonValue("urn:url:https://images.example.invalid/avatar.png") << QString{};
+    }
+    void optionalImageAvatarReferenceSurvivesOwnedUsersCacheReopen()
+    {
+        QFETCH(QJsonValue, wireAvatar); QFETCH(QString, expected);
+        QTemporaryDir directory; const NativeCache::Key users{NativeCache::Kind::Users, {}, {}, {}};
+        QJsonObject person{{"uuid", User}, {"project_id", Project}, {"username", "avatar-self"},
+            {"first_name", "Cassandra"}, {"email", "avatar-self@example.invalid"},
+            {"credentials", QJsonObject{{"must_not_persist", "synthetic"}}}};
+        if (!wireAvatar.isUndefined()) person["avatar"] = wireAvatar;
+        {
+            NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
+            QVERIFY(cache.put(cache.lease(), users, {person}));
+            const auto saved = cache.get(cache.lease(), users); QVERIFY(saved); QCOMPARE(saved->rows.size(), 1);
+            QCOMPARE(saved->rows.first().toObject().value("username").toString(), QString("avatar-self"));
+            QVERIFY(!saved->rows.first().toObject().contains("credentials"));
+        }
+        NativeCache reopened(directory.path()); QVERIFY(reopened.open(Server, Project, User));
+        const auto saved = reopened.get(reopened.lease(), users); QVERIFY(saved); QVERIFY(!saved->fresh);
+        const auto actual = saved->rows.first().toObject();
+        QCOMPARE(actual.value("uuid").toString(), User); QCOMPARE(actual.value("first_name").toString(), QString("Cassandra"));
+        QCOMPARE(actual.value("email").toString(), QString("avatar-self@example.invalid"));
+        QVERIFY(!actual.contains("credentials"));
+        if (expected.isEmpty()) QVERIFY(!actual.contains("avatar"));
+        else QCOMPARE(actual.value("avatar").toString(), expected); // Old whitelist loses this actual witness.
+        QVERIFY(reopened.diskUsageBytes() <= reopened.diskLimitBytes());
+        QCOMPARE(reopened.diskLimitBytes(), NativeCache::DefaultDiskLimitBytes);
+    }
+
+    void imageAvatarReferenceReplacementNullAndForeignLeaseKeepTheSameOwnedUsersKey()
+    {
+        QTemporaryDir directory; NativeCache cache(directory.path());
+        const NativeCache::Key users{NativeCache::Kind::Users, {}, {}, {}};
+        const QString first = "urn:image:aaaaaaaa-0000-4000-8000-000000000001";
+        const QString second = "urn:image:bbbbbbbb-0000-4000-8000-000000000002";
+        QJsonObject person{{"uuid", User}, {"project_id", Project}, {"username", "avatar-self"}, {"avatar", first}};
+        QVERIFY(cache.open(Server, Project, User)); const auto oldLease = cache.lease();
+        QVERIFY(cache.put(oldLease, users, {person}));
+        person["avatar"] = second; QVERIFY(cache.put(cache.lease(), users, {person}));
+        QCOMPARE(cache.stats().entries, 1);
+        const auto replacement = cache.get(cache.lease(), users); QVERIFY(replacement);
+        QCOMPARE(replacement->rows.first().toObject().value("avatar").toString(), second);
+        person["avatar"] = QJsonValue::Null; QVERIFY(cache.put(cache.lease(), users, {person}));
+        const auto cleared = cache.get(cache.lease(), users); QVERIFY(cleared);
+        QVERIFY(!cleared->rows.first().toObject().contains("avatar"));
+        QVERIFY(cache.open(Server, Project, UserB));
+        person["avatar"] = second; QVERIFY(cache.put(cache.lease(), users, {person}));
+        person["avatar"] = first; QVERIFY(!cache.put(oldLease, users, {person}));
+        const auto other = cache.get(cache.lease(), users); QVERIFY(other);
+        QCOMPARE(other->rows.first().toObject().value("avatar").toString(), second);
+        QVERIFY(cache.open(Server, Project, User));
+        const auto prior = cache.get(cache.lease(), users); QVERIFY(prior);
+        QVERIFY(!prior->rows.first().toObject().contains("avatar")); // Other owner did not replace this cleared reference.
+    }
+
     // Separate compatibility supplement. Missing raw viewer is allowed only for
     // a typed partial mask over the already-owned same-route saved body.
     void ownedBodyPartialMasksInheritViewerWithoutOwningPlacement_data()

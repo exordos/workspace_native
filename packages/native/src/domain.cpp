@@ -10,6 +10,31 @@
 
 namespace workspace {
 
+QString sourceTrimmed(const QString &text)
+{
+    const auto space = [](QChar c) {
+        const auto u = c.unicode();
+        return (u >= 9 && u <= 13) || u == 0x20 || u == 0xa0 || u == 0x1680
+            || (u >= 0x2000 && u <= 0x200a) || u == 0x2028 || u == 0x2029
+            || u == 0x202f || u == 0x205f || u == 0x3000 || u == 0xfeff;
+    };
+    qsizetype begin = 0, end = text.size();
+    while (begin < end && space(text[begin])) ++begin;
+    while (end > begin && space(text[end - 1])) --end;
+    return text.mid(begin, end - begin);
+}
+
+QString imageAvatarReference(const QJsonValue &value)
+{
+    if (!value.isString()) return {};
+    const auto avatar = sourceTrimmed(value.toString());
+    // Match Source's avatar UUID shape, including the nil UUID. isUuid() is a
+    // stronger non-null domain identity predicate and remains unchanged.
+    static const QRegularExpression pattern(QStringLiteral(
+        "\\Aurn:image:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\z"));
+    return pattern.match(avatar).hasMatch() ? avatar : QString{};
+}
+
 bool validReactionName(const QString &name)
 {
     // Match the web DTO's non-empty String.trim() predicate. NEL is not

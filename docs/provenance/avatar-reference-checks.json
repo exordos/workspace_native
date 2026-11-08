@@ -1,0 +1,105 @@
+{
+  "schema": "avatar-reference-and-nullable-users-checks-v1",
+  "parent": "6160769f90eb7d9f12fa4d515e3ce42d9b984c8b",
+  "sourceManifestSha256": "20f9e0d226aeb2b6bc3ca027adcff92b2af5b668b8a5df0a070c2c5133b8465a",
+  "scope": "Validated uploaded-image user references in existing presentation directory/public models and Users response cache; no renderer/image-byte cache/new schema. Null allowed only in Source optional first_name/last_name/email.",
+  "actualRed": [
+    {
+      "label": "avatar-cache-reference-red17",
+      "totals": [
+        "Totals: 11 passed, 6 failed, 0 skipped, 0 blacklisted, 559ms"
+      ],
+      "stdoutSha256": "3cccb665e7166a3edda42f965c59bf45a1d950948348952f7c53c5d18973dcb9",
+      "stderrBytes": 0,
+      "wallSeconds": 0.616
+    },
+    {
+      "label": "nullable-users-admission-red17",
+      "totals": [
+        "Totals: 13 passed, 4 failed, 0 skipped, 0 blacklisted, 242ms"
+      ],
+      "stdoutSha256": "bae6f44c926ead65c3b62b7e39a794e1c415bcb75458f219803cc7a1cc935170",
+      "stderrBytes": 0,
+      "wallSeconds": 0.265
+    },
+    {
+      "label": "avatar-controller-reference-red17",
+      "totals": [
+        "Totals: 9 passed, 8 failed, 0 skipped, 0 blacklisted, 9770ms"
+      ],
+      "stdoutSha256": "1efa955a0f44c04d330e21cd952b6b0a87171fa79694345d7ad9a470612c83e1",
+      "stderrBytes": 0,
+      "wallSeconds": 9.848
+    }
+  ],
+  "greenSegments": [
+    {
+      "label": "avatar-cache-reference-and-nullable-green32",
+      "totals": [
+        "Totals: 32 passed, 0 failed, 0 skipped, 0 blacklisted, 1013ms"
+      ],
+      "stdoutSha256": "4df6997e16247faa65ad52dc0e2ec61cbb587cb4c02c02ca245fd100aaa5d59c",
+      "stderrBytes": 0,
+      "wallSeconds": 1.071
+    },
+    {
+      "label": "avatar-controller-reference-green17",
+      "totals": [
+        "Totals: 17 passed, 0 failed, 0 skipped, 0 blacklisted, 9700ms"
+      ],
+      "stdoutSha256": "b47aa1bfb8e1ed6242fe20cc6116911ac63064abdb0e2e932dd6621bfb952630",
+      "stderrBytes": 0,
+      "wallSeconds": 9.797
+    },
+    {
+      "label": "whole-cache129",
+      "totals": [
+        "Totals: 129 passed, 0 failed, 0 skipped, 0 blacklisted, 41314ms"
+      ],
+      "stdoutSha256": "c580296f0b0b7fe887a709da8cf66d35e792d3100b85d8417d922455861f7ce4",
+      "stderrBytes": 0,
+      "wallSeconds": 41.33
+    },
+    {
+      "label": "whole-cache-service53",
+      "totals": [
+        "Totals: 53 passed, 0 failed, 0 skipped, 0 blacklisted, 12948ms"
+      ],
+      "stdoutSha256": "abccfcf5a73e187282d87ff4b778afe90edb1efc8c88c2ffacdd2b6233bae102",
+      "stderrBytes": 0,
+      "wallSeconds": 13.005
+    },
+    {
+      "label": "whole-domain13",
+      "totals": [
+        "Totals: 34 passed, 0 failed, 0 skipped, 0 blacklisted, 125ms"
+      ],
+      "stdoutSha256": "900ea0336ecc927d31ae320d1e2582774de095ef653aaf74b6ba3e2912342690",
+      "stderrBytes": 0,
+      "wallSeconds": 0.165
+    },
+    {
+      "label": "whole-controller770",
+      "totals": [
+        "Totals: 770 passed, 0 failed, 0 skipped, 0 blacklisted, 486417ms"
+      ],
+      "stdoutSha256": "b7d9abf1a0d787269cbd9c451c2bc4dad7ddfee7b56cf20e5d6315ca9652149c",
+      "stderrBytes": 0,
+      "wallSeconds": 486.496
+    }
+  ],
+  "originalGateMetadataError": "Actual Domain34 passed, original runner expected obsolete13 and stopped before Controller. Fresh exact-source continuation ran only not-yet-run fullController770; passed groups not repeated.",
+  "sourceTrimMovedByteExact": true,
+  "allOldTestsRecoveredByteExact": true,
+  "controllerBeforeAfterBinaryHashesMatch": true,
+  "allSourceRawHashesAndOwnedCleanupVerified": true,
+  "publicFields": [
+    "account.avatar",
+    "directPeer.avatar",
+    "direct stream row.avatar",
+    "message.authorAvatar"
+  ],
+  "sourceReferenceSemantics": "Exact case-sensitive urn:image: UUID including syntactic nil; ECMAScript trim; retain UUIDcase. Invalid/null/unsupported reference falls back without rejecting user identity.",
+  "creatorChoicesAndNameFallbacksPreserved": true,
+  "remaining": "Actual image demand/decode/cache/provider, Main pixels/crop/format/cancellation/installed acceptance; external URNs and animation."
+}
