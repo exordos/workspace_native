@@ -1,0 +1,480 @@
+{
+  "schema": "current-schema4-large-cache-measurement-v1",
+  "nativeParent": "d85467bdda6de0e2f93dceb192afc62ad30b793a",
+  "scope": "Single fresh current NativeCacheService component workload on regular Linux disk; no Controller/Main/network/real account",
+  "productionInputs": {
+    "frozen/native-cache.cpp": {
+      "sourcePath": "packages/native/src/native-cache.cpp",
+      "sha256": "c16ffd75b6cfd55f4fabd9ed19e36b7db7e4c5932e0824fbedbca78981fd8503",
+      "gitBlob": "cd563b5515d217f5e718f2255ea9cc28be81f482"
+    },
+    "frozen/native-cache.h": {
+      "sourcePath": "packages/native/src/native-cache.h",
+      "sha256": "fef00bfc169efe770605ef61a7a0e95777b78670beb513a393301f8d0c900a51",
+      "gitBlob": "7f2373d598b2824d74796654f3d12b2817b26b83"
+    },
+    "frozen/native-cache-service.cpp": {
+      "sourcePath": "packages/native/src/native-cache-service.cpp",
+      "sha256": "e98772841e2ea4b7417c6d0e1ff6b52fb05dccaf7dec96d2868be129b468c450",
+      "gitBlob": "cb9e70aac5e1ea8a73e3f3b3b657f01f2d0d682a"
+    },
+    "frozen/native-cache-service.h": {
+      "sourcePath": "packages/native/src/native-cache-service.h",
+      "sha256": "1529a6336bcc0601f016f5e0c1f556b874ace4a5fddd1979ab54e5b95406239a",
+      "gitBlob": "6f195663144f10d070a8958f2aa39780a66dc3cb"
+    },
+    "frozen/domain.cpp": {
+      "sourcePath": "packages/native/src/domain.cpp",
+      "sha256": "6bc2b8137ba60e0e2ba490f2ade28dc848d040b749cb704f035a73ef98487829",
+      "gitBlob": "d7b8182d06fc178a5713a2ad5a13081ad131079c"
+    },
+    "frozen/domain.h": {
+      "sourcePath": "packages/native/src/domain.h",
+      "sha256": "6c98b844adb3b3a878dfd9e72cefe153a1e114307d02f594ea39d1089c7d235d",
+      "gitBlob": "eaf78821809bf0ebbf8d9ea9e1ca3f95fac6dffe"
+    }
+  },
+  "allSixInputsMatchNativeParent": true,
+  "harnessManifestSha256": "3b29dcaad0df33cb77ef1737f501b10acb108622225a0d83187167126d246fa0",
+  "harnessCorrection": "First original helper compile failed at implicit quint64 JSON conversion, before DB fill. Fresh successor only casts two bounded measurement counters to qint64; no production or budget change. Original failure retained.",
+  "originalCompileFailureResultSha256": "eab484a00118b4a67dd591c6650d404c5d71caa4556b0d6328eaa5ffa7a69495",
+  "measurementResultSha256": "681ee597c2b5e046207c4f50a505d813ab84920658885c9df3e38d3732ac66f7",
+  "binarySha256": "37e15c21c73c6dd693113cee60f590fa2d6902b50d00f007c9e95f15c125c5d1",
+  "compileCommandsSha256": "4cdfdd783567abe7e63700e5f3e3946e73853cf09c51f3481cb4cc96bbecb5af",
+  "workload": {
+    "historyPages": 11000,
+    "messagesPerPage": 50,
+    "markdownCharactersPerMessage": 20000,
+    "ownedBodyEveryPages": 32,
+    "defaultLimitBytes": 10000000000,
+    "reducedLimitBytes": 1000000000,
+    "singleOutstandingPublicCallback": true,
+    "noOfflineSqlPopulationOrWrites": true,
+    "noLargeDbCopyOrHash": true,
+    "osFilesystemCacheNotDropped": true
+  },
+  "phases": [
+    {
+      "label": "fill",
+      "wrapperWallSeconds": 275.2358651169925,
+      "stdoutSha256": "6f602f12c1f8d1380c768e830a20d24a91a8ebe14d1dc6d183657575c74d6453",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "samplesSha256": "4bbc6e845e9b72b4a5bf848f26380dd5ecc580b6cdec7d4ed0017454894d837c",
+      "observedPeaksOnly": {
+        "sampleCount": 275,
+        "apparentBytes": 9966842240,
+        "allocatedBytes": 9966845952,
+        "VmRSSKiB": 30260,
+        "VmHWMKiB": 30752,
+        "VmSwapKiB": 0,
+        "minimumFreeBytes": 30779006976
+      },
+      "postExitReadOnlyMetadata": {
+        "present": true,
+        "readOnlyPostProcess": true,
+        "metadataObserverSQLite": "3.46.1",
+        "user_version": 4,
+        "page_size": 4096,
+        "auto_vacuum": 2,
+        "page_count": 2432945,
+        "freelist_count": 148,
+        "entriesSql": "CREATE TABLE entries (owner TEXT NOT NULL, key BLOB NOT NULL, kind INTEGER NOT NULL, stream TEXT NOT NULL, topic TEXT NOT NULL, marker BLOB NOT NULL, payload BLOB NOT NULL, next_marker BLOB NOT NULL, saved_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_used INTEGER NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(owner,key))",
+        "entriesByKind": [
+          [
+            4,
+            9542
+          ],
+          [
+            5,
+            298
+          ]
+        ],
+        "historyMemberships": 477398
+      },
+      "helperEvents": [
+        {
+          "appliedBytes": 10000000000,
+          "openUs": 30323,
+          "phase": "fill",
+          "physicalBytes": 65536,
+          "requestedBytes": 10000000000,
+          "resources": {
+            "maxRssKiB": 24452,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 57123,
+              "read_bytes": 0,
+              "syscr": 51,
+              "syscw": 55,
+              "wchar": 95948,
+              "write_bytes": 155648
+            },
+            "systemCpuSeconds": 0.007118,
+            "userCpuSeconds": 0.007118
+          },
+          "stage": "opened"
+        },
+        {
+          "fresh": true,
+          "latestPageReadUs": 7710,
+          "newestPageSha256": "7c9d9aac946e82ee87f4f6dccb72193e958a10fadc37ff9563a1dc05dba800bc",
+          "phase": "fill",
+          "rows": 50,
+          "stage": "newest-verified"
+        },
+        {
+          "count": 64,
+          "elapsedUs": 2946,
+          "phase": "fill",
+          "resourcesAfter": {
+            "maxRssKiB": 30752,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 17377364257,
+              "read_bytes": 1170317312,
+              "syscr": 4288147,
+              "syscw": 10648970,
+              "wchar": 28967500063,
+              "write_bytes": 29078171648
+            },
+            "systemCpuSeconds": 43.909873,
+            "userCpuSeconds": 98.196335
+          },
+          "resourcesBefore": {
+            "maxRssKiB": 30752,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 17377112211,
+              "read_bytes": 1170317312,
+              "syscr": 4287827,
+              "syscw": 10648650,
+              "wchar": 28967497503,
+              "write_bytes": 29078171648
+            },
+            "systemCpuSeconds": 43.909854,
+            "userCpuSeconds": 98.193224
+          },
+          "stage": "negative-lookups"
+        },
+        {
+          "BodyEveryPages": 32,
+          "BodyRoundTripUs": {
+            "count": 344,
+            "maximumUs": 24201,
+            "p50Us": 5607,
+            "p95Us": 12746,
+            "p99Us": 17887
+          },
+          "HistoryRoundTripUs": {
+            "count": 11000,
+            "maximumUs": 317903,
+            "p50Us": 20586,
+            "p95Us": 43699,
+            "p99Us": 62005
+          },
+          "checkpoints": 11346,
+          "fillMs": 275145,
+          "freshPages": 4096,
+          "fullScans": 1,
+          "generationUs": {
+            "count": 11000,
+            "maximumUs": 5217,
+            "p50Us": 667,
+            "p95Us": 1630,
+            "p99Us": 2889
+          },
+          "historyInputJsonBytes": 11259611000,
+          "historyPagesSubmitted": 11000,
+          "phase": "fill",
+          "retainedEntriesAllKinds": 9840,
+          "stage": "fill-complete",
+          "submitMainThreadUs": {
+            "count": 11000,
+            "maximumUs": 23652,
+            "p50Us": 1753,
+            "p95Us": 4414,
+            "p99Us": 7462
+          }
+        },
+        {
+          "completedWorkerCallbacks": 11415,
+          "mainEventLoopTicks": 54402,
+          "mainEventLoopTimerIntervalMs": 5,
+          "maximumMainLoopGapUs": 27377,
+          "phase": "fill",
+          "resources": {
+            "maxRssKiB": 30752,
+            "procIo": {
+              "cancelled_write_bytes": 32768,
+              "rchar": 17377376743,
+              "read_bytes": 1170317312,
+              "syscr": 4288160,
+              "syscw": 10648988,
+              "wchar": 28967513629,
+              "write_bytes": 29078196224
+            },
+            "systemCpuSeconds": 43.910097,
+            "userCpuSeconds": 98.197857
+          },
+          "sampledWorkerInternalPeakDiskBytes": 9968391360,
+          "stage": "stopped",
+          "stopMs": 2,
+          "wholeMs": 275210
+        },
+        {
+          "complete": true,
+          "cooperativeAbort": false,
+          "phase": "fill",
+          "phaseWorkCompleted": true
+        }
+      ]
+    },
+    {
+      "label": "shrink",
+      "wrapperWallSeconds": 259.2192421129439,
+      "stdoutSha256": "a11a1bf71d87a4182dc18456b8d219d2398627c174b28ec32ee45d570bbeb3e1",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "samplesSha256": "7fa147ef93c9c2e888de5378837df2ec7421196968342304f3e188f27957fa88",
+      "observedPeaksOnly": {
+        "sampleCount": 259,
+        "apparentBytes": 9965375488,
+        "allocatedBytes": 9965375488,
+        "VmRSSKiB": 28128,
+        "VmHWMKiB": 28652,
+        "VmSwapKiB": 0,
+        "minimumFreeBytes": 30782816256
+      },
+      "postExitReadOnlyMetadata": {
+        "present": true,
+        "readOnlyPostProcess": true,
+        "metadataObserverSQLite": "3.46.1",
+        "user_version": 4,
+        "page_size": 4096,
+        "auto_vacuum": 2,
+        "page_count": 235781,
+        "freelist_count": 0,
+        "entriesSql": "CREATE TABLE entries (owner TEXT NOT NULL, key BLOB NOT NULL, kind INTEGER NOT NULL, stream TEXT NOT NULL, topic TEXT NOT NULL, marker BLOB NOT NULL, payload BLOB NOT NULL, next_marker BLOB NOT NULL, saved_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_used INTEGER NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(owner,key))",
+        "entriesByKind": [
+          [
+            4,
+            923
+          ],
+          [
+            5,
+            29
+          ]
+        ],
+        "historyMemberships": 46179
+      },
+      "helperEvents": [
+        {
+          "appliedBytes": 10000000000,
+          "openUs": 1163227,
+          "phase": "shrink",
+          "physicalBytes": 9965375488,
+          "requestedBytes": 10000000000,
+          "resources": {
+            "maxRssKiB": 26788,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 72376175,
+              "read_bytes": 27213824,
+              "syscr": 17701,
+              "syscw": 10,
+              "wchar": 8614,
+              "write_bytes": 20480
+            },
+            "systemCpuSeconds": 0.069931,
+            "userCpuSeconds": 0.069948
+          },
+          "stage": "opened"
+        },
+        {
+          "fresh": false,
+          "latestPageReadUs": 8463,
+          "newestPageSha256": "7c9d9aac946e82ee87f4f6dccb72193e958a10fadc37ff9563a1dc05dba800bc",
+          "phase": "shrink",
+          "rows": 50,
+          "stage": "newest-verified"
+        },
+        {
+          "appliedBytes": 1000000000,
+          "phase": "shrink",
+          "physicalBytes": 965791744,
+          "requestedBytes": 1000000000,
+          "resources": {
+            "maxRssKiB": 28652,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 38368977700,
+              "read_bytes": 7070101504,
+              "syscr": 9361937,
+              "syscw": 10963079,
+              "wchar": 26187601781,
+              "write_bytes": 27298029568
+            },
+            "systemCpuSeconds": 37.077911,
+            "userCpuSeconds": 14.514681
+          },
+          "retainedEntriesAllKinds": 952,
+          "shrinkMs": 257376,
+          "stage": "shrink-applied"
+        },
+        {
+          "fresh": false,
+          "latestPageReadUs": 6906,
+          "newestPageSha256": "7c9d9aac946e82ee87f4f6dccb72193e958a10fadc37ff9563a1dc05dba800bc",
+          "phase": "shrink",
+          "rows": 50,
+          "stage": "newest-verified"
+        },
+        {
+          "completedWorkerCallbacks": 10,
+          "mainEventLoopTicks": 51708,
+          "mainEventLoopTimerIntervalMs": 5,
+          "maximumMainLoopGapUs": 12020,
+          "phase": "shrink",
+          "resources": {
+            "maxRssKiB": 28788,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 38374195754,
+              "read_bytes": 7070101504,
+              "syscr": 9363233,
+              "syscw": 10963122,
+              "wchar": 26187627356,
+              "write_bytes": 27298066432
+            },
+            "systemCpuSeconds": 37.078384,
+            "userCpuSeconds": 14.535252
+          },
+          "sampledWorkerInternalPeakDiskBytes": 9965400240,
+          "stage": "stopped",
+          "stopMs": 0,
+          "wholeMs": 258587
+        },
+        {
+          "complete": true,
+          "cooperativeAbort": false,
+          "phase": "shrink",
+          "phaseWorkCompleted": true
+        }
+      ]
+    },
+    {
+      "label": "reopen",
+      "wrapperWallSeconds": 1.0015528579824604,
+      "stdoutSha256": "0b78cf69a513d7c9eb3a9fc5e2749781bbbd16f44715197d9c0388c5cd949f98",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "samplesSha256": "5dec35f36d4aa8b18d043b3fb9aa21ad1f2e47cc55784d03573e4610466cf91f",
+      "observedPeaksOnly": {
+        "sampleCount": 1,
+        "apparentBytes": 965816496,
+        "allocatedBytes": 965824512,
+        "VmRSSKiB": 208,
+        "VmHWMKiB": 208,
+        "VmSwapKiB": 0,
+        "minimumFreeBytes": 39777173504
+      },
+      "postExitReadOnlyMetadata": {
+        "present": true,
+        "readOnlyPostProcess": true,
+        "metadataObserverSQLite": "3.46.1",
+        "user_version": 4,
+        "page_size": 4096,
+        "auto_vacuum": 2,
+        "page_count": 235781,
+        "freelist_count": 0,
+        "entriesSql": "CREATE TABLE entries (owner TEXT NOT NULL, key BLOB NOT NULL, kind INTEGER NOT NULL, stream TEXT NOT NULL, topic TEXT NOT NULL, marker BLOB NOT NULL, payload BLOB NOT NULL, next_marker BLOB NOT NULL, saved_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_used INTEGER NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(owner,key))",
+        "entriesByKind": [
+          [
+            4,
+            923
+          ],
+          [
+            5,
+            29
+          ]
+        ],
+        "historyMemberships": 46179
+      },
+      "helperEvents": [
+        {
+          "appliedBytes": 1000000000,
+          "openUs": 90208,
+          "phase": "reopen",
+          "physicalBytes": 965791744,
+          "requestedBytes": 1000000000,
+          "resources": {
+            "maxRssKiB": 28836,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 36540263,
+              "read_bytes": 5160960,
+              "syscr": 8951,
+              "syscw": 11,
+              "wchar": 20862,
+              "write_bytes": 40960
+            },
+            "systemCpuSeconds": 0.021286,
+            "userCpuSeconds": 0.009573
+          },
+          "stage": "opened"
+        },
+        {
+          "fresh": false,
+          "latestPageReadUs": 6903,
+          "newestPageSha256": "7c9d9aac946e82ee87f4f6dccb72193e958a10fadc37ff9563a1dc05dba800bc",
+          "phase": "reopen",
+          "rows": 50,
+          "stage": "newest-verified"
+        },
+        {
+          "completedWorkerCallbacks": 6,
+          "mainEventLoopTicks": 21,
+          "mainEventLoopTimerIntervalMs": 5,
+          "maximumMainLoopGapUs": 9160,
+          "phase": "reopen",
+          "resources": {
+            "maxRssKiB": 28836,
+            "procIo": {
+              "cancelled_write_bytes": 0,
+              "rchar": 41729627,
+              "read_bytes": 5160960,
+              "syscr": 10242,
+              "syscw": 54,
+              "wchar": 46367,
+              "write_bytes": 73728
+            },
+            "systemCpuSeconds": 0.026811,
+            "userCpuSeconds": 0.022678
+          },
+          "sampledWorkerInternalPeakDiskBytes": 965820616,
+          "stage": "stopped",
+          "stopMs": 0,
+          "wholeMs": 110
+        },
+        {
+          "complete": true,
+          "cooperativeAbort": false,
+          "phase": "reopen",
+          "phaseWorkCompleted": true
+        }
+      ]
+    }
+  ],
+  "allRawSourceBinaryHashesVerified": true,
+  "allOwnedProcessesGoneAndSyntheticDataRemoved": true,
+  "fullApplicationPerformanceAccepted": false,
+  "largePreexistingFreelistPerformanceAccepted": false,
+  "warmMainNavigation": {
+    "completeWindow226LogSha256": "cff4c89e4dea9294d8bbc2c2368ee21f6912880b053f5363772cd31b95890201",
+    "topicSelections": 4,
+    "topicHistoryGets": 2,
+    "streamSelections": 2,
+    "aggregateHistoryGets": 1,
+    "topicListGets": 1,
+    "cacheHits": 4,
+    "scope": "Actual Main clicks through local HTTP fixture; not live traffic measurement"
+  }
+}

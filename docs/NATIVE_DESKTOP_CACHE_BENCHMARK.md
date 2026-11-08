@@ -5,6 +5,50 @@ settings. These Linux/Qt 6.10.2 measurements distinguish cache-component costs
 from complete application costs. They do not establish full functional parity,
 live-server savings or clean-machine acceptance.
 
+## Current schema-4 public-worker measurement
+
+The current cache sources (routing/response candidate D12) were measured through
+`NativeCacheService` in three fresh processes against one regular-disk database.
+The workload submitted 11,000 pages of 50 large synthetic markdown messages,
+11.260 GB of input JSON, and one owned Body supplement every 32 pages. These are
+capacity-stress messages, not representative normal chat lengths. Production
+code, SQLite settings, deadlines and the 10 GB default were unchanged.
+
+| Current component observation | Result |
+| --- | --- |
+| Fill duration / history put median / p95 / maximum | 275.145 s / 20.586 ms / 43.699 ms / 317.903 ms |
+| Highest internal sampled physical usage, DB + WAL + SHM | 9,968,391,360 bytes, below 10 GB |
+| Retained after fill | 9,542 History pages and 298 owned Body entries |
+| RAM freshness entries | 4,096 |
+| Physical reduction operation, 10 GB to 1 GB | 257.376 s; whole restart/read/shrink phase 259.219 s |
+| Physical usage when the smaller limit was applied | 965,791,744 bytes |
+| Retained after reduction and process restart | 923 History pages and 29 Body entries |
+| New process open / exact latest-page read at 1 GB | 90.208 ms / 6.903 ms |
+| Helper peak RSS across all phases | 30,752 KiB, about 30.0 MiB |
+| Maximum gap of the helper's 5 ms main-loop timer | Fill 27.377 ms; shrink 12.020 ms; reopen 9.160 ms |
+| User + system CPU, fill / whole shrink phase | 142.108 s / 51.614 s |
+
+Every completed put checked the applied physical budget and freshness bound.
+The oldest page was evicted; the exact newest 50 messages, owned Body and indexed
+History fallback survived reduction and restart. Requested 1 GB remained distinct
+from applied 10 GB until actual maintenance completion. Restart reads were stale;
+this retained the OS filesystem cache and is not a cold physical-disk observation.
+External one-second samples reported VmSwap 0; they cannot exclude an unsampled
+transient or establish whole-computer swap behavior. Wrapper timings include its
+sampling/reap granularity. All phase exits were 0, raw stderr was empty, owned
+processes were reaped, and the one synthetic database was removed.
+
+The complete current Window226 run also passed real Main warm-navigation clicks:
+four topic selections needed two topic-history GETs; two stream selections needed
+one topic-list and one aggregate-history GET, with four cache hits. That is a local
+HTTP/visible-Main request witness, separate from this network-free stress helper.
+Neither proves live-server savings, whole-application RSS/frame latency or complete
+offline behavior. The several-minute reduction and pre-existing huge-freelist
+case remain performance work; this fresh fill does not accept the latter.
+[Current measurement provenance](provenance/current-cache-large-checks.json)
+preserves exact production inputs, helper/source/raw hashes and per-phase events,
+including the original measurement-only compile failure and its two-counter fix.
+
 ## Synthetic fill and reopen
 
 An earlier synchronous storage snapshot received 11,000 history pages, each

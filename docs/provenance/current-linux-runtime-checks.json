@@ -1,0 +1,76 @@
+{
+  "schema": "current-linux-runtime-checks-v1",
+  "nativeParent": "d85467bdda6de0e2f93dceb192afc62ad30b793a",
+  "scope": "Actual anonymous current-host Wayland/OpenGL application after prefix install; no login or live writes",
+  "sourceManifestSha256": "d82ba568c740954a95fdaa9dfd51a95b887d81cc1ba39c1c8fc24539c84b9b5d",
+  "nativeProductAndTestsMatchParent": true,
+  "nativeFilesCompared": 92,
+  "builtApplicationSha256": "f792f913ceb71b52cf093adc9fa22bad928fb9ea68f2eec4774a4aaa9372b4ba",
+  "installedApplicationSha256": "3a7bc4530bfe53ef0a2a39df1a9c3f55b434945d75087816611bd20615e4f3e2",
+  "stageFilesManifestSha256": "4cfc123b986b7eacbdac8d1a0c3a96f41b9ea45ee781c1e6815058b9ba62e642",
+  "stageResultSha256": "9b2e816d9f18067869196cd4071296bcbeecc2a6067f3b0cd63d8ddb3aa03393",
+  "lifecycleResultSha256": "826818be89836ab7576b35c3dbd58e1ec3c95d71b7d1cce0bd099d22517a7a5e",
+  "stagingCommands": [
+    {
+      "label": "build-app-probe",
+      "exitCode": 0,
+      "wallSeconds": 0.016,
+      "stdoutSha256": "8c35b1682f73592d30612d7b0fabdb384fcfff35cb5a076cb48b85b1368aa794",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrBytes": 0,
+      "sourceUnchanged": true
+    },
+    {
+      "label": "install",
+      "exitCode": 0,
+      "wallSeconds": 2.32,
+      "stdoutSha256": "9da32db4c4c4de5d1a693d806fb16589660c72da9fedc164407cc62cc6139e96",
+      "stderrSha256": "94131083eb3a3e519b8dade99ec391038eb1af5c153ea479701ea535ac46f150",
+      "stderrBytes": 2651,
+      "sourceUnchanged": true
+    },
+    {
+      "label": "runtime-probe",
+      "exitCode": 0,
+      "wallSeconds": 0.165,
+      "stdoutSha256": "ebd510e8435538048c212b65be29f923d0302848ec82c36d52fa1d558ceefc74",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrBytes": 0,
+      "sourceUnchanged": true
+    }
+  ],
+  "bundledRuntime": {
+    "qmlModules": 10,
+    "liveRelevantMappingsInsidePrefix": 46,
+    "tls": "openssl",
+    "syntheticMessageAndGrantRoundTrips": true
+  },
+  "actualNativeUi": {
+    "startupVisible": true,
+    "clientType": "wayland",
+    "graphics": "Default QRhi OpenGL4.3 Mesa virgl",
+    "closeHidesWindow": true,
+    "secondaryExitCode": 0,
+    "secondaryMilliseconds": 64.572,
+    "restoreSamePrimaryPid": true,
+    "ctrlQPrimaryExitCode": 0,
+    "rootRawScreenshots": "1442x940 anonymous sign-in before and after; native UI tool transcript"
+  },
+  "messagesRetained": [
+    "Install: SDK Qt translations absent for sl, gl, lt, pt_PT",
+    "Launch: preview desktop ID unavailable to host portal",
+    "Native accessibility inspection: Qt AT-SPI unimplemented text/value requests"
+  ],
+  "warningFree": false,
+  "sourceAndStageUnchanged": true,
+  "ownChildrenReapedAndPrivateSettingsRemoved": true,
+  "forcedCleanup": false,
+  "accepted": "This anonymous lifecycle on the current Linux host",
+  "notAccepted": [
+    "Actual account/keyring and live HTTP/WSS",
+    "Tray icon click/notifications/portal dialogs",
+    "Installed desktop registration or ew URI handler",
+    "Relocatable clean-machine package, installer/update/signing",
+    "Complete Linux functionality or visual parity"
+  ]
+}

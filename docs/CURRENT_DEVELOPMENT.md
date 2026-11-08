@@ -12,6 +12,26 @@ now recover retryable saved responses. Ordinary key acquisition, bootstrap,
 provider issuance and the remaining issuer-recovery cases are separate parity
 work.
 
+The coherent routing/response candidate also passed prefix installation and the
+installed ten-module/TLS/message/grant checks. Its actual anonymous Wayland window
+used the default OpenGL backend; all 46 observed Qt/keychain/QML/plugin/Markdown
+libraries came from the staged prefix. Real Alt+F4 hid the window, one secondary
+launch exited in 64.572 ms and restored the same primary process, and real Ctrl+Q
+exited with code 0. Owned children and temporary settings were removed. Install
+translation notices, the unregistered preview portal ID and Qt accessibility
+inspection messages remain in the raw logs. This accepts the anonymous lifecycle
+on this host; keyring/live account, desktop registration, installer and full
+Linux parity remain open. See [current Linux runtime checks](provenance/current-linux-runtime-checks.json).
+
+The unchanged current schema-4 cache also completed a fresh 11,000-page public
+worker fill, physical default-budget overflow, 10 GB to 1 GB reduction and two
+process restarts with exact newest-page/Body/fallback retention. Fill took
+275.145 s and the reduction operation 257.376 s; helper peak RSS was 30,752 KiB.
+All source/raw hashes, process cleanup and synthetic database removal were
+verified. These are component measurements; several-minute maintenance and the
+pre-existing huge-freelist case remain performance work. See
+[current cache measurements](NATIVE_DESKTOP_CACHE_BENCHMARK.md#current-schema-4-public-worker-measurement).
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS
