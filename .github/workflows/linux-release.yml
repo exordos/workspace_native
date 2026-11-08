@@ -31,7 +31,7 @@ jobs:
           apt-get install --no-install-recommends -y \
             ca-certificates git build-essential binutils pkg-config python3 \
             cmake ninja-build patchelf gh qt6-base-dev qt6-image-formats-plugins \
-            qt6-declarative-dev qt6-svg-dev qt6-websockets-dev qt6-l10n-tools \
+            qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-websockets-dev qt6-l10n-tools \
             qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev \
             libqt6sql6-sqlite libmd4c-dev libssl-dev \
             qml6-module-qtquick qml6-module-qtquick-dialogs \
@@ -51,15 +51,15 @@ jobs:
           python3 packages/native/tests/linux-installer-test.py -v
           python3 packages/native/tests/linux-package-test.py -v
 
-      - name: Configure Release with tests disabled
+      - name: Configure Release and installed runtime probe
         shell: bash
         run: |
           set -euo pipefail
           cmake -S packages/native -B build/linux-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_INSTALL_LIBDIR=lib
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib
 
       - name: Build
-        run: cmake --build build/linux-release --parallel 3
+        run: cmake --build build/linux-release --target workspace-native native-runtime-probe --parallel 3
 
       - name: Package installed runtime
         shell: bash
@@ -91,6 +91,9 @@ jobs:
             --build-dir "${GITHUB_WORKSPACE}/build/linux-release" \
             --output-dir "${GITHUB_WORKSPACE}/dist/linux" \
             "${version_args[@]}"
+          python3 packages/native/tests/verify-installed-runtime.py \
+            "${GITHUB_WORKSPACE}/dist/linux/workspace-native-${version}-linux-x86_64" \
+            --probe "${GITHUB_WORKSPACE}/build/linux-release/native-runtime-probe"
 
       - name: Upload Linux packages for review
         uses: actions/upload-artifact@v7

@@ -1,0 +1,59 @@
+{
+  "schema": "native-linux-svg-packaging-v1",
+  "status": "Actual old-CI SVG RED and local installed-codec GREEN; actual next-CI package acceptance pending",
+  "defect": "First GitHub-built package omitted dynamic SVG decoder and icon engine; actual anonymous startup logged 51 unsupported-format errors.",
+  "correction": "Install matching qt6-svg-plugins in clean builder and explicitly deploy qsvg/qsvgicon. Verify actual installed SVG pixels, all original raster/crypto/TLS checks and private runtime paths.",
+  "red": {
+    "actualProbeExit": 8,
+    "raster4Passed": true,
+    "svgDecoded": false,
+    "svgError": "Unsupported image format",
+    "newStaticChecker": "Missing deployed SVG plugin: imageformats/libqsvg.so*",
+    "proofSha256": "16c48ccae7741932f7ce0c75321393aad2c5a016faeb010018e06659a2a8c200"
+  },
+  "green": {
+    "releaseBuildSeconds": 77.727,
+    "packageSeconds": 68.917,
+    "raster4AndSvgDecoded": true,
+    "cryptoTlsAndPrivatePaths": true,
+    "installerCases": 6,
+    "packageVersionCases": 1,
+    "proofSha256": "dfc93c1e342ef4e5fbfdeecdb8c4d75eb444beb171f16d8ab72601ada7dd0a2a"
+  },
+  "currentWholeUi": {
+    "accepted": false,
+    "totals": "266 passed, 1 failed, 0 warnings",
+    "failure": "archiveUsesExactHistoryAndCanonicalRestore(open-channel): archiveChatSearch remained visible",
+    "cause": "UNKNOWN",
+    "proofSha256": "f1f3723f4a704d7983884f9de2dfc8d6afe1f5d8a28ab525cacdfb93e129b688"
+  },
+  "visibleLocalStartup": {
+    "accepted": false,
+    "observation": "Three attempts observed only the AT-SPI application root. Startup could not be confirmed through this observer; no runtime SVG errors in those logs.",
+    "attempts": [
+      {
+        "label": "local-svg-fixed",
+        "sha256": "a55a91e5c8df37a1d37525ab748eeae662254dfea239319f9666f065904a5062"
+      },
+      {
+        "label": "local-svg-fixed-v2",
+        "sha256": "e5a9e7dba5e1d1cb4f9a281645c960c61a6582e1b6721e27baadb353d6a09e86"
+      },
+      {
+        "label": "local-svg-fixed-v3",
+        "sha256": "aac9d4d50d89a57b2f6705eea2124bc5533a865758c2698d5844e5269cfcc894"
+      }
+    ]
+  },
+  "acceptanceLimits": [
+    "next actual GitHub package not yet downloaded",
+    "two-release update/restart not yet run; initial preview publication precedes it as requested",
+    "full Linux functional/pixel/live acceptance remains open"
+  ],
+  "sourceSha256": {
+    "packages/native/CMakeLists.txt": "64677facc4d04198804179c920dcd48aeab6ad6919833818dac8dc94bdb97d16",
+    "packages/native/tests/native-runtime-probe.cpp": "051bcea484b65959f37b6b46a78914dd20599badde48673b32d70df31735486b",
+    "packages/native/tests/verify-installed-runtime.py": "633bf1f14678ee5e8811b8b594786439811f2ba260f3ad877373c50e113baf3c",
+    ".github/workflows/linux-release.yml": "ae7b08f89461f91dbcd0d46306ab1c14311ce8a1be767c4a2dfb6a244d67abfe"
+  }
+}

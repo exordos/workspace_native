@@ -82,6 +82,10 @@ def verify(prefix, pid=None):
             files = list(plugins.glob(relative))
             assert files, f"Missing deployed Linux display plugin: {relative}"
             assert all(file.resolve().is_relative_to(prefix) for file in files), "Display plugin symlink escapes package"
+        for relative in ("imageformats/libqsvg.so*", "iconengines/libqsvgicon.so*"):
+            files = [file for file in plugins.glob(relative) if file.is_file()]
+            assert files, f"Missing deployed SVG plugin: {relative}"
+            assert all(file.resolve().is_relative_to(prefix) for file in files), "SVG plugin symlink escapes package"
         for name in ("libmd4c", "libmd4c-html", "libcrypto", "libssl"):
             libraries = list(prefix.glob(f"lib*/{name}.so*"))
             libraries += list(prefix.glob(f"lib*/*/{name}.so*"))

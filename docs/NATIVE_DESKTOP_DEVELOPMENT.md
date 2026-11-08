@@ -20,7 +20,7 @@ On a Debian/Ubuntu development machine:
 
 ```sh
 sudo apt-get install --no-install-recommends cmake ninja-build patchelf qt6-base-dev qt6-image-formats-plugins \
-  qt6-declarative-dev qt6-svg-dev qt6-websockets-dev qt6-l10n-tools qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev libqt6sql6-sqlite libmd4c-dev libssl-dev \
+  qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-websockets-dev qt6-l10n-tools qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev libqt6sql6-sqlite libmd4c-dev libssl-dev \
   qml6-module-qtquick qml6-module-qtquick-dialogs \
   qml6-module-qt-labs-folderlistmodel \
   qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-effects \
@@ -79,7 +79,7 @@ The matching OpenSSL Crypto/SSL libraries and license are copied from the select
 SDK. The executable directly initializes SSL so the loader resolves that private
 pair before a host dependency can bring in a system SSL library. The runtime
 check guards this direct dependency. Its optional noninstalled probe exercises
-message/grant encryption, PNG/JPEG/GIF/WebP decoding and the Qt TLS backend, checks their actual mapped
+message/grant encryption, PNG/JPEG/GIF/WebP and SVG decoding and the Qt TLS backend, checks their actual mapped
 library paths, and removes its temporary staged executable afterward. It uses
 synthetic values and performs no account or network requests.
 Linux deployment explicitly includes the Wayland platform, XDG shell and client

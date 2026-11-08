@@ -156,7 +156,7 @@ if(UNIX AND NOT APPLE)
     # desktop. Include the Wayland platform and its dynamically loaded helpers.
     list(APPEND native_deploy_plugin_args
         NO_TRANSLATIONS
-        INCLUDE_PLUGINS qwayland
+        INCLUDE_PLUGINS qwayland qsvg qsvgicon
         INCLUDE_PLUGIN_TYPES wayland-shell-integration
             wayland-graphics-integration-client wayland-decoration-client)
 endif()

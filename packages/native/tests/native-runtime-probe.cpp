@@ -60,6 +60,21 @@ int main(int argc, char **argv)
         imageRoundTrips.insert(QString::fromLatin1(fixture.format), okay);
         imagesDecoded = imagesDecoded && okay;
     }
+    // SVG is dynamically decoded in Main (qrc icons), independently of the
+    // raster avatar formats. A host-only codec must not mask a missing package.
+    QByteArray svgBytes(R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="13" height="17" viewBox="0 0 13 17"><rect width="13" height="17" fill="#ff0000"/></svg>)SVG");
+    QBuffer svgInput(&svgBytes);
+    svgInput.open(QIODevice::ReadOnly);
+    QImageReader svgReader(&svgInput);
+    const auto svgImage = svgReader.read();
+    bool svgDecoded = !svgImage.isNull() && svgImage.size() == QSize(13, 17);
+    if (svgDecoded) {
+        const auto center = svgImage.pixelColor(6, 8);
+        svgDecoded = center.red() == 255 && center.green() == 0
+            && center.blue() == 0 && center.alpha() == 255;
+    }
+    imageRoundTrips.insert(QStringLiteral("svg"), svgDecoded);
+    imagesDecoded = imagesDecoded && svgDecoded;
     const bool tls = QSslSocket::supportsSsl();
     QFile maps("/proc/self/maps");
     if (!maps.open(QIODevice::ReadOnly)) return 7;
@@ -81,6 +96,7 @@ int main(int argc, char **argv)
     QJsonArray runtimePaths;
     for (const auto &path : sortedPaths) runtimePaths.append(path);
     const QJsonObject output{{"imageRoundTrips", imageRoundTrips}, {"imagesDecoded", imagesDecoded},
+        {"svgDecodeError", svgDecoded ? QString{} : svgReader.errorString()},
         {"runtimePaths", runtimePaths}, {"messageRoundTrip", true}, {"grantRoundTrip", true},
         {"tlsSupported", tls}, {"tlsBackend", QSslSocket::activeBackend()}, {"tlsVersion", QSslSocket::sslLibraryVersionString()},
         {"runtimePathsInsidePrefix", allInside}, {"cryptoMapped", cryptoMapped}, {"sslMapped", sslMapped},

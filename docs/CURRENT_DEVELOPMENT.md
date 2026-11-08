@@ -434,3 +434,13 @@ the Russian/dark channel form. Its cause is under investigation. No full UI,
 published release or installed upgrade acceptance is claimed. See
 [release workflow](NATIVE_DESKTOP_RELEASES.md) and
 [initial updater evidence](provenance/linux-updater-initial-checks.json).
+
+The first actual CI package omitted SVG plugins despite a successful build and
+raster/TLS check. An added decoder test fails on that exact package while its
+four original raster formats, crypto and TLS still pass. The corrected local
+Release package passes SVG pixel decoding and all retained checks. GitHub now
+installs/deploys both SVG plugins and runs the probe against its own package.
+The next actual CI artifact remains a separate acceptance step. A second full
+Window267 run retained one archive-dialog closing failure (266 passes); its
+cause is unknown. The original channel-member failure remains open as well.
+See [SVG package checks](provenance/linux-svg-packaging-checks.json).

@@ -11,14 +11,16 @@ retain the first whole-window failure and outstanding release acceptance.
 `.github/workflows/linux-release.yml` builds on master pushes, `vX.Y.Z` tags
 and manual dispatch. It uses an Ubuntu 26.04 container on an Ubuntu 24.04 runner,
 installs the documented Qt kit, checks installer/package regressions, builds
-Release, deploys the actual QML runtime and uploads the archive and checksums.
+Release, deploys the actual QML runtime, exercises the packaged five-codec
+(including SVG), encryption and TLS probe, and uploads the archive and checksums.
 Tag runs also publish those files in this repository's GitHub Releases using
 the workflow's repository-scoped token. Application packages contain no token.
 
 The tag, configured CMake version and source project version must agree.
 `main.cpp` receives the version from CMake. A source version bump cannot relabel
-an older configured build. Tags are published after the corresponding local
-checks and installed runtime/upgrade acceptance. An artifact upload alone is
+an older configured build. The first development-preview tag follows its local
+checks and installed-runtime acceptance. As requested, the first actual upgrade
+between released versions is verified after that initial publication. An artifact upload alone is
 not release or installed-app acceptance.
 
 ## Local package
