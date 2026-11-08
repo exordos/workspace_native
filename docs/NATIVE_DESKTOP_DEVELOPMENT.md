@@ -663,6 +663,40 @@ The vault tests check key ownership, disabled plaintext fallback, serialized
 save/forget and rotation. Preferences tests recreate the settings object and
 exercise Qt style-hint changes and separate owner restoration.
 
+### Updater metadata transport
+
+The updater's real-wire Linux regressions use separate QCore drivers with Node's
+built-in TLS/HTTP2 server, Python 3 and the `openssl` command. The verified kit is
+Qt 6.10.2 with Node 22. Each case generates its own short-lived CA and server key,
+uses strict certificate/hostname validation, and removes its private XDG/temp/key
+state. `HOME` is preserved. No Workspace account or external endpoint is used.
+
+```sh
+cmake --build packages/native/build --target \
+  native-updater-test native-updater-http2-recovery-driver \
+  native-updater-http2-controls-driver --parallel 3
+ctest --test-dir packages/native/build \
+  -R '^native-updater(-http2-.*)?$' --output-on-failure -j 1
+```
+
+The 18 HTTP2 controls cover real pre-header connection loss and one recovery,
+two-failure termination, a new explicit Check resetting that allowance, HTTP
+403/404/429/503, schema/TLS/post-header/HTTP1 errors, cancellation/destruction/new
+operation fences, the unchanged total deadline, IPv4/IPv6 admission and the
+metadata-only fixture/download boundary. They observe real replies, public state
+and actual connection/stream IDs; they do not inject fake replies or complete
+private operations. The pre-header public `Http2WasUsed` attribute can be absent,
+so actual negotiated ALPN is a separate required witness.
+
+The separate QCore wrappers retain and require the exact known Qt warning pairs
+for deliberate h2 connection closures; any additional or missing warning fails.
+The existing `native-updater-test` warning policy remains strict. Raw logs and
+safe receipts are retained in the build directory's `Testing/updater-h2` folder.
+The Linux release job builds/runs this additional CTest prefix. Current private
+RED/GREEN and 18-case results are recorded in
+[recovery checks](provenance/updater-http2-recovery-checks.json); they do not replace
+the complete updater suite, package or installed public-release acceptance.
+
 An optional platform check uses the actual operating-system secure credential
 store. It creates only a unique disposable test key in the application's service,
 sends random test bytes to child processes through stdin, verifies process-restart

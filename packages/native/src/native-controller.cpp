@@ -2181,7 +2181,7 @@ std::optional<Stream> directStreamDto(const QJsonObject &raw, const QString &pro
         || (raw.value("owner").toString() != viewer && raw.value("owner").toString() != peer)
         || raw.value("source_name").toString() != "native" || !raw.value("provider_uuid").toString().isEmpty()
         || !raw.value("provider_identity").toString().isEmpty()
-        || parsed->encrypted != isUuid(raw.value("current_encryption_key_uuid").toString())) return {};
+        || (!parsed->encrypted && isUuid(raw.value("current_encryption_key_uuid").toString()))) return {};
     return parsed;
 }
 }
@@ -2672,10 +2672,9 @@ void NativeController::lookupDirectChat(const QString &owner, const QString &att
         }
         intent.confirmed = true; intent.allowCreate = false;
         intent.defaultTopic = raw.value("default_topic_uuid").toString(); intent.acl = streamAcl(*parsed);
-        if (parsed->encrypted || parsed->archived) {
-            finishDirectChat(owner, attempt, ticket, parsed->encrypted
-                ? tr("This personal chat is encrypted. Opening encrypted chats is not supported yet.")
-                : tr("This personal chat is archived. Opening archived chats is not supported yet."), QStringLiteral("unsupported")); return;
+        if (parsed->archived) {
+            finishDirectChat(owner, attempt, ticket,
+                tr("This personal chat is archived. Opening archived chats is not supported yet."), QStringLiteral("unsupported")); return;
         }
         if (!isUuid(intent.defaultTopic)) {
             finishDirectChat(owner, attempt, ticket, tr("The server did not return a valid default topic for this chat.")); return;
@@ -2699,7 +2698,7 @@ void NativeController::postDirectChat(const QString &owner, const QString &attem
         const auto &intent = m_directChats[owner];
         const auto parsed = result.ok() && result.data.isObject()
             ? directStreamDto(result.data.toObject(), m_session->project(), m_session->user(), intent.peer) : std::optional<Stream>{};
-        if (!parsed || parsed->encrypted || parsed->archived) {
+        if (!parsed || parsed->archived) {
             const bool failed = result.status == 400 || result.status == 401 || result.status == 403 || result.status == 404;
             finishDirectChat(owner, attempt, ticket, failed ? tr("Could not start the personal chat. %1").arg(result.error)
                 : tr("The chat status is unknown. Check status before trying again."),
@@ -2802,7 +2801,7 @@ void NativeController::loadDirectCatalog(const QString &owner, const QString &at
             const auto parsed = target ? directStreamDto(raw, m_session->project(), m_session->user(), intent.peer)
                 : creationStreamDto(raw, m_session->project(), m_session->user(), false);
             if (!value.isObject() || !parsed || ids.contains(parsed->uuid) || (target
-                && (parsed->archived || parsed->encrypted || streamAcl(*parsed) != intent.acl
+                && (parsed->archived || streamAcl(*parsed) != intent.acl
                     || raw.value("default_topic_uuid").toString() != intent.defaultTopic))) {
                 finishDirectChat(owner, attempt, ticket, tr("The server returned an invalid personal chat list.")); return;
             }

@@ -648,3 +648,38 @@ retained two portal and 156 AT-SPI diagnostics. No warning-free desktop or
 transport-fix claim follows. This is anonymous upgrade/cache acceptance only,
 not live-account, credential-store, authenticated history or full application
 parity. See [published 0.1.4 update checks](provenance/linux-published-0.1.4-upgrade-checks.json).
+
+## 0.1.5 candidate: existing encrypted Direct conversations
+
+New chat now admits a verified active encrypted native Direct pair, including
+a peer-created pair and a nullable current key. Canonical identity, archive/access
+refusals, owner/selection fences and default-topic/catalog verification remain.
+Opening needs no stream/member write; missing keys keep Send and Attach locked.
+Encrypted-pair creation and bootstrap remain separate work.
+
+Pinned Source action tests (14 cases) and complete Native Controller (837 cases) passed. A clean actual
+Main/TLS scenario then passed physical New chat/topic/Request key, independent
+Source grant/read and physical encrypted Send/cross-decryption on that same Direct.
+New Main (3 Qt cases) and unchanged default peer/composer controls (3/8 Qt cases) passed. A typed request POST echo
+binds exact UUIDv5/Vault pending state without an extra R GET; encrypted text keeps
+its separate canonical GET. These are synthetic HTTP/public event-admission tests.
+
+Earlier failed rows remain. A trace proved a pre-layout topic click hit the other
+row; tests now require semantic placement and an actual frame. The original
+Request no-input observation still has no proven private Qt cause. The later
+normal Request GET expectation was a test-contract error, corrected without a
+product change. Clean tests retain actual click receipts and no diagnostics.
+
+The updater passed 18 real TLS/HTTP/2 controls. Only a metadata ProtocolFailure
+before any status, header or body, with negotiated h2, can receive one fresh
+request within the original total deadline. HTTP/schema/TLS/post-header errors
+and archive transfers retain their policy. Injected-fault diagnostics remain;
+this does not establish the cause of earlier public update failures.
+
+The coherent 0.1.5 build, actual Main Source3, complete updater49 and locale14 passed;
+the complete E2EE core passed 274 cases, and the local package/runtime probe passed.
+A full Window run had two failures (283 passes); a passive focused observation
+passed 25 cases without reproducing them. Their causes remain unknown. Scoped
+input readiness and actual click/route controls now precede the original oracles.
+Clean full Window/encrypted UI, CI, publication and installed 0.1.5 remain pending. Live-account/WSS, full Source/pixel parity and other
+platforms remain open. See [candidate checks](provenance/linux-0.1.5-candidate-checks.json).

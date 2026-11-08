@@ -149,6 +149,7 @@ QVariantMap displayed(const NativeController &controller, const QString &id) {
 
 class Fixture {
 public:
+    const QString streamIdentity;
     MockServer http;
     TlsGateway tls{http.serverPort()};
     ApiClient api;
@@ -167,7 +168,9 @@ public:
     int catalogGets = 0, catalogDelay = 0, streamStatus = 200, checkDelay = 0;
     QString deviceName = "Synthetic native TLS device";
     bool legacyCatalog = false, catalogOwnsStream = true;
-    Fixture() {
+    explicit Fixture(const QString &identity = streamId) : streamIdentity(identity) {
+        stream["uuid"] = streamIdentity;
+        cipher["stream_uuid"] = streamIdentity;
         cipher["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
             {"content", QString::fromLatin1(QByteArray(48, 'x').toBase64())}};
         cipher["author_uuid"] = Issuer; cipher["is_own"] = false;
@@ -176,30 +179,30 @@ public:
             if (path == "/api/workspace/v1/messenger/streams/") {
                 ++catalogGets;
                 const QJsonArray rows = catalogOwnsStream ? QJsonArray{legacyCatalog
-                    ? QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Legacy encrypted fixture"}, {"encryption", true}}
+                    ? QJsonObject{{"uuid", streamIdentity}, {"project_id", projectId}, {"name", "Legacy encrypted fixture"}, {"encryption", true}}
                     : stream} : QJsonArray{};
                 return {rows, 200, catalogDelay};
             }
-            if (path == "/api/workspace/v1/messenger/streams/" + streamId) { ++streamGets; return {stream, streamStatus, streamDelay}; }
+            if (path == "/api/workspace/v1/messenger/streams/" + streamIdentity) { ++streamGets; return {stream, streamStatus, streamDelay}; }
             if (path == "/api/workspace/v1/users/") return {QJsonArray{}};
             if (path == "/api/workspace/v1/messenger/stream_topics/") {
                 ++topicGets;
-                return {QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                return {QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamIdentity},
                     {"name", "Visible history"}, {"is_default", stream.value("default_topic_uuid").toString() == topicId}},
-                    QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                    QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId}, {"stream_uuid", streamIdentity},
                     {"name", "Actual default"}, {"is_default", stream.value("default_topic_uuid").toString() == secondTopicId}}}};
             }
             if (path == "/api/workspace/v1/messenger/stream_bindings/") {
                 ++bindingGets;
-                return {QJsonArray{QJsonObject{{"uuid", messageId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                return {QJsonArray{QJsonObject{{"uuid", messageId}, {"project_id", projectId}, {"stream_uuid", streamIdentity},
                     {"user_uuid", userId}, {"role", "member"}}, QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
-                    {"stream_uuid", streamId}, {"user_uuid", Issuer}, {"role", issuerRole}}}};
+                    {"stream_uuid", streamIdentity}, {"user_uuid", Issuer}, {"role", issuerRole}}}};
             }
             if (path == "/api/workspace/v1/messenger/messages/" && request.method == "POST") {
                 ++posts; requestBody = request.body; requestBodies.append(request.body);
                 const auto publicId = QUuid::createUuidV5(QUuid(request.body.value("topic_uuid").toString()), request.body.value("uuid").toString().toUtf8())
                     .toString(QUuid::WithoutBraces);
-                savedRequest = message({}, publicId, request.body.value("topic_uuid").toString()); savedRequest["payload"] = request.body.value("payload");
+                savedRequest = message({}, publicId, request.body.value("topic_uuid").toString()); savedRequest["stream_uuid"] = streamIdentity; savedRequest["payload"] = request.body.value("payload");
                 savedRequests.insert(publicId, savedRequest);
                 return {savedRequest, 201, postDelay};
             }
@@ -229,8 +232,8 @@ public:
         controller.openProject(projectId);
         if (!QTest::qWaitFor([this, archived] { return archived ? controller.archivedChats().size() == 1
             : controller.streams().size() == 1; }, 2000)) return failedStage("streams");
-        if (archived) controller.openArchivedChat(streamId);
-        else controller.selectStream(streamId);
+        if (archived) controller.openArchivedChat(streamIdentity);
+        else controller.selectStream(streamIdentity);
         if (!QTest::qWaitFor([this] { return controller.topics().size() == 2; }, 2000)) return failedStage("topics");
         if (!archived) controller.selectTopic(topicId);
         if (!QTest::qWaitFor([this] { return !controller.busy() && controller.messages().size() == 1; }, 2000)) return failedStage("history");
@@ -247,7 +250,7 @@ public:
         QProcess peer;
         peer.start(QStringLiteral(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE), {QStringLiteral(WORKSPACE_NATIVE_E2EE_PEER_SCRIPT)});
         if (!peer.waitForStarted()) return {};
-        const QJsonObject input{{"project", projectId}, {"stream", streamId}, {"key", payload.value("key_uuid")},
+        const QJsonObject input{{"project", projectId}, {"stream", streamIdentity}, {"key", payload.value("key_uuid")},
             {"request", saved.value("uuid")}, {"requester", userId}, {"author", Issuer}, {"senderDevice", IssuerDevice},
             {"recipientDevice", payload.value("device_id")}, {"publicKey", payload.value("public_key")},
             {"role", "owner"}, {"plaintext", "Synthetic source-granted plaintext"}, {"reject", reject}};
@@ -258,6 +261,12 @@ public:
     QJsonObject responseDto(const QJsonObject &source) const {
         const auto result = source.value("message").toObject();
         auto dto = message({}, result.value("uuid").toString(), secondTopicId);
+        dto["stream_uuid"] = streamIdentity;
+        if (streamIdentity != streamId) {
+            dto["user_uuid"] = userId; dto["pinned"] = false;
+            dto["reactions"] = QJsonObject{}; dto["reaction_users"] = QJsonObject{};
+            dto["updated_at"] = dto.value("created_at");
+        }
         dto["author_uuid"] = Issuer; dto["is_own"] = false; dto["payload"] = result.value("payload");
         return dto;
     }
@@ -270,17 +279,17 @@ public:
         const auto publicId = QUuid::createUuidV5(QUuid(secondTopicId), pending.localId.toUtf8()).toString(QUuid::WithoutBraces);
         if (binding == "public") pending.messageId = publicId;
         else if (binding == "legacy-local") pending.messageId = pending.localId;
-        if (vault.putPendingRequest(vault.lease(), {streamId, key}, pending) != NativeChatKeyVault::Failure::None) return false;
+        if (vault.putPendingRequest(vault.lease(), {streamIdentity, key}, pending) != NativeChatKeyVault::Failure::None) return false;
         const QJsonObject payload{{"kind", "key_request"}, {"key_uuid", key}, {"device_id", vault.device().id},
             {"device_name", pending.deviceName}, {"public_key", QString::fromLatin1(pending.publicKey.toBase64())}};
-        own = message({}, publicId, secondTopicId); own["payload"] = payload;
-        body = {{"uuid", pending.localId}, {"stream_uuid", streamId}, {"topic_uuid", secondTopicId}, {"payload", payload}};
+        own = message({}, publicId, secondTopicId); own["stream_uuid"] = streamIdentity; own["payload"] = payload;
+        body = {{"uuid", pending.localId}, {"stream_uuid", streamIdentity}, {"topic_uuid", secondTopicId}, {"payload", payload}};
         return true;
     }
     bool prepareA() {
         controller.requestChatKey(returnedId);
-        if (!QTest::qWaitFor([this] { return posts == 1 && !vault.pendingRequests(vault.lease(), {streamId, returnedId}).values.isEmpty()
-            && !vault.pendingRequests(vault.lease(), {streamId, returnedId}).values.first().messageId.isEmpty(); }, 2000)) return false;
+        if (!QTest::qWaitFor([this] { return posts == 1 && !vault.pendingRequests(vault.lease(), {streamIdentity, returnedId}).values.isEmpty()
+            && !vault.pendingRequests(vault.lease(), {streamIdentity, returnedId}).values.first().messageId.isEmpty(); }, 2000)) return false;
         const auto source = sourceResponse(); if (!source.value("ok").toBool()) return false;
         if (!controller.applyRealtimeEvent(cryptoEvent(responseDto(source)))) return false;
         cipher["payload"] = source.value("encrypted"); if (!controller.applyRealtimeEvent(cryptoEvent(cipher))) return false;
@@ -334,6 +343,13 @@ public:
             return fixture.posts == posts + 1 && !fixture.savedRequest.isEmpty()
                 && !fixture.controller.encryption().value("busy").toBool();
         }, 2000)) return false;
+        return acceptSavedRequest(fixture, targetTopic, expectedText, keyUuid);
+    }
+    // Existing prepare keeps its public Controller request seam. A new actual
+    // Main Request click may instead pass the same acknowledged canonical R here.
+    bool acceptSavedRequest(Fixture &fixture, const QString &targetTopic,
+                            const QString &expectedText, const QString &keyUuid = returnedId) {
+        capturedStream = fixture.streamIdentity;
         const auto payload = fixture.requestBody.value("payload").toObject();
         peer.start(QStringLiteral(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE),
             {QStringLiteral(WORKSPACE_NATIVE_E2EE_PEER_SCRIPT), "--verify-native-send"});
@@ -341,7 +357,7 @@ public:
         const auto outgoingBytes = expectedText.toUtf8().size();
         const auto readText = 4 * ((outgoingBytes + 48 + 2) / 3) > 213336
             ? QString("Synthetic small read before an oversized outgoing attempt") : expectedText;
-        const QJsonObject input{{"project", projectId}, {"stream", streamId}, {"key", keyUuid},
+        const QJsonObject input{{"project", projectId}, {"stream", capturedStream}, {"key", keyUuid},
             {"request", fixture.savedRequest.value("uuid")}, {"requester", userId}, {"author", Issuer},
             {"senderDevice", IssuerDevice}, {"recipientDevice", payload.value("device_id")},
             {"publicKey", payload.value("public_key")}, {"role", "owner"},
@@ -354,14 +370,14 @@ public:
         if (!fixture.controller.applyRealtimeEvent(cryptoEvent(fixture.cipher))) return false;
         return QTest::qWaitFor([&fixture, readText, keyUuid] {
             const auto receipt = fixture.vault.requestCompletionByMessage(fixture.vault.lease(),
-                {streamId, keyUuid}, fixture.savedRequest.value("uuid").toString());
+                {fixture.streamIdentity, keyUuid}, fixture.savedRequest.value("uuid").toString());
             return receipt.value && receipt.value->outcome == NativeChatKeyVault::Outcome::Granted
                 && displayed(fixture.controller, messageId).value("decrypted").toBool()
                 && displayed(fixture.controller, messageId).value("content").toString() == readText;
         }, 2000);
     }
     QJsonObject verify(const QJsonObject &payload, const QString &topic) {
-        if (!writeFrame({{"kind", "verify-native-send"}, {"stream", streamId}, {"topic", topic}, {"payload", payload}})) return {};
+        if (!writeFrame({{"kind", "verify-native-send"}, {"stream", capturedStream}, {"topic", topic}, {"payload", payload}})) return {};
         peer.closeWriteChannel();
         auto output = readFrame();
         if (!QTest::qWaitFor([this] { return peer.state() == QProcess::NotRunning; }, 10000)
@@ -372,6 +388,7 @@ public:
     }
     QJsonObject source;
 private:
+    QString capturedStream = streamId;
     QProcess peer;
     QByteArray buffer;
     bool writeFrame(const QJsonObject &frame) {
@@ -6555,6 +6572,228 @@ private slots:
         QCOMPARE(verified.value("plaintextBytes").toInt(),text.toUtf8().size());QCOMPARE(verified.value("keyUuid").toString(),returnedId);
         QTRY_COMPARE(f.controller.draft(),QString{});QCOMPARE(f.posts,before+1);
         const bool closed=closeIncubatedEncryptedVisualWindow(window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+    void uiNewChatEncryptedCanonicalDirectUsesActualSourceGrantReadAndSend()
+    {
+        QStringList members{userId.toLower(), Issuer.toLower()}; members.sort();
+        const auto direct = QUuid::createUuidV5(QUuid("26f42131-4503-5f59-8aa6-32b20f551751"),
+            (projectId.toLower() + ":" + members.join(':')).toUtf8()).toString(QUuid::WithoutBraces);
+        QVERIFY(isUuid(direct)); QVERIFY(direct != streamId);
+        Fixture f(direct); QCOMPARE(f.streamIdentity, direct); f.stream = fullEncryptedStream();
+        f.stream["uuid"] = direct; f.stream["private"] = true; f.stream["direct_user_uuid"] = Issuer;
+        f.stream["owner"] = Issuer; f.stream["role"] = "owner"; f.stream["name"] = "Direct";
+        f.stream["description"] = "Private workspace"; f.stream["default_topic_uuid"] = secondTopicId;
+        f.cipher["user_uuid"] = userId; f.cipher["read"] = true;
+        f.cipher["pinned"] = false; f.cipher["starred"] = false;
+        f.cipher["reactions"] = QJsonObject{}; f.cipher["reaction_users"] = QJsonObject{};
+        f.cipher["updated_at"] = f.cipher.value("created_at");
+        int streamOrMemberWrites = 0, directoryGets = 0;
+        const auto actual = f.http.handler;
+        f.http.handler = [&](const Request &request) -> Response {
+            const auto route = request.target.path();
+            if (request.method != "GET" && (route == "/api/workspace/v1/messenger/streams/"
+                || route == "/api/workspace/v1/messenger/streams/" + direct
+                || route == "/api/workspace/v1/messenger/stream_bindings/"
+                || route.endsWith("/actions/add_users/invoke"))) {
+                ++streamOrMemberWrites; return {QJsonObject{}, 405};
+            }
+            if (route == "/api/workspace/v1/users/" && request.method == "GET") {
+                ++directoryGets; QJsonArray rows;
+                for (const auto &id : {userId, Issuer}) rows.append(QJsonObject{
+                    {"uuid", id}, {"project_id", projectId}, {"source", "iam"}, {"status", "offline"},
+                    {"username", id == userId ? "cassi" : "issuer"}, {"first_name", id == userId ? "Cassi" : "Issuer"},
+                    {"last_name", "Synthetic"}, {"email", id == userId ? "cassi@example.invalid" : "issuer@example.invalid"},
+                    {"last_ping_at", "2026-01-02T10:00:00Z"}, {"created_at", "2026-01-02T10:00:00Z"},
+                    {"updated_at", "2026-01-02T10:00:00Z"}});
+                return {rows};
+            }
+            if (route == "/api/workspace/v1/messenger/stream_topics/" && request.method == "GET") {
+                const auto requested = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (requested != direct) return {QJsonArray{}};
+                ++f.topicGets; QJsonArray rows;
+                for (const auto &id : {topicId, secondTopicId}) rows.append(QJsonObject{
+                    {"uuid", id}, {"project_id", projectId}, {"user_uuid", userId}, {"stream_uuid", direct},
+                    {"name", id == topicId ? "Visible history" : "Actual default"}, {"is_default", id == secondTopicId},
+                    {"is_done", false}, {"notification_mode", "default"}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0}, {"last_message_uuid", QJsonValue::Null},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}});
+                return {rows};
+            }
+            if (route == "/api/workspace/v1/messenger/stream_bindings/" && request.method == "GET") {
+                ++f.bindingGets; QJsonArray rows; int number = 0;
+                for (const auto &id : {userId, Issuer}) rows.append(QJsonObject{
+                    {"uuid", number++ ? returnedId : messageId}, {"project_id", projectId}, {"stream_uuid", direct},
+                    {"user_uuid", id}, {"who_uuid", Issuer}, {"role", "owner"}, {"notification_mode", "all_messages"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}});
+                return {rows};
+            }
+            auto response = actual(request);
+            if ((request.method == "POST" && route == "/api/workspace/v1/messenger/messages/")
+                || (request.method == "GET" && route.startsWith("/api/workspace/v1/messenger/messages/")
+                    && !route.endsWith('/') && response.status == 200)) {
+                auto row = response.data.toObject();
+                row["pinned"] = false; row["reactions"] = QJsonObject{}; row["reaction_users"] = QJsonObject{};
+                row["updated_at"] = row.value("created_at"); response.data = row;
+            }
+            return response;
+        };
+        useCompleteSendEcho(f);
+        NativePreferences preferences(f.directory.filePath("canonical-direct-source.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedEncryptedVisualWindow(guard.data()))
+                QTest::qFail("Canonical Direct Source window did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
+        QTRY_COMPARE(f.controller.projects().size(), 1); f.controller.openProject(projectId);
+        QTRY_COMPARE(f.controller.streams().size(), 1); QTRY_VERIFY(f.controller.directChatDirectoryVerified());
+        QTRY_VERIFY(f.controller.canStartDirectChatWith(Issuer)); QVERIFY(directoryGets > 0);
+        QVERIFY(!f.controller.hasConversation()); QCOMPARE(f.posts, 0); QCOMPARE(streamOrMemberWrites, 0);
+        auto *newChat = encryptedUiItem(window, "createChatButton"); QVERIFY(newChat && newChat->isEnabled());
+        encryptedUiClick(newChat); QTRY_VERIFY(encryptedUiItem(window, "directChatSearch"));
+        encryptedUiClick(encryptedUiItem(window, "directChatSearch"));
+        for (const auto key : QByteArray("issuer")) QTest::keyClick(window, key);
+        QTRY_VERIFY(encryptedUiItem(window, "direct-user-" + Issuer));
+        QSignalSpy opened(&f.controller, &NativeController::directChatOpened); QVERIFY(opened.isValid());
+        auto *choice = encryptedUiItem(window, "direct-user-" + Issuer); QVERIFY(choice && choice->isEnabled());
+        QVERIFY(QRectF(QPointF{}, QSizeF(window->size())).contains(choice->mapToScene(QPointF(choice->width()/2, choice->height()/2))));
+        encryptedUiClick(choice);
+        QTRY_COMPARE(opened.size(), 1); QCOMPARE(f.controller.selectedStream(), direct); QVERIFY(f.controller.selectedTopic().isEmpty());
+        QVERIFY(f.streamGets > 0 && f.topicGets > 0);
+        QTRY_VERIFY(!encryptedUiItem(window, "directChatSearch")); QTRY_VERIFY(encryptedUiItem(window, "directConversationName"));
+        QCOMPARE(f.posts, 0); QCOMPARE(streamOrMemberWrites, 0);
+        QTRY_VERIFY(encryptedUiItem(window, "topic-" + topicId));
+        // Publication creates Repeater delegates before Column placement. Dispatch
+        // only after both actual rows are distinct, below their stream and hit-ready.
+        const auto topicLayoutReady = [&] {
+            auto *wanted = encryptedUiItem(window, "topic-" + topicId);
+            auto *other = encryptedUiItem(window, "topic-" + secondTopicId);
+            auto *stream = encryptedUiItem(window, "stream-" + direct);
+            if (!wanted || !other || !stream || wanted->window() != window || other->window() != window
+                || stream->window() != window || wanted->parentItem() != other->parentItem()
+                || wanted->parentItem() != stream->parentItem()) return false;
+            const auto rect = [](QQuickItem *item) { return item->mapRectToScene(QRectF(QPointF{}, item->size())); };
+            const auto a = rect(wanted), b = rect(other), header = rect(stream);
+            if (a.isEmpty() || b.isEmpty() || header.isEmpty() || a.intersects(b)
+                || a.top() <= header.bottom() || b.top() <= header.bottom()) return false;
+            for (auto *row : {wanted, other}) {
+                const auto center = row->mapToScene(QPointF(row->width()/2, row->height()/2));
+                if (!QRectF(QPointF{}, QSizeF(window->size())).contains(center)) return false;
+                for (auto *parent = row->parentItem(); parent; parent = parent->parentItem())
+                    if (parent->clip() && !parent->contains(parent->mapFromScene(center))) return false;
+                const auto local = row->parentItem()->mapFromScene(center);
+                auto *hit = row->parentItem()->childAt(local.x(), local.y());
+                if (!hit || (hit != row && !row->isAncestorOf(hit))) return false;
+            }
+            return true;
+        };
+        QTRY_VERIFY(topicLayoutReady());
+        QSignalSpy topicPlacedFrame(window, &QQuickWindow::frameSwapped); window->update();
+        QTRY_VERIFY(!topicPlacedFrame.isEmpty()); QVERIFY(topicLayoutReady());
+        auto *topic = encryptedUiItem(window, "topic-" + topicId); QVERIFY(topic);
+        QSignalSpy topicClicked(topic, SIGNAL(clicked())); QVERIFY(topicClicked.isValid()); encryptedUiClick(topic);
+        QTRY_COMPARE(topicClicked.size(), 1);
+        QTRY_COMPARE(f.controller.selectedTopic(), topicId); QTRY_VERIFY(!f.controller.busy());
+        QTRY_VERIFY(encryptedUiItem(window, "encrypted-placeholder-" + messageId));
+        QVERIFY(!displayed(f.controller, messageId).value("decrypted").toBool());
+        const auto vaultOpened = std::make_shared<bool>(false);
+        const auto vaultFailure = std::make_shared<NativeChatKeyVault::Failure>(NativeChatKeyVault::Failure::Unavailable);
+        f.vault.open(f.tls.origin(), projectId, userId, f.deviceName, [vaultOpened, vaultFailure](NativeChatKeyVault::Failure failure) {
+            *vaultFailure = failure; *vaultOpened = true;
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(*vaultOpened, 2000); QCOMPARE(*vaultFailure, NativeChatKeyVault::Failure::None);
+        f.controller.useChatKeys(&f.vault);
+        QTRY_VERIFY(f.controller.encryption().value("canRequestCurrentKey").toBool());
+        QTRY_VERIFY(encryptedUiItem(window, "requestCurrentChatKeyButton")
+            && encryptedUiItem(window, "requestCurrentChatKeyButton")->isEnabled());
+        const auto requestFlowReady = [&] {
+            auto *button = encryptedUiItem(window, "requestCurrentChatKeyButton");
+            if (!button || !button->isEnabled() || button->window() != window || !button->parentItem()) return false;
+            auto *flow = button->parentItem();
+            // This missing-current-key state offers only Request. Flow must have
+            // replaced its old Retry child geometry before dispatching input.
+            int visibleActions = 0;
+            for (auto *child : flow->childItems()) if (child->isVisible() && child->width() > 0 && child->height() > 0) ++visibleActions;
+            return visibleActions == 1 && qFuzzyCompare(flow->implicitWidth(), button->width())
+                && qFuzzyCompare(flow->implicitHeight(), button->height());
+        };
+        QTRY_VERIFY(requestFlowReady());
+        QSignalSpy requestPlacedFrame(window, &QQuickWindow::frameSwapped); window->update();
+        QTRY_VERIFY(!requestPlacedFrame.isEmpty()); QVERIFY(requestFlowReady());
+        auto *requestKey = encryptedUiItem(window, "requestCurrentChatKeyButton"); QVERIFY(requestKey);
+        QSignalSpy requestClicked(requestKey, SIGNAL(clicked())); QVERIFY(requestClicked.isValid());
+        QVERIFY(QRectF(QPointF{}, QSizeF(window->size())).contains(requestKey->mapToScene(QPointF(requestKey->width()/2, requestKey->height()/2))));
+        encryptedUiClick(requestKey); // Actual existing Main Request key button; no Controller substitute.
+        QTRY_COMPARE(requestClicked.size(), 1);
+        QTRY_COMPARE(f.posts, 1); QTRY_VERIFY(!f.controller.encryption().value("busy").toBool());
+        const auto request = f.requestBody, requestPayload = request.value("payload").toObject();
+        QCOMPARE(request.value("stream_uuid").toString(), direct); QCOMPARE(request.value("topic_uuid").toString(), secondTopicId);
+        QCOMPARE(requestPayload.value("kind").toString(), QString("key_request"));
+        QCOMPARE(requestPayload.value("key_uuid").toString(), returnedId);
+        const auto requestPublicId = QUuid::createUuidV5(QUuid(secondTopicId), request.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(f.savedRequest.value("uuid").toString(), requestPublicId);
+        QCOMPARE(f.savedRequest.value("stream_uuid").toString(), direct);
+        // A valid typed POST echo already binds the canonical request. Normal
+        // Request does not issue the separate GET used by Check/recovery.
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/" + requestPublicId), 0);
+        QCOMPARE(f.savedRequest.value("payload").toObject(), requestPayload);
+        QCOMPARE(f.savedRequest.value("user_uuid").toString(), userId);
+        {
+            auto pending = f.vault.pendingRequests(f.vault.lease(), {direct, returnedId});
+            const auto scrub = qScopeGuard([&] { for (auto &row : pending.values) row.clearSecrets(); });
+            QCOMPARE(pending.failure, NativeChatKeyVault::Failure::None); QCOMPARE(pending.values.size(), 1);
+            QCOMPARE(pending.values.first().localId, request.value("uuid").toString());
+            QCOMPARE(pending.values.first().messageId, requestPublicId);
+            QCOMPARE(pending.values.first().targetTopic, secondTopicId);
+        }
+        const QString text = "Synthetic canonical Direct from Main";
+        SourceSendPeer peer; QVERIFY(peer.acceptSavedRequest(f, topicId, text));
+        QCOMPARE(f.posts, 1); QVERIFY(f.bindingGets > 0);
+        QCOMPARE(displayed(f.controller, messageId).value("content").toString(), text);
+        QTRY_VERIFY(encryptedUiItem(window, "message-content-" + messageId));
+        auto *body = encryptedUiItem(window, "message-content-" + messageId); QVERIFY(body);
+        QVERIFY(body->property("text").toString().contains(text));
+        QVERIFY(body->width() > 0 && body->property("contentHeight").toReal() > 0);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QVERIFY(!window->grabWindow().isNull()); // Actual frame; no glyph/pixel-parity claim.
+        QTRY_VERIFY(encryptedUiItem(window, "messageComposer") && encryptedUiItem(window, "messageComposer")->isEnabled());
+        auto *composer = encryptedUiItem(window, "messageComposer"); QVERIFY(composer);
+        encryptedUiClick(composer); QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto key : text.toLatin1()) QTest::keyClick(window, key);
+        QTRY_COMPARE(f.controller.draft(), text);
+        QTRY_VERIFY(encryptedUiItem(window, "sendButton") && encryptedUiItem(window, "sendButton")->isEnabled());
+        auto *send = encryptedUiItem(window, "sendButton"); QVERIFY(send);
+        QSignalSpy sent(&f.controller, &NativeController::messageSent); QVERIFY(sent.isValid()); encryptedUiClick(send);
+        QTRY_COMPARE(f.posts, 2); QTRY_COMPARE(sent.size(), 1);
+        const auto outgoing = f.requestBody, payload = outgoing.value("payload").toObject();
+        QCOMPARE(outgoing.value("stream_uuid").toString(), direct); QCOMPARE(outgoing.value("topic_uuid").toString(), topicId);
+        QCOMPARE(payload.keys(), QStringList({"content", "key_uuid", "kind"}));
+        QCOMPARE(payload.value("kind").toString(), QString("e2ee")); QCOMPARE(payload.value("key_uuid").toString(), returnedId);
+        const auto encoded = payload.value("content").toString().toLatin1();
+        const auto bytes = QByteArray::fromBase64(encoded, QByteArray::AbortOnBase64DecodingErrors);
+        QVERIFY(bytes.size() >= 48); QCOMPARE(bytes.toBase64(), encoded); QVERIFY(encoded.size() <= 213336);
+        for (const auto &posted : f.requestBodies) {
+            QCOMPARE(posted.value("stream_uuid").toString(), direct);
+            QVERIFY(!QJsonDocument(posted).toJson(QJsonDocument::Compact).contains(text.toUtf8()));
+        }
+        const auto publicId = QUuid::createUuidV5(QUuid(topicId), outgoing.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+        QCOMPARE(sent.first().at(0).toString(), publicId); QCOMPARE(sent.first().at(1).toString(), direct);
+        QCOMPARE(sent.first().at(2).toString(), topicId);
+        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/" + publicId), 1);
+        QCOMPARE(f.savedRequests.value(publicId).value("stream_uuid").toString(), direct);
+        QCOMPARE(f.savedRequests.value(publicId).value("payload").toObject(), payload);
+        const auto verified = peer.verify(payload, topicId);
+        QVERIFY(verified.value("ok").toBool()); QVERIFY(verified.value("matchesExpected").toBool());
+        QCOMPARE(verified.value("plaintextBytes").toInt(), text.toUtf8().size());
+        QCOMPARE(verified.value("keyUuid").toString(), returnedId);
+        QTRY_COMPARE(f.controller.draft(), QString{}); QCOMPARE(f.posts, 2); QCOMPARE(streamOrMemberWrites, 0);
+        QVERIFY(f.stream.value("encryption").toBool()); QCOMPARE(f.stream.value("uuid").toString(), direct);
+        captureEncryptedUi(window, "canonical-direct-source-main", "readable-and-sent");
+        const bool closed = closeIncubatedEncryptedVisualWindow(window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
     void uiEncryptedComposerSendsActualSourceCipher_data() {

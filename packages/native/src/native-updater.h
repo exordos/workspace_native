@@ -34,7 +34,8 @@ public:
     static constexpr qint64 MaximumArchiveBytes = 512LL * 1024 * 1024;
     explicit NativeUpdater(QObject *parent = nullptr);
     // C++ fixture injection only, never a QML invokable or runtime setting.
-    // The alternative endpoint must be literal IPv4/IPv6 loopback HTTP.
+    // The alternative metadata endpoint must be literal IPv4/IPv6 loopback HTTP or HTTPS.
+    // HTTPS is metadata-only; normal production download/redirect validation remains unchanged.
     NativeUpdater(const QUrl &releaseUrl, const QString &currentVersion,
                   const QString &cachePath, QObject *parent = nullptr);
     ~NativeUpdater() override;
@@ -83,6 +84,7 @@ private:
     QString m_cachePath;
     bool m_fixture = false;
     bool m_endpointValid = false;
+    bool m_metadataRetried = false;
     quint64 m_ticket = 0;
     QString m_state = QStringLiteral("idle");
     QString m_error;

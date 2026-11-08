@@ -14,6 +14,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSet>
+#include <QSslConfiguration>
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QTemporaryFile>
@@ -75,7 +76,10 @@ NativeUpdater::NativeUpdater(const QUrl &releaseUrl, const QString &currentVersi
                              const QString &cachePath, QObject *parent)
     : QObject(parent), m_network(new QNetworkAccessManager(this)),
       m_releaseUrl(releaseUrl), m_currentVersion(currentVersion), m_cachePath(cachePath),
-      m_fixture(loopback(releaseUrl)), m_endpointValid(releaseUrl == ReleaseUrl || m_fixture)
+      m_fixture(loopback(releaseUrl)),
+      m_endpointValid(releaseUrl == ReleaseUrl || m_fixture
+          || (cleanUrl(releaseUrl) && releaseUrl.scheme() == QStringLiteral("https") && releaseUrl.port() > 0
+              && (releaseUrl.host() == QStringLiteral("127.0.0.1") || releaseUrl.host() == QStringLiteral("::1"))))
 {
     m_deadline.setSingleShot(true);
     connect(&m_deadline, &QTimer::timeout, this, [this] {
@@ -152,6 +156,7 @@ void NativeUpdater::check()
 {
     if (busy() || m_state == QStringLiteral("downloaded") || m_state == QStringLiteral("ready")) return;
     const auto ticket = ++m_ticket;
+    m_metadataRetried = false;
     discardFile();
     m_availableVersion.clear();
     m_downloadUrl.clear();
@@ -301,7 +306,23 @@ void NativeUpdater::consume(quint64 ticket, QNetworkReply *reply, bool metadata)
 void NativeUpdater::finished(quint64 ticket, QNetworkReply *reply, bool metadata)
 {
     if (ticket != m_ticket || m_reply != reply) return;
-    const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const auto statusAttribute = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+    const auto status = statusAttribute.toInt();
+    if (metadata && !m_metadataRetried && m_state == QStringLiteral("checking")
+        && reply->error() == QNetworkReply::ProtocolFailure
+        && !statusAttribute.isValid() && reply->rawHeaderPairs().isEmpty()
+        && m_metadata.isEmpty() && reply->bytesAvailable() == 0
+        && reply->sslConfiguration().nextNegotiatedProtocol() == QByteArray("h2")) {
+        m_metadataRetried = true;
+        const QPointer<NativeUpdater> guard(this);
+        stopReply();
+        if (!guard) return;
+        QTimer::singleShot(0, this, [this, ticket] {
+            if (ticket != m_ticket || m_state != QStringLiteral("checking") || !m_deadline.isActive()) return;
+            startRequest(ticket, m_releaseUrl, true);
+        });
+        return;
+    }
     if (!metadata && (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)) {
         const auto next = reply->url().resolved(reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
         if (++m_redirects > 5 || !allowedDownload(next, true)) {

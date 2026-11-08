@@ -1327,10 +1327,6 @@
             <translation>Не удалось подтвердить данные личного чата.</translation>
         </message>
         <message>
-            <source>This personal chat is encrypted. Opening encrypted chats is not supported yet.</source>
-            <translation>Этот личный чат зашифрован. Открытие зашифрованных чатов пока не поддерживается.</translation>
-        </message>
-        <message>
             <source>This personal chat is archived. Opening archived chats is not supported yet.</source>
             <translation>Этот личный чат в архиве. Открытие архивных чатов пока не поддерживается.</translation>
         </message>

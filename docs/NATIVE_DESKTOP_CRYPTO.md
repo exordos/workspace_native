@@ -518,3 +518,25 @@ Source failure-toast presentation remain open; see
 in [holder checks](provenance/ordinary-holder-checks.json). The configurable disk
 cache still defaults to 10 GB. Full Linux, live service, packaging and other
 platforms are not established by these local synthetic checks.
+
+## Candidate: canonical encrypted Direct from New chat
+
+The existing Direct lookup now admits verified active encrypted pairs with a
+valid or null current generation. Pair/viewer/project, native source, archive,
+access, selection and canonical default/catalog guards remain. No encrypted-pair
+creation, bootstrap, group-key import or plaintext downgrade is introduced; the
+null-current/no-key case stays locked.
+
+One actual Main/TLS case physically opens that Direct, selects its topic and
+requests A. Its typed POST echo binds localId/public UUIDv5/default topic in the
+Vault without another R GET. The unchanged Source peer grants to that exact
+request, Native reads the sample, and physical Send produces e2ee-only wire
+confirmed by the existing canonical GET and decrypted by the same peer. No A or
+private pair crosses the pipe. New Main (3 Qt cases) and old peer/composer controls (3/8 Qt cases) pass without
+runtime warnings, stderr or skips; Controller (837 cases) passed separately.
+
+This uses synthetic HTTP and public event admission, not live WSS/backend or a
+full Source UI session. The peer reconstructs typed public request input; full
+transport-DTO parsing and pixel parity are not claimed. The whole current E2EE core passed 274 cases. Whole Window/encrypted UI,
+public package delivery and installed 0.1.5 acceptance remain pending. Distinct earlier
+failures and causal limits are retained in [candidate checks](provenance/linux-0.1.5-candidate-checks.json).

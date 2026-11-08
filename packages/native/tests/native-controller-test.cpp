@@ -3455,7 +3455,8 @@ private slots:
     {
         QTest::addColumn<QString>("field");
         for (const auto *field : {"401", "403", "500", "uuid", "project_id", "user_uuid", "owner", "direct_user_uuid",
-             "private", "source_name", "provider_uuid", "role", "encryption", "created_at", "description", "default_topic_uuid"})
+             "private", "source_name", "provider_uuid", "role", "encryption", "invalid-current-key",
+             "nonencrypted-current-key", "created_at", "description", "default_topic_uuid"})
             QTest::newRow(field) << QString(field);
     }
     void directChatLookupCannotTurnInvalidIdentityIntoCreateAuthority()
@@ -3463,7 +3464,9 @@ private slots:
         QFETCH(QString, field); DirectChatFixture test; test.seed();
         if (field == "401" || field == "403" || field == "500") test.lookupStatus = field.toInt();
         else if (field == "private") test.created[field] = false;
-        else if (field == "encryption") test.created[field] = true;
+        else if (field == "encryption") test.created[field] = "true"; // Malformed type; encrypted+null is now a valid pair.
+        else if (field == "invalid-current-key") { test.created["encryption"] = true; test.created["current_encryption_key_uuid"] = "not-a-uuid"; }
+        else if (field == "nonencrypted-current-key") test.created["current_encryption_key_uuid"] = returnedId;
         else if (field == "source_name") test.created[field] = "zulip";
         else if (field == "role") test.created[field] = "member";
         else if (field == "created_at") test.created[field] = "invalid-date";
@@ -3479,7 +3482,8 @@ private slots:
 
     void directChatUnsupportedExistingPairNeverDowngradesOrUnarchives_data()
     {
-        QTest::addColumn<bool>("encrypted"); QTest::newRow("encrypted") << true; QTest::newRow("archived") << false;
+        // Valid encrypted pairs are covered by the positive known/null-current table below.
+        QTest::addColumn<bool>("encrypted"); QTest::newRow("archived") << false;
     }
     void directChatUnsupportedExistingPairNeverDowngradesOrUnarchives()
     {
@@ -3491,6 +3495,99 @@ private slots:
         QCOMPARE(test.posts, 0); QCOMPARE(test.topicGets, 0); QVERIFY(!controller.canCheckDirectChat()); QVERIFY(!controller.canRetryDirectChat());
         QCOMPARE(controller.directChatForm().value("confirmedStreamId").toString(), directId);
         QVERIFY(controller.selectedStream() != directId);
+    }
+
+    void directChatEncryptedExistingPairPreservesCanonicalMetadata_data()
+    {
+        QTest::addColumn<bool>("currentKeyKnown"); QTest::addColumn<bool>("peerCreated");
+        QTest::newRow("known-current-own-created") << true << false;
+        QTest::newRow("null-current-own-created") << false << false;
+        QTest::newRow("known-current-peer-created") << true << true;
+        QTest::newRow("null-current-peer-created") << false << true;
+    }
+    void directChatEncryptedExistingPairPreservesCanonicalMetadata()
+    {
+        QFETCH(bool, currentKeyKnown); QFETCH(bool, peerCreated);
+        DirectChatFixture test;
+        auto pair = creationDirect(); pair["encryption"] = true;
+        pair["current_encryption_key_uuid"] = currentKeyKnown ? QJsonValue(returnedId) : QJsonValue(QJsonValue::Null);
+        if (peerCreated) pair["owner"] = channelMemberA;
+        test.seed(pair); const auto originalPair = test.created, originalTopic = test.defaultTopic;
+        auto &controller = test.fixture.controller;
+        FileClient files(&test.fixture.api); controller.useFiles(&files);
+        QVERIFY(test.fixture.start()); QTRY_VERIFY(controller.directChatDirectoryVerified());
+        const auto catalogs = test.streamGets, users = test.usersGets;
+        QSignalSpy done(&controller, &NativeController::directChatOpened); QVERIFY(done.isValid());
+        controller.startDirectChat(channelMemberA);
+        QTRY_COMPARE(done.size(), 1); QCOMPARE(controller.directChatPhase(), QString("ready"));
+        QCOMPARE(test.gets, 1); QCOMPARE(test.posts, 0); QCOMPARE(test.topicGets, 1);
+        QCOMPARE(test.streamGets - catalogs, 1); QCOMPARE(test.usersGets, users);
+        QCOMPARE(done.first().at(0).toString(), directId);
+        QCOMPARE(done.first().at(1).toString(), channelMemberA);
+        QCOMPARE(done.first().at(2).toString(), channelDefault);
+        QCOMPARE(controller.selectedStream(), directId); QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(controller.conversationKind(), QString("stream")); QVERIFY(controller.isDirectConversation());
+        QCOMPARE(controller.directPeer().value("id").toString(), channelMemberA);
+        QCOMPARE(test.created, originalPair); QCOMPARE(test.defaultTopic, originalTopic);
+        QCOMPARE(controller.encryption().value("currentKeyUuid").toString(), currentKeyKnown ? returnedId : QString{});
+        controller.selectTopic(channelDefault); QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.selectedTopic(), channelDefault);
+        controller.setDraft("Must stay local without a Vault key");
+        QVERIFY(!controller.encryption().value("available").toBool());
+        QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+        controller.send(); controller.attachFiles({QUrl::fromLocalFile("/nonexistent/cassi-encrypted-direct-no-upload")});
+        QCOMPARE(controller.draft(), QString("Must stay local without a Vault key"));
+        for (const auto &request : test.fixture.server.requests)
+            if (request.target.path().startsWith("/api/workspace/v1/messenger/")) QCOMPARE(request.method, QByteArray("GET"));
+        QCOMPARE(test.posts, 0); QCOMPARE(test.created, originalPair); QCOMPARE(test.defaultTopic, originalTopic);
+    }
+
+    void directChatOrdinaryPostMayReturnEncryptedExistingPair_data()
+    {
+        QTest::addColumn<bool>("currentKeyKnown");
+        QTest::newRow("known-current") << true; QTest::newRow("null-current") << false;
+    }
+    void directChatOrdinaryPostMayReturnEncryptedExistingPair()
+    {
+        QFETCH(bool, currentKeyKnown); DirectChatFixture test;
+        // A pair may appear between the initial404 and the idempotent ordinary
+        // create. The POST body still never requests encryption or bootstrap.
+        test.alterPost = [&](QJsonObject &row) {
+            row["encryption"] = true;
+            row["current_encryption_key_uuid"] = currentKeyKnown ? QJsonValue(returnedId) : QJsonValue(QJsonValue::Null);
+            test.created = row; // The subsequent actual GET/catalog return the same canonical encrypted pair.
+        };
+        auto &controller = test.fixture.controller;
+        FileClient files(&test.fixture.api); controller.useFiles(&files);
+        QVERIFY(test.fixture.start()); QTRY_VERIFY(controller.directChatDirectoryVerified());
+        const auto catalogs = test.streamGets;
+        QSignalSpy done(&controller, &NativeController::directChatOpened); QVERIFY(done.isValid());
+        controller.startDirectChat(channelMemberA); QTRY_COMPARE(done.size(), 1);
+        QCOMPARE(controller.directChatPhase(), QString("ready"));
+        QCOMPARE(test.posts, 1); QCOMPARE(test.gets, 2); QCOMPARE(test.topicGets, 1);
+        QCOMPARE(test.streamGets - catalogs, 1); QCOMPARE(test.bodies.size(), 1);
+        QCOMPARE(test.bodies.first(), QJsonObject({{"name", "Direct"}, {"description", "Private workspace"},
+            {"source_name", "native"}, {"direct_user_uuid", channelMemberA}}));
+        QCOMPARE(controller.selectedStream(), directId); QVERIFY(controller.selectedTopic().isEmpty());
+        QVERIFY(test.created.value("encryption").toBool());
+        QCOMPARE(test.created.value("current_encryption_key_uuid"),
+            currentKeyKnown ? QJsonValue(returnedId) : QJsonValue(QJsonValue::Null));
+        int pairPosts = 0;
+        for (const auto &request : test.fixture.server.requests) {
+            if (!request.target.path().startsWith("/api/workspace/v1/messenger/")) continue;
+            if (request.method != "GET") {
+                QCOMPARE(request.method, QByteArray("POST"));
+                QCOMPARE(request.target.path(), QString("/api/workspace/v1/messenger/streams/"));
+                ++pairPosts;
+            }
+        }
+        QCOMPARE(pairPosts, 1); // No member write, key request, bootstrap or message POST.
+        controller.selectTopic(channelDefault); QTRY_VERIFY(!controller.busy());
+        controller.setDraft("No plaintext fallback after an encrypted canonical result");
+        QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach());
+        const auto requestsBeforeSend = test.fixture.server.requests.size(); controller.send();
+        QCOMPARE(test.fixture.server.requests.size(), requestsBeforeSend);
+        QCOMPARE(controller.draft(), QString("No plaintext fallback after an encrypted canonical result"));
     }
 
     void directChatUnknownPostRecoversOnlyThroughExplicitActions_data()

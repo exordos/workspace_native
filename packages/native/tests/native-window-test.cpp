@@ -1707,7 +1707,34 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto identity=session.publicProfile(),profile=controller.account();
         click(window,visibleItem("accountMenuButton"));
         QTRY_VERIFY(visibleItem("ownStatusAction")); // First intended old-Main missing-editor RED.
-        click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        auto *statusAction = visibleItem(window->contentItem(), "ownStatusAction");
+        auto *aboutAction = visibleItem(window->contentItem(), "aboutAction");
+        QVERIFY(statusAction && aboutAction);
+        QQmlExpression statusPopupExpression(qmlContext(window), window, QStringLiteral("accountPopup"));
+        const auto statusPopupValue = statusPopupExpression.evaluate();
+        auto *statusPopup = statusPopupValue.metaType() == QMetaType::fromType<QJSValue>()
+            ? statusPopupValue.value<QJSValue>().toQObject() : statusPopupValue.value<QObject *>();
+        QVERIFY(statusPopup && !statusPopupExpression.hasError());
+        const auto statusActionReady = [&] {
+            auto *column = statusAction->parentItem();
+            if (!column || aboutAction->parentItem() != column || !statusAction->isVisible()
+                || !statusAction->isEnabled() || statusAction->window() != window
+                || !statusPopup->property("visible").toBool() || !statusPopup->property("opened").toBool()
+                || column->height() != column->implicitHeight()
+                || statusAction->height() != statusAction->implicitHeight()) return false;
+            const QRectF statusRect(statusAction->mapToScene(QPointF{}), statusAction->size());
+            const QRectF aboutRect(aboutAction->mapToScene(QPointF{}), aboutAction->size());
+            const QRectF columnRect(column->mapToScene(QPointF{}), column->size());
+            return statusRect.width() > 0 && statusRect.height() > 0 && columnRect.contains(statusRect)
+                && columnRect.contains(aboutRect) && aboutRect.top() >= statusRect.bottom();
+        };
+        QTRY_VERIFY2(statusActionReady(), "The account menu must finish placing its rows before mouse input");
+        QSignalSpy statusInputFrame(window, &QQuickWindow::frameSwapped);
+        window->update(); QTRY_VERIFY(!statusInputFrame.isEmpty());
+        QVERIFY(statusActionReady());
+        QSignalSpy statusClicked(statusAction, SIGNAL(clicked())); QVERIFY(statusClicked.isValid());
+        click(window,statusAction); QCOMPARE(statusClicked.size(),1);
+        QTRY_VERIFY(visibleItem("ownStatusText"));
         auto *dialog=window->findChild<QObject *>("ownStatusDialog");QVERIFY(dialog&&dialog->property("visible").toBool());
         QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
         QCOMPARE(visibleItem("ownStatusSave")->property("text").toString(),locale=="ru"?QString("Сохранить"):QString("Save"));
@@ -4403,7 +4430,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("channelCreateButton")->isEnabled());
         click(window, visibleItem("createChatTab-0"));
         QTRY_VERIFY(!controller.directChatBusy());
-        if (scenario == "encrypted" || scenario == "archived" || scenario == "403") {
+        if (scenario == "archived" || scenario == "403") {
             QCOMPARE(fixture.posts, 0); QCOMPARE(opened.size(), 0);
             QCOMPARE(controller.directChatPhase(), scenario == "403" ? QString("failed") : QString("unsupported"));
             QTRY_VERIFY(visibleItem("directChatError"));
@@ -4444,14 +4471,19 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(controller.selectedStream(), windowDirectId());
         QCOMPARE(controller.selectedTopic(), QString{});
         QCOMPARE(controller.conversationKind(), QString("stream"));
-        QTRY_VERIFY(visibleItem("streamTopicPrompt"));
+        if (scenario == "encrypted") {
+            QTRY_VERIFY(visibleItem("encryptedReadStatus"));
+            QVERIFY(!visibleItem("streamTopicPrompt"));
+        } else {
+            QTRY_VERIFY(visibleItem("streamTopicPrompt"));
+        }
         QVERIFY(!controller.canSend() && !controller.canAttach());
         QTRY_VERIFY(visibleItem("directConversationName"));
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(), QString("Alice"));
         QTRY_COMPARE(visibleItem("conversationHeader")->height(), qreal(56));
         QCOMPARE(item(window->contentItem(), "stream-" + windowDirectId())->property("enabled").toBool(), true);
         QCOMPARE(fixture.memberPosts, 0);
-        QCOMPARE(fixture.posts, scenario == "existing" ? 0 : scenario == "not-applied503" ? 2 : 1);
+        QCOMPARE(fixture.posts, scenario == "existing" || scenario == "encrypted" ? 0 : scenario == "not-applied503" ? 2 : 1);
         if (!fixture.directBodies.isEmpty())
             QCOMPARE(fixture.directBodies.first(), QJsonObject({{"name", "Direct"}, {"description", "Private workspace"},
                 {"source_name", "native"}, {"direct_user_uuid", channelPeer}}));
@@ -4460,8 +4492,95 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.busy());
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(), QString("Alice"));
         controller.setDraft("A real selected topic enables the composer");
-        QVERIFY(controller.canSend());
+        QCOMPARE(controller.canSend(), scenario != "encrypted"); // No Vault/key: the encrypted route stays locked.
         window->close();
+    }
+
+    void existingEncryptedDirectFromNewChatOpensWithoutChangingThePair_data()
+    {
+        QTest::addColumn<bool>("currentKeyKnown");
+        QTest::newRow("known-current") << true;
+        QTest::newRow("null-current") << false;
+    }
+    void existingEncryptedDirectFromNewChatOpensWithoutChangingThePair()
+    {
+        QFETCH(bool, currentKeyKnown);
+        QTest::failOnWarning(QRegularExpression(".*"));
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("existing-encrypted-direct.ini"));
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.created["encryption"] = true;
+        fixture.created["current_encryption_key_uuid"] = currentKeyKnown
+            ? QJsonValue(returnedId) : QJsonValue(QJsonValue::Null);
+        const auto originalPair = fixture.created;
+        const auto originalTopic = fixture.defaultTopic;
+        int acknowledgedPairGets = 0, unexpectedWrites = 0;
+        QJsonObject servedPair;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method != "GET" && request.target.path().startsWith("/api/workspace/v1/messenger/"))
+                ++unexpectedWrites;
+            auto response = fallback(request);
+            if (request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/streams/" + windowDirectId()) {
+                ++acknowledgedPairGets;
+                servedPair = response.data.toObject();
+            }
+            return response;
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QSignalSpy opened(&controller, &NativeController::directChatOpened); QVERIFY(opened.isValid());
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Existing encrypted Direct window did not settle before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(controller.directChatDirectoryVerified());
+        QTRY_VERIFY(controller.canStartDirectChatWith(channelPeer));
+        auto *newChat = item(window->contentItem(), "createChatButton"); QVERIFY(newChat && newChat->isEnabled());
+        click(window, newChat);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "directChatSearch"));
+        click(window, visibleItem(window->contentItem(), "directChatSearch"));
+        for (const auto key : QByteArray("alice")) QTest::keyClick(window, key);
+        QTRY_COMPARE(visibleItem(window->contentItem(), "directChatSearch")->property("text").toString(), QString("alice"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "direct-user-" + channelPeer)
+            && visibleItem(window->contentItem(), "direct-user-" + channelPeer)->isEnabled());
+        auto *peer = visibleItem(window->contentItem(), "direct-user-" + channelPeer); QVERIFY(peer);
+        const auto point = peer->mapToScene(QPointF(peer->width() / 2, peer->height() / 2));
+        QVERIFY(QRectF(QPointF{}, QSizeF(window->size())).contains(point));
+        click(window, peer);
+        QTRY_COMPARE(acknowledgedPairGets, 1); // Actual server acknowledgement, not merely an allocated QNetworkReply.
+        QTRY_VERIFY(!controller.directChatBusy());
+        QCOMPARE(servedPair, originalPair);
+        QCOMPARE(servedPair.value("uuid").toString(), windowDirectId());
+        QCOMPARE(servedPair.value("project_id").toString(), projectId);
+        QCOMPARE(servedPair.value("user_uuid").toString(), userId);
+        QCOMPARE(servedPair.value("direct_user_uuid").toString(), channelPeer);
+        QVERIFY(servedPair.value("encryption").toBool());
+        QVERIFY(!servedPair.value("is_archived").toBool());
+        QCOMPARE(fixture.posts, 0); QCOMPARE(fixture.memberPosts, 0); QCOMPARE(unexpectedWrites, 0);
+        // First intended product oracle: the successful owned existing pair opens.
+        // No crypto/Vault/read/send assertion is used to manufacture this route RED.
+        QTRY_COMPARE(opened.size(), 1);
+        QCOMPARE(controller.directChatPhase(), QString("ready"));
+        QCOMPARE(controller.selectedStream(), windowDirectId());
+        QCOMPARE(controller.selectedTopic(), QString{}); // Source navigates the stream, not an invented selected topic.
+        QCOMPARE(controller.conversationKind(), QString("stream"));
+        QVERIFY(controller.isDirectConversation());
+        QCOMPARE(controller.directPeer().value("id").toString(), channelPeer);
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "directChatSearch"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "directConversationName"));
+        QCOMPARE(fixture.created, originalPair); QCOMPARE(fixture.defaultTopic, originalTopic);
+        QVERIFY(fixture.topicGets >= 1); // Existing verified-default/topics publication must actually occur.
+        QVERIFY(!controller.canSend()); QVERIFY(!controller.canAttach()); // No Vault/key is fabricated here.
+        QCOMPARE(fixture.posts, 0); QCOMPARE(fixture.memberPosts, 0); QCOMPARE(unexpectedWrites, 0);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
     void directChatRecoveryRemainsInTheKeyboardFocusLoop()
@@ -6738,7 +6857,31 @@ mv -Tf "$root/.current-new" "$root/current"
         controller.setRealtimeMode(true);
         click(window, item(window->contentItem(), "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), 2);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        auto *wantedTopic = item(window->contentItem(), "topic-" + topicId);
+        auto *otherTopic = item(window->contentItem(), "topic-" + secondTopicId);
+        auto *streamRow = item(window->contentItem(), "stream-" + streamId);
+        QVERIFY(wantedTopic && otherTopic && streamRow);
+        const auto reactionTopicReady = [&] {
+            auto *column = wantedTopic->parentItem();
+            if (!column || otherTopic->parentItem() != column || wantedTopic->window() != window
+                || otherTopic->window() != window || !wantedTopic->isVisible() || !otherTopic->isVisible()
+                || !wantedTopic->isEnabled() || !otherTopic->isEnabled()) return false;
+            const QRectF wanted(wantedTopic->mapToScene(QPointF{}), wantedTopic->size());
+            const QRectF other(otherTopic->mapToScene(QPointF{}), otherTopic->size());
+            const QRectF parent(column->mapToScene(QPointF{}), column->size());
+            const auto streamBottom = streamRow->mapToScene(QPointF(0, streamRow->height())).y();
+            return wanted.width() > 0 && wanted.height() > 0 && other.width() > 0 && other.height() > 0
+                && wanted.top() >= streamBottom && other.top() >= streamBottom
+                && parent.contains(wanted) && parent.contains(other) && !wanted.intersects(other);
+        };
+        QTRY_VERIFY2(reactionTopicReady(), "Topic rows must occupy separate placed cells before mouse input");
+        QSignalSpy reactionInputFrame(window, &QQuickWindow::frameSwapped);
+        window->update(); QTRY_VERIFY(!reactionInputFrame.isEmpty()); QVERIFY(reactionTopicReady());
+        QSignalSpy wantedClicked(wantedTopic, SIGNAL(clicked())), otherClicked(otherTopic, SIGNAL(clicked()));
+        QVERIFY(wantedClicked.isValid() && otherClicked.isValid());
+        click(window, wantedTopic);
+        QCOMPARE(wantedClicked.size(), 1); QCOMPARE(otherClicked.size(), 0);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *content = window->contentItem();
         QTRY_VERIFY(item(content, "message-" + messageId));

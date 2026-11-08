@@ -1,0 +1,337 @@
+{
+  "schema": "native-linux-0.1.5-candidate-v1",
+  "status": "PRIVATE_DRAFT_FOCUSED_ACCEPTED_FULL_RELEASE_PENDING",
+  "version": "0.1.5",
+  "sourceReference": {
+    "repository": "exordos/workspace_ui",
+    "commit": "95495b10b828f853c9e770b47216073eb973fa95",
+    "wholeActionTests": 14,
+    "addedNullableEncryptedPairControls": 2,
+    "productionSourceUnchanged": true,
+    "rawSha256": "211d163dfa45ca5f3a65af7cc41b0ff89ea01aaf370c61b2d0fc5774b74353fa",
+    "resultSha256": "c2452806ccc9b749ad866a197b8711f43c83632c1ccbfca0fb8d09511a77e17e",
+    "rootReviewSha256": "dcf4a7137f19ac75b7a3729a5af8307c6d0a3b9591b3c940e27efed4111ee010",
+    "sourceBuildAdvisoryRetained": true,
+    "stderrEmptyClaimed": false
+  },
+  "directCapability": {
+    "scope": "Existing active canonical encrypted native Direct, valid/null current key; no encrypted-pair creation/bootstrap",
+    "actualProductRed": {
+      "qtPassed": 2,
+      "qtFailed": 2,
+      "qtMilliseconds": 33100,
+      "knownAndNullCurrentRows": true,
+      "canonicalGetAndNoWritesPositive": true,
+      "rawSha256": "a5000957f00992d5ac86c53c4f913b9822cdaff2b649bb5d9a9391ab7700891c",
+      "rootReviewSha256": "ca0ba6cd01773e8671cfc02fa7a7698e35134eeaa5313fb46e2c81d39d582c3b"
+    },
+    "identityAccessAndLifetimeGuardsRetained": true,
+    "missingKeysKeepSendAndAttachLocked": true,
+    "streamOrMemberWritesInActualMain": 0,
+    "requestPostBindsExactPublicUuidV5AndVaultPending": true,
+    "normalRequestExtraGet": 0,
+    "encryptedSendCanonicalGet": 1,
+    "actualMainActions": [
+      "New chat",
+      "Search/select participant",
+      "Select topic",
+      "Request key",
+      "Type/Send"
+    ],
+    "independentSourceCrypto": [
+      "Grant to exact Direct/public request",
+      "Native reads Source ciphertext",
+      "Same peer decrypts Native ciphertext"
+    ],
+    "groupOrPrivateKeyTransferred": false,
+    "acceptedFocused": [
+      {
+        "scope": "clean-canonical-direct-main3",
+        "qtPassed": 3,
+        "qtMilliseconds": 2451,
+        "failed": 0,
+        "skipped": 0,
+        "runtimeWarnings": 0,
+        "stderrBytes": 0,
+        "rawSha256": "ecf8bc0c3041729c252b04e140e8d2ffd1b637d6823ed6768d47acf049c5b7ac"
+      },
+      {
+        "scope": "old-default-source-core",
+        "qtPassed": 3,
+        "qtMilliseconds": 1740,
+        "failed": 0,
+        "skipped": 0,
+        "runtimeWarnings": 0,
+        "stderrBytes": 0,
+        "rawSha256": "23b8b47dc9dc090e423278f9c283c4a71e5cfbd6a8e3e6fb191da621fbdf7c83"
+      },
+      {
+        "scope": "old-default-source-composer",
+        "qtPassed": 8,
+        "qtMilliseconds": 14074,
+        "failed": 0,
+        "skipped": 0,
+        "runtimeWarnings": 0,
+        "stderrBytes": 0,
+        "rawSha256": "2e77118009cb81a9a1f5f9554492ca1037ac960db817b090ca0f9f42b973618c"
+      }
+    ],
+    "completeController": {
+      "qtPassed": 837,
+      "qtMilliseconds": 524381,
+      "runtimeWarnings": 0,
+      "stderrBytes": 0,
+      "skipped": 0,
+      "rawSha256": "ec956328e0667ebe5b27d946f1ec281f3fd3b3cb12284ed83a957ee6137c1819",
+      "resultSha256": "51895384c906f0b3cb54dbdb658316ca3c11a29fe16459882fc81420b9eb4099",
+      "rootReviewSha256": "bdaa8dd4ea2a8d7fd8a48c8e0d8ee6e2dc6fb7c668b25156fca558560db49be3",
+      "applicableCppAndTestMatchCandidate": true
+    },
+    "cleanResultSha256": "1133d283df1a415a03c91a087213114b968f40b3ae79d36ddf3fdffe91765c3b",
+    "cleanRootReviewSha256": "a22c4fb063a8de8c47ef6d3542807c31a99587aa63c8bcd7e79bea9195a279a0",
+    "diagnosticsRemoved": true,
+    "retainedObservations": [
+      {
+        "run": "v109",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Request no POST; no receiver trace",
+        "limit": "Original cause UNKNOWN",
+        "rawSha256": "42925ff29dfe75a66c6f2d591afd50abf65606c11897d4d4cc09f5a44f71008d",
+        "resultSha256": "af211638fb611cd97dce97d7ab299674d51ac2a966621ff975910fb0d52a5bbb"
+      },
+      {
+        "run": "v111",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Other topic selected before Request observer",
+        "limit": "No same-state Request reproduction",
+        "rawSha256": "cff1a2d86d9c35c4ea80d5109b79b88e6cb71895eda22a2e5fbe63dcdf7086d0",
+        "resultSha256": "76d95a461b3115cbb2c3e877b36b2d77b99415ddb6f9cb3bbb49077eff53fd48"
+      },
+      {
+        "run": "v112",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Topics overlapped before layout; other button received clicked",
+        "limit": "Proven pre-layout wrong-topic dispatch only",
+        "rawSha256": "d60e7b4a936d68b9386da8f323c509f2949771f8bf6f9a4579074c1632fda7a3",
+        "resultSha256": "4258dbe3d53dd3cee0c22baf187de4d6baed22439b16da6a4115436b078cc9b4"
+      },
+      {
+        "run": "v113",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Correct topic; enabled Request received no signals",
+        "limit": "Private Qt cause UNKNOWN; small relocation alone is not proof",
+        "rawSha256": "15b10664eb8cd79d6b5d0e57f5c4fb64bd736616bae356f4a09535c156e87389",
+        "resultSha256": "ef31cf5c1750268d848767a5891e83b05c743ebd797e4d2a87446d0e50821a46"
+      },
+      {
+        "run": "v114",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Window got press/release; Request did not; Flow unsettled",
+        "limit": "Private Qt recipient/cause UNKNOWN",
+        "rawSha256": "4fe4b1181b00aa772f6e5950af7de09ba3ccb40a6028055247ac08be523e263c",
+        "resultSha256": "a5b10cf9fe086395b3fdb2b1ae1fce6ed4ff24ef380a6618f8e34f1e3ecb3d8f"
+      },
+      {
+        "run": "v115",
+        "status": "RETAINED_NOT_ACCEPTED",
+        "observation": "Request click/POST succeeded; new R GET1 oracle failed",
+        "limit": "Test-contract error; valid POST echo binds without extra GET",
+        "rawSha256": "51ccd528039bd375ba54f43a6a79683c153e5e01827842a810571a13f8819533",
+        "resultSha256": "b2c099bd9bd1d5fdf3605c47997730f4ed31b61ca1f6195502836937a3b6517e"
+      }
+    ]
+  },
+  "updaterMetadataRecovery": {
+    "scope": "One fresh metadata request after pre-status/header/body ProtocolFailure with negotiated h2 within original deadline",
+    "http1Forcing": false,
+    "archiveRetryAdded": false,
+    "httpStatusSchemaTlsOrPostHeaderRetryAdded": false,
+    "originalDeadlineMilliseconds": 30000,
+    "actualHeldRetryElapsedMilliseconds": 29856,
+    "all18Passed": true,
+    "cases": [
+      {
+        "case": "recovery",
+        "status": "PASS",
+        "resultSha256": "ed95264267906f50e78f372151d0e0280368c9765e4aecd69c724dc487e2bcf4",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "two-fail",
+        "status": "PASS",
+        "resultSha256": "70a8550e24a662591740fc56292d2572c569005aab23eef32967110ca1499ec3",
+        "retainedExpectedFaultWarningLines": 4
+      },
+      {
+        "case": "reset-cap",
+        "status": "PASS",
+        "resultSha256": "bf25da398b30c00b01dbb8a23bb7e1d8b389c16be97af29cf13258ee45f1bc1c",
+        "retainedExpectedFaultWarningLines": 6
+      },
+      {
+        "case": "http-403",
+        "status": "PASS",
+        "resultSha256": "dbff0d8bf309c172ef4b993b07368f457cd47de1740e216755cc86ee7e8fa0d8",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "http-404",
+        "status": "PASS",
+        "resultSha256": "6433ca59a268ac64d664fe9c511820d3f291eda2e3da9f47f4a9dec0e1409dbb",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "http-429",
+        "status": "PASS",
+        "resultSha256": "f2b11239f7cdea938187bd1ec5e0c2b65a7dfcc0a39a651a3b21f8656701b0a1",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "http-503",
+        "status": "PASS",
+        "resultSha256": "093ab56537ffa7e5c8e0f34a97121fe65c44efa881642722fc8eb903ead845a8",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "schema",
+        "status": "PASS",
+        "resultSha256": "f0e8eaa7c1a00bc4c5bd7d434facb26253e19473acbca8fdb1f5082d766e333b",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "postheaders",
+        "status": "PASS",
+        "resultSha256": "105e053a68aa1e91351d459eb47983ec42ebb2efe820a706fff34a58fb072a1f",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "tls",
+        "status": "PASS",
+        "resultSha256": "f2b4615f6b95b881ea6877c81b6b9fb46ad11a70f9b8b0208b62c30876030856",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "http1",
+        "status": "PASS",
+        "resultSha256": "ed47bf556bed933ff674cab6dc51dd91beb066f57b7eff6396ea4a83e7e54233",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "cancel",
+        "status": "PASS",
+        "resultSha256": "4b95c53ff33d00a6fd538d6377e78c5612b08151e44df7269c8b9ff6e82ef00f",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "destroy",
+        "status": "PASS",
+        "resultSha256": "0a4f8a5e5cc9e503c05fd90ce6f6d17a6b5dfb9b849c2b5f77f3a57be6d8bc20",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "replacement",
+        "status": "PASS",
+        "resultSha256": "07b72d129715fdcd71158cf1791266f0074321b1d70054ffadd3a7c463e8d139",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "deadline",
+        "status": "PASS",
+        "resultSha256": "ae3c0b9765d17e0838140af9e45181e5c84dc3af2f4e3fdbf18f2a5c23e843a4",
+        "retainedExpectedFaultWarningLines": 2
+      },
+      {
+        "case": "ipv6",
+        "status": "PASS",
+        "resultSha256": "1d5f6b6d2cfaa24068cc5188cba2bcea33c25a8b88db1e2ce436ba67228266ec",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "archive-policy",
+        "status": "PASS",
+        "resultSha256": "faa43b9e93b8a53b351c373334654929e31021edb7f915ed54cc3ab81f18a802",
+        "retainedExpectedFaultWarningLines": 0
+      },
+      {
+        "case": "endpoint-admission",
+        "status": "PASS",
+        "resultSha256": "03e619065fe4ef3fd4a714e750dd6321438f0d9b461eff70d31815fe965683be",
+        "retainedExpectedFaultWarningLines": 0
+      }
+    ],
+    "resultSha256": "19297eab2c0bc0d7e4f9644fa5810637f2101315675c24846b0c3083aaaf44b9",
+    "rootReviewSha256": "0d2764419a2b85c1a6c8c8842c677b7a5026e10a463c300b28d7661d2faa83bb",
+    "faultDiagnosticsRetained": true,
+    "warningFreeClaimed": false,
+    "externalPublicFailureRootCause": "UNKNOWN",
+    "installedRecoveryAccepted": false
+  },
+  "acceptedDirectInputsSha256": {
+    "packages/native/src/native-controller.cpp": "95c5d752a0433524386c7227d4e6009f5a636e7cf92a93fa628eb4af32703e3f",
+    "packages/native/tests/native-controller-test.cpp": "b1f781604e736493cab7f3c540df3082244890d2299315bde0bc800c39647ee5",
+    "packages/native/tests/native-e2ee-read-test.cpp": "4ecc62609a2b45214a529d09f244ee8621f9437bbe1797eb5b4903ec09d6ac1e",
+    "packages/native/qml/Main.qml": "899b76bcf373e3a21fe827b20e86d61a610af7a36fd573bf22e095b6a2daaefe",
+    "packages/native/tests/e2ee-peer/peer.mjs": "4f639bc752bea808e242cc4760f0259eba1f3a8ad5e48166485baa3e7f24cfbe"
+  },
+  "pending": {
+    "coherentBuild": "PASS_WITH_RETAINED_25_CMAKE_IMPORT_WARNINGS",
+    "wholeWindow285": "PENDING",
+    "wholeE2eeCore": "PASS_274",
+    "wholeEncryptedUi": "PENDING",
+    "ci": "PENDING",
+    "packagedRuntime": "LOCAL_PACKAGE_AND_DEPLOYED_PROBE_PASS_PUBLIC_PENDING",
+    "publication": "PENDING",
+    "installedUpgrade": "PENDING",
+    "releaseTag": null,
+    "asset": null
+  },
+  "limits": [
+    "Synthetic HTTP/TLS/public event admission, not live account/backend/WSS",
+    "Typed Source peer reconstruction, not full transport-DTO parsing or Source UI",
+    "No new pixel/full-shell or credentials/history acceptance",
+    "Other distributions, Windows and macOS remain open",
+    "Previous failures/configure diagnostics retained; no blanket root-cause or warning-free-build claim"
+  ],
+  "resourceProofScope": "Completed focused Root receipts confirm cleanup; still-pending broad gates are separate. This draft created no runtime.",
+  "coherentCandidateFocused": {
+    "sourceFileCount": 281,
+    "inputTestSha256": "5395e1fab9eb7df9aed9db09b9aab073628ea111a716bb56433a33b6bf40821d",
+    "resultSha256": "a9db130daf3c405d2503363bdda9cc056316cbbe1c1466332fb68ae8f2c0997d",
+    "rootReviewSha256": "eb6e410c22b05ba624ffebeadf98c9f28047a3edca62a94d4befbcdedab22a9d",
+    "actualMainSourcePassed": 3,
+    "updaterUnitPassed": 49,
+    "localePassed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "runtimeWarnings": 0,
+    "stderrBytes": 0,
+    "cleanupVerified": true
+  },
+  "completeE2eeCore": {
+    "qtPassed": 274,
+    "qtMilliseconds": 600839,
+    "failed": 0,
+    "skipped": 0,
+    "runtimeWarnings": 0,
+    "stderrBytes": 0,
+    "resultSha256": "cb78f762759f359d677a9781629f7864893bec90f4f8470301065a39bd29bf3a",
+    "rootReviewSha256": "cf9d59a1b959a5562fc3764c278bc488f79ebb82540325e62a7efcb009d426af"
+  },
+  "windowReadiness": {
+    "firstCompleteRun": {
+      "passed": 283,
+      "failed": 2,
+      "rawSha256": "cc0587920be33f45ecaa9489d8ad98eeab60c3af7e7273f85ac2f825e6001ff4"
+    },
+    "passiveFocusedObservation": {
+      "passed": 25,
+      "failed": 0,
+      "rawSha256": "40dd1d55284a0574125184e511bc20c2710151b29340e5df60bcd63748d43cce",
+      "originalFailuresReproduced": false
+    },
+    "originalFailureCauses": "UNKNOWN",
+    "cleanScopedInputReadinessAndClickedRouteControlsAdded": true,
+    "originalResultAssertionsPreserved": true,
+    "finalFullRun": "PENDING"
+  }
+}

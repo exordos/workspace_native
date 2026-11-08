@@ -1,3 +1,24 @@
+# Workspace Native 0.1.5 — candidate, not published
+
+New chat can open an existing active encrypted Direct conversation, including
+one created by the other participant. Identity/default-topic checks remain, and
+missing keys keep sending and attachments locked. A local actual Main scenario
+covers Request key, Source grant/read and encrypted Send on that canonical Direct.
+Creating encrypted pairs and bootstrap remain open.
+
+Update metadata checks can make one fresh request after a specific HTTP/2 failure
+before any status, headers or body. The original total deadline and archive/error
+policies remain; 18 local TLS/HTTP/2 controls passed. This does not establish the
+cause of earlier public network failures.
+
+Focused Direct Main (3 Qt cases), default peer/composer controls (3/8 Qt cases) and separate Controller (837 cases) passed.
+The coherent build, actual Main Source3, updater49 and locale14 passed.
+Full Window (285 cases) and E2EE suites, CI, packaged runtime, publication and
+installed upgrade are pending. This remains a Linux development preview; live
+account, full functional/pixel parity and other platforms remain open.
+
+---
+
 # Workspace Native 0.1.4 — Linux development preview
 
 A picked image now displays after Send when the draft already contains a caption.

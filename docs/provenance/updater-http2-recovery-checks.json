@@ -1,0 +1,158 @@
+{
+  "scope": "Bounded metadata-only HTTP/2 recovery in the 0.1.5 development candidate; private real-wire acceptance, not public-release acceptance",
+  "candidateVersion": "0.1.5",
+  "policy": {
+    "maximumAutomaticMetadataRecoveryGetsPerExplicitCheck": 1,
+    "eligibleQtError": "ProtocolFailure (399)",
+    "requiresNegotiatedAlpn": "h2",
+    "requiresNoHttpStatusHeadersOrMetadataBytes": true,
+    "logicalStateDuringRecovery": "checking",
+    "sameEndpointAndRequestPolicy": true,
+    "originalTotalDeadlineMilliseconds": 30000,
+    "deadlineNotRestarted": true,
+    "secondEligibleFailureTerminal": true,
+    "downloadAndRedirectPolicyUnchanged": true,
+    "http1NotForced": true
+  },
+  "red": {
+    "observed": true,
+    "realStrictTlsAndH2": true,
+    "publicChecks": 2,
+    "actualGets": 2,
+    "warmupState": "current",
+    "fault": {
+      "connection": 1,
+      "stream": 3,
+      "errorCode": 399,
+      "httpStatus": null,
+      "responseHeaders": 0,
+      "responseBodyBytes": 0,
+      "publicHttp2Used": null,
+      "alpn": "h2"
+    },
+    "secondCheckFinalState": "error",
+    "resultSha256": "a14300f145f414bfaa2070a197fbf09207bfc58660eb33272c42ba51449689c6"
+  },
+  "green": {
+    "observed": true,
+    "sameFunctionalOracle": true,
+    "publicChecks": 2,
+    "actualGets": 3,
+    "replyErrorCodes": [
+      0,
+      399,
+      0
+    ],
+    "connectionStreamSequence": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        2,
+        1
+      ]
+    ],
+    "secondCheckFinalState": "current",
+    "noPublicErrorFlicker": true,
+    "resultSha256": "5c2ad945ca1b53694519f3bc08a992f358e5226ddce0dfa406de6b89c54f66cb"
+  },
+  "controls": {
+    "passed": 18,
+    "failed": 0,
+    "repeated": 0,
+    "caseNames": [
+      "recovery",
+      "two-fail",
+      "reset-cap",
+      "http-403",
+      "http-404",
+      "http-429",
+      "http-503",
+      "schema",
+      "postheaders",
+      "tls",
+      "http1",
+      "cancel",
+      "destroy",
+      "replacement",
+      "deadline",
+      "ipv6",
+      "archive-policy",
+      "endpoint-admission"
+    ],
+    "deadlineObservedMilliseconds": 29856,
+    "postHeaders399WasTerminal": true,
+    "strictTlsFailureMadeNoHttpRequest": true,
+    "http1PublicChecks": 1,
+    "http1QNetworkReplies": 1,
+    "http1QtInternalWireAttempts": 2,
+    "expectedFaultWarningLinesRetained": 22,
+    "unexpectedWarnings": 0,
+    "existingQtTestWarningPolicyUnchanged": true,
+    "resultSha256": "19297eab2c0bc0d7e4f9644fa5810637f2101315675c24846b0c3083aaaf44b9",
+    "independentReviewSha256": "0d2764419a2b85c1a6c8c8842c677b7a5026e10a463c300b28d7661d2faa83bb"
+  },
+  "referenceRuntime": {
+    "publishedArchiveVersion": "0.1.4",
+    "qtVersion": "6.10.2",
+    "nodeVersion": "22.22.1",
+    "selectedMappedLibraries": [
+      {
+        "relativePath": "lib/libQt6Core.so.6.10.2",
+        "sha256": "37f096cc0c5f9a1a90ff17885a16c8387cc386908be4cf893fe47cf1ebf2e639"
+      },
+      {
+        "relativePath": "lib/libQt6Network.so.6.10.2",
+        "sha256": "8f6bb71f8f118ae0ce3f01d0716af2b13c23a8e6dbd60ff8b5aae6cd7ee41c00"
+      },
+      {
+        "relativePath": "lib/libssl.so.3",
+        "sha256": "e7991405be03278ea73aab661406c747053c53d8ebdb3315a35a611229021984"
+      },
+      {
+        "relativePath": "lib/libcrypto.so.3",
+        "sha256": "06a35b49eaec2c3666e493848f250ffdb9b8544da738e02e1f746b066fbb0c06"
+      },
+      {
+        "relativePath": "lib/x86_64-linux-gnu/qt6/plugins/tls/libqopensslbackend.so",
+        "sha256": "b9b29913f6f2fa5a4980d5800221f76dd2564bf66d65be4be97cfb079374287b"
+      }
+    ],
+    "allWireControlsMatchedThoseLibraryHashes": true
+  },
+  "inputsSha256": {
+    "packages/native/src/native-updater.h": "df09806ca87198a1d94143ede7e7b2911068e192bee61b3446ca03bccd654e42",
+    "packages/native/src/native-updater.cpp": "2cd3d8b9b667addbc625f7d15768064977a518820415ec393962b2a1a0b8a4b3",
+    "packages/native/tests/updater-http2/controls.cpp": "bbbf598aac88a64835271957e0d21fa875352443753e0bb3a6d6b1fbfceed2f5",
+    "packages/native/tests/updater-http2/fixture.mjs": "4e37c4e5a352bc7e194e25dfc2225835dc0e8c0063bac564b3029d9443647ce9",
+    "packages/native/tests/updater-http2/metadata.json": "49f2795ce0fec9c35f2d45dc70c8b3cd47de5590d1c6855ba54a2fbcbb96d6ac",
+    "packages/native/tests/updater-http2/recovery-fixture.mjs": "347e41cccb9ad53e524cd22e6e0509b3b8cc9f63fd3096384aa9e4b646d31f48",
+    "packages/native/tests/updater-http2/recovery.cpp": "cdf01700ecc0e5aa2966c7e8c1330b3a10a635a4c16141ede8470e285778d66e",
+    "packages/native/tests/updater-http2/run.py": "320d07593263f8addb067cb705be149a3a6bbf0d9918a5066d6bee6aa1f9d69a"
+  },
+  "cleanup": {
+    "allOwnedProcessIdentitiesGone": true,
+    "ownedProcessCount": 86,
+    "ownedPortsClosed": true,
+    "ephemeralPrivateKeysRemoved": true,
+    "privateXdgRemoved": true,
+    "homePreserved": true
+  },
+  "pendingForCandidate": {
+    "completeExistingNativeUpdaterQtTestSuite": "PASS_49",
+    "finalPackageRuntimeProbe": "pending",
+    "githubCIAndPublishedAssetDelivery": "pending",
+    "actualInstalledUpgradeAndCachePreservation": "pending"
+  },
+  "limits": [
+    "The original external intermittent metadata-error cause remains unknown.",
+    "Owned local socket closure models a transport failure; it does not identify the remote source of earlier closes.",
+    "No Workspace credentials, live account, GUI, About visual or general application acceptance comes from these QCore controls.",
+    "A passed private control set is not final package, publication or installed-upgrade acceptance."
+  ]
+}

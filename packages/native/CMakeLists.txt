@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.1.4 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.1.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -232,6 +232,25 @@ if(BUILD_TESTING)
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
+    # Actual local TLS/h2 transport regressions. Existing QtTest failOnWarning policy is untouched.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_executable(native-updater-http2-recovery-driver tests/updater-http2/recovery.cpp src/native-updater.cpp src/native-updater.h)
+        target_include_directories(native-updater-http2-recovery-driver PRIVATE src)
+        target_link_libraries(native-updater-http2-recovery-driver PRIVATE Qt6::Core Qt6::Network OpenSSL::SSL)
+        add_executable(native-updater-http2-controls-driver tests/updater-http2/controls.cpp src/native-updater.cpp src/native-updater.h)
+        target_include_directories(native-updater-http2-controls-driver PRIVATE src)
+        target_link_libraries(native-updater-http2-controls-driver PRIVATE Qt6::Core Qt6::Network OpenSSL::SSL)
+        foreach(case recovery two-fail reset-cap http-403 http-404 http-429 http-503 schema postheaders tls http1 cancel destroy replacement deadline ipv6 archive-policy endpoint-admission)
+            add_test(NAME "native-updater-http2-${case}" COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/updater-http2/run.py"
+                --case "${case}" --driver "$<TARGET_FILE:native-updater-http2-controls-driver>"
+                --recovery-driver "$<TARGET_FILE:native-updater-http2-recovery-driver>"
+                --updater-source-dir "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                --node "${WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE}" --openssl "${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}"
+                --output-root "${CMAKE_CURRENT_BINARY_DIR}/Testing/updater-h2")
+            set_tests_properties("native-updater-http2-${case}" PROPERTIES TIMEOUT 180 LABELS "updater;transport;tls;http2")
+        endforeach()
+    endif()
     add_executable(native-e2ee-read-test tests/native-e2ee-read-test.cpp)
     target_link_libraries(native-e2ee-read-test PRIVATE workspace-native-core Qt6::Test)
     target_compile_definitions(native-e2ee-read-test PRIVATE
@@ -269,6 +288,7 @@ if(BUILD_TESTING)
         uiEncryptedSourceHeaderAvatarUsesDefaultThemeCircle
         uiEncryptedSourceSidebarAvatarUsesLockFallback
         uiEncryptedComposerSendsActualSourceCipher
+        uiNewChatEncryptedCanonicalDirectUsesActualSourceGrantReadAndSend
         uiEncryptedComposerEmojiUsesActualSourcePeer
         uiEncryptedComposerLockedKeyNeverFallsBackToPlaintext
         uiOrdinaryComposerPreservesMarkdownAndAggregatePrompt
