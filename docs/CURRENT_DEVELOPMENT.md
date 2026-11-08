@@ -128,6 +128,29 @@ checks follow the D17 complete groups above; those earlier groups are not claime
 rerun on this small failed-acquire change. See
 [avatar remount checks](provenance/avatar-remount-checks.json).
 
+Canonical Users first and last names now supply the message-author label through
+the existing Source-trimmed helper. Present null or whitespace fields fall back
+to username; when both canonical fields are absent the previous legacy extension
+fallback stays intact. Actual HTTP and visible Main regressions reproduced the
+earlier username/stale-name display before the correction.
+
+The existing user-presentation map also carries normalized presence and own
+custom status. Owned account, Direct sidebar/header and message-author data
+update after actual Users replies and admitted public user events. Cached
+profiles restore offline without stale custom status; per-owner timestamps
+protect only these added facts from older updates. Existing name/avatar ordering,
+creator choices, permissions, cache schema and image operations are unchanged.
+
+All three actual test-only regressions failed at their intended missing facts.
+The first focused successor passed 31 cases and failed one new cache fixture
+before reopening: it incorrectly assumed synchronous worker shutdown. The next
+fixture waits for the existing asynchronous stop and real shutdownFinished,
+without changing product code, assertion values or budgets. Focused Controller32,
+actual Main3 and the complete Controller800 then passed without runtime warnings,
+stderr or skips. Existing test lines are preserved. These are local synthetic
+data checks; QML presence, profile email and complete visual acceptance follow
+separately. See [user presentation checks](provenance/user-presentation-checks.json).
+
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
 so explicit Retry can recover after a trust reset. Actual no-work and real WSS

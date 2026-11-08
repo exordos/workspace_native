@@ -714,9 +714,434 @@ public:
     }
 };
 
+// Additive presentation fixture only: the existing real Users/direct/history HTTP paths.
+static QJsonObject presencePerson(const QString &id, const QString &username, const QJsonValue &status,
+    const QString &updated = "2026-01-02T10:00:00Z", const QJsonValue &text = QJsonValue::Null,
+    const QJsonValue &emoji = QJsonValue::Null, const QJsonValue &avatar = QJsonValue(avatarReferenceA))
+{
+    auto row = avatarReferencePerson(id, username, avatar);
+    if (status.isUndefined()) row.remove("status"); else row["status"] = status;
+    row["updated_at"] = updated;
+    row["status_text"] = text; row["status_emoji"] = emoji;
+    return row;
+}
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
+    void usersHttpNamesMatchSourceAndPreserveLegacyAbsentFields_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QString>("expectedAuthor");
+        QTest::addColumn<QString>("expectedDirectory");
+        QTest::newRow("canonical-first-last") << QString("canonical-first-last")
+            << QString("Alice Synthetic") << QString("Alice Synthetic");
+        QTest::newRow("canonical-present-null") << QString("canonical-present-null")
+            << QString("alice") << QString("alice");
+        QTest::newRow("canonical-present-whitespace") << QString("canonical-present-whitespace")
+            << QString("alice") << QString("alice");
+        QTest::newRow("legacy-name-when-both-absent") << QString("legacy-name")
+            << QString("Legacy name") << QString("alice");
+        QTest::newRow("legacy-display-name-when-both-absent") << QString("legacy-display-name")
+            << QString("Legacy display name") << QString("alice");
+    }
+
+    void usersHttpNamesMatchSourceAndPreserveLegacyAbsentFields()
+    {
+        QFETCH(QString, scenario); QFETCH(QString, expectedAuthor); QFETCH(QString, expectedDirectory);
+        AvatarReferenceFixture test{QJsonValue(avatarReferenceA)}; auto &c = test.direct.fixture.controller;
+        auto peer = test.directory[1].toObject();
+        peer["username"] = "alice"; peer["email"] = "alice@example.invalid";
+        peer["name"] = "Legacy name"; peer["display_name"] = "Legacy display name";
+        if (scenario == "canonical-first-last") {
+            peer["first_name"] = " Alice "; peer["last_name"] = " Synthetic ";
+        } else if (scenario == "canonical-present-whitespace") {
+            peer["first_name"] = " \t"; peer["last_name"] = "\n ";
+        } else if (scenario.startsWith("legacy-")) {
+            peer.remove("first_name"); peer.remove("last_name");
+            if (scenario == "legacy-display-name") peer.remove("name");
+        } // The canonical null row retains the actual nullable Users fields.
+        test.directory[1] = peer; // Before the actual Users HTTP collection is served.
+        QVERIFY(test.start());
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(test.direct.usersGets, 1); QCOMPARE(test.direct.gets, 1); QCOMPARE(test.direct.posts, 0);
+        QVERIFY(c.directChatDirectoryVerified()); QVERIFY(c.isDirectConversation());
+        QCOMPARE(c.selectedStream(), directId); QCOMPARE(c.selectedTopic(), channelDefault);
+        QCOMPARE(c.directPeer().value("displayName").toString(), expectedDirectory);
+        QCOMPARE(test.sidebar().value("displayName").toString(), expectedDirectory);
+        const auto displayed = modelMessage(c, returnedId);
+        QCOMPARE(displayed.value("authorId").toString(), channelMemberA);
+        QCOMPARE(displayed.value("content").toString(), QString("Actual peer image-reference witness"));
+        QVERIFY(!displayed.value("own").toBool());
+        QCOMPARE(displayed.value("authorAvatar").toString(), avatarReferenceA);
+        QCOMPARE(c.directPeer().value("avatar").toString(), avatarReferenceA);
+        QCOMPARE(c.viewerDisplayName(), QString("avatar-self"));
+        QCOMPARE(modelMessage(c, messageId).value("author").toString(), QString("avatar-self"));
+        // First intended behavioral RED: current HTTP projection ignores canonical name parts.
+        QCOMPARE(displayed.value("author").toString(), expectedAuthor);
+        for (const auto &request : test.direct.fixture.server.requests)
+            QVERIFY(!request.target.path().contains("/files/"));
+    }
+
+    void presenceUsesActualUsersAndPreservesIndependentPresentation_data()
+    {
+        QTest::addColumn<QJsonValue>("wireStatus"); QTest::addColumn<QString>("expected");
+        QTest::newRow("active") << QJsonValue("active") << QString("active");
+        QTest::newRow("idle") << QJsonValue("idle") << QString("idle");
+        QTest::newRow("do-not-disturb") << QJsonValue("do_not_disturb") << QString("idle");
+        QTest::newRow("offline") << QJsonValue("offline") << QString("offline");
+        QTest::newRow("absent") << QJsonValue(QJsonValue::Undefined) << QString{};
+        QTest::newRow("null") << QJsonValue(QJsonValue::Null) << QString{};
+        QTest::newRow("unknown-string") << QJsonValue("online") << QString{};
+        QTest::newRow("invalid-object") << QJsonValue(QJsonObject{{"active",true}}) << QString{};
+    }
+    void presenceUsesActualUsersAndPreservesIndependentPresentation()
+    {
+        QFETCH(QJsonValue, wireStatus); QFETCH(QString, expected);
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        test.directory = {presencePerson(userId,"avatar-self",wireStatus),
+            presencePerson(channelMemberA,"avatar-peer",wireStatus),
+            avatarReferencePerson(channelMemberB,"other-peer")};
+        QVERIFY2(test.start(),"Actual Users/direct/topic history must settle before presence assertions");
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(test.direct.usersGets,1); QCOMPARE(test.direct.gets,1); QCOMPARE(test.direct.posts,0);
+        QCOMPARE(c.account().value("uuid").toString(),userId);
+        QCOMPARE(c.viewerDisplayName(),QString("avatar-self"));
+        QCOMPARE(c.directPeer().value("displayName").toString(),QString("avatar-peer"));
+        QCOMPARE(modelMessage(c,returnedId).value("author").toString(),QString("avatar-peer"));
+        QCOMPARE(c.account().value("avatar").toString(),avatarReferenceA);
+        QCOMPARE(c.directPeer().value("avatar").toString(),avatarReferenceA);
+        QCOMPARE(c.selectedStream(),directId); QCOMPARE(c.selectedTopic(),channelDefault);
+        QVERIFY(c.directChatDirectoryVerified());
+        QCOMPARE(c.channelMemberChoices().first().toMap(),QVariantMap({{"id",channelMemberA},
+            {"displayName","avatar-peer"},{"username","avatar-peer"},{"email","avatar-peer@example.invalid"}}));
+        const auto sidebar = test.sidebar(), peer = modelMessage(c,returnedId), own = modelMessage(c,messageId);
+        QVERIFY(sidebar.contains("id") && peer.contains("id") && own.contains("id"));
+        QVERIFY2(c.account().contains("presence"),"Actual Workspace Users presence is absent from account projection");
+        QVERIFY(c.directPeer().contains("presence")); QVERIFY(sidebar.contains("presence"));
+        QVERIFY(peer.contains("authorPresence")); QVERIFY(own.contains("authorPresence"));
+        QCOMPARE(c.account().value("presence").toString(),expected);
+        QCOMPARE(c.directPeer().value("presence").toString(),expected);
+        QCOMPARE(sidebar.value("presence").toString(),expected);
+        QCOMPARE(peer.value("authorPresence").toString(),expected);
+        QCOMPARE(own.value("authorPresence").toString(),expected);
+        for (const auto &request : test.direct.fixture.server.requests)
+            QVERIFY(!request.target.path().contains("/files/")
+                && !(request.method!="GET" && request.target.path().startsWith("/api/workspace/")));
+    }
+
+    void ownStatusLabelUsesSourceTrimAndEmojiRules_data()
+    {
+        QTest::addColumn<QJsonValue>("text"); QTest::addColumn<QJsonValue>("emoji");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("empty") << QJsonValue(" \t") << QJsonValue(" ") << QString{};
+        QTest::newRow("unicode") << QJsonValue(" Focus ") << QJsonValue(QString::fromUtf8("☕")) << QString::fromUtf8("☕ Focus");
+        const auto feff = QString(QChar(0xfeff));
+        QTest::newRow("source-feff-trim") << QJsonValue(feff+"Focus"+feff) << QJsonValue(feff+"house"+feff) << QString::fromUtf8("🏠 Focus");
+        QTest::newRow("unknown-shortcode") << QJsonValue(" Ship ") << QJsonValue("party_parrot") << QString("Ship");
+        QTest::newRow("legacy-emoji-only") << QJsonValue(QJsonValue::Null) << QJsonValue("speech_balloon") << QString::fromUtf8("💬");
+        QTest::newRow("kelvin-not-ascii-shortcode") << QJsonValue(QJsonValue::Null) << QJsonValue(QString::fromUtf8("K")) << QString::fromUtf8("K");
+        QTest::newRow("long-s-not-ascii-shortcode") << QJsonValue(QJsonValue::Null) << QJsonValue(QString::fromUtf8("ſ")) << QString::fromUtf8("ſ");
+    }
+    void ownStatusLabelUsesSourceTrimAndEmojiRules()
+    {
+        QFETCH(QJsonValue,text); QFETCH(QJsonValue,emoji); QFETCH(QString,expected);
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        test.directory.replace(0,presencePerson(userId,"avatar-self","active","2026-01-02T10:00:00Z",text,emoji));
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.viewerDisplayName(),QString("avatar-self")); QCOMPARE(c.account().value("avatar").toString(),avatarReferenceA);
+        QVERIFY2(c.account().contains("statusLabel"),"Source own custom-status projection is absent");
+        QCOMPARE(c.account().value("statusLabel").toString(),expected);
+        QCOMPARE(c.account().value("presence").toString(),QString("active"));
+        QCOMPARE(test.direct.usersGets,1); QCOMPARE(test.direct.posts,0);
+    }
+
+    void presenceOnlyRealtimeNotifiesExistingSurfacesWithoutChangingIdentity()
+    {
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto choices = c.channelMemberChoices(); const auto context = c.directChatContextKey();
+        const auto account = c.account();
+        QSignalSpy state(&c,&NativeController::stateChanged), streams(&c,&NativeController::streamsChanged),
+            messages(&c,&NativeController::messagesChanged);
+        QVERIFY(state.isValid() && streams.isValid() && messages.isValid());
+        const QStringList statuses{"active","idle","do_not_disturb","offline"};
+        const QStringList visuals{"active","idle","idle","offline"};
+        QString previous = "offline"; int epoch = 80;
+        for (qsizetype i=0;i<statuses.size();++i) {
+            state.clear(); streams.clear(); messages.clear();
+            const auto stamp = QString("2026-01-02T10:0%1:00Z").arg(i+1);
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                presencePerson(channelMemberA,"avatar-peer",statuses[i],stamp),epoch++)));
+            QCOMPARE(c.directPeer().value("displayName").toString(),QString("avatar-peer"));
+            QCOMPARE(c.directPeer().value("avatar").toString(),avatarReferenceA);
+            QCOMPARE(c.directPeer().value("presence").toString(),visuals[i]);
+            QCOMPARE(test.sidebar().value("presence").toString(),visuals[i]);
+            QCOMPARE(modelMessage(c,returnedId).value("authorPresence").toString(),visuals[i]);
+            if (previous!=visuals[i]) QVERIFY2(!streams.isEmpty(),"A pure presence transition must notify the real Direct sidebar model");
+            QVERIFY(!messages.isEmpty()); QVERIFY(!state.isEmpty()); previous=visuals[i];
+            state.clear();
+            const auto label = QString("Own public status %1").arg(i);
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                presencePerson(userId,"avatar-self",statuses[i],stamp,label),epoch++)));
+            QCOMPARE(c.account().value("presence").toString(),visuals[i]);
+            QCOMPARE(c.account().value("statusLabel").toString(),label); QVERIFY(!state.isEmpty());
+            QCOMPARE(c.account().value("displayName"),account.value("displayName"));
+            QCOMPARE(c.account().value("avatar").toString(),avatarReferenceA);
+            QCOMPARE(c.channelMemberChoices(),choices); QCOMPARE(c.directChatContextKey(),context);
+            QCOMPARE(c.selectedStream(),directId); QCOMPARE(c.selectedTopic(),channelDefault);
+        }
+        QCOMPARE(test.direct.usersGets,1); QCOMPARE(test.direct.posts,0);
+        for (const auto &request : test.direct.fixture.server.requests) QVERIFY(!request.target.path().contains("/files/"));
+    }
+
+    void olderPresenceKeepsNewFactsWithoutChangingLegacyReplacementOrder_data()
+    {
+        QTest::addColumn<bool>("throughUsers"); QTest::addColumn<QJsonValue>("wireUpdatedAt");
+        QTest::newRow("admitted-realtime") << false << QJsonValue("2026-01-02T10:04:00Z");
+        QTest::newRow("deferred-users-http") << true << QJsonValue("2026-01-02T10:04:00Z");
+        QTest::newRow("missing-time-admitted-realtime") << false << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("invalid-time-admitted-realtime") << false << QJsonValue("not-a-timestamp");
+    }
+    void olderPresenceKeepsNewFactsWithoutChangingLegacyReplacementOrder()
+    {
+        QFETCH(bool,throughUsers); QFETCH(QJsonValue,wireUpdatedAt);
+        bool hold=false; std::function<void()> release;
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        test.directory = {presencePerson(userId,"avatar-self","active","2026-01-02T10:05:00Z","Current"),
+            presencePerson(channelMemberA,"avatar-peer","active","2026-01-02T10:05:00Z"),
+            avatarReferencePerson(channelMemberB,"other-peer")};
+        test.direct.fixture.users = [&](const Request &) {
+            Response response{test.directory};
+            if(hold) { hold=false; response.defer=[&](std::function<void()> send){release=std::move(send);}; }
+            return response;
+        };
+        auto releaseOnExit=qScopeGuard([&] { if(release) release(); });
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        auto oldSelf=presencePerson(userId,"older-self","idle","2026-01-02T10:04:00Z","Older",QJsonValue::Null,avatarReferenceB);
+        auto oldPeer=presencePerson(channelMemberA,"older-peer","idle","2026-01-02T10:04:00Z",QJsonValue::Null,QJsonValue::Null,avatarReferenceB);
+        if(wireUpdatedAt.isUndefined()) { oldSelf.remove("updated_at"); oldPeer.remove("updated_at"); }
+        else { oldSelf["updated_at"]=wireUpdatedAt; oldPeer["updated_at"]=wireUpdatedAt; }
+        if(throughUsers) {
+            test.directory = {oldSelf,oldPeer,avatarReferencePerson(channelMemberB,"other-peer")};
+            hold=true; c.refresh(); QTRY_COMPARE(test.direct.usersGets,2); QTRY_VERIFY(bool(release));
+            QPointer<QNetworkReply> pending;
+            for(auto *reply:test.direct.fixture.api.findChildren<QNetworkReply *>())
+                if(!reply->isFinished()&&reply->url().path()=="/api/workspace/v1/users/") pending=reply;
+            QVERIFY(pending && !pending->isFinished());
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                presencePerson(channelMemberA,"avatar-peer","active","2026-01-02T10:06:00Z"),100)));
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+                presencePerson(userId,"avatar-self","active","2026-01-02T10:06:00Z","Current"),101)));
+            auto send=std::move(release); release={}; send();
+            QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        } else {
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",oldPeer,100)));
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",oldSelf,101)));
+        }
+        // The old name/avatar replacement remains observable; only new status facts are ordered.
+        QCOMPARE(c.directPeer().value("displayName").toString(),QString("older-peer"));
+        QCOMPARE(c.viewerDisplayName(),QString("older-self"));
+        QCOMPARE(c.directPeer().value("avatar").toString(),avatarReferenceB);
+        QCOMPARE(c.account().value("avatar").toString(),avatarReferenceB);
+        QCOMPARE(c.account().value("presence").toString(),QString("active"));
+        QCOMPARE(c.account().value("statusLabel").toString(),QString("Current"));
+        QCOMPARE(c.directPeer().value("presence").toString(),QString("active"));
+        QCOMPARE(test.sidebar().value("presence").toString(),QString("active"));
+        QCOMPARE(modelMessage(c,returnedId).value("authorPresence").toString(),QString("active"));
+        QCOMPARE(test.direct.posts,0);
+    }
+
+    void reopenedUsersProfilesAreOfflineUntilTheActualUsersReply()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        bool hold=false; std::function<void()> release;
+        NativeCacheService initial(directory.path(),{},true);
+        AvatarReferenceFixture test(avatarReferenceA); auto &c=test.direct.fixture.controller;
+        test.directory = {presencePerson(userId,"avatar-self","active","2026-01-02T10:05:00Z","Current"),
+            presencePerson(channelMemberA,"avatar-peer","active","2026-01-02T10:05:00Z"),
+            avatarReferencePerson(channelMemberB,"other-peer")};
+        test.direct.fixture.users=[&](const Request &) {
+            Response response{test.directory};
+            if(hold) response.defer=[&](std::function<void()> send){release=std::move(send);};
+            return response;
+        };
+        c.useCache(&initial); QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(flushCache(initial)); auto saved=cacheEntry(initial,initial.lease(),{NativeCache::Kind::Users,{},{},{}});
+        QVERIFY(saved); QCOMPARE(saved->rows.size(),3);
+        for(const auto &value:saved->rows) {
+            const auto row=value.toObject(); QVERIFY(row.contains("username"));
+            QVERIFY(!row.contains("status")); QVERIFY(!row.contains("status_text"));
+            QVERIFY(!row.contains("status_emoji")); QVERIFY(!row.contains("last_ping_at"));
+        }
+        c.setRealtimeMode(true); // Existing public mode stops its poll; no fake event or store injection.
+        QSignalSpy shutdownNotice(&initial,&NativeCacheService::shutdownFinished); QVERIFY(shutdownNotice.isValid());
+        c.useCache(nullptr); initial.shutdown(); QTRY_VERIFY(initial.stopped());
+        QCOMPARE(shutdownNotice.size(),1); // Real worker SQL close acknowledged before reopening.
+        hold=true; const int before=test.direct.usersGets;
+        NativeCacheService reopened(directory.path(),{},true);
+        NativeController restored(&test.direct.fixture.api,&test.direct.fixture.session);
+        auto releaseOnExit=qScopeGuard([&] { if(release) release(); });
+        restored.useCache(&reopened);
+        QTRY_COMPARE(test.direct.usersGets,before+1); QTRY_VERIFY(bool(release));
+        QTRY_COMPARE(restored.account().value("avatar").toString(),avatarReferenceA);
+        QTRY_VERIFY(restored.cacheStale());
+        QCOMPARE(restored.account().value("presence").toString(),QString("offline"));
+        QVERIFY(restored.account().contains("statusLabel"));
+        QVERIFY(restored.account().value("statusLabel").toString().isEmpty());
+        QPointer<QNetworkReply> pending;
+        for(auto *reply:test.direct.fixture.api.findChildren<QNetworkReply *>())
+            if(!reply->isFinished()&&reply->url().path()=="/api/workspace/v1/users/") pending=reply;
+        QVERIFY(pending && !pending->isFinished());
+        auto send=std::move(release); release={}; hold=false; send();
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_COMPARE(restored.account().value("presence").toString(),QString("active"));
+        QCOMPARE(restored.account().value("statusLabel").toString(),QString("Current"));
+        QCOMPARE(test.direct.usersGets,before+1); QCOMPARE(test.direct.posts,0);
+    }
+
+    void oldOwnerUsersCannotRestorePresenceAfterReplacementOrReset()
+    {
+        bool newOwner=false,holdNext=false; int usersGets=0; std::function<void()> releaseOld;
+        Fixture f;
+        f.users=[&](const Request &) {
+            ++usersGets;
+            Response response{QJsonArray{presencePerson(newOwner?returnedId:userId,newOwner?"new-viewer":"old-viewer",newOwner?"idle":"active"),
+                presencePerson(channelMemberA,newOwner?"new-peer":"old-peer",newOwner?"idle":"active")}};
+            if(holdNext) { holdNext=false; response.defer=[&](std::function<void()> send){releaseOld=std::move(send);}; }
+            return response;
+        };
+        f.authentication=[&](const Request &request) {
+            auto response=sessionResponse(request);
+            if(newOwner&&request.target.path().endsWith("/actions/introspect")) {
+                auto raw=response.data.toObject(), user=raw.value("user_info").toObject();
+                user["uuid"]=returnedId; raw["user_info"]=user; response.data=raw;
+            }
+            return response;
+        };
+        f.messages=[](const Request &) {
+            auto row=message("Actual owner-scoped presence history"); row["author_uuid"]=channelMemberA; row["is_own"]=false;
+            return Response{QJsonArray{row}};
+        };
+        auto releaseOnExit=qScopeGuard([&] { if(releaseOld) releaseOld(); });
+        QVERIFY(f.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.controller.viewerDisplayName(),QString("old-viewer")); QCOMPARE(usersGets,1);
+        holdNext=true; f.controller.refresh(); QTRY_COMPARE(usersGets,2); QTRY_VERIFY(bool(releaseOld));
+        QPointer<QNetworkReply> oldReply;
+        for(auto *reply:f.api.findChildren<QNetworkReply *>())
+            if(!reply->isFinished()&&reply->url().path()=="/api/workspace/v1/users/") oldReply=reply;
+        QVERIFY(oldReply && !oldReply->isFinished());
+        const auto generation=f.api.generation(); f.controller.logout();
+        QVERIFY(f.controller.account().isEmpty()); QVERIFY(f.controller.messages().isEmpty()); QVERIFY(f.controller.streams().isEmpty());
+        QTRY_VERIFY(oldReply.isNull()||oldReply->isFinished());
+        newOwner=true; QVERIFY(f.start()); QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.controller.account().value("uuid").toString(),returnedId); QCOMPARE(usersGets,3);
+        QCOMPARE(f.controller.viewerDisplayName(),QString("new-viewer")); QVERIFY(f.api.generation()>generation);
+        QCOMPARE(f.controller.account().value("presence").toString(),QString("idle"));
+        QCOMPARE(modelMessage(f.controller,messageId).value("authorPresence").toString(),QString("idle"));
+        auto send=std::move(releaseOld); releaseOld={}; send();
+        QCOMPARE(f.controller.account().value("presence").toString(),QString("idle"));
+        auto oldEvent=controllerEvent("user.updated",presencePerson(channelMemberA,"old-peer","active"),180);
+        QVERIFY(!f.controller.applyRealtimeEvent(oldEvent));
+        QCOMPARE(modelMessage(f.controller,messageId).value("authorPresence").toString(),QString("idle"));
+        f.controller.logout(); QVERIFY(f.controller.account().isEmpty()); QVERIFY(f.controller.messages().isEmpty());
+    }
+
+    void presenceOnlyUsersReplyNotifiesAfterTheOtherCatalogRepliesHaveSettled()
+    {
+        bool hold=false,observedCurrent=false; std::function<void()> release;
+        AvatarReferenceFixture test(avatarReferenceA); auto &c=test.direct.fixture.controller;
+        test.direct.fixture.users=[&](const Request &) {
+            Response response{test.directory};
+            if(hold) { hold=false; response.defer=[&](std::function<void()> send){release=std::move(send);}; }
+            return response;
+        };
+        auto releaseOnExit=qScopeGuard([&] { if(release) release(); });
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto choices=c.channelMemberChoices(); const auto names=c.directPeer().value("displayName");
+        test.directory.replace(1,presencePerson(channelMemberA,"avatar-peer","idle","2026-01-02T10:01:00Z"));
+        hold=true; c.refresh(); QTRY_COMPARE(test.direct.usersGets,2); QTRY_VERIFY(bool(release));
+        // Only the acknowledged, deliberately held Users request remains; earlier
+        // Streams signals cannot satisfy the post-Users-publication witness.
+        QTRY_COMPARE(test.direct.fixture.api.findChildren<QNetworkReply *>().size(),1);
+        QPointer<QNetworkReply> pending=test.direct.fixture.api.findChildren<QNetworkReply *>().first();
+        QVERIFY(pending&&!pending->isFinished()); QCOMPARE(pending->url().path(),QString("/api/workspace/v1/users/"));
+        const auto observer=connect(&c,&NativeController::streamsChanged,&c,[&] {
+            if(test.sidebar().value("presence").toString()=="idle") observedCurrent=true;
+        });
+        auto disconnectObserver=qScopeGuard([&] { disconnect(observer); });
+        auto send=std::move(release); release={}; send();
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.directPeer().value("displayName"),names);
+        QCOMPARE(c.directPeer().value("avatar").toString(),avatarReferenceA);
+        QCOMPARE(c.directPeer().value("presence").toString(),QString("idle"));
+        QVERIFY2(observedCurrent,"The actual Users-only presence publication must notify the Direct sidebar");
+        QCOMPARE(c.channelMemberChoices(),choices); QCOMPARE(test.direct.posts,0);
+    }
+
+    void aPresenceOnlySubscriberCanSignOutBeforeAnyOldOwnerRefill()
+    {
+        bool armed=false; int observations=0;
+        AvatarReferenceFixture test(avatarReferenceA); auto &c=test.direct.fixture.controller;
+        QVERIFY(test.start()); QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        const auto observer=connect(&c,&NativeController::streamsChanged,&c,[&] {
+            if(!armed) return;
+            armed=false; ++observations; c.logout();
+        });
+        auto disconnectObserver=qScopeGuard([&] { disconnect(observer); });
+        armed=true;
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated",
+            presencePerson(channelMemberA,"avatar-peer","active","2026-01-02T10:01:00Z"),190)));
+        QCOMPARE(observations,1); QVERIFY(!c.authenticated());
+        QVERIFY(c.account().isEmpty()); QVERIFY(c.directPeer().isEmpty());
+        QVERIFY(c.streams().isEmpty()); QVERIFY(c.messages().isEmpty());
+    }
+
+    void anotherProjectDoesNotInheritTheSameUsersPresenceTimestamp()
+    {
+        const QString otherProject="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        bool secondProject=false; int usersGets=0;
+        Fixture f;
+        f.authentication=[&](const Request &request) {
+            auto response=sessionResponse(request);
+            if(request.target.path()=="/api/core/v1/iam/projects/")
+                response.data=QJsonArray{QJsonObject{{"uuid",projectId},{"name","First project"},{"status","ACTIVE"}},
+                    QJsonObject{{"uuid",otherProject},{"name","Second project"},{"status","ACTIVE"}}};
+            if(secondProject&&request.target.path().endsWith("/actions/introspect")) {
+                auto raw=response.data.toObject(); raw["project_id"]=otherProject; response.data=raw;
+            }
+            return response;
+        };
+        f.streams=[&](const Request &) {
+            return Response{secondProject?QJsonArray{}:QJsonArray{creationChannel(streamId,"First project channel")}};
+        };
+        f.topics=[&](const Request &) {
+            return Response{secondProject?QJsonArray{}:QJsonArray{creationTopic(topicId,streamId,"First project topic")}};
+        };
+        f.users=[&](const Request &) {
+            ++usersGets;
+            auto row=presencePerson(userId,secondProject?"second-viewer":"first-viewer",secondProject?"idle":"active",
+                secondProject?"2026-01-02T10:00:00Z":"2026-01-02T10:05:00Z");
+            row["project_id"]=secondProject?otherProject:projectId;
+            return Response{QJsonArray{row}};
+        };
+        f.controller.login(f.server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE(f.controller.projects().size(),2); f.controller.openProject(projectId);
+        QTRY_COMPARE(f.controller.viewerDisplayName(),QString("first-viewer"));
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(usersGets,1);
+        secondProject=true;
+        // Actual Session public boundary, without controller.reset or a fake row:
+        // the new owner may reuse the global user UUID but not its old timestamp.
+        f.session.selectProject(otherProject);
+        QCOMPARE(f.session.project(),otherProject); QVERIFY(!f.session.ready());
+        QVERIFY(f.controller.account().isEmpty());
+        QTRY_COMPARE(f.controller.viewerDisplayName(),QString("second-viewer"));
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(usersGets,2);
+        QCOMPARE(f.controller.account().value("uuid").toString(),userId);
+        QCOMPARE(f.controller.account().value("presence").toString(),QString("idle"));
+    }
+
     void avatarImageReferencesUseTheActualUsersCollectionAcrossPublicProjections_data()
     {
         QTest::addColumn<QJsonValue>("wireAvatar");

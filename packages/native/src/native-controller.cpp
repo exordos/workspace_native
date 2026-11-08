@@ -2201,6 +2201,67 @@ QString NativeController::userDisplayName(const QString &id, const QString &fall
     return found == m_names.cend() ? fallback : found->name;
 }
 
+NativeController::UserPresentation NativeController::makeUserPresentation(
+    const QString &name, const QJsonObject &row, bool authoritative,
+    const UserPresentation &previous)
+{
+    UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {}};
+    if (!authoritative) {
+        // Source persists profiles, never live presence/status decorations.
+        result.presence = "offline";
+        result.presenceUpdatedAt = 0;
+        return result;
+    }
+    qint64 updatedAt = 0; // Source user.model getTimestamp: invalid/missing date is zero.
+    if (row.value("updated_at").isString()) {
+        const auto date = QDateTime::fromString(row.value("updated_at").toString(), Qt::ISODateWithMs);
+        if (date.isValid()) updatedAt = date.toMSecsSinceEpoch();
+    }
+    // Only the added presence facts have this ordering witness. Existing name
+    // and avatar replacement semantics deliberately remain independent.
+    if (previous.presenceUpdatedAt && updatedAt < *previous.presenceUpdatedAt) {
+        result.presence = previous.presence;
+        result.statusLabel = previous.statusLabel;
+        result.presenceUpdatedAt = previous.presenceUpdatedAt;
+        return result;
+    }
+    result.presenceUpdatedAt = updatedAt;
+    const auto status = row.value("status").toString();
+    if (status == "active" || status == "offline") result.presence = status;
+    else if (status == "idle" || status == "do_not_disturb") result.presence = "idle";
+    // Missing/invalid optional status remains unknown, not invented online/offline.
+    auto emoji = sourceTrimmed(row.value("status_emoji").toString());
+    static const QHash<QString, QString> legacyEmoji{
+        {"speech_balloon", QString::fromUtf8("💬")}, {"house", QString::fromUtf8("🏠")},
+        {"palm_tree", QString::fromUtf8("🌴")}, {"plate_with_cutlery", QString::fromUtf8("🍽️")},
+        {"helmet_with_white_cross", QString::fromUtf8("⛑️")}, {"spiral_calendar_pad", QString::fromUtf8("🗓️")}};
+    const auto symbol = legacyEmoji.constFind(emoji);
+    // Source JS /i without /u is ASCII-caseless; Unicode case folding must not
+    // turn Kelvin sign or long-s into a shortcode. This is not a Unicode regex.
+    const bool shortcode = !emoji.isEmpty() && std::all_of(emoji.cbegin(), emoji.cend(), [](QChar c) {
+        const auto u = c.unicode();
+        return (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9')
+            || u == '_' || u == '+' || u == '-';
+    });
+    if (symbol != legacyEmoji.cend()) emoji = *symbol;
+    else if (shortcode) emoji.clear();
+    const auto text = sourceTrimmed(row.value("status_text").toString());
+    result.statusLabel = text.isEmpty() ? emoji : emoji.isEmpty() ? text : emoji + ' ' + text;
+    return result;
+}
+
+QString NativeController::userPresence(const QString &id) const
+{
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
+    return m_names.value(id).presence;
+}
+
+QString NativeController::userStatusLabel(const QString &id) const
+{
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
+    return m_names.value(id).statusLabel;
+}
+
 QString NativeController::userAvatar(const QString &id) const
 {
     if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
@@ -2210,7 +2271,11 @@ QString NativeController::userAvatar(const QString &id) const
 QVariantMap NativeController::account() const
 {
     auto profile = m_session->publicProfile();
-    if (!profile.isEmpty()) profile.insert("avatar", userAvatar(m_session->user()));
+    if (!profile.isEmpty()) {
+        profile.insert("avatar", userAvatar(m_session->user()));
+        profile.insert("presence", userPresence(m_session->user()));
+        profile.insert("statusLabel", userStatusLabel(m_session->user()));
+    }
     return profile;
 }
 
@@ -2299,6 +2364,7 @@ QVariantMap NativeController::directPeer() const
     choice["id"] = id;
     choice["displayName"] = peerDisplayName(id);
     choice["avatar"] = userAvatar(id);
+    choice["presence"] = userPresence(id);
     return choice;
 }
 
@@ -5039,7 +5105,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto generation = m_api->generation(), catalog = m_catalog;
         const auto current = [&] { return guard && owner == creationOwnerKey()
             && generation == m_api->generation() && catalog == m_catalog; };
-        const auto previousName = peerDisplayName(id), previousAvatar = userAvatar(id);
+        const auto previousName = peerDisplayName(id), previousAvatar = userAvatar(id), previousPresence = userPresence(id);
         const bool directPeerVisible = std::any_of(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &stream) {
             return stream.privateStream && stream.directUser == id;
         });
@@ -5055,8 +5121,10 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         auto name = (payload.value("first_name").toString() + " "
                      + payload.value("last_name").toString()).trimmed();
-        m_names.insert(id, {name.isEmpty() ? username : name, imageAvatarReference(payload.value("avatar"))});
-        if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar)) emit streamsChanged();
+        m_names.insert(id, makeUserPresentation(name.isEmpty() ? username : name, payload, true,
+            m_channelDirectoryOwner == owner ? m_names.value(id) : UserPresentation{}));
+        if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar
+            || userPresence(id) != previousPresence)) emit streamsChanged();
         if (!current()) return true;
         emit messagesChanged();
         if (!current()) return true;
@@ -5334,6 +5402,8 @@ QVariantList NativeController::streams() const
                 ? peerDisplayName(stream.directUser) : stream.name},
             {"avatar", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
                 ? m_names.value(stream.directUser).avatar : QString{}},
+            {"presence", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
+                ? m_names.value(stream.directUser).presence : QString{}},
             {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}});
     }
     return result;
@@ -5508,6 +5578,7 @@ QVariantList NativeController::messages() const
             {"topicId", message.topic}, {"topicName", topicName},
             {"author", userDisplayName(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
             {"authorAvatar", avatarsOwned ? m_names.value(message.author).avatar : QString{}},
+            {"authorPresence", avatarsOwned ? m_names.value(message.author).presence : QString{}},
             {"content", content}, {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
@@ -6031,10 +6102,13 @@ void NativeController::reloadSnapshot()
         [this, catalog](const QJsonArray &rows, bool authoritative) {
         if (catalog != m_catalog) return false;
         if (!authoritative && !m_names.isEmpty()) return true;
-        QMap<QString, QPair<QString, QString>> previousDirectPresentation;
+        QMap<QString, QStringList> previousDirectPresentation;
         for (const auto &stream : m_streams)
             if (stream.privateStream && isUuid(stream.directUser))
-                previousDirectPresentation.insert(stream.directUser, qMakePair(peerDisplayName(stream.directUser), userAvatar(stream.directUser)));
+                previousDirectPresentation.insert(stream.directUser,
+                    {peerDisplayName(stream.directUser), userAvatar(stream.directUser), userPresence(stream.directUser)});
+        const auto previousPresentation = m_channelDirectoryOwner == creationOwnerKey()
+            ? m_names : QHash<QString, UserPresentation>{};
         updateChannelDirectory(rows, authoritative);
         m_names.clear();
         if (authoritative) {
@@ -6045,18 +6119,25 @@ void NativeController::reloadSnapshot()
             const auto json = value.toObject();
             const auto id = json.value("uuid").toString();
             if (authoritative && id == m_session->user()) m_viewerDirectoryName = directoryViewerName(json);
-            auto name = json.value("name").toString();
-            if (name.isEmpty())
-                name = json.value("display_name").toString();
-            if (name.isEmpty())
-                name = json.value("username").toString();
+            QString name;
+            if (json.contains("first_name") || json.contains("last_name")) {
+                name = directoryViewerName(json);
+            } else {
+                name = json.value("name").toString();
+                if (name.isEmpty())
+                    name = json.value("display_name").toString();
+                if (name.isEmpty())
+                    name = json.value("username").toString();
+            }
             if (isUuid(id) && !name.isEmpty())
-                m_names.insert(id, {name, imageAvatarReference(json.value("avatar"))});
+                m_names.insert(id, makeUserPresentation(name, json, authoritative, previousPresentation.value(id)));
         }
         m_usersVerified = authoritative;
         bool labelsChanged = false;
         for (auto it = previousDirectPresentation.cbegin(); it != previousDirectPresentation.cend(); ++it)
-            if (it.value() != qMakePair(peerDisplayName(it.key()), userAvatar(it.key()))) { labelsChanged = true; break; }
+            if (it.value() != QStringList{peerDisplayName(it.key()), userAvatar(it.key()), userPresence(it.key())}) {
+                labelsChanged = true; break;
+            }
         const QPointer<NativeController> guard(this);
         const auto owner = creationOwnerKey();
         const auto generation = m_api->generation();

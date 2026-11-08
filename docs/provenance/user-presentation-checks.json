@@ -1,0 +1,99 @@
+{
+  "schema": "native-user-presentation-local-checks-v1",
+  "sourceManifestSha256": "dc732d725278f0132d88b486d22aaa3658391a923ef0b4b78c40fb73fbdf415c",
+  "localSyntheticAcceptanceOnly": true,
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "productAndTestFiles": {
+    "packages/native/src/native-controller.h": "799e5dc2a69a2b0e8b44b4ae91f091495039564d7574f1fb8eaf4e1bae6dfb9d",
+    "packages/native/src/native-controller.cpp": "43e284e9f429b4cb5cf5e199e56e5118ff289f95b0f2a8149d2876b1ecb020fe",
+    "packages/native/tests/native-controller-test.cpp": "9e93b86f373651c7e77e911d5dac4920d0e9bbb9f68aa1092cc04a3c07d7bc21",
+    "packages/native/tests/native-window-test.cpp": "bfbca27b9dd048942d7e70ad78e8b8fcef60779c09fb7b4f8e76de1c8cb0fefc"
+  },
+  "allPrecedingTestLinesPreserved": true,
+  "actualTestOnlyReds": [
+    {
+      "label": "actual-users-presence-red",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 635ms"
+      ],
+      "wallSeconds": 0.716,
+      "stdoutSha256": "221f18d30da637b50851eebac237cebbb41bbfe5991042115692ff58e5122253",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-users-name-red",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 639ms"
+      ],
+      "wallSeconds": 0.716,
+      "stdoutSha256": "7940511e1364866dfe932fa87b94456264a8e7e0a20704af46bcfb7fe19ff090",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-main-author-name-red",
+      "totals": [
+        "Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 1510ms"
+      ],
+      "wallSeconds": 1.618,
+      "stdoutSha256": "029c3aad7813a6e320bd0dcdbca4512ef3567e38bc701bba14aa674acbb7cfcf",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "focused": [
+    {
+      "label": "actual-users-projections32",
+      "totals": [
+        "Totals: 32 passed, 0 failed, 0 skipped, 0 blacklisted, 19452ms"
+      ],
+      "wallSeconds": 19.529,
+      "stdoutSha256": "2762473dbbc04617a1149b1e2452371d9187fa7cc3301e4919a6716da6bcfa83",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "actual-main-author-name3",
+      "totals": [
+        "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 1457ms"
+      ],
+      "wallSeconds": 1.568,
+      "stdoutSha256": "86285a649c1aad1b740b6157389ff1ed23387288c0a97448e2d8447fdc90ecd6",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "wholeController": [
+    {
+      "label": "whole-controller800",
+      "totals": [
+        "Totals: 800 passed, 0 failed, 0 skipped, 0 blacklisted, 505968ms"
+      ],
+      "wallSeconds": 506.063,
+      "stdoutSha256": "6739883b01884675c9feed31c63ee542f9397a870db2bed09ffa43c850d43c7f",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "binaries": {
+    "native-controller-test": "8e8f79d46e701ffe755305ffa9c05508feb9b7a95dfc588821ae67914b3eb863",
+    "native-window-test": "9c85a63113af0ff3d306d8cdda977f1f409672ac648198a2ffee4fddfe67a891"
+  },
+  "preservedFirstGreenFailure": {
+    "rawSha256": "b41be411a784ac7bf69038c052b1aa6a680034da6a40741dd0b8789e177d6384",
+    "totals": [
+      "Totals: 31 passed, 1 failed, 0 skipped, 0 blacklisted, 19246ms"
+    ],
+    "scope": "New cache-reopen fixture asserted synchronous shutdown before actual worker SQL close. Existing API and tests require asynchronous shutdownFinished/stopped. Successor changes only that new readiness check, uses existing default QTRY budget and acknowledges one real shutdownFinished. Product and all presence/name/reopen oracles stay unchanged."
+  },
+  "scope": [
+    "Canonical Users first/last fields use existing Source-trimmed display-name helper. Present null/blank fields fall back to username. When both fields are absent, preceding legacy name/display_name/username behavior is preserved.",
+    "Existing UserPresentation map additionally carries normalized static presence, own custom status label and per-owner timestamp witness. No new IO, timer, collection, cache schema, choice-map authority or image operation.",
+    "Cached profiles restore offline with no live custom status; actual Users HTTP and public user.updated admission refresh facts. Older presence updates retain only preceding presence/status; preceding name/avatar replacement order is preserved.",
+    "Owned account, Direct sidebar/header and message-author projections expose presence; QML badges and profile email are not part of this change."
+  ],
+  "cleanup": {
+    "allOwnedGroupsGone": true,
+    "privateXdgRemoved": true
+  },
+  "remaining": [
+    "Presence QML and display-only owned profile email",
+    "Matched new visual comparison and full shell parity",
+    "Actual wire-WebSocket/live account/installed latest Linux/other OS acceptance"
+  ]
+}
