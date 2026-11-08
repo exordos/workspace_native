@@ -7287,6 +7287,231 @@ private slots:
 
 // Append inside the existing WORKSPACE_NATIVE_E2EE_UI slots only.
 // Requires the reviewed OrdinaryRejectCase helper from the Core GREEN overlay.
+    void uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire_data()
+    {
+        QTest::addColumn<bool>("grant"); QTest::addColumn<bool>("applied");
+        QTest::newRow("Grant/absent503/same-button-identical-retry") << true << false;
+        QTest::newRow("Grant/applied503/same-button-GET-only") << true << true;
+        QTest::newRow("Reject/absent503/same-button-identical-retry") << false << false;
+        QTest::newRow("Reject/applied503/same-button-GET-only") << false << true;
+    }
+    void uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire()
+    {
+        QFETCH(bool, grant); QFETCH(bool, applied);
+        OrdinaryRejectCase c; auto &f = c.f; f.stream["role"] = "member";
+        QVERIFY(f.stream.value("owner").toString() != userId); QVERIFY(c.start());
+        QJsonObject publicProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, publicProbe));
+        QTRY_VERIFY(c.row().value("hasRequestedKey").toBool());
+        QTRY_VERIFY(c.row().value("canGrant").toBool() && c.row().value("canReject").toBool());
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.servedRoles->value(userId), QString("member"));
+        QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        QVERIFY(!f.stream.value("encryption").toBool()); QVERIFY(f.stream.value("current_encryption_key_uuid").isNull());
+        QCOMPARE(c.peer.requestDto.value("author_uuid").toString(), SourceRecipient);
+        QCOMPARE(c.peer.requestDto.value("payload").toObject().value("key_uuid").toString(), OtherGeneration);
+        UncertainIssuerPost uncertain(f, applied);
+        NativePreferences preferences(f.directory.filePath("ordinary-same-action-recovery-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeIncubatedEncryptedVisualWindow(window.data())) QTest::qFail("Same-action recovery window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped); QVERIFY(rendered.isValid());
+        window->update(); QTRY_VERIFY(!rendered.isEmpty());
+        QVERIFY(!window->property("encryptedConversation").toBool());
+        expandInitialServiceGroup(window, c.peer.requestId); QVERIFY(!QTest::currentTestFailed());
+        const auto buttonId = (grant ? "grantChatKeyButton-" : "rejectChatKeyButton-") + c.peer.requestId;
+        const auto oppositeId = (grant ? "rejectChatKeyButton-" : "grantChatKeyButton-") + c.peer.requestId;
+        const auto label = grant ? QString("Send key") : QString("Reject");
+        auto *button = encryptedUiItem(window, buttonId); QVERIFY(button); QVERIFY(button->isEnabled());
+        QCOMPARE(button->property("text").toString(), label);
+        auto *opposite = encryptedUiItem(window, oppositeId); QVERIFY(opposite); QVERIFY(opposite->isEnabled());
+        auto *list = encryptedUiItem(window, "messageList"); QVERIFY(list);
+        const auto inside = [&](QQuickItem *item) {
+            if (!item || item->window() != window || !item->isVisible() || item->width() <= 0 || item->height() <= 0) return false;
+            const QRectF bounds(item->mapToScene(QPointF{}), item->size());
+            return QRectF(list->mapToScene(QPointF{}), list->size()).contains(bounds)
+                && QRectF(QPointF{}, QSizeF(window->size())).contains(bounds);
+        };
+        const auto disabled = [&](const QString &id) { auto *item = encryptedUiItem(window, id); return item && !item->isEnabled(); };
+        const auto sameActionEnabled = [&] { auto *item = encryptedUiItem(window, buttonId); return item && item->isEnabled(); };
+        const auto sameLabel = [&] { auto *item = encryptedUiItem(window, buttonId); return item && item->property("text").toString() == label; };
+        QTRY_VERIFY(inside(encryptedUiItem(window, buttonId)));
+        QCOMPARE(f.posts, 0); const auto draft = f.controller.draft();
+        button = encryptedUiItem(window, buttonId); QVERIFY(button); QVERIFY(button->isEnabled());
+        QSignalSpy firstClick(button, SIGNAL(clicked())); QVERIFY(firstClick.isValid());
+        encryptedUiClick(button); QTRY_COMPARE(firstClick.size(), 1);
+        QTRY_VERIFY(uncertain.failed); QTRY_COMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QTRY_VERIFY(!c.response().value("busy").toBool()); QCOMPARE(f.posts, 1);
+        QCOMPARE(c.row().value("status").toString(), QString("pending"));
+        QVERIFY(c.row().value("offerGrant").toBool()); QVERIFY(c.row().value("offerReject").toBool());
+        QVERIFY(!c.row().value("canGrant").toBool()); QVERIFY(!c.row().value("canReject").toBool());
+        QVERIFY(c.response().value("canCheck").toBool()); QVERIFY(c.response().value("canRetry").toBool());
+        QCOMPARE(c.response().value("action").toString(), grant ? QString("grant") : QString("reject"));
+        const auto frozen = uncertain.frozen, canonical = uncertain.canonical;
+        const auto publicId = canonical.value("uuid").toString(); QVERIFY(isUuid(publicId));
+        const auto path = "/api/workspace/v1/messenger/messages/" + publicId;
+        QCOMPARE(c.response().value("responseId").toString(), publicId);
+        QCOMPARE(frozen.value("stream_uuid").toString(), streamId); QCOMPARE(frozen.value("topic_uuid").toString(), secondTopicId);
+        QVERIFY(frozen.value("topic_uuid") != c.peer.requestDto.value("topic_uuid"));
+        QCOMPARE(QUuid::createUuidV5(QUuid(secondTopicId), frozen.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces), publicId);
+        const auto payload = frozen.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), grant ? QString("key_grant") : QString("key_reject"));
+        QCOMPARE(payload.value("key_uuid").toString(), OtherGeneration);
+        QCOMPARE(payload.value("request_message_uuid").toString(), c.peer.requestId);
+        QCOMPARE(payload.value("sender_device_id").toString(), f.vault.device().id);
+        QCOMPARE(payload.value("recipient_device_id").toString(), SourceRecipientDevice);
+        if (grant) QVERIFY(!payload.value("content").toString().isEmpty()); else QVERIFY(!payload.contains("content"));
+        QCOMPARE(exactRequests(f, "GET", path), 0); // finally/rendering never initiates status or replay
+        const auto details = f.streamGets, bindings = f.bindingGets, topics = f.topicGets;
+        const auto requestPath = "/api/workspace/v1/messenger/messages/" + c.peer.requestId;
+        const auto requestGets = exactRequests(f, "GET", requestPath);
+        // Same Source label; the opposite action must not borrow the saved wire.
+        QTRY_VERIFY(disabled(oppositeId));
+        // Intended capability RED on unchanged Main: Core canRetry is positive,
+        // while its existing same-action button still uses strict canGrant/canReject.
+        QTRY_VERIFY2(sameActionEnabled(), "Existing same-action Main button must admit explicit retained-wire recovery");
+        QTRY_VERIFY(sameLabel());
+        std::function<void()> releaseStatus;
+        QVector<int> statuses; bool holdStatus = true;
+        const auto previous = f.http.handler;
+        f.http.handler = [&, previous](const Request &wire) {
+            auto result = previous(wire);
+            if (wire.method == "GET" && wire.target.path() == path) {
+                statuses.append(result.status);
+                if (holdStatus) {
+                    holdStatus = false;
+                    result.defer = [&](std::function<void()> send) { releaseStatus = std::move(send); };
+                }
+            }
+            return result;
+        };
+        const auto restoreHandler = qScopeGuard([&] { f.http.handler = previous; releaseStatus = {}; });
+        QTRY_VERIFY(inside(encryptedUiItem(window, buttonId))); button = encryptedUiItem(window, buttonId); QVERIFY(button);
+        const auto actionPoint = button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint();
+        QSignalSpy secondClick(button, SIGNAL(clicked())); QVERIFY(secondClick.isValid());
+        encryptedUiClick(button); QTRY_COMPARE(secondClick.size(), 1);
+        QTRY_COMPARE(exactRequests(f, "GET", path), 1);
+        QTRY_VERIFY(bool(releaseStatus)); QVERIFY(c.pending("GET", path));
+        QCOMPARE(statuses, QVector<int>{applied ? 200 : 404});
+        QCOMPARE(c.response().value("phase").toString(), QString("checking")); QVERIFY(c.response().value("busy").toBool());
+        QCOMPARE(f.posts, 1); QCOMPARE(f.requestBody, frozen);
+        QTRY_VERIFY(disabled(buttonId)); QTRY_VERIFY(disabled(oppositeId));
+        QTRY_VERIFY(inside(encryptedUiItem(window, buttonId)) && inside(encryptedUiItem(window, oppositeId)));
+        // Both disabled inputs are actual mouse events, without direct Core recovery.
+        auto *disabledAction = encryptedUiItem(window, buttonId); QVERIFY(disabledAction);
+        QVERIFY(!disabledAction->isEnabled()); QVERIFY(inside(disabledAction));
+        QTest::mouseClick(window, Qt::LeftButton, {}, disabledAction->mapToScene(QPointF(disabledAction->width()/2, disabledAction->height()/2)).toPoint());
+        auto *other = encryptedUiItem(window, oppositeId); QVERIFY(other); QVERIFY(!other->isEnabled()); QVERIFY(inside(other));
+        QTest::mouseClick(window, Qt::LeftButton, {}, other->mapToScene(QPointF(other->width()/2, other->height()/2)).toPoint());
+        QCOMPARE(exactRequests(f, "GET", path), 1); QCOMPARE(f.posts, 1);
+        auto send = std::move(releaseStatus); send();
+        QTRY_COMPARE(c.response().value("phase").toString(), QString("ready"));
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.posts, applied ? 1 : 2); QCOMPARE(f.requestBody, frozen);
+        QCOMPARE(f.savedRequest.value("uuid").toString(), publicId);
+        QCOMPARE(f.savedRequest.value("payload").toObject(), payload);
+        QCOMPARE(f.savedRequest.value("user_uuid").toString(), userId); QCOMPARE(f.savedRequest.value("author_uuid").toString(), userId);
+        QCOMPARE(exactRequests(f, "GET", path), applied ? 1 : 2);
+        QCOMPARE(f.streamGets, details + (applied ? 0 : 1)); QCOMPARE(f.bindingGets, bindings + (applied ? 0 : 1));
+        QCOMPARE(f.topicGets, topics + (applied ? 0 : 1)); QCOMPARE(exactRequests(f, "GET", requestPath), requestGets + (applied ? 0 : 1));
+        QCOMPARE(statuses, applied ? QVector<int>{200} : (QVector<int>{404, 200}));
+        const auto result = c.peer.finish(f.savedRequest, frozen.value("uuid").toString(), grant ? publicProbe : QJsonObject{});
+        QVERIFY(result.value("ok").toBool());
+        QCOMPARE(result.value("completionOutcome").toString(), grant ? QString("granted") : QString("rejected"));
+        QCOMPARE(result.value("completionRequest").toString(), c.peer.requestId); QCOMPARE(result.value("completionResponse").toString(), publicId);
+        QCOMPARE(result.value("recipientPending").toInt(), 0); QCOMPARE(result.value("recipientHasKey").toBool(), grant);
+        if (grant) { QVERIFY(result.value("nativeProbeVerified").toBool()); QVERIFY(result.value("matchesNativeProbe").toBool()); }
+        else QVERIFY(!result.contains("nativeProbeVerified"));
+        QTRY_VERIFY(!encryptedUiItem(window, buttonId)); QVERIFY(!encryptedUiItem(window, oppositeId));
+        QTest::mouseClick(window, Qt::LeftButton, {}, actionPoint);
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty()); QCOMPARE(f.posts, applied ? 1 : 2);
+        QCOMPARE(f.controller.draft(), draft);
+        const bool closed = closeIncubatedEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
+    }
+
+    void uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction()
+    {
+        OrdinaryRejectCase c; auto &f = c.f; f.stream["role"] = "member";
+        QVERIFY(f.stream.value("owner").toString() != userId); QVERIFY(c.start());
+        QJsonObject publicProbe; QVERIFY(prepareActualOrdinaryHeldGeneration(c, publicProbe));
+        QTRY_VERIFY(c.row().value("canGrant").toBool() && c.row().value("canReject").toBool());
+        // No new helper/mode or copied synthetic UUID: another real Source
+        // request pair remains owned by a second unchanged recipient process.
+        SourceRecipientPeer second; QVERIFY(second.prepare(f, false, OtherGeneration));
+        QVERIFY(second.requestId != c.peer.requestId);
+        QCOMPARE(second.requestDto.value("author_uuid").toString(), SourceRecipient);
+        QCOMPARE(second.requestDto.value("payload").toObject().value("key_uuid").toString(), OtherGeneration);
+        f.savedRequests.insert(second.requestId, second.requestDto);
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(second.requestDto)));
+        const auto secondRow = [&] { return incomingKeyRequestRow(f.controller, second.requestId); };
+        QTRY_VERIFY(secondRow().value("canGrant").toBool() && secondRow().value("canReject").toBool());
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(c.servedRoles->value(userId), QString("member")); QCOMPARE(c.servedRoles->value(SourceRecipient), QString("member"));
+        const auto details = f.streamGets, bindings = f.bindingGets, topics = f.topicGets;
+        const auto firstRequestPath = "/api/workspace/v1/messenger/messages/" + c.peer.requestId;
+        const auto secondRequestPath = "/api/workspace/v1/messenger/messages/" + second.requestId;
+        const auto firstGets = exactRequests(f, "GET", firstRequestPath), secondGets = exactRequests(f, "GET", secondRequestPath);
+        UncertainIssuerPost uncertain(f, false);
+        NativePreferences preferences(f.directory.filePath("ordinary-other-request-recovery-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeIncubatedEncryptedVisualWindow(window.data())) QTest::qFail("Other-request recovery window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped); QVERIFY(rendered.isValid()); window->update(); QTRY_VERIFY(!rendered.isEmpty());
+        expandInitialServiceGroup(window, c.peer.requestId); QVERIFY(!QTest::currentTestFailed());
+        expandInitialServiceGroup(window, second.requestId); QVERIFY(!QTest::currentTestFailed());
+        const auto grant1 = "grantChatKeyButton-" + c.peer.requestId, reject1 = "rejectChatKeyButton-" + c.peer.requestId;
+        const auto grant2 = "grantChatKeyButton-" + second.requestId, reject2 = "rejectChatKeyButton-" + second.requestId;
+        const auto enabled = [&](const QString &id) { auto *item = encryptedUiItem(window, id); return item && item->isEnabled(); };
+        const auto disabled = [&](const QString &id) { auto *item = encryptedUiItem(window, id); return item && !item->isEnabled(); };
+        auto *list = encryptedUiItem(window, "messageList"); QVERIFY(list);
+        const auto inside = [&](const QString &id) {
+            auto *item = encryptedUiItem(window, id);
+            if (!item || item->window() != window || item->width() <= 0 || item->height() <= 0) return false;
+            const QRectF bounds(item->mapToScene(QPointF{}), item->size());
+            return item->isVisible() && QRectF(list->mapToScene(QPointF{}), list->size()).contains(bounds)
+                && QRectF(QPointF{}, QSizeF(window->size())).contains(bounds);
+        };
+        QTRY_VERIFY(enabled(grant1) && enabled(reject1) && enabled(grant2) && enabled(reject2));
+        QTRY_VERIFY(inside(grant1)); auto *first = encryptedUiItem(window, grant1); QVERIFY(first);
+        QSignalSpy clicked(first, SIGNAL(clicked())); QVERIFY(clicked.isValid()); encryptedUiClick(first); QTRY_COMPARE(clicked.size(), 1);
+        QTRY_VERIFY(uncertain.failed); QTRY_COMPARE(c.response().value("phase").toString(), QString("uncertain"));
+        QVERIFY(!c.response().value("busy").toBool()); QVERIFY(c.response().value("canRetry").toBool()); QCOMPARE(f.posts, 1);
+        const auto frozen = uncertain.frozen; const auto publicId = uncertain.canonical.value("uuid").toString(); QVERIFY(isUuid(publicId));
+        const auto publicPath = "/api/workspace/v1/messenger/messages/" + publicId;
+        QCOMPARE(c.response().value("requestId").toString(), c.peer.requestId); QCOMPARE(c.response().value("action").toString(), QString("grant"));
+        QCOMPARE(c.response().value("responseId").toString(), publicId);
+        QVERIFY(secondRow().value("offerGrant").toBool() && secondRow().value("offerReject").toBool());
+        QVERIFY(!secondRow().value("canGrant").toBool() && !secondRow().value("canReject").toBool());
+        // Discriminating negative: global pending is FALSE and saved R1 canRetry
+        // is TRUE. R2 must not borrow that recovery permission for either action.
+        QTRY_VERIFY(enabled(grant1)); QTRY_VERIFY(disabled(reject1));
+        QTRY_VERIFY(disabled(grant2) && disabled(reject2));
+        for (const auto &id : {reject1, grant2, reject2}) {
+            QTRY_VERIFY(inside(id)); auto *item = encryptedUiItem(window, id); QVERIFY(item); QVERIFY(!item->isEnabled());
+            QTest::mouseClick(window, Qt::LeftButton, {}, item->mapToScene(QPointF(item->width()/2, item->height()/2)).toPoint());
+        }
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(f.posts, 1); QCOMPARE(f.requestBody, frozen); QCOMPARE(exactRequests(f, "GET", publicPath), 0);
+        QCOMPARE(exactRequests(f, "GET", firstRequestPath), firstGets); QCOMPARE(exactRequests(f, "GET", secondRequestPath), secondGets);
+        QCOMPARE(f.streamGets, details); QCOMPARE(f.bindingGets, bindings); QCOMPARE(f.topicGets, topics);
+        QCOMPARE(c.response().value("phase").toString(), QString("uncertain")); QCOMPARE(c.response().value("requestId").toString(), c.peer.requestId);
+        QCOMPARE(c.response().value("responseId").toString(), publicId); QVERIFY(c.response().value("canRetry").toBool());
+        QCOMPARE(c.row().value("status").toString(), QString("pending")); QCOMPARE(secondRow().value("status").toString(), QString("pending"));
+        const auto result1 = c.peer.finish(), result2 = second.finish();
+        for (const auto &result : {result1, result2}) {
+            QVERIFY(result.value("ok").toBool()); QVERIFY(result.value("recipientStillPending").toBool());
+            QVERIFY(!result.value("recipientHasKey").toBool()); QCOMPARE(result.value("completionCount").toInt(), 0);
+        }
+        const bool closed = closeIncubatedEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
+    }
+
     void uiOrdinaryManagerGrantsFromTheActualMainAction_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("actualOwner"); QTest::addColumn<bool>("memberHolder");

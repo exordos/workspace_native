@@ -1,0 +1,60 @@
+{
+  "schema": "same-main-key-response-recovery-checks-v1",
+  "scope": "Same existing inline G/J label, same owned R and action with canRetry, explicit click only. P GET first; exact applied result settles with no POST; fresh404 renews authority/currentR then sends exact frozen wire. No new control or label.",
+  "sourceRef": "95495b10b828f853c9e770b47216073eb973fa95",
+  "sourceManifestSha256": "0915158560d8e1621e8d57ce7cbd196779b3317bfd3fe38d392d23118ffeb8bf",
+  "productionDelta": "Main QML33lines only; C++ controller matches accepted Core274 holder snapshot.",
+  "actualRed": {
+    "totals": "2 passed,4 failed; sameActionEnabled only in all G/J x applied/absent503 rows",
+    "stdoutSha256": "1751f618cc15b1ab5a416893e290953b1ed9f00de2f97bc952f7cabef924bde6"
+  },
+  "focused": [
+    {
+      "label": "same-main-action-recovery6",
+      "totals": [
+        "Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 10405ms"
+      ],
+      "stdoutSha256": "a12670305b824c921b41345aaa260717e9529e704b285f504b7a27cc3a730867",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 10.547
+    },
+    {
+      "label": "other-request-and-opposite-action3",
+      "totals": [
+        "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 2546ms"
+      ],
+      "stdoutSha256": "a02049f7096931ec32bffae9c959a878aab3f726f55da8de7583ec0fcf145bf2",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 2.672
+    },
+    {
+      "label": "old-initial-manager-holder-and-encrypted-ui",
+      "totals": [
+        "Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 31550ms"
+      ],
+      "stdoutSha256": "f0c5d1a1a80b81e7f65de6d2ab6f0fa9961cec4d1bc7e535b56817ad2ceb4c46",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 31.665
+    },
+    {
+      "label": "actual-absent-delegate-green3",
+      "totals": [
+        "Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 1885ms"
+      ],
+      "stdoutSha256": "305864cb5bfed13ff0520d52ba2aebc2a4d593c6e1608704815215ae528b9770",
+      "stderrBytes": 0,
+      "warnings": [],
+      "wallSeconds": 2.082
+    }
+  ],
+  "qtCountNote": "Each group includes init/cleanup; group totals are not a unique-scenario count.",
+  "actualOtherRequestControl": "Independent second unchanged Source recipient creates R2; eligible before failure. With R1 uncertain/canRetry true and notbusy, R1 opposite and both R2 inputs stay visible-disabled; actual contained mouse inputs cause zero new GET/POST or intent replacement.",
+  "sourceRecipient": "Actual G imports key and decrypts Native public ciphertext probe; J completes rejected with no imported key/probe.",
+  "fullUiAccepted": false,
+  "remaining": "Original live-history expansion property failure and original fullUI SIGSEGV cause; permanent Grant material loss/status-only recovery, switching action/request, failure toast, full shell/Linux/live/package acceptance.",
+  "allSourceBinaryRawCleanupVerified": true,
+  "adoptionCodeReverseCompositionVerified": true
+}

@@ -7,9 +7,10 @@ generation can Grant or Reject. Owners and administrators retain Reject without
 the requested local key. Grant reads the exact generation already held in the
 native vault; the current stream key can be null. Typed payloads, canonical
 placement, the exact default-topic target, request/device binding and retained
-controller Check/Retry reuse the existing protocol. Ordinary key acquisition,
-bootstrap, provider issuance and the Main issuer-recovery flow remain separate
-parity work.
+controller Check/Retry reuse the existing protocol. The existing Main buttons
+now recover retryable saved responses. Ordinary key acquisition, bootstrap,
+provider issuance and the remaining issuer-recovery cases are separate parity
+work.
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
@@ -69,9 +70,9 @@ Retry awaits its acknowledged current-request GET after an unapplied failed POST
 Both now settle the same current intent through the existing post guard. GET-only
 Check and explicit same-wire Retry retain their existing ownership rules; Reject
 does not acquire Grant's permanent material-loss pin. These recovery checks are
-**controller-only**. Main has no separate issuer Check/Retry controls; its recovery
-interaction still requires Source-compatible integration through the existing
-surface. No retained recovery UI acceptance is claimed.
+**controller-only at that holder snapshot**. The later Main change below reuses
+the existing labels for retryable matching responses. No separate Check/Retry
+controls were added.
 
 The final holder snapshot passes complete Core274 in 613.800 seconds
 and the eight actual Main initial-action cases in 13.206 seconds,
@@ -88,6 +89,21 @@ The compared text/actions do not establish full shell or Source runtime
 role/crypto/dispatch parity. [Holder checks](provenance/ordinary-holder-checks.json)
 retain the actual REDs, intermediate failed scope run, accepted groups and exact
 presentation boundary. Historical warning causes below remain open.
+
+A later Main change lets a new explicit click of the same eligible Send key or
+Reject label recover the matching saved response. A status GET runs first; an
+already applied response settles without another POST. Only a fresh absent
+response proceeds through the existing fresh-authority/current-request checks
+and exact-wire retry. Four actual mouse scenarios cover G/J with applied or
+unapplied 503s and independent Source recipient completion. A second real Source
+request and the opposite action cannot borrow that permission; contained mouse
+inputs leave traffic and the saved identity unchanged. These groups passed 6 and
+3 Qt cases; the existing initial manager/holder/encrypted controls passed 16.
+Counts include setup/cleanup per group. [Main recovery checks](provenance/same-action-main-recovery-checks.json)
+record the actual four-row RED and focused results. Permanent Grant material-loss
+and status-only flows, switching R/action, Source failure-toast presentation and
+complete UI acceptance remain open. The existing full-run crash and separate
+history-expansion failure are not claimed fixed by this QML change.
 
 A controlled real-window merge reproduced an unsafe test-side delegate lookup:
 after deleting the separator, Core retained two service messages while the view

@@ -3176,6 +3176,39 @@ ApplicationWindow {
                                 readonly property string description: root.incomingKeyRequestDescription(request)
                                 readonly property string status: root.incomingKeyRequestStatus(request)
                                 readonly property string actor: own ? "" : String(request.name || "")
+                                readonly property var responseIntent: {
+                                    const saved = root.chatEncryption.keyResponse || ({});
+                                    return String(saved.requestId || "") === String(messageRow.modelData.id) ? saved : ({});
+                                }
+                                readonly property bool retainedResponse: String(responseIntent.requestId || "").length > 0
+                                    && responseIntent.phase !== "ready"
+                                function responseEnabled(action) {
+                                    if (!root.controller.authenticated || !root.controller.hasConversation
+                                            || String(request.id || "") !== String(messageRow.modelData.id)
+                                            || Boolean(request.ownCurrentDevice) || Boolean(root.chatEncryption.busy))
+                                        return false;
+                                    if (action !== "grant" && action !== "reject")
+                                        return false;
+                                    const offered = action === "grant" ? Boolean(request.offerGrant) : Boolean(request.offerReject);
+                                    if (!offered)
+                                        return false;
+                                    if (retainedResponse)
+                                        return String(responseIntent.action || "") === action
+                                            && responseIntent.phase === "uncertain" && !Boolean(responseIntent.busy)
+                                            && Boolean(responseIntent.canRetry);
+                                    return action === "grant" ? Boolean(request.canGrant) : Boolean(request.canReject);
+                                }
+                                function respond(action) {
+                                    if (!responseEnabled(action))
+                                        return;
+                                    const id = String(messageRow.modelData.id);
+                                    if (retainedResponse)
+                                        root.controller.retryChatKeyResponse(id);
+                                    else if (action === "grant")
+                                        root.controller.grantChatKey(id);
+                                    else
+                                        root.controller.rejectChatKey(id);
+                                }
                                 readonly property string accessibleSummary: [actor, title, description, status].filter(part => part.length > 0).join(" ")
                                 width: parent.width; spacing: 4
                                 Flow {
@@ -3238,9 +3271,9 @@ ApplicationWindow {
                                         }
                                         objectName: "grantChatKeyButton-" + messageRow.modelData.id
                                         visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerGrant)
-                                        enabled: Boolean(keyRequestService.request.canGrant) && !Boolean(root.chatEncryption.busy)
+                                        enabled: keyRequestService.responseEnabled("grant")
                                         text: qsTr("Send key")
-                                        onClicked: root.controller.grantChatKey(String(messageRow.modelData.id))
+                                        onClicked: keyRequestService.respond("grant")
                                     }
                                     InlineKeyRequestAction {
                                         id: rejectRequestKey
@@ -3250,9 +3283,9 @@ ApplicationWindow {
                                         }
                                         objectName: "rejectChatKeyButton-" + messageRow.modelData.id
                                         visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerReject)
-                                        enabled: Boolean(keyRequestService.request.canReject) && !Boolean(root.chatEncryption.busy)
+                                        enabled: keyRequestService.responseEnabled("reject")
                                         text: qsTr("Reject")
-                                        onClicked: root.controller.rejectChatKey(String(messageRow.modelData.id))
+                                        onClicked: keyRequestService.respond("reject")
                                     }
                                 }
                                 Text {

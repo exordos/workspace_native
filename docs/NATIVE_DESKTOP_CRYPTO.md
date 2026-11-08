@@ -506,10 +506,15 @@ lost write admission; no extra POST, new target or UUID is introduced. Reject
 still permits public status Check without A and explicit same-wire recovery
 when current eligibility is restored. Grant's deletion/material fence remains.
 
-These retained issuer recovery checks cover the controller, not Main recovery.
-The actual Main surface has the Source Grant/Reject actions and no separate
-issuer Check/Retry controls. Its recovery integration remains open; no unmatched
-controls were added. Current complete groups and preserved failures are recorded
+The holder snapshot's retained issuer checks covered the controller. The later
+Main integration reuses the same eligible Grant/Reject action for a matching
+retryable saved response: an explicit click enters the existing GET-first,
+same-wire recovery. Actual applied/unapplied 503 flows pass for both actions,
+including Source-recipient completion; another R and the opposite action cannot
+borrow the saved permission. No separate Check/Retry controls were added.
+Permanent Grant material loss, status-only recovery, switching action/request and
+Source failure-toast presentation remain open; see
+[Main recovery checks](provenance/same-action-main-recovery-checks.json). Current complete groups and preserved failures are recorded
 in [holder checks](provenance/ordinary-holder-checks.json). The configurable disk
 cache still defaults to 10 GB. Full Linux, live service, packaging and other
 platforms are not established by these local synthetic checks.
