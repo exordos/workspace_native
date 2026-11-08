@@ -14,14 +14,22 @@ The final UI capture closure preserves the same product bytes and effective Core
 logic, with failure-only numeric startup diagnostics and optional UI-only public
 capture export. Public export contains synthetic transport facts, never private keys.
 
-Whole Core acceptance is still open. An earlier complete run failed at one cache
-fixture startup before the cache-admission branch; an isolated instrumented check
-passed and did not establish its cause. A later instrumented complete run passed
-that row but failed an old ordinary-plaintext send zero-authority assertion: one
-binding read was observed. That read path also exists in the imported baseline.
-The source-backed empty-account-control prefetch is being investigated with a
-separate deterministic regression; the old zero-count assertion is retained.
-These observations are not hidden by a whole-suite acceptance claim.
+Ordinary plaintext windows now skip shared issuer-authority preparation when they
+contain no service controls. An existing unfinished owned response is an exception:
+it still needs fresh authority before explicit Retry after a trust reset. The
+existing pure ownership predicate supplies this exception without new state.
+The no-work regression reproduced the former extra detail/binding reads. A second
+real HTTP/WSS regression demonstrated that simply skipping every empty window
+would strand retained Retry after same-route history replacement and reconnect.
+Both tests pass with the minimal guard, as do existing ordinary send, role/member,
+Check/Retry and prefilter controls. No assertion or timeout was weakened.
+
+The complete Core suite passed all 261 Qt cases in 579.428 seconds on this exact
+source snapshot; see [authority checks](provenance/ordinary-authority-checks.json).
+An earlier cache-fixture startup failure remains unexplained. It passed in this
+run; this is not evidence that the authority guard caused or fixed that earlier
+startup observation. The previous complete UI126 run predates this guard. A full
+current UI acceptance, live service and complete Linux parity are still open.
 
 Current screenshots compare the service row against the pinned desktop components.
 Full shell, unknown-user generic bubble labels, presence/counts, Source crypto/role

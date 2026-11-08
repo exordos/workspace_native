@@ -1380,6 +1380,9 @@ void NativeController::processChatAccountRequests(quint64 epoch, quint64 selecti
         emit messagesChanged();
         if (!guard || !current()) return;
     }
+    // An unfinished owned response still needs fresh authority for explicit Retry.
+    if (m_chatControlRows.isEmpty() && (!m_chatKeyResponse || m_chatKeyResponse->phase == "ready"
+        || !chatKeyResponseOwned(false))) return;
     // Only ordinary native sessions have Source's holder/manager preparation.
     // Public account correlation above also works when no such session exists.
     const auto stream = currentStream();

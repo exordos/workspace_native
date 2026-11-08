@@ -1,0 +1,33 @@
+{
+  "schema": "workspace-native-ordinary-authority-checks-v1",
+  "baselineNoWorkRed": {
+    "passedQtCases": 4,
+    "failedQtCases": 1,
+    "onlyFailure": "plaintext-with-vault-no-authority observed one binding GET instead of zero",
+    "rawSha256": "541df1c5bc046f837f94e7fa76e261892c29aa4a231ad9803504af8344e585ee"
+  },
+  "simpleEmptyComparatorRed": {
+    "passedQtCases": 2,
+    "failedQtCases": 1,
+    "onlyFailure": "owned retained Reject did not renew authority after accepted same-route history omission and real WSS trust reset",
+    "rawSha256": "96c5ee247e742f9902dd1c9899875c725f4175dd649b20798859870c18936bc2",
+    "runnerDiagnosticRegexMistake": "Initial classifier expected extra parentheses. Original failed classifier receipt was preserved; the exact intended single failure was verified directly without rerunning or altering the test."
+  },
+  "fixedFocusedQtCounts": [8, 14, 17],
+  "wholeCore": {
+    "passedQtCases": 261,
+    "failedQtCases": 0,
+    "skippedQtCases": 0,
+    "seconds": 579.428,
+    "rawSha256": "f4f4c9fc4eab181d7376f7670c64e83880581e9f016013f52ce51c8c1ced1884",
+    "sourceAndBinaryUnchangedDuringRun": true,
+    "warnings": 0,
+    "stderrBytes": 0,
+    "temporaryDirectoriesRemoved": true,
+    "remainingOwnedProcesses": 0
+  },
+  "historicalCacheFixtureStartupCause": "UNKNOWN; its passing current row does not establish a causal fix",
+  "completeCurrentUiAccepted": false,
+  "liveServiceAccepted": false,
+  "fullLinuxParity": false
+}
