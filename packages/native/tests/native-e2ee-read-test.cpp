@@ -13,6 +13,10 @@
 #include <QAccessible>
 #include <QClipboard>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
+#include <QQmlIncubator>
+#include <QtQml/qqml.h>
+#include <QEvent>
 #include <QQmlProperty>
 #include <QQmlExpression>
 #include <QJSValue>
@@ -1017,6 +1021,31 @@ static bool closeEncryptedVisualWindow(QQuickWindow *window)
     const bool closed = guarded && guarded->close();
     QGuiApplication::sync();
     return inactive && survived && closed;
+}
+
+// Bounded test-only readiness wrapper; the existing focus-only helper and
+// every other old callsite remain unchanged. This is not a private-counter guarantee.
+static bool closeIncubatedEncryptedVisualWindow(QQuickWindow *window)
+{
+    const QPointer<QQuickWindow> guard(window);
+    if(!guard)return true;
+    const QPointer<QQmlEngine> engine(qmlEngine(guard.data()));
+    auto *incubation=engine?engine->incubationController():nullptr;
+    const bool observedController=engine&&incubation&&incubation==guard->incubationController();
+    bool settled=false;
+    if(observedController&&guard->isVisible()&&guard->isExposed()) {
+        QSignalSpy frame(guard.data(),&QQuickWindow::frameSwapped);
+        if(frame.isValid()) {
+            guard->update();
+            settled=QTest::qWaitFor([&] {
+                return engine&&guard&&guard->isVisible()&&!frame.isEmpty()
+                    &&engine->incubationController()==incubation&&incubation->incubatingObjectCount()==0;
+            },2000);
+        }
+    }
+    // Ordinary cleanup is attempted even on readiness failure. Failure is not acceptance.
+    const bool closed=guard&&closeEncryptedVisualWindow(guard.data());
+    return settled&&closed&&engine&&engine->incubationController()==incubation&&incubation->incubatingObjectCount()==0;
 }
 
 static QVariant serviceUiProperty(QObject *object, const char *name)
@@ -5661,13 +5690,58 @@ private slots:
         QCOMPARE(f.posts,0);
     }
 
+    void uiEncryptedWindowTeardownWaitsForVisibleIncubationBeforeHide()
+    {
+        Fixture f; f.stream=fullEncryptedStream(); QVERIFY(f.start());
+        NativePreferences preferences(f.directory.filePath("e2ee-incubation.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine,&f.controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow=qScopeGuard([guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedEncryptedVisualWindow(guard.data()))QTest::qFail("E2EE incubation witness window did not close",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        auto *incubation=engine.incubationController();QVERIFY(incubation);
+        QCOMPARE(qmlEngine(window),static_cast<QQmlEngine *>(&engine));
+        QCOMPARE(incubation,window->incubationController());QTRY_COMPARE(incubation->incubatingObjectCount(),0);
+        QQmlComponent component(&engine);
+        component.setData("import QtQuick\nItem { objectName: \"pendingE2eeTeardownItem\"; width: 1; height: 1 }",QUrl("inline:e2ee-teardown-item.qml"));
+        QTRY_VERIFY2(component.isReady(),qPrintable(component.errorString()));
+        QQmlIncubator pending(QQmlIncubator::Asynchronous);
+        pending.setInitialProperties({{"parent",QVariant::fromValue(window->contentItem())}});
+        const auto clearPending=qScopeGuard([&pending] {
+            const QPointer<QObject> created(pending.object());
+            pending.clear(); // Only this test-owned fixture, including failed RED assertions.
+            if(created)delete created.data();
+        });
+        struct HideProbe final:QObject {
+            QQmlEngine &engine;int countAtFirstHide=-1;
+            explicit HideProbe(QQmlEngine &value):engine(value){}
+            bool eventFilter(QObject *,QEvent *event) override {
+                if(event->type()==QEvent::Hide&&countAtFirstHide<0) {
+                    const auto *control=engine.incubationController();
+                    countAtFirstHide=control?control->incubatingObjectCount():-1;
+                }
+                return false;
+            }
+        } probe(engine);
+        window->installEventFilter(&probe);
+        component.create(pending);
+        // Mandatory positive asynchronous boundary before any event pump/close.
+        // A failure here is invalid setup, not the intended lifecycle RED.
+        QVERIFY(pending.isLoading());QCOMPARE(incubation->incubatingObjectCount(),1);
+        const bool closed=closeIncubatedEncryptedVisualWindow(window);if(closed)closeWindow.dismiss();QVERIFY(closed);
+        QCOMPARE(probe.countAtFirstHide,0);
+        QCOMPARE(incubation->incubatingObjectCount(),0);QVERIFY(pending.isReady());
+    }
+
     void uiServiceAutomaticOffscreenCollapsePreservesAnchorAndManualChoice() {
         MixedOutcomeCase source; QVERIFY(source.start());
         Fixture f; f.stream=fullEncryptedStream(); QVERIFY(f.start());
         NativePreferences preferences(f.directory.filePath("service-offscreen.ini")); preferences.setOwner(f.controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
         QQmlApplicationEngine engine; loadNativeUi(engine,&f.controller,&preferences);
         auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
-        const auto close=qScopeGuard([window=QPointer<QQuickWindow>(window)] {if(!closeEncryptedVisualWindow(window.data()))QTest::qFail("Service offscreen window did not close",__FILE__,__LINE__);});
+        const auto close=qScopeGuard([window=QPointer<QQuickWindow>(window)] {if(!closeIncubatedEncryptedVisualWindow(window.data()))QTest::qFail("Service offscreen window did not close",__FILE__,__LINE__);});
         QVERIFY(QTest::qWaitForWindowExposed(window)); auto *list=encryptedUiItem(window,"messageList"); QVERIFY(list);
         QTRY_VERIFY(serviceUiProperty(list,"serviceSession").toMap().value("ready").toBool());
         auto grant=source.grant; grant["topic_uuid"]=topicId; grant["created_at"]="2026-01-02T10:01:00.000Z";

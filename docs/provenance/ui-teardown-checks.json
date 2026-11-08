@@ -1,0 +1,56 @@
+{
+  "schema": "visible-ui-incubation-teardown-checks-v1",
+  "scope": "Test-only visible-frame and public-incubation readiness before hiding the automatic offscreen-collapse window. Product code unchanged. This does not establish the identity of both private Qt in-progress creations.",
+  "sourceManifestSha256": "74f16d8742734da0496f3d3e02b437c66804d5fc5a0c7309511e629343ae7c7b",
+  "planSha256": "cd22aa4d0fc23fe142accea6324ac5ab21b59bf2180765446dcbf3a1eaf5114e",
+  "rootReviewSha256": "f5e5759b27ddab4bcd7c3c23cd87e7daf4fdccbb08d1e84799e5028548c6cb42",
+  "ctestSelection": {
+    "rootVerified": true,
+    "regularUiCommandExact": true,
+    "uiFunctions": 49,
+    "uiTimeout": 360.0,
+    "noExecution": true
+  },
+  "spontaneousDiagnostic": {
+    "manifestSha256": "750b1e58adfeaddcfc8f3aa2a83fab632fc7804f10c5f773383c6095ad56d621",
+    "warning": "There are still \"2\" items in the process of being created at engine destruction.",
+    "publicWitness": "One asynchronous item remained while hiding/closing the actual window. Public counter does not identify both private creations.",
+    "stdoutSha256": "4a9af1b25723496212a7305bb088ce31422a5929c9aed50920e1c37ab4cbd8fb",
+    "stderrSha256": "606b99a9e233fb3c84a3d69d913b79b8e7745e805c8c6e9eff469583aa2acb63",
+    "accepted": false
+  },
+  "controlledRed": {
+    "manifestSha256": "fdaea216dbd50d693229238590e69d88cfa0ba3aaa130117a882c7d910f38255",
+    "totals": "2 passed, 1 failed",
+    "failure": "A test-owned asynchronous item was still pending at first Hide: actual1, expected0. Existing focus-only close helper.",
+    "stdoutSha256": "0f08b482c18dc11f7900757ee0d57dd6a560a31033e496d22c02a41b0b9d02fb"
+  },
+  "focusedGreen": {
+    "accepted": true,
+    "totals": [
+      "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 7067ms"
+    ],
+    "wallSeconds": 7.234,
+    "stdoutSha256": "f30c8c4619234e7e7760ff96da950e48cb1086208d41ab8d720110181e7f8fb0",
+    "stderrBytes": 0,
+    "failures": []
+  },
+  "fullUi": {
+    "accepted": false,
+    "totals": [
+      "Totals: 128 passed, 1 failed, 0 skipped, 0 blacklisted, 301513ms"
+    ],
+    "wallSeconds": 301.725,
+    "stdoutSha256": "dd568c98b23336a1a909cd0a7a525990e7dacc17fa4046e63367f0985b636918",
+    "stderrBytes": 0,
+    "failures": [
+      "FAIL!  : NativeE2eeReadTest::uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch() Received a warning that resulted in a failure:",
+      "FAIL!  : NativeE2eeReadTest::uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch() Received a warning that resulted in a failure:",
+      "FAIL!  : NativeE2eeReadTest::uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch() Compared values are not the same"
+    ]
+  },
+  "cleanupVerified": true,
+  "runtimeChanges": false,
+  "unchanged": "Existing focus-only helper and every old callsite except the reproduced offscreen case. No forced incubation/layout, disabled asynchronous creation, warning filtering or longer waits.",
+  "remaining": "Full UI acceptance remains open for two Wayland text-input warnings and subsequent observed0/expected500 before that slot creates its window; no causal transport claim. Earlier independent QMutex and out-of-window input remain open."
+}

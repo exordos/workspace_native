@@ -59,10 +59,24 @@ Source `#` plus eight UUID characters and checks that exact controller caption;
 every geometry assertion is unchanged. The focused six-case check passed. The
 next original-order UI run passed 127 cases and failed one: Qt reported two items
 still being created at engine destruction in the automatic offscreen-collapse
-test. The cause is unknown and the full UI gate remains **not accepted**. No
-warning is suppressed or retried for acceptance. The focused Main and comparison
-checks above passed independently. [Grant checks](provenance/ordinary-grant-checks.json)
-preserve the original failures and exact accepted scope.
+test. A passive diagnostic reproduced that warning and observed one public
+asynchronous creation still pending while the window hid. It does not identify
+both private Qt creations. A controlled real-window regression then failed with
+one pending item at first Hide. Its test-only close wrapper now waits for an
+ordinary visible frame and completion of public incubation before the existing
+focus/close cleanup. Product code, asynchronous creation and warning checks are
+unchanged. The controlled witness and original offscreen case passed together.
+
+The subsequent complete original-order UI run passed 128 cases and failed one
+different slot: two Wayland text-input warnings were followed by an observed
+empty model where the large-history fixture expected 500 messages, before that
+slot creates its window. The cause is unproven; this run is **not accepted**.
+The new close wrapper is first invoked later in the suite. No warning is
+suppressed or rerun for acceptance. [Teardown checks](provenance/ui-teardown-checks.json)
+preserve the actual warning reproduction, controlled regression and this failed
+full run. The focused Main and comparison checks above passed independently.
+[Grant checks](provenance/ordinary-grant-checks.json) preserve the earlier failures
+and exact accepted scope.
 
 The earlier Window run passed 224 functional cases, but its quality gate remains
 **not accepted**: one test sent a mouse event outside a 700px window. Isolated

@@ -264,6 +264,7 @@ if(BUILD_TESTING)
         uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch
         uiServiceProductionReducerPreservesManualMergeFocusAndContext
         uiServiceManualChoiceFollowsActualSplitMergeAndHeadDeletion
+        uiEncryptedWindowTeardownWaitsForVisibleIncubationBeforeHide
         uiServiceAutomaticOffscreenCollapsePreservesAnchorAndManualChoice
         uiCollapsedServiceReadBoundaryUsesLatestActualSameTopicUuid
         uiServiceAccountFilterPrecedesAuthorAndTopicGrouping
