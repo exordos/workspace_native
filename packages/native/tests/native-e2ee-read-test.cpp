@@ -7,6 +7,10 @@
 #include "native-app.h"
 #include "native-markdown.h"
 #include "native-preferences.h"
+#include "message-images.h"
+#include "file-client.h"
+#include <QQuickImageProvider>
+#include <QtMath>
 #include <QApplication>
 #include <QImage>
 #include <QCryptographicHash>
@@ -8189,6 +8193,154 @@ private slots:
         QVERIFY(incomingKeyRequestRow(f.controller,id).value("canReject").toBool()); QCOMPARE(f.posts,1);
         const bool closed=closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
     }
+    void uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand()
+    {
+        const QString fileId="99999999-9999-4999-8999-999999999992";
+        const QString alt="SYNTHETIC ENCRYPTED IMAGE ALT";
+        const QString urn="urn:image:"+fileId+"?name=encrypted-inline.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        const QString markdown="Before encrypted image\n\n!["+alt+"]("+urn+")\n\nAfter encrypted image";
+        // Same immutable 96x64 public PNG used by the accepted ordinary Main image fixture.
+        const auto png=QByteArray::fromHex(
+            "89504e470d0a1a0a0000000d4948445200000060000000400806000000e534720e000000ad4944415478daedd1310d80301440c19a68d28d818da4766a017d4c18a8061430b023004474f81d6e7806dea5be5ddf48f75243cb470b6df45f02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000260058f727b4f72ca1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001300fc64110b8532ff49270000000049454e44ae426082");
+        QCOMPARE(png.size(),qsizetype(230));
+        QCOMPARE(QCryptographicHash::hash(png,QCryptographicHash::Sha256).toHex(),
+                 QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9"));
+        const auto expected=QImage::fromData(png,"PNG");QCOMPARE(expected.size(),QSize(96,64));
+        int metadataGets=0,binaryGets=0,fileWrites=0;bool headersOkay=true;
+        const QJsonObject metadata{{"uuid",fileId},{"stream_uuid",streamId},{"name","encrypted-inline.png"},
+            {"content_type","image/png"},{"size_bytes",png.size()},
+            {"hash",QString::fromLatin1(QCryptographicHash::hash(png,QCryptographicHash::Sha256).toHex())}};
+        Fixture f;f.stream=fullEncryptedStream();f.cipher["user_uuid"]=userId;
+        const auto previous=f.http.handler;
+        f.http.handler=[&,previous](const Request &request)->Response {
+            const auto path=request.target.path(),file="/api/workspace/v1/messenger/files/"+fileId;
+            if(path.startsWith("/api/workspace/v1/messenger/files/")) {
+                headersOkay=headersOkay&&request.headers.value("authorization")==QByteArray("Bearer synthetic-project-token")
+                    &&request.headers.value("cookie").isEmpty();
+                if(request.method!="GET"){++fileWrites;return {QJsonObject{},405};}
+                if(path==file){++metadataGets;return {metadata};}
+                if(path==file+"/actions/download") {
+                    ++binaryGets;Response response;response.rawBody=png;response.rawContentType="image/png";return response;
+                }
+                return {QJsonObject{},404};
+            }
+            return previous(request);
+        };
+        QVERIFY(f.start());
+        SourceSendPeer peer;QVERIFY(peer.prepare(f,topicId,markdown));
+        QCOMPARE(f.posts,1);QCOMPARE(f.requestBody.value("payload").toObject().value("kind").toString(),QString("key_request"));
+        QCOMPARE(f.requestBody.value("topic_uuid").toString(),secondTopicId);
+        QCOMPARE(f.cipher.value("payload").toObject(),peer.source.value("encrypted").toObject());
+        QCOMPARE(f.cipher.value("payload").toObject().value("kind").toString(),QString("e2ee"));
+        QCOMPARE(displayed(f.controller,messageId).value("content").toString(),markdown);
+        const auto receipt=f.vault.requestCompletionByMessage(f.vault.lease(),{streamId,returnedId},
+            f.savedRequest.value("uuid").toString());
+        QVERIFY(receipt.value);QCOMPARE(receipt.value->outcome,NativeChatKeyVault::Outcome::Granted);
+        const auto originalLease=f.vault.lease();
+        f.vault.close(); // Persisted source-granted A remains on disk; this is a real lease/availability change.
+        QTRY_VERIFY(!displayed(f.controller,messageId).value("decrypted").toBool());
+        QCOMPARE(f.controller.selectedStream(),streamId);QCOMPARE(f.controller.selectedTopic(),topicId);
+        FileClient files(&f.api);f.controller.useFiles(&files);
+        MessageImages images(&f.api,&f.session,&files);
+        std::unique_ptr<QQuickImageProvider> provider(images.createImageProvider());
+        NativePreferences preferences(f.directory.filePath("encrypted-inline-image-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey());preferences.setLocale("en");preferences.setMode("light");
+        QQmlApplicationEngine engine;loadNativeUi(engine,&f.controller,&preferences,nullptr,nullptr,&images);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto close=qScopeGuard([guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedEncryptedVisualWindow(guard.data()))
+                QTest::qFail("Encrypted inline image teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900);QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(window->devicePixelRatio(),qreal(1));
+        std::function<bool(QQuickItem *)> noDisclosure=[&](QQuickItem *entry) {
+            for(const auto *name:{"text","label","reference","source"}) {
+                const auto value=entry->property(name).toString();
+                if(value.contains(alt)||value.contains(urn)||value.contains(fileId))return false;
+            }
+            for(auto *child:entry->childItems())if(!noDisclosure(child))return false;
+            return true;
+        };
+        std::function<QQuickItem *(QQuickItem *)> readyImage=[&](QQuickItem *entry)->QQuickItem * {
+            if(!entry||!entry->isVisible())return nullptr;
+            const auto source=entry->property("source").toUrl();
+            if(source.scheme()=="image"&&source.host()=="messageimages"&&entry->property("status").toInt()==1)return entry;
+            for(auto *child:entry->childItems())if(auto *found=readyImage(child))return found;
+            return nullptr;
+        };
+        const auto inlineImage=[&]() {
+            return readyImage(encryptedUiItem(window,"message-content-"+messageId));
+        };
+        auto *viewport=encryptedUiItem(window,"messageList");QVERIFY(viewport);
+        QTRY_VERIFY(encryptedUiItem(window,"encrypted-placeholder-"+messageId));
+        QTRY_VERIFY(!viewport->property("positioning").toBool());
+        QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+        QSignalSpy lockedFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!lockedFrame.isEmpty());
+        QVERIFY(!f.controller.encryption().value("available").toBool());
+        QVERIFY(!encryptedUiItem(window,"message-content-"+messageId));QVERIFY(!inlineImage());
+        QVERIFY(noDisclosure(window->contentItem()));
+        const auto lockedRow=displayed(f.controller,messageId);QCOMPARE(lockedRow.value("kind").toString(),QString("e2ee"));
+        QVERIFY(!lockedRow.value("content").toString().contains(alt)&&!lockedRow.value("content").toString().contains(urn));
+        QCOMPARE(metadataGets,0);QCOMPARE(binaryGets,0);QCOMPARE(images.stats().entries,0);
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+        const auto opened=std::make_shared<bool>(false);
+        const auto openFailure=std::make_shared<NativeChatKeyVault::Failure>(NativeChatKeyVault::Failure::Unavailable);
+        f.vault.open(f.tls.origin(),projectId,userId,f.deviceName,[opened,openFailure](NativeChatKeyVault::Failure failure) {
+            *openFailure=failure;*opened=true;
+        });
+        QTRY_VERIFY(*opened);QCOMPARE(*openFailure,NativeChatKeyVault::Failure::None);
+        QCOMPARE(f.vault.lease().owner,originalLease.owner);QVERIFY(f.vault.lease().generation!=originalLease.generation);
+        QTRY_VERIFY(displayed(f.controller,messageId).value("decrypted").toBool());
+        QCOMPARE(displayed(f.controller,messageId).value("content").toString(),markdown);
+        QTRY_VERIFY(inlineImage());QTRY_COMPARE(metadataGets,1);QTRY_COMPARE(binaryGets,1);
+        QTRY_COMPARE(images.stats().pipelineJobs,0);QCOMPARE(images.stats().leases,1);
+        QCOMPARE(images.stats().previews,1);QCOMPARE(images.info(urn),(QVariantMap{{"width",96},{"height",64}}));
+        QVERIFY(headersOkay);QCOMPARE(fileWrites,0);QCOMPARE(f.posts,1);
+        auto *picture=inlineImage();QVERIFY(picture);QCOMPARE(picture->size(),QSizeF(96,64));
+        const auto url=images.imageUrl(urn);QVERIFY(!url.isEmpty());
+        QCOMPARE(picture->property("source").toUrl(),QUrl(url));
+        QSignalSpy readableFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!readableFrame.isEmpty());
+        const auto painted=[&] {
+            auto *image=inlineImage();if(!image)return false;
+            const auto pixels=window->grabWindow();if(pixels.isNull())return false;
+            if(!QRectF(QPointF{},QSizeF(window->size())).contains(QRectF(image->mapToScene(QPointF{}),image->size())))return false;
+            for(const QPoint &point:{QPoint(8,8),QPoint(24,16),QPoint(72,16),QPoint(24,48),QPoint(72,48),QPoint(88,56)}) {
+                const auto position=image->mapToScene(QPointF(point));
+                const QPoint sample(qRound(position.x()),qRound(position.y()));
+                if(!pixels.rect().contains(sample))return false;
+                const auto actual=pixels.pixelColor(sample),wanted=expected.pixelColor(point);
+                if(qAbs(actual.red()-wanted.red())>3||qAbs(actual.green()-wanted.green())>3
+                    ||qAbs(actual.blue()-wanted.blue())>3||actual.alpha()!=255)return false;
+            }
+            return true;
+        };
+        QTRY_VERIFY2(painted(),"Actual Source-decrypted image markdown must paint the real verified PNG in Main");
+        f.vault.close();
+        QTRY_VERIFY(!displayed(f.controller,messageId).value("decrypted").toBool());
+        QTRY_VERIFY(encryptedUiItem(window,"encrypted-placeholder-"+messageId));
+        QTRY_VERIFY(!inlineImage());QTRY_COMPARE(images.stats().leases,0);
+        QTRY_VERIFY(noDisclosure(window->contentItem()));
+        QCOMPARE(metadataGets,1);QCOMPARE(binaryGets,1);QCOMPARE(f.posts,1);QCOMPARE(fileWrites,0);
+        // A same-owner decoded preview may stay bounded; Session reset must retire the full scope.
+        const auto scope=images.scopeRevision();
+        f.session.logout();
+        QTRY_VERIFY(!f.controller.authenticated());QTRY_VERIFY(f.controller.messages().isEmpty());
+        QTRY_VERIFY(images.scopeRevision()>scope);QCOMPARE(images.stats().entries,0);
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+        QCOMPARE(images.stats().previews,0);QCOMPARE(images.stats().previewBytes,qint64(0));
+        QVERIFY(images.imageUrl(urn).isEmpty());QTRY_VERIFY(!inlineImage());QTRY_VERIFY(noDisclosure(window->contentItem()));
+        QSize retiredSize;const auto retired=provider->requestImage(QUrl(url).path().mid(1),&retiredSize,QSize{});
+        QCOMPARE(retired.size(),QSize(1,1));QCOMPARE(retired.pixelColor(0,0).alpha(),0);
+        QCOMPARE(metadataGets,1);QCOMPARE(binaryGets,1);QVERIFY(headersOkay);
+        for(const auto &body:f.requestBodies) {
+            const auto bytes=QJsonDocument(body).toJson(QJsonDocument::Compact);
+            QVERIFY(!bytes.contains(alt.toUtf8())&&!bytes.contains(urn.toUtf8()));
+        }
+        const bool closed=closeIncubatedEncryptedVisualWindow(window);if(closed)close.dismiss();QVERIFY(closed);
+    }
+
+
     void uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data() {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
         for(const auto *locale:{"en","ru"}) for(const auto *mode:{"light","dark"})

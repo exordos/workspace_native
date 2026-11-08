@@ -2126,4 +2126,11 @@
             <translation>Проверить обновления</translation>
         </message>
     </context>
+    <context>
+        <name>NativeMessageImage</name>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+    </context>
 </TS>

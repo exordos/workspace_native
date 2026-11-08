@@ -9,6 +9,7 @@ namespace workspace {
 class NativeController;
 class NativePreferences;
 class AvatarImages;
+class MessageImages;
 class NativeCacheService;
 class NativeChatKeyVault;
 class ApiClient;
@@ -20,5 +21,5 @@ void bindNativeChatKeys(NativeChatKeyVault &keys, Session &session, ApiClient &a
                         NativeController &controller, const QString &deviceName);
 void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller,
                   NativePreferences *preferences = nullptr, AvatarImages *avatars = nullptr,
-                  NativeUpdater *updater = nullptr);
+                  NativeUpdater *updater = nullptr, MessageImages *messageImages = nullptr);
 }

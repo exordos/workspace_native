@@ -5,6 +5,7 @@
 #include "native-preferences.h"
 #include "native-cache-service.h"
 #include "avatar-images.h"
+#include "message-images.h"
 #include <QQuickImageProvider>
 
 #include <QQmlApplicationEngine>
@@ -121,7 +122,7 @@ void bindNativeLocale(QQmlEngine &engine, NativePreferences *preferences)
     apply();
 }
 
-void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences, AvatarImages *avatars, NativeUpdater *updater)
+void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, NativePreferences *preferences, AvatarImages *avatars, NativeUpdater *updater, MessageImages *messageImages)
 {
     initializeNativeResources();
     if (!preferences) preferences = new NativePreferences({}, &engine);
@@ -145,6 +146,8 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     if (avatars) engine.addImageProvider("avatars", avatars->createImageProvider());
     engine.rootContext()->setContextProperty("nativeAvatars", avatars);
     engine.rootContext()->setContextProperty("nativeUpdater", updater);
+    if (messageImages) engine.addImageProvider("messageimages", messageImages->createImageProvider());
+    engine.rootContext()->setContextProperty("nativeMessageImages", messageImages);
     engine.load(QUrl("qrc:/workspace/qml/Main.qml"));
 }
 

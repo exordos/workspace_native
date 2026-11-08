@@ -1,0 +1,159 @@
+{
+  "scope": "Standalone received image paragraphs in native Main; local HTTP/TLS/Source-peer and real Source body reference, separate from public release/live acceptance",
+  "sourcePin": "95495b10b828f853c9e770b47216073eb973fa95",
+  "fullWindow": {
+    "cases": 282,
+    "qtTotals": "Totals: 282 passed, 0 failed, 0 skipped, 0 blacklisted, 300635ms",
+    "rawSha256": "2c2112b2755035b61e22b4d484fa014717399624787748ca1a1c4b2bbab4e138",
+    "runtimeWarningsStderrSkips": 0,
+    "cleanupVerified": true
+  },
+  "priorExactCandidate": {
+    "windowCases": 281,
+    "encryptedReceiveReadComposerCases": 8,
+    "messageImagesCases": 20,
+    "markdownCases": 34,
+    "reviewSha256": "4fb90523b0506e3bbb86552d9120daf309dff310c8133bfade129a8313209598"
+  },
+  "finalFocused": {
+    "saveCases": 3,
+    "mainAndLifetimeCases": 5,
+    "encryptedReceiveCases": 3,
+    "reviewSha256": "7b52235c1074d5d41f2f4cecc7d6c4dc9ec060bfcfe6109f6f20a49389555f05",
+    "sameSaveTestBytesAfterActualRed": true
+  },
+  "locale": {
+    "cases": 14,
+    "oldRecordsPreserved": 511,
+    "added": [
+      "NativeMessageImage",
+      "Retry"
+    ]
+  },
+  "bounds": {
+    "messageManagerEntries": 64,
+    "leases": 4096,
+    "pipelineJobs": 2,
+    "serialDecoderWorkers": 1,
+    "retainedPreviewBytes": 33554432,
+    "sourcePixels": 16000000,
+    "fileTransferBytes": 26214400,
+    "previewMaximum": [
+      2048,
+      360
+    ],
+    "providerDoesNoIOOrDecodeOrScale": true,
+    "globalRssBoundClaim": false,
+    "imageByteDiskStore": false,
+    "existingTypedDiskCacheDefaultDecimalBytes": 10000000000
+  },
+  "actualMain": {
+    "imageSize": [
+      96,
+      64
+    ],
+    "bodyHeight": 152,
+    "bubbleHeight": 188,
+    "imageOffsetInBody": [
+      1,
+      43
+    ],
+    "sourceObservedImageRadius": 4,
+    "outerCornerPixelChecks": 4,
+    "guardAndQuadrantPixelChecks": 6,
+    "metadataGets": 1,
+    "binaryGets": 1,
+    "warmRouteAdditionalGets": 0,
+    "decodedPreviewBytes": 24576,
+    "encryptedLockedFileGets": 0,
+    "lockedImageAndLeaseRemoved": true,
+    "logoutRetiresPreviewScope": true,
+    "failedPreviewRetainsExistingSaveAction": true,
+    "saveCancelAdditionalFileGets": 0
+  },
+  "sourceReference": {
+    "actualHeadedGlobalPlaywright": true,
+    "productionFilesMatchPinnedGitBlobs": 1682,
+    "canonicalActualNativeHandlerDtoEqualsSourceInput": true,
+    "sourceManifestSha256": "8ce59e1e77b1fc1a29b7e58b530253f888dfbc5aae2f1f44852911e31a8eaffd",
+    "captureProofSha256": "5a8f3fdf5fe91b969f915a66f2ff8cd364b8e0db64bdb5973e74f18073f79afe",
+    "rawPngSha256": "93fb98a5e5b806dc6c0a24d30933ccdaa6216be8e494cc9ae4249172a2a57f3d",
+    "initialQueuedOutsideLazyBandGet0ThenRealWheelGet1": true,
+    "actualBlobBytes": 230,
+    "actualWholeImageSize": [
+      96,
+      64
+    ],
+    "sourceHasOneBinaryGetNativeUsesExistingMetadataPlusBinary": true,
+    "sourceComponentOnly": true,
+    "authorDirectoryUnmatched": true,
+    "serverBrowserProfileCleanupVerified": true
+  },
+  "regressions": {
+    "missingPixels": true,
+    "quotedRootImageIncorrectlyPromotedThenGuarded": true,
+    "loaderHeightLoopThenExplicitItemLayout": true,
+    "nestedScopeReferenceUrlAndTicketLoopsThenImperativePublicationAndTicketGuard": true,
+    "sourceSpacing114To152": true,
+    "sourceRoundedCorners": true,
+    "failedPreviewOpened0ThenExistingSaveActionOnce": true,
+    "noWarningSuppressionOrWaitIncrease": true,
+    "earlierFailedSaveWaitEndedWithSecondTransferCauseUnknown": true
+  },
+  "localPackage": {
+    "version": "0.1.3",
+    "installerCases": 6,
+    "configuredVersionRegressionCases": 1,
+    "actualStagedFiveCodecCryptoTlsProbePassed": true,
+    "rawResultSha256": "51a36db1e44ca012aa071792d5291e588157bb3e7edeb41695793696ad747691",
+    "publicOrInstalledUpgradeClaim": false
+  },
+  "comparisons": {
+    "49": {
+      "messageReadBackVerified": true,
+      "rawAttachmentCount": 2,
+      "downloadHashesVerified": true,
+      "privateReceiptSha256": "c5f92508daf6fec7257b9ac5e4e9c5d84dc2e4ffefd3379b8c3d06d85164d2f5",
+      "fullApplicationAcceptance": false
+    },
+    "50": {
+      "messageReadBackVerified": true,
+      "rawAttachmentCount": 2,
+      "downloadHashesVerified": true,
+      "privateReceiptSha256": "bb3bb9db4bd090cacf5882e05ccff254ce816a88b52f8425937ef3a1701f7fd8",
+      "fullApplicationAcceptance": false
+    }
+  },
+  "rawLogs": {
+    "v80-completed-build-canonical-red-gate/main-missing-image3.log": "f950d2d901a73da1e4090b029777520d2b6ddd60907c1d4d671ea51ae2de3450",
+    "v84-received-image-markdown-fixed-gate/complete-markdown34.log": "6c29026b36b686ccf967959a83b7105b219dfb963aaa2447cc84594a616a736f",
+    "v86-received-image-main-first-gate/actual-main-received-image3.log": "8d211a24b9573bce28d5273432626d0a6b02915209a52a4da8f1c5b66fa2f30b",
+    "v87-received-image-main-layout-fixed-gate/actual-main-received-image3.log": "19aa98a5dd1a930816f23e5bc26cd085e8dc534213252480ba76334f9c3c1aa4",
+    "v88-received-image-component-first-gate/component-nested4.log": "57d11babcd7f0e7b78f583f43b0e195f5b604d68fb1b42351653c7a712bec3d8",
+    "v89-received-image-component-fixed-gate/main-basic3.log": "017d3ea5daf8e061bae978a0326fb264110733a25d95492990423fa44535a572",
+    "v89-received-image-component-fixed-gate/component-nested4.log": "339897ea574b65f0dbea0d1b2119a288bccd2c36f7ef800398a86aa737a3a6d7",
+    "v90-received-image-source-spacing-red-gate/spacing-red.log": "92be85a223a774a4a195eb5a7a251dff6ea64a8cbea87d474d7f8e167a2784f9",
+    "v92-received-image-rounded-corner-red-gate/corner-red.log": "feec966de89d3c0ab177dbe9983c2d217b03c77d6afe4bba3de44d6723c28c7e",
+    "v93-received-image-rounded-encrypted-first-gate/component4.log": "b94bf8db04287c8cf4d2133c61e8e50294177e2e91ecdf36b78c7b29c7ac9ac3",
+    "v93-received-image-rounded-encrypted-first-gate/encrypted-image3.log": "669c7e301904e52fbedec503cba816b19dbdcde33225ecd216f7bd0601c5d92b",
+    "v93-received-image-rounded-encrypted-first-gate/main-basic3.log": "4224743fa14c841d7bcf47ef202ad3f1636ff6ca23bac6627ebb429454860141",
+    "v94-received-image-full-candidate-gate/markdown34.log": "6c29026b36b686ccf967959a83b7105b219dfb963aaa2447cc84594a616a736f",
+    "v94-received-image-full-candidate-gate/message-images20.log": "2f1ee49e4fd7ae565f39c1e8b316c882e7b0012e6c9b71de5a69570b81eb6725",
+    "v94-received-image-full-candidate-gate/window281.log": "e433fe11445241386bb1228e78b08439473f167fc617f38fdd5e00060d7fb24e",
+    "v94-received-image-full-candidate-gate/encrypted8.log": "a971bb1fa27ace4f56b246e9b0e9c6fe14c4277af8cba2db483735c9869f34ed",
+    "v95-received-broken-image-save-red-gate/broken-save-red.log": "ce383468cbcaf81b4f8343ae8b7e7716dab8096ca6d9c1792c7ff39b1642029e",
+    "v96-received-image-save-fixed-focused-gate/broken-save3.log": "ef214a54fe7e2c291e3eb25e5d2beea5a42809606b48ba42ca93474301e86f1d",
+    "v96-received-image-save-fixed-focused-gate/encrypted-image3.log": "081d1284345f522a3baf4126e85c7e9e70e0f684653073e3b586fee90fec53b7",
+    "v96-received-image-save-fixed-focused-gate/old-image-main5.log": "262dbaa61ea3fc4848df50c1db4ecd52d6f356cfce24a1659445c4f0e0f00bc0",
+    "v96-received-image-save-fixed-whole-gate/window282.log": "2c2112b2755035b61e22b4d484fa014717399624787748ca1a1c4b2bbab4e138"
+  },
+  "limits": [
+    "Root standalone image paragraphs only; mixed, adjacent, nested, quoted and external media retain sanitized link fallback",
+    "One actual96x64 EN-light body reference; whole shell, author hydration, fonts/AA and all-aspect/tiny-height fidelity remain open",
+    "Static PNG/JPEG/GIF/WebP previews; animation, video/audio, galleries/viewer and full composition remain open",
+    "Decoded previews are bounded in memory; cold offline image bytes and restart restoration are not accepted",
+    "Same-owner decoded preview may remain after key-vault close; locked UI/demand removal and full Session logout scope reset are checked separately",
+    "Live primary account, authenticated history/credential upgrade and complete Linux/otherOS acceptance remain separate",
+    "Earlier intermittent public metadata and whole-window causes remain unexplained"
+  ]
+}

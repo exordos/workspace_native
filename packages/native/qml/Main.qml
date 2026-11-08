@@ -32,6 +32,7 @@ ApplicationWindow {
     readonly property var markdown: nativeMarkdown
     readonly property var preferences: nativePreferences
     readonly property var updater: nativeUpdater
+    readonly property var messageImages: nativeMessageImages
     property bool updatesVisible: false
     property bool aboutFromProfile: false
     function openAbout(fromProfile) {
@@ -3582,7 +3583,19 @@ ApplicationWindow {
                     readonly property real bubbleOffset: hasDivider ? topicDivider.height + 8 : 0
                     readonly property var avatar: messageList.avatarPlacement(messageRow, index)
                     readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel : String(modelData.content))
-                    readonly property bool inlineMeta: !encryptedLocked && !keyControl && !(modelData.reactions || []).some(reaction => Number(reaction.count) > 0) && root.trailingMessageParagraph(rendered.html) >= 0
+                    readonly property var imageParts: rendered.parts || []
+                    readonly property bool hasInlineImages: !!root.messageImages && !encryptedLocked && !keyControl
+                        && incomingKeyRequest === null && !keyResponse && modelData.kind !== "key_announced"
+                        && (modelData.kind === "markdown" || modelData.kind === "e2ee" && Boolean(modelData.decrypted))
+                        && imageParts.some(part => part.kind === "image")
+                    readonly property string tailHtml: hasInlineImages
+                        ? imageParts.length && imageParts[imageParts.length - 1].kind === "text" ? String(imageParts[imageParts.length - 1].html) : ""
+                        : String(rendered.html)
+                    readonly property bool inlineMeta: !encryptedLocked && !keyControl && !(modelData.reactions || []).some(reaction => Number(reaction.count) > 0) && root.trailingMessageParagraph(tailHtml) >= 0
+                    function imagePartHtml(part, index) {
+                        const html = String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;');
+                        return inlineMeta && index === imageParts.length - 1 ? root.reserveMessageTime(html, modelData.time) : html;
+                    }
                     // Text.lineHeight does not affect Qt RichText. Apply the
                     // desktop paragraph leading only to renderer-owned p styles.
                     readonly property string bodyHtml: String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
@@ -3612,6 +3625,7 @@ ApplicationWindow {
                     function settleGeometry() {
                         naturalText.forceLayout();
                         messageBody.forceLayout();
+                        mediaMessageBody.forceLayout();
                         bubbleContent.forceLayout();
                     }
                     Component.onCompleted: {
@@ -3632,7 +3646,7 @@ ApplicationWindow {
                     Text {
                         id: naturalText
                         visible: false
-                        text: messageRow.displayHtml
+                        text: messageRow.hasInlineImages ? messageRow.imageParts.map((part, index) => part.kind === "text" ? messageRow.imagePartHtml(part, index) : "").join("") : messageRow.displayHtml
                         textFormat: Text.RichText
                         font.pixelSize: 14
                         Accessible.ignored: true
@@ -3741,7 +3755,7 @@ ApplicationWindow {
                         id: bubble
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
-                        width: messageRow.keyControl ? messageRow.width : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
+                        width: messageRow.keyControl ? messageRow.width : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, messageRow.hasInlineImages ? mediaMessageBody.imagePreferredWidth : 0, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
                         height: bubbleContent.implicitHeight + (messageRow.keyControl ? 8 : 16)
                         x: messageRow.keyControl ? 0 : messageRow.own ? messageRow.width - width : 56
                         y: messageRow.bubbleOffset + (messageRow.externalAuthor ? 24 : 0)
@@ -4167,9 +4181,9 @@ ApplicationWindow {
                             }
                             Text {
                                 id: messageBody
-                                visible: !messageRow.encryptedLocked && messageRow.incomingKeyRequest === null && !messageRow.keyResponse && messageRow.modelData.kind !== "key_announced"
+                                visible: !messageRow.hasInlineImages && !messageRow.encryptedLocked && messageRow.incomingKeyRequest === null && !messageRow.keyResponse && messageRow.modelData.kind !== "key_announced"
                                 horizontalAlignment: messageRow.keyControl ? Text.AlignHCenter : Text.AlignLeft
-                                objectName: "message-content-" + messageRow.modelData.id
+                                objectName: messageRow.hasInlineImages ? "" : "message-content-" + messageRow.modelData.id
                                 width: parent.width
                                 text: messageRow.keyControl ? messageRow.controlLabel : messageRow.displayHtml
                                 textFormat: messageRow.keyControl ? Text.PlainText : Text.RichText
@@ -4183,6 +4197,75 @@ ApplicationWindow {
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 linkColor: root.colors.accent
                                 onLinkActivated: link => root.openReference(link)
+                            }
+                            Column {
+                                id: mediaMessageBody
+                                objectName: messageRow.hasInlineImages ? "message-content-" + messageRow.modelData.id : ""
+                                visible: messageRow.hasInlineImages
+                                width: parent.width
+                                // A standalone Markdown image has an explicit
+                                // blank paragraph boundary (Source: 0.7 * 20px).
+                                spacing: 14
+                                readonly property string text: messageRow.displayHtml
+                                readonly property real contentHeight: implicitHeight
+                                readonly property real imagePreferredWidth: {
+                                    let width = 0;
+                                    for (let i = 0; i < imageRuns.count; ++i) {
+                                        const run = imageRuns.itemAt(i);
+                                        if (run)
+                                            width = Math.max(width, run.imageNaturalWidth);
+                                    }
+                                    return width;
+                                }
+                                Repeater {
+                                    id: imageRuns
+                                    model: messageRow.hasInlineImages ? messageRow.imageParts : []
+                                    delegate: Item {
+                                        id: imageRun
+                                        required property var modelData
+                                        required property int index
+                                        readonly property var part: modelData
+                                        readonly property real imageNaturalWidth: part.kind === "image" ? picture.implicitWidth + 2 : 0
+                                        readonly property real imageWrapperHeight: Math.min(180, picture.height + 10)
+                                        width: mediaMessageBody.width
+                                        height: part.kind === "image" ? imageWrapperHeight + 8 : textRun.contentHeight + textRun.bottomPadding
+                                        Text {
+                                            id: textRun
+                                            visible: imageRun.part.kind === "text"
+                                            width: parent.width
+                                            height: contentHeight + bottomPadding
+                                            text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
+                                            textFormat: Text.RichText
+                                            wrapMode: Text.Wrap
+                                            font.pixelSize: 14
+                                            lineHeightMode: Text.FixedHeight
+                                            lineHeight: 20
+                                            bottomPadding: messageRow.inlineMeta && imageRun.index === messageRow.imageParts.length - 1 ? 2 : 0
+                                            color: root.colors["text-primary"]
+                                            linkColor: root.colors.accent
+                                            onLinkActivated: link => root.openReference(link)
+                                            Accessible.ignored: true
+                                        }
+                                        NativeMessageImage {
+                                            id: picture
+                                            visible: imageRun.part.kind === "image"
+                                            colors: root.colors
+                                            images: root.messageImages
+                                            viewport: messageList
+                                            reference: String(imageRun.part.reference || "")
+                                            label: String(imageRun.part.label || "")
+                                            hintWidth: Number(imageRun.part.width || 0)
+                                            hintHeight: Number(imageRun.part.height || 0)
+                                            // Source keeps a transparent 1px
+                                            // border and two 4px margin pairs.
+                                            x: 1; y: 4 + (imageRun.imageWrapperHeight - height) / 2
+                                            width: Math.min(Math.max(0, parent.width - 2), implicitWidth)
+                                            bodyActive: mediaMessageBody.visible && !messageList.positioning
+                                                && messageList.displayedRoute === messageList.serviceScope()
+                                            onOpened: root.openReference(reference)
+                                        }
+                                    }
+                                }
                             }
                             Item {
                                 id: messageFooter
@@ -4385,7 +4468,7 @@ ApplicationWindow {
                             visible: !messageRow.keyControl
                             objectName: "message-time-" + messageRow.modelData.id
                             x: bubble.width - 12 - implicitWidth
-                            y: messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
+                            y: messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
                             height: 16
                             text: messageRow.modelData.time
                             textFormat: Text.PlainText

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.1.2 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,7 +44,8 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
         resources/emoji_picker_clear.svg resources/emoji_picker_triangle.svg)
 
 add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
-    src/avatar-images.cpp src/avatar-images.h src/native-image-input.h)
+    src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
+    src/message-images.cpp src/message-images.h)
 target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
@@ -69,7 +70,7 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
     BASE "${CMAKE_CURRENT_BINARY_DIR}/translations" FILES "${native_ru_qm}")
 set(native_qml_files
     qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeMessageImage.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
@@ -192,7 +193,7 @@ if(BUILD_TESTING)
 
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences session session-vault realtime-client native-controller native-window native-desktop)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences session session-vault realtime-client native-controller native-window native-desktop)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test)
         if(test STREQUAL "native-desktop")
@@ -257,6 +258,7 @@ if(BUILD_TESTING)
     set_target_properties(native-e2ee-ui-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
     add_test(NAME native-native-e2ee-ui COMMAND native-e2ee-ui-test
         uiEncryptedReadUsesActualSourceGrantAndSafeCopy
+        uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         uiEncryptedOsRetryDoesNotSendAKeyRequest
         uiEncryptedCheckIsGetOnlyAndRetryKeepsTheSameIntent

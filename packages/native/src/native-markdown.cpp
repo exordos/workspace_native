@@ -8,6 +8,8 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextDocumentFragment>
+#include <QTextFrame>
 #include <QTextFragment>
 #include <QTextImageFormat>
 #include <QUrl>
@@ -23,6 +25,56 @@ protected:
 QString resourceTarget(const QTextCharFormat &format)
 {
     return format.isImageFormat() ? format.toImageFormat().name() : format.anchorHref();
+}
+
+// Private document metadata never becomes HTML or a resource request.
+constexpr int InlineImageReference = QTextFormat::UserProperty + 101;
+
+QString htmlBody(const QString &html)
+{
+    const auto body = html.indexOf("<body");
+    const auto start = html.indexOf('>', body);
+    const auto end = html.lastIndexOf("</body>");
+    return start >= 0 && end > start ? html.mid(start + 1, end - start - 1) : QString{};
+}
+
+QVariantMap textPart(MessageDocument &document, int first, int last)
+{
+    if (last <= first) return {};
+    QTextCursor cursor(&document);
+    cursor.setPosition(first); cursor.setPosition(last, QTextCursor::KeepAnchor);
+    MessageDocument part;
+    part.setResourceProvider([](const QUrl &) { return QVariant{}; });
+    part.setHtml(QTextDocumentFragment(cursor).toHtml());
+    // The enclosing native Column supplies the inter-part paragraph gap.
+    const auto tail = part.lastBlock();
+    auto format = tail.blockFormat(); format.setBottomMargin(0);
+    QTextCursor(tail).setBlockFormat(format);
+    return {{"kind", "text"}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
+}
+
+QVariantList orderedImageParts(MessageDocument &document)
+{
+    QVariantList parts;
+    int first = 0;
+    bool hasImage = false;
+    for (auto block = document.begin(); block.isValid(); block = block.next()) {
+        QVariantMap image;
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (fragment.isValid()) image = fragment.charFormat().property(InlineImageReference).toMap();
+            if (!image.isEmpty()) break;
+        }
+        if (image.isEmpty()) continue;
+        const auto before = textPart(document, first, block.position() - 1);
+        if (!before.isEmpty()) parts.append(before);
+        parts.append(image); hasImage = true;
+        first = block.position() + block.length();
+    }
+    if (!hasImage) return {};
+    const auto after = textPart(document, first, document.characterCount() - 1);
+    if (!after.isEmpty()) parts.append(after);
+    return parts;
 }
 
 bool secretFragment(const QTextCharFormat &format)
@@ -133,9 +185,26 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
             const auto label = image.stringProperty(QTextFormat::ImageAltText);
             text = label.isEmpty() ? tr("Image") : label;
             format = QTextCharFormat{};
-            if (!reference(image.name()).isEmpty()) {
+            auto parsed = reference(image.name());
+            if (!parsed.isEmpty()) {
                 format.setAnchor(true);
                 format.setAnchorHref(image.name());
+                const auto block = document.findBlock(it->position);
+                QTextCursor location(&document); location.setPosition(it->position);
+                // The first media slice admits an image-only root paragraph.
+                // Mixed inline, nested and adjacent-image composition keep the
+                // existing safe linked-text fallback until their own layouts.
+                if (parsed.value("kind") == "image" && it->length == 1
+                    && block.text() == QString(QChar::ObjectReplacementCharacter)
+                    && block.position() == it->position && !block.textList()
+                    && !block.blockFormat().headingLevel() && !block.blockFormat().nonBreakableLines()
+                    && block.blockFormat().indent() == 0 && block.blockFormat().leftMargin() == 0
+                    && block.blockFormat().rightMargin() == 0 && !location.currentTable()
+                    && location.currentFrame() == document.rootFrame()) {
+                    parsed.insert("reference", image.name());
+                    parsed.insert("label", text);
+                    format.setProperty(InlineImageReference, parsed);
+                }
             }
         }
         if (format.isAnchor()) {
@@ -160,7 +229,8 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? html.mid(start + 1, end - start - 1) : markdown.toHtmlEscaped();
-    const QVariantMap result{{"html", html}, {"plain", document.toPlainText()}};
+    const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
+                             {"parts", orderedImageParts(document)}};
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);

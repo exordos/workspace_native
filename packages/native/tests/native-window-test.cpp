@@ -8,6 +8,7 @@
 #include "native-preferences.h"
 #include "file-client.h"
 #include "avatar-images.h"
+#include "message-images.h"
 
 #include <QCryptographicHash>
 #include <QColor>
@@ -2602,6 +2603,185 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(metadataGets.value(ViewerAvatarFile),1); QCOMPARE(binaryGets.value(ViewerAvatarFile),1);
         QCOMPARE(metadataGets.value(PeerAvatarFile),1); QCOMPARE(binaryGets.value(PeerAvatarFile),1);
     }
+
+    void messageImageComponentKeepsNestedScopeAndReferenceLease_data()
+    {
+        QTest::addColumn<bool>("atRefreshTicket");
+        QTest::newRow("image-url-scope-reference") << false;
+        QTest::newRow("refresh-ticket-scope-reference") << true;
+    }
+
+    void messageImageComponentKeepsNestedScopeAndReferenceLease()
+    {
+        QFETCH(bool,atRefreshTicket);
+        QTest::failOnWarning(QRegularExpression(".*"));
+        QMap<QString,int> metadataGets,binaryGets;
+        const QMap<QString,QByteArray> bodies{{ViewerAvatarFile,avatarProbePng(false)},
+                                             {PeerAvatarFile,avatarProbePng(true)}};
+        const auto urnA="urn:image:"+ViewerAvatarFile,urnB="urn:image:"+PeerAvatarFile;
+        WindowDirectFixture fixture;fixture.seed();
+        const auto original=fixture.server.handler;
+        fixture.server.handler=[&,original](const Request &request)->Response {
+            const auto path=request.target.path();
+            for(auto i=bodies.cbegin();i!=bodies.cend();++i) {
+                const auto file="/api/workspace/v1/messenger/files/"+i.key();
+                if(request.method=="GET"&&path==file) {
+                    ++metadataGets[i.key()];return {avatarProbeMetadata(i.key(),i.value())};
+                }
+                if(request.method=="GET"&&path==file+"/actions/download") {
+                    ++binaryGets[i.key()];Response result;
+                    result.rawBody=i.value();result.rawContentType="image/png";return result;
+                }
+            }
+            return original(request);
+        };
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("message-image-reentry.ini"));
+        ApiClient api(nullptr,true);Session session(&api);
+        NativeController controller(&api,&session);FileClient files(&api);controller.useFiles(&files);
+        MessageImages images(&api,&session,&files);
+        std::unique_ptr<QQuickImageProvider> provider(images.createImageProvider());
+        QPointer<QQuickItem> photo;
+        bool armed=false,reentered=false,readyAtBoundary=false,advancedGeneration=false;
+        bool changedReference=false,nestedVisible=false;
+        int nestedLeaseCount=-1;
+        quint64 initialGeneration=0,initialScope=0;
+        TopicCompletionProbe probe;
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("nativeMessageReentryProbe",&probe);
+        loadNativeUi(engine,&controller,&preferences,nullptr,nullptr,&images);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Message image reentry window did not settle before teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        engine.rootContext()->setContextProperty("nativeMessageReentryWindow",window);
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_VERIFY(session.ready());QTRY_VERIFY(controller.authenticated());
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+        QVERIFY(metadataGets.isEmpty()&&binaryGets.isEmpty()); // No prewarm.
+        std::unique_ptr<QQuickItem> holder;
+        const auto connection=connect(&probe,&TopicCompletionProbe::completed,&images,
+            [&](const QString &kind,const QString &value) {
+                const auto expected=atRefreshTicket?QString("ticket"):QString("url");
+                if(!armed||reentered||!photo||kind!=expected||(!atRefreshTicket&&!value.isEmpty()))return;
+                reentered=true;armed=false; // Before outward calls; no pumping/assertions here.
+                readyAtBoundary=session.ready();
+                api.setAccessToken("synthetic-message-image-reentrant-generation");
+                advancedGeneration=api.generation()>initialGeneration;
+                if(!photo)return;
+                changedReference=photo->setProperty("reference",urnB);
+                if(!photo)return;
+                photo->setVisible(true);
+                nestedVisible=photo&&photo->isVisible();nestedLeaseCount=images.stats().leases;
+            });
+        const auto disconnectObserver=qScopeGuard([&armed,connection] {armed=false;QObject::disconnect(connection);});
+        QQmlComponent component(&engine);
+        component.setData(R"QML(
+            import QtQuick
+            import "qrc:/workspace/qml"
+            Flickable {
+                id: band
+                width: 320; height: 240; contentWidth: width; contentHeight: 480
+                clip: true; z: 100
+                NativeMessageImage {
+                    id: subject
+                    objectName: "messageImageReentrySubject"
+                    width: 96; x: 0; y: 40
+                    images: nativeMessageImages
+                    colors: nativeMessageReentryWindow.colors
+                    viewport: band
+                    Connections {
+                        target: subject
+                        function onImageUrlChanged() {
+                            nativeMessageReentryProbe.completed("url",subject.imageUrl)
+                        }
+                        function onRefreshTicketChanged() {
+                            nativeMessageReentryProbe.completed("ticket",String(subject.refreshTicket))
+                        }
+                    }
+                }
+            }
+        )QML",QUrl("qrc:/native-message-image-reentry-test.qml"));
+        QVERIFY2(component.isReady(),qPrintable(component.errorString()));
+        holder.reset(qobject_cast<QQuickItem *>(component.create()));
+        QVERIFY2(holder,qPrintable(component.errorString()));
+        holder->setParentItem(window->contentItem());holder->setPosition(QPointF(90,90));
+        photo=item(holder.get(),"messageImageReentrySubject");QVERIFY(photo);
+        std::function<QQuickItem *(QQuickItem *)> readyImage=[&](QQuickItem *root)->QQuickItem * {
+            if(!root||!root->isVisible())return nullptr;
+            const auto source=root->property("source").toUrl();
+            if(source.scheme()=="image"&&source.host()=="messageimages"&&root->property("status").toInt()==1)return root;
+            for(auto *child:root->childItems())if(auto *found=readyImage(child))return found;
+            return nullptr;
+        };
+        QVERIFY(photo->setProperty("reference",urnA));
+        QTRY_VERIFY(!images.imageUrl(urnA).isEmpty());QTRY_VERIFY(readyImage(photo.data()));
+        QCOMPARE(photo->size(),QSizeF(96,64));QVERIFY(photo->property("loadActive").toBool());
+        QCOMPARE(images.stats().leases,1);QTRY_COMPARE(images.stats().pipelineJobs,0);
+        QCOMPARE(metadataGets.value(ViewerAvatarFile),1);QCOMPARE(binaryGets.value(ViewerAvatarFile),1);
+        const auto oldUrl=images.imageUrl(urnA);
+        initialGeneration=api.generation();initialScope=images.scopeRevision();
+        armed=true;
+        photo->setVisible(false); // Actual visibility -> demand release; no readiness injection.
+        QVERIFY(reentered);QVERIFY(readyAtBoundary);QVERIFY(advancedGeneration);
+        QVERIFY(changedReference);QVERIFY(nestedVisible);QCOMPARE(nestedLeaseCount,1);
+        QVERIFY(images.scopeRevision()>initialScope);QVERIFY(photo&&photo->isVisible());
+        QCOMPARE(photo->property("reference").toString(),urnB);
+        // Intended ticket-row consequence: stale outer refresh must not release the nested lease.
+        QCOMPARE(images.stats().leases,1);
+        QTRY_VERIFY(!images.imageUrl(urnB).isEmpty());QTRY_VERIFY(readyImage(photo.data()));
+        QCOMPARE(photo->property("imageUrl").toString(),images.imageUrl(urnB));
+        QCOMPARE(photo->size(),QSizeF(96,64));QCOMPARE(images.stats().leases,1);
+        QTRY_COMPARE(images.stats().pipelineJobs,0);QCOMPARE(images.stats().entries,1);
+        QCOMPARE(images.stats().previews,1);QCOMPARE(images.stats().previewBytes,qint64(96*64*4));
+        QCOMPARE(metadataGets.value(PeerAvatarFile),1);QCOMPARE(binaryGets.value(PeerAvatarFile),1);
+        const auto expected=QImage::fromData(bodies.value(PeerAvatarFile));QCOMPARE(expected.size(),QSize(96,64));
+        QSize providerSize;
+        const auto actual=provider->requestImage(QUrl(images.imageUrl(urnB)).path().mid(1),&providerSize,QSize{});
+        QCOMPARE(providerSize,expected.size());QCOMPARE(actual.size(),expected.size());
+        for(const QPoint &point:{QPoint(24,16),QPoint(72,16),QPoint(24,48),QPoint(72,48)})
+            QCOMPARE(actual.pixelColor(point),expected.pixelColor(point));
+        const auto stale=provider->requestImage(QUrl(oldUrl).path().mid(1),&providerSize,QSize{});
+        QCOMPARE(stale.size(),QSize(1,1));QCOMPARE(stale.pixelColor(0,0).alpha(),0);
+        QVERIFY(images.imageUrl(urnA).isEmpty());
+        QSignalSpy frame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!frame.isEmpty());
+        const auto realPixels=[&] {
+            if(!photo||!readyImage(photo.data()))return false;
+            const auto capture=window->grabWindow();if(capture.isNull())return false;
+            const auto scene=photo->mapToScene(QPointF(24,16));
+            const QPoint sample(qRound(scene.x()*window->devicePixelRatio()),qRound(scene.y()*window->devicePixelRatio()));
+            if(!capture.rect().contains(sample))return false;
+            const auto color=capture.pixelColor(sample),wanted=expected.pixelColor(24,16);
+            return qAbs(color.red()-wanted.red())<=3&&qAbs(color.green()-wanted.green())<=3
+                &&qAbs(color.blue()-wanted.blue())<=3&&color.alpha()==255;
+        };
+        QTRY_VERIFY2(realPixels(),"Nested B must paint actual verified provider pixels in the visible window");
+        const auto finalUrl=images.imageUrl(urnB);const auto finalScope=images.scopeRevision();
+        photo->setVisible(false);
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+        QCOMPARE(photo->size(),QSizeF(96,64)); // Ordinary release preserves measured layout.
+        QVERIFY(photo->property("imageUrl").toString().isEmpty());
+        api.setAccessToken("synthetic-message-image-hidden-generation");
+        QVERIFY(images.scopeRevision()>finalScope);
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+        QCOMPARE(images.stats().entries,0);QCOMPARE(images.stats().previewBytes,qint64(0));
+        QVERIFY(images.imageUrl(urnB).isEmpty());QVERIFY(photo->property("imageUrl").toString().isEmpty());
+        const auto hidden=provider->requestImage(QUrl(finalUrl).path().mid(1),&providerSize,QSize{});
+        QCOMPARE(hidden.size(),QSize(1,1));QCOMPARE(hidden.pixelColor(0,0).alpha(),0);
+        for(const auto &request:fixture.server.requests) {
+            if(!request.target.path().startsWith("/api/workspace/v1/messenger/files/"))continue;
+            QCOMPARE(request.method,QByteArray("GET"));QVERIFY(request.headers.value("cookie").isEmpty());
+        }
+        QCOMPARE(fixture.posts+fixture.memberPosts,0);
+        holder.reset();
+        const bool closed=closeIncubatedTestWindow(engine,window);
+        if(closed)closeBeforeEngine.dismiss();QVERIFY(closed);
+        QCOMPARE(images.stats().leases,0);QCOMPARE(images.stats().pipelineJobs,0);
+    }
+
 
     void uploadedAvatarsUseRealMainPixels_data()
     {
@@ -8264,6 +8444,382 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "appearance-mode-system"));
         QCOMPARE(restored.mode(), QString("system"));
         const bool closed=closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void receivedStandaloneImagePaintsBetweenTextAndCaption()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileId = "99999999-9999-4999-8999-999999999991";
+        const auto png = avatarProbePng(false); // Existing public 96x64 fixture, never passed to Main.
+        QCOMPARE(png.size(), qsizetype(230));
+        QCOMPARE(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex(),
+            QByteArray("9fb39a2b2737f88bdf0b383c4fcea4b0f3636e584b280f10afd18444739ed1f9"));
+        const auto expected = QImage::fromData(png, "PNG");
+        QVERIFY(!expected.isNull()); QCOMPARE(expected.size(), QSize(96, 64));
+        const QString urn = "urn:image:" + fileId
+            + "?name=inline.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        const QString markdown = "Before image\n\n![inline.png](" + urn + ")\n\nAfter image";
+        auto canonical = message(markdown);
+        canonical["user_uuid"] = userId; // Source's canonical message validator also requires the sender identity.
+        QCOMPARE(canonical.value("user_uuid").toString(), userId);
+        canonical["author_uuid"] = channelPeer; canonical["is_own"] = false;
+        canonical["pinned"] = false; canonical["reactions"] = QJsonObject{};
+        canonical["reaction_users"] = QJsonObject{}; canonical["updated_at"] = canonical.value("created_at");
+        auto metadata = avatarProbeMetadata(fileId, png);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "inline.png";
+        int metadataGets = 0, binaryGets = 0, servedHistory = 0, messagePosts = 0, fileWrites = 0;
+        bool fileHeadersOkay = true;
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QString filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (path.startsWith("/api/workspace/v1/messenger/files/")) {
+                fileHeadersOkay = fileHeadersOkay
+                    && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
+                    && request.headers.value("cookie").isEmpty();
+                if (request.method != "GET") { ++fileWrites; return Response{QJsonObject{}, 405}; }
+                if (path == filePath) { ++metadataGets; return Response{metadata}; }
+                if (path == filePath + "/actions/download") {
+                    ++binaryGets; Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "POST") {
+                ++messagePosts; return Response{QJsonObject{}, 405};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("stream_uuid") == streamId
+                    && query.queryItemValue("topic_uuid") == topicId) {
+                    ++servedHistory; return Response{QJsonArray{canonical}};
+                }
+                return Response{QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("received-image.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Received image window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(window->devicePixelRatio(), qreal(1)); QCOMPARE(window->size(), QSize(1440, 900));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QCOMPARE(preferences.locale(), QString("en")); QCOMPARE(preferences.mode(), QString("light"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QCOMPARE(controller.conversationKind(), QString("topic")); QVERIFY(controller.hasConversation());
+        QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(servedHistory > 0);
+        const auto canonicalLoaded = [&] {
+            const auto rows = controller.messages();
+            return rows.size() == 1 && rows.first().toMap().value("id").toString() == messageId
+                && rows.first().toMap().value("kind").toString() == "markdown"
+                && rows.first().toMap().value("content").toString() == markdown
+                && rows.first().toMap().value("authorId").toString() == channelPeer;
+        };
+        QTRY_VERIFY(canonicalLoaded());
+        NativeMarkdown parser; const auto reference = parser.reference(urn);
+        QCOMPARE(reference.value("kind").toString(), QString("image"));
+        QCOMPARE(reference.value("id").toString(), fileId);
+        QCOMPARE(reference.value("width").toInt(), 96); QCOMPARE(reference.value("height").toInt(), 64);
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        auto *viewport = item(window->contentItem(), "messageList"); QVERIFY(viewport);
+        QTRY_VERIFY(!viewport->property("positioning").toBool());
+        const auto textVisible = [&] {
+            auto *body = visibleItem(window->contentItem(), "message-content-" + messageId);
+            if (!body) return false;
+            const auto text = body->property("text").toString();
+            return text.contains("Before image") && text.contains("After image");
+        };
+        QTRY_VERIFY(textVisible());
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid());
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QRect paintedImage, sampledBubble; int matchingPixels = 0; bool pixelOraclePassed = false;
+        const auto closeColor = [](const QColor &a, const QColor &b) {
+            return a.isValid() && b.isValid() && qAbs(a.red() - b.red()) <= 3
+                && qAbs(a.green() - b.green()) <= 3 && qAbs(a.blue() - b.blue()) <= 3;
+        };
+        const QVector<QPoint> probes{{8, 8}, {24, 16}, {72, 16}, {24, 48}, {72, 48}, {88, 56}};
+        const auto pixelsPainted = [&] {
+            paintedImage = {}; sampledBubble = {}; matchingPixels = 0;
+            auto *bubble = visibleItem(window->contentItem(), "message-" + messageId);
+            if (!bubble || bubble->window() != window) return false;
+            const auto pixels = window->grabWindow(); if (pixels.isNull()) return false;
+            sampledBubble = QRectF(bubble->mapToScene(QPointF{}), bubble->size()).toAlignedRect();
+            if (!pixels.rect().contains(sampledBubble)) return false;
+            for (int y = sampledBubble.top(); y <= sampledBubble.bottom(); ++y) {
+                for (int x = sampledBubble.left(); x <= sampledBubble.right(); ++x) {
+                    const auto color = pixels.pixelColor(x, y);
+                    bool known = false;
+                    for (const auto &point : probes) if (closeColor(color, expected.pixelColor(point))) { known = true; break; }
+                    if (known) { paintedImage |= QRect(x, y, 1, 1); ++matchingPixels; }
+                }
+            }
+            if (qAbs(paintedImage.width() - 96) > 1 || qAbs(paintedImage.height() - 64) > 1
+                || matchingPixels < 5500) return false;
+            for (const auto &point : probes) {
+                const QPoint sample(paintedImage.left() + qFloor((point.x() + .5) * paintedImage.width() / 96),
+                    paintedImage.top() + qFloor((point.y() + .5) * paintedImage.height() / 64));
+                if (!closeColor(pixels.pixelColor(sample), expected.pixelColor(point))) return false;
+            }
+            return true;
+        };
+        const auto rect = [](const QRect &value) -> QJsonObject {
+            return {{"x", value.x()}, {"y", value.y()}, {"width", value.width()}, {"height", value.height()}};
+        };
+        const auto evidence = [&](const char *phase) {
+            qInfo().noquote() << "RECEIVED_IMAGE_PIXELS" << QJsonDocument(QJsonObject{
+                {"phase", QString::fromLatin1(phase)}, {"canonicalLoaded", canonicalLoaded()}, {"pixelOraclePassed", pixelOraclePassed},
+                {"servedHistory", servedHistory}, {"metadataGets", metadataGets}, {"binaryGets", binaryGets},
+                {"messagePosts", messagePosts}, {"fileWrites", fileWrites}, {"fileHeadersOkay", fileHeadersOkay},
+                {"locale", preferences.locale()}, {"mode", preferences.mode()}, {"dpr", window->devicePixelRatio()},
+                {"windowWidth", window->width()}, {"windowHeight", window->height()},
+                {"bubble", rect(sampledBubble)}, {"imagePixels", rect(paintedImage)}, {"matchingPixels", matchingPixels}
+            }).toJson(QJsonDocument::Compact);
+        };
+        pixelsPainted(); evidence("before-pixel-oracle");
+        const auto failedPixelEvidence = qScopeGuard([&] { if (QTest::currentTestFailed()) evidence("failed-case"); });
+        // First intended old-product failure: real PNG pixels, not a future
+        // objectName/Ready flag, a missing API, or a failed-transfer assumption.
+        QTRY_VERIFY2(pixelsPainted(), "The actual 96x64 received PNG, including both edge guard bands, must paint inside its message bubble");
+        pixelOraclePassed = true; evidence("image-painted");
+        QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1); QVERIFY(fileHeadersOkay);
+        QCOMPARE(messagePosts, 0); QCOMPARE(fileWrites, 0); QCOMPARE(fixture.posts + fixture.memberPosts, 0);
+        QTRY_VERIFY(canonicalLoaded()); QVERIFY(textVisible());
+        auto *body = visibleItem(window->contentItem(), "message-content-" + messageId); QVERIFY(body);
+        const QRectF bodyBounds(body->mapToScene(QPointF{}), body->size());
+        QVERIFY(bodyBounds.contains(QRectF(paintedImage)));
+        // Actual pinned Source body capture, same complete handler DTO/PNG:
+        // 20px paragraph + 14px blank line + 82px image paragraph + 14px
+        // blank line + 22px caption including inline time = 152px. Compare
+        // relative body geometry, not the synthetic host's absolute position.
+        QCOMPARE(qRound(bodyBounds.height()), 152);
+        QCOMPARE(qRound(paintedImage.left() - bodyBounds.left()), 1);
+        QCOMPARE(qRound(paintedImage.top() - bodyBounds.top()), 43);
+        const auto roundedPixels = window->grabWindow();
+        QVERIFY(!roundedPixels.isNull());
+        // The same raw Source frame has white outer corner pixels from its
+        // 4px image radius; keep the rectangular file/provider bytes intact.
+        for (const auto &corner : {paintedImage.topLeft(), paintedImage.topRight(),
+                                  paintedImage.bottomLeft(), paintedImage.bottomRight()})
+            QVERIFY2(closeColor(roundedPixels.pixelColor(corner), QColor("#ffffff")),
+                "Source's rounded image corners must reveal this peer bubble's white background");
+        // Existing body keeps the actual preceding and trailing text rows;
+        // the image is not appended outside the body or floated over the caption.
+        QVERIFY(paintedImage.top() - bodyBounds.top() >= 16);
+        QVERIFY(bodyBounds.bottom() - (paintedImage.bottom() + 1) >= 16);
+        QVERIFY(!images.imageUrl(urn).isEmpty());
+        QCOMPARE(images.info(urn), (QVariantMap{{"width", 96}, {"height", 64}}));
+        QCOMPARE(images.stats().leases, 1); QCOMPARE(images.stats().previews, 1);
+        QCOMPARE(images.stats().previewBytes, qint64(96 * 64 * 4));
+        const auto captureDirectory = qEnvironmentVariable("CASSI_NATIVE_E2EE_SCREENSHOT_DIRECTORY");
+        if (!captureDirectory.isEmpty()) {
+            QDir capture(captureDirectory); QVERIFY(capture.mkpath("."));
+            QVERIFY(window->grabWindow().save(capture.filePath("received-image-en-light.png")));
+            QFile dto(capture.filePath("received-image-handler-dto.json")); QVERIFY(dto.open(QIODevice::WriteOnly));
+            const auto dtoBytes = QJsonDocument(canonical).toJson(QJsonDocument::Compact);
+            QCOMPARE(dto.write(dtoBytes), qint64(dtoBytes.size())); dto.close();
+
+        }
+        // A real route change releases this body. Returning reads the retained
+        // preview; it must not repeat metadata or binary requests.
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "message-content-" + messageId));
+        QTRY_COMPARE(images.stats().leases, 0);
+        QCOMPARE(images.stats().previews, 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(canonicalLoaded()); QTRY_VERIFY(textVisible()); QTRY_VERIFY(pixelsPainted());
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(images.stats().leases, 1); QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1);
+        QCOMPARE(messagePosts, 0); QCOMPARE(fileWrites, 0);
+        qInfo().noquote() << "RECEIVED_IMAGE_WARM_CACHE" << QJsonDocument(QJsonObject{
+            {"metadataGets", metadataGets}, {"binaryGets", binaryGets},
+            {"previews", images.stats().previews}, {"previewBytes", double(images.stats().previewBytes)},
+            {"pipelineJobs", images.stats().pipelineJobs}, {"leases", images.stats().leases}
+        }).toJson(QJsonDocument::Compact);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+    void receivedBrokenImageKeepsItsAttachmentSaveAction()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileId = "99999999-9999-4999-8999-999999999992";
+        // Metadata deliberately authenticates these exact bytes. This is a
+        // decoder failure, not an HTTP/hash/size failure or a fake Ready state.
+        const QByteArray bytes("synthetic invalid PNG preview bytes");
+        const QString urn = "urn:image:" + fileId
+            + "?name=broken.png&content_type=image%2Fpng&w=96&h=64&size=" + QString::number(bytes.size());
+        const QString markdown = "Before broken image\n\n![broken.png](" + urn + ")\n\nAfter broken image";
+        auto canonical = message(markdown);
+        canonical["user_uuid"] = userId; canonical["author_uuid"] = channelPeer; canonical["is_own"] = false;
+        canonical["pinned"] = false; canonical["reactions"] = QJsonObject{};
+        canonical["reaction_users"] = QJsonObject{}; canonical["updated_at"] = canonical.value("created_at");
+        auto metadata = avatarProbeMetadata(fileId, bytes);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "broken.png";
+        QCOMPARE(metadata.value("size_bytes").toInt(), int(bytes.size()));
+        QCOMPARE(metadata.value("hash").toString(), QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()));
+        int metadataGets = 0, binaryGets = 0, servedHistory = 0, messagePosts = 0, fileWrites = 0;
+        bool fileHeadersOkay = true;
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QString filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (path.startsWith("/api/workspace/v1/messenger/files/")) {
+                fileHeadersOkay = fileHeadersOkay
+                    && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
+                    && request.headers.value("cookie").isEmpty();
+                if (request.method != "GET") { ++fileWrites; return Response{QJsonObject{}, 405}; }
+                if (path == filePath) { ++metadataGets; return Response{metadata}; }
+                if (path == filePath + "/actions/download") {
+                    ++binaryGets; Response result; result.rawBody = bytes; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "POST") {
+                ++messagePosts; return Response{QJsonObject{}, 405};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("stream_uuid") == streamId
+                    && query.queryItemValue("topic_uuid") == topicId) {
+                    ++servedHistory; return Response{QJsonArray{canonical}};
+                }
+                return Response{QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("broken-image.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Broken image window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QCOMPARE(window->devicePixelRatio(), qreal(1)); QCOMPARE(window->size(), QSize(1440, 900));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QCOMPARE(controller.conversationKind(), QString("topic")); QVERIFY(controller.hasConversation());
+        QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(servedHistory > 0);
+        const auto canonicalLoaded = [&] {
+            const auto rows = controller.messages();
+            return rows.size() == 1 && rows.first().toMap().value("id").toString() == messageId
+                && rows.first().toMap().value("content").toString() == markdown
+                && rows.first().toMap().value("authorId").toString() == channelPeer;
+        };
+        QTRY_VERIFY(canonicalLoaded());
+        auto *viewport = item(window->contentItem(), "messageList"); QVERIFY(viewport);
+        QTRY_VERIFY(!viewport->property("positioning").toBool());
+        QTRY_VERIFY(images.failed(urn));
+        QTRY_COMPARE(images.stats().pipelineJobs, 0);
+        QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1); QVERIFY(fileHeadersOkay);
+        QCOMPARE(images.stats().leases, 1); QCOMPARE(images.stats().previews, 0);
+        QVERIFY(images.imageUrl(urn).isEmpty()); QVERIFY(images.info(urn).isEmpty());
+        // Reacquire the actual visible component by its existing public
+        // reference, never a future objectName or a stale delegate pointer.
+        const auto picture = [&]() -> QQuickItem * {
+            auto *body = visibleItem(window->contentItem(), "message-content-" + messageId);
+            const auto find = [&](auto &&self, QQuickItem *node) -> QQuickItem * {
+                if (!node || !node->isVisible()) return nullptr;
+                if (node->property("reference").toString() == urn
+                    && node->metaObject()->indexOfSignal("opened()") >= 0) return node;
+                for (auto *child : node->childItems()) if (auto *found = self(self, child)) return found;
+                return nullptr;
+            };
+            return find(find, body);
+        };
+        const auto failedPictureVisible = [&] {
+            auto *current = picture();
+            return current && current->property("failed").toBool();
+        };
+        QTRY_VERIFY(failedPictureVisible());
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid());
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        QVERIFY(images.failed(urn)); QVERIFY(images.imageUrl(urn).isEmpty()); QVERIFY(images.info(urn).isEmpty());
+        QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1); // Pure reads/render did not retry.
+        QPointer<QQuickItem> target = picture(); QVERIFY(target);
+        QCOMPARE(target->window(), window); QVERIFY(target->width() > 12 && target->height() > 12);
+        auto *retry = dialogButton(target.data(), "Retry"); QVERIFY(retry);
+        QVERIFY(retry->isEnabled());
+        const QRectF retryBounds(retry->mapToItem(target.data(), QPointF{}), retry->size());
+        QPointF local; bool outsideRetry = false;
+        for (const auto &point : {QPointF(4, 4), QPointF(target->width() - 4, 4),
+                                 QPointF(target->width() - 4, target->height() - 4), QPointF(4, target->height() - 4)}) {
+            if (!retryBounds.contains(point)) { local = point; outsideRetry = true; break; }
+        }
+        QVERIFY(outsideRetry);
+        const auto at = target->mapToScene(local).toPoint();
+        QVERIFY(QRect(QPoint{}, window->size()).contains(at));
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        QVERIFY(!saveDialog->property("visible").toBool());
+        QSignalSpy opened(target.data(), SIGNAL(opened())); QVERIFY(opened.isValid());
+        QSignalSpy rejected(saveDialog, SIGNAL(rejected())); QVERIFY(rejected.isValid());
+        const auto evidence = [&](const char *phase) {
+            qInfo().noquote() << "BROKEN_IMAGE_SAVE" << QJsonDocument(QJsonObject{
+                {"phase", QString::fromLatin1(phase)}, {"canonicalLoaded", canonicalLoaded()},
+                {"failed", images.failed(urn)}, {"urlEmpty", images.imageUrl(urn).isEmpty()},
+                {"metadataGets", metadataGets}, {"binaryGets", binaryGets}, {"opened", int(opened.size())},
+                {"dialogVisible", saveDialog->property("visible").toBool()}, {"outsideRetry", outsideRetry},
+                {"point", QJsonArray{at.x(), at.y()}}, {"fileHeadersOkay", fileHeadersOkay}
+            }).toJson(QJsonDocument::Compact);
+        };
+        auto failureEvidence = qScopeGuard([&] { if (QTest::currentTestFailed()) evidence("failed-case"); });
+        evidence("before-one-pointer");
+        QTest::mouseClick(window, Qt::LeftButton, {}, at); // One real input, never Retry or a direct callback.
+        // First intended current-product failure: a failed preview still names
+        // a valid attachment and must retain the existing Save dialog action.
+        QTRY_VERIFY2(saveDialog->property("visible").toBool(),
+            "A failed received-image preview must keep its attachment Save action outside the Retry button");
+        QCOMPARE(opened.size(), 1);
+        QCOMPARE(window->property("downloadOwner").toString(), controller.ownerKey());
+        QCOMPARE(window->property("downloadId").toString(), fileId);
+        QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1); // Opening a chooser downloads nothing.
+        QTRY_VERIFY(dialogButton("Cancel"));
+        auto *cancel = dialogButton("Cancel"); QVERIFY(cancel && cancel->window());
+        click(cancel->window(), cancel); // Existing real Qt fallback dialog input.
+        QTRY_COMPARE(rejected.size(), 1); QTRY_VERIFY(!saveDialog->property("visible").toBool());
+        QVERIFY(window->property("downloadId").toString().isEmpty());
+        QCOMPARE(opened.size(), 1); QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1);
+        QVERIFY(images.failed(urn)); QCOMPARE(images.stats().previews, 0);
+        QCOMPARE(messagePosts, 0); QCOMPARE(fileWrites, 0); QCOMPARE(fixture.posts + fixture.memberPosts, 0);
+        QVERIFY(canonicalLoaded()); evidence("canceled-without-download");
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
     void quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()

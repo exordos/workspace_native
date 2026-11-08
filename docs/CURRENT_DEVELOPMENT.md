@@ -498,10 +498,10 @@ interrupted attempts are retained. Intermittent public metadata-check errors
 remain unexplained; no transport fix is claimed. See
 [published update checks](provenance/linux-published-0.1.1-upgrade-checks.json).
 
-The next delivery priority is everyday usage: inline received-image previews,
-using the existing bounded file transport. Composer Unicode emoji selection is
-now delivered in 0.1.2. Smaller tested releases take precedence over licenses-page or
-secondary presentation work. Full Linux parity remains the overall goal.
+The delivery priority is everyday usage. Composer Unicode emoji selection was
+delivered in 0.1.2; standalone received-image previews are the 0.1.3 candidate below.
+Smaller tested releases take precedence over secondary presentation work. Full
+Linux parity remains the overall goal.
 
 
 The composer Emoji action now reuses the existing native picker/catalog and
@@ -545,3 +545,43 @@ closure/protocol diagnostics are retained; this does not identify the underlying
 cause or establish a transport fix. This is anonymous installed-update acceptance,
 not authenticated history, credential preservation or full application parity.
 See [published 0.1.2 update checks](provenance/linux-published-0.1.2-upgrade-checks.json).
+
+
+## Received standalone images
+
+Standalone root image paragraphs now render between their preceding text and
+caption through the real Main scene. Existing sanitized HTML/plain fallback,
+copy/accessibility content and ordinary text rendering stay available. Mixed,
+adjacent, nested, quoted and external image references retain their safe links.
+The current static PNG/JPEG/GIF/WebP previews use the existing authenticated
+FileClient metadata/hash/size pipeline. Reopening a warm route shares the retained
+preview without another file request. A failed decoder still leaves the original
+attachment's existing Save action usable; Retry remains a separate action.
+
+MessageImages bounds its own decoded preview LRU to 32 MiB, 64 entries, 4096 leases
+and two network/decode jobs with one serial worker. Codec scratch, source bytes
+and GPU layers are separate costs. Provider reads do no I/O, decoding or scaling.
+The existing configurable decimal 10 GB typed disk cache is unchanged; this slice
+does not persist image bytes or establish cold offline previews.
+
+Actual regressions covered missing pixels, quote admission, Loader height and
+nested scope/reference binding loops, the 38px Source spacing difference, rounded
+corners and the failed-preview Save action. Same oracles pass after their fixes
+without warning suppression or wait increases. One earlier failed Save wait ended
+with a second transfer; its cause is retained as unknown, not a new retry fix.
+
+The final complete Window 282 passed with no runtime warnings, stderr or skips.
+Focused Save 3, preceding Main/lifetime 5 and encrypted receive 3 also passed. The
+previous exact C++ candidate passed service 20 / Markdown 34 and Source-peer receive,
+read and composer 8; Locale 14 preserves all earlier translations with one added
+Retry. Local installer 6 / version 1 and the staged five-codec/crypto/TLS probe passed.
+
+The actual Source component uses the same full handler DTO and raw 96x64 PNG. It
+remained queued outside its lazy band, then one wheel caused a real binary GET,
+Blob decode and matching pixels. Native intentionally retains metadata+binary.
+Matched relative body geometry is 152px, bubble 188px and image 96x64 with four
+rounded outer corners. Comparisons 49/50 sent raw frames with verified downloads
+and message read-back. The Source host and author directory differ; full shell,
+all aspect ratios, tiny-height line metrics, animation and gallery/viewer remain
+open. These are synthetic local checks, not live-account/full Linux acceptance.
+See [received-image checks](provenance/received-image-checks.json).

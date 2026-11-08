@@ -190,6 +190,83 @@ private slots:
         QVERIFY(renderer.reference("https://example.invalid\n").isEmpty());
     }
 
+    void standaloneImagePartsPreserveSafeTextAndCaption()
+    {
+        NativeMarkdown renderer;
+        const auto urn = "urn:image:" + messageId + "?name=sample.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        const auto output = renderer.render("**Before** image\n\n![sample](" + urn + ")\n\n_After_ image");
+        const auto parts = output.value("parts").toList();
+        QCOMPARE(parts.size(), 3);
+        QCOMPARE(parts[0].toMap().value("kind").toString(), QString("text"));
+        QCOMPARE(parts[0].toMap().value("plain").toString(), QString("Before image"));
+        QVERIFY(parts[0].toMap().value("html").toString().contains("font-weight:700"));
+        const auto image = parts[1].toMap();
+        QCOMPARE(image.value("kind").toString(), QString("image"));
+        QCOMPARE(image.value("id").toString(), messageId);
+        QCOMPARE(image.value("reference").toString(), urn);
+        QCOMPARE(image.value("label").toString(), QString("sample"));
+        QCOMPARE(image.value("width").toInt(), 96); QCOMPARE(image.value("height").toInt(), 64);
+        QCOMPARE(parts[2].toMap().value("kind").toString(), QString("text"));
+        QCOMPARE(parts[2].toMap().value("plain").toString(), QString("After image"));
+        QVERIFY(parts[2].toMap().value("html").toString().contains("font-style:italic"));
+        for (int i : {0, 2}) {
+            QTextDocument document; document.setHtml(parts[i].toMap().value("html").toString());
+            QCOMPARE(document.blockCount(), 1);
+            QCOMPARE(document.lastBlock().blockFormat().bottomMargin(), qreal(0));
+            QVERIFY(!parts[i].toMap().value("html").toString().contains("<img"));
+        }
+        // Legacy copy/link presentation remains the same safe document.
+        QCOMPARE(output.value("plain").toString(), QString("Before image\nsample\nAfter image"));
+        QVERIFY(!output.value("html").toString().contains("<img"));
+        QVERIFY(output.value("html").toString().contains("urn:image:" + messageId));
+        QCOMPARE(renderer.render("**Before** image\n\n![sample](" + urn + ")\n\n_After_ image"), output);
+    }
+
+    void imageOnlyPartsHaveNoInventedCaptionOrEmptyTextRun()
+    {
+        NativeMarkdown renderer;
+        const auto parts = renderer.render("![filename.png](urn:image:" + messageId + ")").value("parts").toList();
+        QCOMPARE(parts.size(), 1);
+        QCOMPARE(parts[0].toMap().value("kind").toString(), QString("image"));
+        QCOMPARE(parts[0].toMap().value("label").toString(), QString("filename.png"));
+        QVERIFY(!parts[0].toMap().contains("html"));
+    }
+
+    void nestedMixedAndUntrustedImagesKeepSafeFallback_data()
+    {
+        QTest::addColumn<QString>("markdown");
+        const auto image = "![image](urn:image:" + messageId + ")";
+        QTest::newRow("mixed-inline") << QString("before ") + image + " after";
+        QTest::newRow("adjacent-composition") << image + " " + image;
+        QTest::newRow("quoted") << QString("> ") + image;
+        QTest::newRow("list") << QString("- ") + image;
+        QTest::newRow("table") << QString("| A |\n|---|\n| ") + image + " |";
+        QTest::newRow("code") << QString("```\n") + image + "\n```";
+        QTest::newRow("remote") << QString("![remote](https://example.invalid/track.png)");
+        QTest::newRow("local") << QString("![local](file:///does-not-exist.png)");
+        QTest::newRow("raw-html") << QString("<img src='urn:image:") + messageId + "'>";
+        QTest::newRow("malformed") << QString("![bad](urn:image:not-a-uuid)");
+    }
+    void nestedMixedAndUntrustedImagesKeepSafeFallback()
+    {
+        QFETCH(QString, markdown);
+        NativeMarkdown renderer;
+        const auto result = renderer.render(markdown);
+        QVERIFY2(result.value("parts").toList().isEmpty(), qPrintable(result.value("html").toString()));
+        QVERIFY(!result.value("html").toString().contains("<img"));
+    }
+
+    void secretFragmentsCannotLeakThroughNewImageParts()
+    {
+        NativeMarkdown renderer;
+        const auto output = renderer.render("[**HIDDEN LABEL**](urn:secret:v99:synthetic-envelope)\n\n![image](urn:image:" + messageId + ")\n\nAfter");
+        QCOMPARE(output.value("parts").toList().size(), 3);
+        const auto serialized = QJsonDocument::fromVariant(output).toJson(QJsonDocument::Compact);
+        QVERIFY(!serialized.contains("HIDDEN")); QVERIFY(!serialized.contains("LABEL"));
+        QVERIFY(!serialized.contains("urn:secret:")); QVERIFY(!serialized.contains("synthetic-envelope"));
+        QVERIFY(serialized.contains("Encrypted fragment"));
+    }
+
     void boundedCacheKeepsFormattingConsistent()
     {
         NativeMarkdown renderer;
