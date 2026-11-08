@@ -1,7 +1,7 @@
 // peer.ts
 import fs from "node:fs";
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/errors.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/errors.js
 var HpkeError = class extends Error {
   constructor(e) {
     let message;
@@ -39,7 +39,7 @@ var DeriveKeyPairError = class extends HpkeError {
 var NotSupportedError = class extends HpkeError {
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/_dnt.shims.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/_dnt.shims.js
 var dntGlobals = {};
 var dntGlobalThis = createMergeProxy(globalThis, dntGlobals);
 function createMergeProxy(baseObj, extObj) {
@@ -96,7 +96,7 @@ function createMergeProxy(baseObj, extObj) {
   });
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/algorithm.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/algorithm.js
 async function loadSubtleCrypto() {
   if (dntGlobalThis !== void 0 && globalThis.crypto !== void 0) {
     return globalThis.crypto.subtle;
@@ -125,7 +125,7 @@ var NativeAlgorithm = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/identifiers.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/identifiers.js
 var Mode = {
   Base: 0,
   Psk: 1,
@@ -165,7 +165,7 @@ var AeadId = {
   ExportOnly: 65535
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/consts.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/consts.js
 var INPUT_LENGTH_LIMIT = 8192;
 var INFO_LENGTH_LIMIT = 268435456;
 var MINIMUM_PSK_LENGTH = 32;
@@ -174,7 +174,7 @@ var N_0 = 0n;
 var N_1 = 1n;
 var N_2 = 2n;
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/interfaces/kemInterface.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/interfaces/kemInterface.js
 var SUITE_ID_HEADER_KEM = /* @__PURE__ */ new Uint8Array([
   75,
   69,
@@ -183,7 +183,7 @@ var SUITE_ID_HEADER_KEM = /* @__PURE__ */ new Uint8Array([
   0
 ]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kdfs/hkdf.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kdfs/hkdf.js
 var HPKE_VERSION = /* @__PURE__ */ new Uint8Array([
   72,
   80,
@@ -353,7 +353,7 @@ var HkdfSha256Native = class extends HkdfNative {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/utils/misc.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/utils/misc.js
 var isCryptoKeyPair = (x) => typeof x === "object" && x !== null && typeof x.privateKey === "object" && typeof x.publicKey === "object";
 function i2Osp(n, w) {
   if (w <= 0) {
@@ -406,7 +406,7 @@ function xor(a, b) {
   return buf;
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkem.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkem.js
 var LABEL_EAE_PRK = /* @__PURE__ */ new Uint8Array([
   101,
   97,
@@ -589,7 +589,7 @@ var Dhkem = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/interfaces/dhkemPrimitives.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/interfaces/dhkemPrimitives.js
 var KEM_USAGES = ["deriveBits"];
 var LABEL_DKP_PRK = /* @__PURE__ */ new Uint8Array([
   100,
@@ -602,7 +602,7 @@ var LABEL_DKP_PRK = /* @__PURE__ */ new Uint8Array([
 ]);
 var LABEL_SK = /* @__PURE__ */ new Uint8Array([115, 107]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/ec.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/ec.js
 var EC_P_521_PARAMS = {
   p: (1n << 521n) - 1n,
   b: 0x0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00n,
@@ -611,7 +611,7 @@ var EC_P_521_PARAMS = {
   coordinateSize: 66
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/xCryptoKey.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/xCryptoKey.js
 var XCryptoKey = class {
   constructor(name, key, type, usages = []) {
     Object.defineProperty(this, "key", {
@@ -654,7 +654,7 @@ var XCryptoKey = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/xCurve.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/xCurve.js
 var XCurveDhkemPrimitives = class {
   constructor(algName, keySize, curve, hkdf2) {
     Object.defineProperty(this, "_algName", {
@@ -810,7 +810,7 @@ var XCurveDhkemPrimitives = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/utils/noble.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/utils/noble.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -1034,7 +1034,7 @@ function oidNist(suffix) {
   };
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/hash.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/hash.js
 function ahash(h) {
   if (typeof h !== "function" || typeof h.create !== "function") {
     throw new Error("Hash must wrapped by utils.createHasher");
@@ -1054,7 +1054,7 @@ function createHasher(hashCons, info = {}) {
   return Object.freeze(hashC);
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/hmac.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/hmac.js
 var _HMAC = class {
   constructor(hash, key) {
     Object.defineProperty(this, "oHash", {
@@ -1156,7 +1156,7 @@ var _HMAC = class {
 var hmac = (hash, key, message) => new _HMAC(hash, key).update(message).digest();
 hmac.create = (hash, key) => new _HMAC(hash, key);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/md.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/md.js
 function Chi(a, b, c) {
   return a & b ^ ~a & c;
 }
@@ -1320,7 +1320,7 @@ var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/u64.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/u64.js
 var U32_MASK64 = 0xffffffffn;
 var _32n = 32n;
 function fromBig(n, le = false) {
@@ -1343,7 +1343,7 @@ function split(lst, le = false) {
   return [Ah, Al];
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/sha2.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/sha2.js
 var SHA256_K = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -1531,7 +1531,7 @@ var sha256 = /* @__PURE__ */ createHasher(
   /* @__PURE__ */ oidNist(1)
 );
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/sha3.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/hash/sha3.js
 var _0n = 0n;
 var _1n = 1n;
 var _2n = 2n;
@@ -1557,7 +1557,7 @@ var IOTAS = split(_SHA3_IOTA, true);
 var SHA3_IOTA_H = IOTAS[0];
 var SHA3_IOTA_L = IOTAS[1];
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/modular.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/modular.js
 function mod(a, b) {
   const result = a % b;
   return result >= N_0 ? result : b + result;
@@ -1571,7 +1571,7 @@ function pow2(x, power, modulo) {
   return res;
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/curve.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/curve.js
 function createKeygen(randomSecretKey, getPublicKey) {
   return function keygen(seed) {
     const secretKey = randomSecretKey(seed);
@@ -1579,7 +1579,7 @@ function createKeygen(randomSecretKey, getPublicKey) {
   };
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/montgomery.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/common/esm/src/curve/montgomery.js
 function validateOpts(curve) {
   validateObject(curve, {
     adjustScalarBytes: "function",
@@ -1694,7 +1694,7 @@ function montgomery(curveDef) {
   });
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/utils.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/utils.js
 function abool(b) {
   if (typeof b !== "boolean")
     throw new Error(`boolean expected, not ${b}`);
@@ -1783,7 +1783,7 @@ function isAligned32(bytes) {
   return bytes.byteOffset % 4 === 0;
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/_arx.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/_arx.js
 var _utf8ToBytes = (str) => Uint8Array.from(str.split("").map((c) => c.charCodeAt(0)));
 var sigma16 = _utf8ToBytes("expand 16-byte k");
 var sigma32 = _utf8ToBytes("expand 32-byte k");
@@ -1901,7 +1901,7 @@ function createCipher(core, opts) {
   };
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/_poly1305.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/_poly1305.js
 function u8to16(a, i) {
   return a[i++] & 255 | (a[i++] & 255) << 8;
 }
@@ -2198,7 +2198,7 @@ function wrapConstructorWithKey(hashCons) {
 }
 var poly1305 = /* @__PURE__ */ (() => wrapConstructorWithKey((key) => new Poly1305(key)))();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/chacha.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha/chacha.js
 function chachaCore(s, k, n, out, cnt, rounds = 20) {
   const y00 = s[0], y01 = s[1], y02 = s[2], y03 = s[3], y04 = k[0], y05 = k[1], y06 = k[2], y07 = k[3], y08 = k[4], y09 = k[5], y10 = k[6], y11 = k[7], y12 = cnt, y13 = n[0], y14 = n[1], y15 = n[2];
   let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
@@ -2343,7 +2343,7 @@ var _poly1305_aead = (xorStream) => (key, nonce, AAD) => {
 };
 var chacha20poly1305 = /* @__PURE__ */ wrapCipher({ blockSize: 64, nonceLength: 12, tagLength: 16 }, _poly1305_aead(chacha20));
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha20Poly1305.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/chacha20poly1305/esm/src/chacha20Poly1305.js
 var Chacha20Poly1305Context = class {
   constructor(key) {
     Object.defineProperty(this, "_key", {
@@ -2405,14 +2405,14 @@ var Chacha20Poly1305 = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/utils/emitNotSupported.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/utils/emitNotSupported.js
 function emitNotSupported() {
   return new Promise((_resolve, reject) => {
     reject(new NotSupportedError("Not supported"));
   });
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/exporterContext.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/exporterContext.js
 var LABEL_SEC = new Uint8Array([115, 101, 99]);
 var ExporterContextImpl = class {
   constructor(api, kdf, exporterSecret) {
@@ -2472,7 +2472,7 @@ var SenderExporterContextImpl = class extends ExporterContextImpl {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/encryptionContext.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/encryptionContext.js
 var EncryptionContextImpl = class extends ExporterContextImpl {
   constructor(api, kdf, params) {
     super(api, kdf, params.exporterSecret);
@@ -2533,7 +2533,7 @@ var EncryptionContextImpl = class extends ExporterContextImpl {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/mutex.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/mutex.js
 var __classPrivateFieldGet = function(receiver, state, kind, f) {
   if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
   if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
@@ -2563,7 +2563,7 @@ var Mutex = class {
 };
 _Mutex_locked = /* @__PURE__ */ new WeakMap();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/recipientContext.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/recipientContext.js
 var __classPrivateFieldGet2 = function(receiver, state, kind, f) {
   if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
   if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
@@ -2598,7 +2598,7 @@ var RecipientContextImpl = class extends EncryptionContextImpl {
 };
 _RecipientContextImpl_mutex = /* @__PURE__ */ new WeakMap();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/senderContext.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/senderContext.js
 var __classPrivateFieldGet3 = function(receiver, state, kind, f) {
   if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
   if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
@@ -2640,7 +2640,7 @@ var SenderContextImpl = class extends EncryptionContextImpl {
 };
 _SenderContextImpl_mutex = /* @__PURE__ */ new WeakMap();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/cipherSuiteNative.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/cipherSuiteNative.js
 var LABEL_BASE_NONCE = new Uint8Array([
   98,
   97,
@@ -2913,13 +2913,13 @@ var CipherSuiteNative = class extends NativeAlgorithm {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/native.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/native.js
 var CipherSuite = class extends CipherSuiteNative {
 };
 var HkdfSha256 = class extends HkdfSha256Native {
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x25519.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x25519.js
 var PKCS8_ALG_ID_X25519 = new Uint8Array([
   48,
   46,
@@ -2939,7 +2939,7 @@ var PKCS8_ALG_ID_X25519 = new Uint8Array([
   32
 ]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x448.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x448.js
 var PKCS8_ALG_ID_X448 = new Uint8Array([
   48,
   70,
@@ -2959,7 +2959,7 @@ var PKCS8_ALG_ID_X448 = new Uint8Array([
   56
 ]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/primitives/x25519.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/primitives/x25519.js
 var _1n2 = 1n;
 var _2n2 = 2n;
 var _3n = 3n;
@@ -3004,7 +3004,7 @@ var x25519 = /* @__PURE__ */ (() => {
   });
 })();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/hkdfSha256.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/hkdfSha256.js
 var HkdfSha2562 = class extends HkdfSha256Native {
   async extract(salt, ikm) {
     await this._setup();
@@ -3020,7 +3020,7 @@ var HkdfSha2562 = class extends HkdfSha256Native {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/dhkemX25519.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@hpke/dhkem-x25519/esm/src/dhkemX25519.js
 var X255192 = class extends XCurveDhkemPrimitives {
   constructor(hkdf2) {
     super("X25519", 32, x25519, hkdf2);
@@ -3070,7 +3070,7 @@ var DhkemX25519HkdfSha2562 = class extends Dhkem {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/utils.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/utils.js
 function isBytes2(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
 }
@@ -3248,7 +3248,7 @@ function copyBytes2(bytes) {
   return Uint8Array.from(abytes2(bytes));
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/_arx.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/_arx.js
 var encodeStr = (str) => Uint8Array.from(str.split(""), (c) => c.charCodeAt(0));
 var sigma16_322 = /* @__PURE__ */ (() => swap32IfBE2(u322(encodeStr("expand 16-byte k"))))();
 var sigma32_322 = /* @__PURE__ */ (() => swap32IfBE2(u322(encodeStr("expand 32-byte k"))))();
@@ -3378,7 +3378,7 @@ function createCipher2(core, opts) {
   };
 }
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/_poly1305.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/_poly1305.js
 function u8to162(a, i) {
   return a[i++] & 255 | (a[i++] & 255) << 8;
 }
@@ -3629,7 +3629,7 @@ var Poly13052 = class {
 };
 var poly13052 = /* @__PURE__ */ wrapMacConstructor(32, (key) => new Poly13052(key));
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/chacha.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/ciphers/chacha.js
 function chachaCore2(s, k, n, out, cnt, rounds = 20) {
   let y00 = s[0], y01 = s[1], y02 = s[2], y03 = s[3], y04 = k[0], y05 = k[1], y06 = k[2], y07 = k[3], y08 = k[4], y09 = k[5], y10 = k[6], y11 = k[7], y12 = cnt, y13 = n[0], y14 = n[1], y15 = n[2];
   let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
@@ -3779,7 +3779,7 @@ var chacha20poly13052 = /* @__PURE__ */ wrapCipher2(
   /* @__PURE__ */ _poly1305_aead2(chacha202)
 );
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/utils.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/utils.js
 function isBytes3(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
 }
@@ -3934,7 +3934,7 @@ var oidNist2 = (suffix) => ({
   oid: Uint8Array.from([6, 9, 96, 134, 72, 1, 101, 3, 4, 2, suffix])
 });
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/hmac.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/hmac.js
 var _HMAC2 = class {
   oHash;
   iHash;
@@ -4010,7 +4010,7 @@ var hmac2 = /* @__PURE__ */ (() => {
   return hmac_;
 })();
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/hkdf.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/hkdf.js
 function extract(hash, ikm, salt) {
   ahash2(hash);
   if (salt === void 0)
@@ -4050,7 +4050,7 @@ function expand(hash, prk, info, length = 32) {
 }
 var hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/_md.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/_md.js
 function Chi2(a, b, c) {
   return a & b ^ ~a & c;
 }
@@ -4164,7 +4164,7 @@ var SHA256_IV2 = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/sha2.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/sha2.js
 var SHA256_K2 = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -5240,7 +5240,7 @@ var ChatE2eeController = class {
   }
 };
 
-// ../../../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/legacy.js
+// ../../../../../../../../worktrees/cassi-telegram-ui/node_modules/@noble/hashes/legacy.js
 var SHA1_IV = /* @__PURE__ */ Uint32Array.from([
   1732584193,
   4023233417,
@@ -5598,8 +5598,25 @@ async function verifyNativeKeyResponseMode(mixedOutcomes = false) {
     const ingested = await recipient.ingestKeyMessage({ uuid: response.uuid, streamUuid: input.stream, authorUuid: response.author_uuid, payload: decoded.value });
     if (!ingested.ok) throw new Error("Synthetic source recipient rejected native response");
     const completed = completions.get(saved.localRequestId);
-    let matchesExpected = false, groupMatchesIssuer = false;
-    if (payload.kind === "key_grant") {
+    let matchesExpected = false, groupMatchesIssuer = false, nativeProbeVerified = false, matchesNativeProbe = false;
+    if (frame.nativeProbe !== void 0) {
+      if (input.seedNative || mixedOutcomes || payload.kind !== "key_grant" || !recipientKey?.groupKey)
+        throw new Error("Synthetic native public probe context invalid");
+      const publicProbe = frame.nativeProbe;
+      if (!publicProbe || typeof publicProbe !== "object" || Object.keys(publicProbe).sort().join(",") !== "content,key_uuid,kind" || publicProbe.kind !== "e2ee" || publicProbe.key_uuid !== input.key || typeof publicProbe.content !== "string" || publicProbe.content.length > 4096) throw new Error("Synthetic native public probe invalid");
+      const decodedProbe = decodeChatE2eePayload(publicProbe);
+      if (!decodedProbe.ok || decodedProbe.value.kind !== "e2ee") throw new Error("Synthetic native public probe codec invalid");
+      const read = await provider.decryptMessage({
+        groupKey: recipientKey.groupKey,
+        envelope: decodedProbe.value.content,
+        context: { streamUuid: input.stream, keyUuid: input.key }
+      });
+      if (!read.ok) throw new Error("Synthetic native public probe could not decrypt");
+      decrypted = read.value;
+      nativeProbeVerified = true;
+      matchesNativeProbe = decrypted.length === plaintext.length && decrypted.every((byte, index) => byte === plaintext[index]);
+      groupMatchesIssuer = recipientKey.groupKey.bytes.length === key.value.bytes.length && recipientKey.groupKey.bytes.every((byte, index) => byte === key.value.bytes[index]);
+    } else if (payload.kind === "key_grant") {
       if (!recipientKey?.groupKey) throw new Error("Synthetic recipient key not imported");
       groupMatchesIssuer = recipientKey.groupKey.bytes.length === key.value.bytes.length && recipientKey.groupKey.bytes.every((byte, index) => byte === key.value.bytes[index]);
       const read = await provider.decryptMessage({ groupKey: recipientKey.groupKey, envelope: probe.value, context: { streamUuid: input.stream, keyUuid: input.key } });
@@ -5616,7 +5633,8 @@ async function verifyNativeKeyResponseMode(mixedOutcomes = false) {
       recipientPending: pending.size,
       recipientHasKey: recipientKey?.groupKey != null,
       matchesExpected,
-      groupMatchesIssuer
+      groupMatchesIssuer,
+      ...frame.nativeProbe !== void 0 ? { nativeProbeVerified, matchesNativeProbe } : {}
     }) + "\n");
   } finally {
     decrypted?.fill(0);

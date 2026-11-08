@@ -193,7 +193,23 @@ async function verifyNativeKeyResponseMode(mixedOutcomes = false) {
   const ingested=await recipient.ingestKeyMessage({uuid:response.uuid,streamUuid:input.stream,authorUuid:response.author_uuid,payload:decoded.value});
   if(!ingested.ok)throw new Error('Synthetic source recipient rejected native response');
   const completed=completions.get(saved.localRequestId);
-  let matchesExpected=false,groupMatchesIssuer=false;
+  let matchesExpected=false,groupMatchesIssuer=false,nativeProbeVerified=false,matchesNativeProbe=false;
+  if(frame.nativeProbe!==undefined) {
+   if(input.seedNative||mixedOutcomes||payload.kind!=='key_grant'||!recipientKey?.groupKey)
+    throw new Error('Synthetic native public probe context invalid');
+   const publicProbe=frame.nativeProbe;
+   if(!publicProbe||typeof publicProbe!=='object'||Object.keys(publicProbe).sort().join(',')!=='content,key_uuid,kind'
+    ||publicProbe.kind!=='e2ee'||publicProbe.key_uuid!==input.key||typeof publicProbe.content!=='string'
+    ||publicProbe.content.length>4096)throw new Error('Synthetic native public probe invalid');
+   const decodedProbe=decodeChatE2eePayload(publicProbe);
+   if(!decodedProbe.ok||decodedProbe.value.kind!=='e2ee')throw new Error('Synthetic native public probe codec invalid');
+   const read=await provider.decryptMessage({groupKey:recipientKey.groupKey,envelope:decodedProbe.value.content,
+    context:{streamUuid:input.stream,keyUuid:input.key}});
+   if(!read.ok)throw new Error('Synthetic native public probe could not decrypt');decrypted=read.value;
+   nativeProbeVerified=true;
+   matchesNativeProbe=decrypted.length===plaintext.length&&decrypted.every((byte,index)=>byte===plaintext[index]);
+   groupMatchesIssuer=recipientKey.groupKey.bytes.length===key.value.bytes.length&&recipientKey.groupKey.bytes.every((byte:number,index:number)=>byte===key.value.bytes[index]);
+  } else
   if(payload.kind==='key_grant') {
    if(!recipientKey?.groupKey)throw new Error('Synthetic recipient key not imported');
    groupMatchesIssuer=recipientKey.groupKey.bytes.length===key.value.bytes.length&&recipientKey.groupKey.bytes.every((byte:number,index:number)=>byte===key.value.bytes[index]);
@@ -204,7 +220,7 @@ async function verifyNativeKeyResponseMode(mixedOutcomes = false) {
   if(!(await iterator.next()).done)throw new Error('Synthetic peer extra frame');
   process.stdout.write(JSON.stringify({ok:true,completionOutcome:completed?.outcome??null,completionRequest:completed?.requestMessageUuid??null,
    completionResponse:completed?.responseMessageUuid??null,recipientPending:pending.size,recipientHasKey:recipientKey?.groupKey!=null,
-   matchesExpected,groupMatchesIssuer})+'\n');
+   matchesExpected,groupMatchesIssuer,...(frame.nativeProbe!==undefined?{nativeProbeVerified,matchesNativeProbe}:{})})+'\n');
  } finally {
   decrypted?.fill(0);plaintext.fill(0);recipientKey?.groupKey?.bytes.fill(0);key.value.bytes.fill(0);
   for(const item of pairs){item.privateKey.fill(0);item.recovery?.previousGroupKey?.bytes.fill(0);item.recovery?.envelope?.bytes.fill(0);}

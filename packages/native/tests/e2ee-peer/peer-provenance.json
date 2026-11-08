@@ -8,8 +8,8 @@
     "packages/web/src/entities/messenger/chat-e2ee-controller.lib.ts": "8942c24e8489c6c0859b2bf53ab1fd507a0de995fe67a7b1c591b3c515c1ff71",
     "packages/web/src/entities/messenger/chat-e2ee-payload-adapters.lib.ts": "c3da5f1ca36ccd65b673028fdda5eb2570286e696e17d5e7aaf8c4f1ccab9d6b",
     "packages/web/src/entities/messenger/messenger-adapters.lib.ts": "567ec9ecaf66c6e216a01ebbd712293ee0bbc17d9e9d6d40c5705b21328fd27c",
-    "packages/web/src/entities/workspace-runtime/workspace-runtime.lib.ts": "8f6afadcc00136019f0c2bf0aadbf9defb2d7acea5b6dfb3f180b2bb28e4bbb7",
     "packages/web/src/entities/messenger/chat-e2ee.lib.ts": "ed694c87ba3064a5bd4f045f537d33352cbac6b65c9eab7b3ff3c9198c72202b",
+    "packages/web/src/entities/workspace-runtime/workspace-runtime.lib.ts": "8f6afadcc00136019f0c2bf0aadbf9defb2d7acea5b6dfb3f180b2bb28e4bbb7",
     "packages/web/src/entities/messenger/messenger-ids.lib.ts": "b861ae230b0c1ca381a65b20c0792fbf12bfb60df0b0fc8c9a3c8b78bff940ec",
     "packages/web/src/entities/messenger/messenger-folder-system-type.lib.ts": "473486324c5c95a1d02afddee7dcf98321f865ff465881fc3fd332767b121d7d"
   },
@@ -22,14 +22,15 @@
     "esbuild": "0.28.2"
   },
   "fixtures": {
-    "entrySha256": "3b317c4304ed887dd5e52aac67d65c493fa0f8830fd6ea8ff4e655b388d4a0bb",
-    "bundleSha256": "86b4c5a9f48293cbd4963e56596ff2af763e130670937b3717655404d1ea3d13",
+    "entrySha256": "10a9eba228bc1fabc177947013f0a03760bc5ff4b9ce5867278e3557cb262c78",
+    "bundleSha256": "4f639bc752bea808e242cc4760f0259eba1f3a8ad5e48166485baa3e7f24cfbe",
     "legacyOneShotBodySha256": "c4b07a438254426ee1c8087ac4fcb3cae890c5c21bf918f9a4dff004dfb792fb",
     "protocols": [
       "legacy-one-shot-eof",
       "optional-two-line-public-envelope",
       "optional-two-line-native-key-response",
-      "optional-two-line-source-mixed-outcomes-pair"
+      "optional-two-line-source-mixed-outcomes-pair",
+      "optional-native-key-response-public-probe"
     ]
   },
   "platformAdapter": "Only getDeviceName; original grant/reject modes do not call it; independent recipient request uses fixed synthetic label"

@@ -1456,13 +1456,13 @@ bool NativeController::chatIssuerAllowed() const
     return m_chatAuthority.issuerOwner == m_session->user() || role == "owner" || role == "administrator";
 }
 
-bool NativeController::chatRejectAllowed(const ChatRequestFact &fact) const
+bool NativeController::chatResponseAllowed(const ChatRequestFact &fact) const
 {
     const auto *stream = currentStream();
     if (!stream) return false;
     if (stream->encrypted) return chatIssuerAllowed();
-    // Ordinary managers may reject a current participant without possessing A.
-    // Grant and exact-generation holder relay retain their existing scope.
+    // Ordinary manager permission is independent of possessing A.
+    // Grant separately checks exact-generation material at admission/dispatch.
     if (!stream->security || stream->security->viewer != m_session->user()
         || stream->security->source != "native" || !stream->security->provider.isEmpty()
         || !stream->security->providerIdentity.isEmpty() || !chatContext(m_chatEpoch, m_selection)
@@ -1495,7 +1495,6 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
     const bool busy = m_chatBusy || (m_chatKeyResponse && m_chatKeyResponse->busy);
     const bool retained = m_chatKeyResponse && m_chatKeyResponse->owner == ownerKey() && m_chatKeyResponse->phase != "ready";
     const bool manager = chatIssuerAllowed();
-    const bool allowed = manager && !busy && !retained;
     const auto localDevice = m_chatKeys->device().id;
     QStringList ids = m_chatRequestFacts.keys(); std::sort(ids.begin(), ids.end());
     for (const auto &id : ids) {
@@ -1510,7 +1509,7 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
         const bool ordinaryEligible = ordinary && participant
             && (m_chatAuthority.issuerOwner == m_session->user() || selfRole == "owner" || selfRole == "administrator"
                 || key.state == ChatKeyAvailability::Present);
-        const bool rejectAllowed = chatRejectAllowed(fact);
+        const bool responseAllowed = chatResponseAllowed(fact);
         const bool pending = m_chatKeyResponse && m_chatKeyResponse->request == id && m_chatKeyResponse->busy;
         const auto status = fact.outcome.isEmpty() ? QStringLiteral("pending") : fact.outcome;
         rows.append(QVariantMap{{"id", id}, {"authorId", fact.author},
@@ -1518,10 +1517,10 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
             {"keyUuid", fact.key}, {"status", status}, {"pending", pending},
             {"ownCurrentDevice", fact.author == m_session->user() && fact.device == localDevice},
             {"canManageKeys", ordinary ? ordinaryEligible : manager}, {"hasRequestedKey", key.state == ChatKeyAvailability::Present},
-            {"offerGrant", manager && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"offerReject", rejectAllowed && valid && status == "pending"},
-            {"canGrant", allowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"canReject", rejectAllowed && !busy && !retained && valid && status == "pending"},
+            {"offerGrant", responseAllowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"offerReject", responseAllowed && valid && status == "pending"},
+            {"canGrant", responseAllowed && !busy && !retained && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"canReject", responseAllowed && !busy && !retained && valid && status == "pending"},
             {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : QString{}}});
     }
     return rows;
@@ -1637,7 +1636,7 @@ bool NativeController::chatKeyResponseOwned(bool writing) const
         || intent.user != m_session->user() || intent.stream != m_stream || intent.deleted
         || (m_chatAccessKnown && !m_chatReadableStreams.contains(intent.stream))
         || !m_catalogVerified || m_snapshotActive || m_syncBlocked || stream == m_streams.cend()
-        || (!stream->encrypted && intent.action != "reject") || !stream->security || stream->security->viewer != intent.user
+        || (!stream->encrypted && intent.action != "reject" && intent.action != "grant") || !stream->security || stream->security->viewer != intent.user
         || stream->security->source != "native" || !stream->security->provider.isEmpty()
         || !stream->security->providerIdentity.isEmpty()
         || !QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(stream->role)) return false;
@@ -1651,7 +1650,7 @@ bool NativeController::chatKeyResponseOwned(bool writing) const
     const auto fact = m_chatRequestFacts.constFind(intent.request);
     if (fact == m_chatRequestFacts.cend() || !chatRequestMatches(*fact, intent)
         || (!fact->outcome.isEmpty() && fact->response != intent.publicId)
-        || (intent.action == "reject" ? !chatRejectAllowed(*fact) : !chatIssuerAllowed())) return false;
+        || !chatResponseAllowed(*fact)) return false;
     if (intent.action == "grant") {
         const auto key = m_chatIssueKeys.constFind(intent.key);
         if (key == m_chatIssueKeys.cend() || key->state != ChatKeyAvailability::Present || key->deletion != intent.deletion) return false;
@@ -1716,7 +1715,7 @@ void NativeController::startChatKeyResponse(const QString &request, bool grant)
     const auto found = m_chatRequestFacts.constFind(request);
     if (found == m_chatRequestFacts.cend() || found->deleted || found->stream != m_stream || !found->outcome.isEmpty()
         || !isUuid(found->key) || found->device.isEmpty() || !isUuid(found->author)
-        || (grant ? !chatIssuerAllowed() : !chatRejectAllowed(*found))) return;
+        || !chatResponseAllowed(*found)) return;
     const auto publicKey = strictChatBase64(found->publicKey, 2048);
     if (publicKey.isEmpty() || (grant && publicKey.size() != 32) || !isUuid(m_chatAuthority.defaultTopic)) return;
     const auto fact = *found;

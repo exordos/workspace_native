@@ -1,11 +1,13 @@
 # Current native development
 
 The imported baseline remains recorded in `docs/provenance/import-v34.json`.
-This branch adds the ordinary native channel owner/administrator Reject action
-for a current-member foreign key request without the requested local key. The
-current stream key can be null. Grant remains unavailable in this slice. Typed
-payloads, canonical placement, exact default-topic target, request/device binding
-and retained Check/Retry rules reuse the existing protocol.
+This branch adds ordinary native channel owner/administrator responses to a
+current member's foreign key request. Reject does not require the requested local
+key. Grant requires the exact requested generation already held in the native
+vault; the current stream key can be null. Typed payloads, canonical placement,
+the exact default-topic target, request/device binding and retained Check/Retry
+rules reuse the existing protocol. Ordinary key acquisition, bootstrap and
+member/moderator holder relay remain separate parity work.
 
 Ordinary plaintext windows skip shared issuer-authority preparation when they
 contain no service controls. An unfinished owned response remains an exception,
@@ -28,13 +30,39 @@ are preserved. Existing Body ages and History ages/cursors remain unchanged;
 a newly materialized Body records the current canonical event. This addresses one
 cache behavior from upstream `61dacef`, without claiming all of its routing changes.
 
-Latest local checks passed Cache99, Cache Service53 and Controller748, without
+The moved-body local checks passed Cache99, Cache Service53 and Controller748, without
 warnings or skips. The standalone application also built. The original Cache and
 Controller move regressions failed before the fix and passed afterward, including
 disk reopen and no invented destination page. Scripted-clock, independent viewer,
 read/mask and entry-budget controls passed; see
-[moved-body checks](provenance/moved-body-checks.json). Full Core/UI on this latest
-cache snapshot, sanitizer checks and live-service acceptance remain open.
+[moved-body checks](provenance/moved-body-checks.json). Later Core checks include
+the manager-response change below; sanitizer and live-service acceptance remain
+open.
+
+Ordinary manager Grant reproduced the missing action in both the controller and
+the actual Main window before the change. Focused checks now pass for owners with
+a member binding and administrators, exact-generation and current-member fences,
+revocation, and GET-only status after local key deletion. An independent pinned
+Source recipient imports the native Grant and decrypts a public Native ciphertext
+probe without receiving the private key. Actual English/light and Russian/dark
+Main mouse clicks produce one canonical response, remove the actions and do not
+duplicate the POST on a second click. Existing ordinary Reject and encrypted
+issuer controls pass. The full Core269 run passed in 601.371 seconds. A matched
+pre-click Source comparison uses actual public Native inputs and the pinned
+production Source row/actions; all four button rectangles differ horizontally by
+less than 0.3px, with identical y/height. This accepts that row's presentation,
+not Source authority/crypto/dispatch or the complete shell.
+
+The first full UI run passed 124 cases and failed four obsolete full-UUID author
+lookups in the locked-message geometry test. Its lookup now requires the accepted
+Source `#` plus eight UUID characters and checks that exact controller caption;
+every geometry assertion is unchanged. The focused six-case check passed. The
+next original-order UI run passed 127 cases and failed one: Qt reported two items
+still being created at engine destruction in the automatic offscreen-collapse
+test. The cause is unknown and the full UI gate remains **not accepted**. No
+warning is suppressed or retried for acceptance. The focused Main and comparison
+checks above passed independently. [Grant checks](provenance/ordinary-grant-checks.json)
+preserve the original failures and exact accepted scope.
 
 The earlier Window run passed 224 functional cases, but its quality gate remains
 **not accepted**: one test sent a mouse event outside a 700px window. Isolated

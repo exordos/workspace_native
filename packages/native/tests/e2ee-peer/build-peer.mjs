@@ -36,6 +36,6 @@ if(start<0||end<=start)throw new Error('Original one-shot fixture witness missin
 const fixtures={entrySha256:createHash('sha256').update(fixtureSource).digest('hex'),
  bundleSha256:createHash('sha256').update(fs.readFileSync(path.join(here,'peer.mjs'))).digest('hex'),
  legacyOneShotBodySha256:createHash('sha256').update(fixtureSource.subarray(start+legacyStart.length,end)).digest('hex'),
- protocols:['legacy-one-shot-eof','optional-two-line-public-envelope','optional-two-line-native-key-response','optional-two-line-source-mixed-outcomes-pair']};
+ protocols:['legacy-one-shot-eof','optional-two-line-public-envelope','optional-two-line-native-key-response','optional-two-line-source-mixed-outcomes-pair','optional-native-key-response-public-probe']};
 fs.writeFileSync(path.join(here,'peer-provenance.json'),JSON.stringify({ref,sources,versions,fixtures,
  platformAdapter:'Only getDeviceName; original grant/reject modes do not call it; independent recipient request uses fixed synthetic label'},null,2)+'\n');

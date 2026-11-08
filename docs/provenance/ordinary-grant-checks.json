@@ -1,0 +1,179 @@
+{
+  "schema": "ordinary-manager-grant-checks-v1",
+  "scope": "Already-held exact generation, current owner/administrator and current member requester in ordinary native channels; null current key allowed. Acquisition/bootstrap/holder relay remain open.",
+  "sourceManifestSha256": "a95f8fb5c215ba2b54bb726cbc3ae2b6c56663c84ecce67d1aedb2cb284ebd70",
+  "sourceRef": "95495b10b828f853c9e770b47216073eb973fa95",
+  "focused": [
+    {
+      "label": "old-peer-and-native-protocol5",
+      "totals": [
+        "Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 5027ms"
+      ],
+      "wallSeconds": 5.08,
+      "stdoutSha256": "782bec122d1b213c4f5baacee3529cdc37e70a8280abf976a8a8983f77d87303",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "ordinary-manager-grant4",
+      "totals": [
+        "Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 3635ms"
+      ],
+      "wallSeconds": 3.679,
+      "stdoutSha256": "2cc581ae1d773de132cc38214c0fc014ecb661b063cc25d2f27306d4fad523fe",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "ordinary-manager-grant-boundary7",
+      "totals": [
+        "Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 11097ms"
+      ],
+      "wallSeconds": 11.151,
+      "stdoutSha256": "ef3a80c360136d070c37506cde8ac15130011533fe31e19ef42c5fcbfd911f98",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "ordinary-reject-and-transition14",
+      "totals": [
+        "Totals: 14 passed, 0 failed, 0 skipped, 0 blacklisted, 27245ms"
+      ],
+      "wallSeconds": 27.305,
+      "stdoutSha256": "03685b9d37310021af156e4e8a5f8aafa3e9171fd673d6e2812a0bbdcc7ddeea",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "encrypted-response-controls",
+      "totals": [
+        "Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 27365ms"
+      ],
+      "wallSeconds": 27.401,
+      "stdoutSha256": "e8d666d0870774796d6403b11627d9b237d909cc503cfd1a579649cb23b79b0e",
+      "stderrBytes": 0,
+      "warnings": []
+    },
+    {
+      "label": "ordinary-main-grant-and-reject6",
+      "totals": [
+        "Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 9633ms"
+      ],
+      "wallSeconds": 9.793,
+      "stdoutSha256": "6851dfa3e0358c58cf2e9b82f799f24794fba25d4b1846d2ec50f245169eb96f",
+      "stderrBytes": 0,
+      "warnings": []
+    }
+  ],
+  "red": [
+    {
+      "label": "ordinary-manager-grant-red4",
+      "totals": [
+        "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 3213ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::ordinaryManagerGrantsActualHeldAToIndependentSourceRecipient(actual-owner-role-member/current-null) 'row.value(\"offerGrant\").toBool()' returned FALSE. (Planned ordinary manager Grant capability is unavailable)",
+        "FAIL!  : NativeE2eeReadTest::ordinaryManagerGrantsActualHeldAToIndependentSourceRecipient(administrator/current-null) 'row.value(\"offerGrant\").toBool()' returned FALSE. (Planned ordinary manager Grant capability is unavailable)"
+      ],
+      "stdoutSha256": "e3c0fc63c9740fb286885f112ea9304f70eb9203f5ac6af217078b24ef0ef7d5",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    },
+    {
+      "label": "ordinary-main-ui-red4",
+      "totals": [
+        "Totals: 2 passed, 2 failed, 0 skipped, 0 blacklisted, 36027ms"
+      ],
+      "failures": [
+        "FAIL!  : NativeE2eeReadTest::uiOrdinaryManagerGrantsFromTheActualMainAction(ordinary-owner-member-held-A-en-light) 'encryptedUiItem(window, \"grantChatKeyButton-\" + c.peer.requestId)' returned FALSE. ()",
+        "FAIL!  : NativeE2eeReadTest::uiOrdinaryManagerGrantsFromTheActualMainAction(ordinary-administrator-held-A-ru-dark) 'encryptedUiItem(window, \"grantChatKeyButton-\" + c.peer.requestId)' returned FALSE. ()"
+      ],
+      "stdoutSha256": "165264b0d6d9c4ad3f719a2a0045bf009845932b2b7b6ac48161282384f828a2",
+      "stderrBytes": 0,
+      "warnings": [],
+      "intendedRedOnly": true
+    }
+  ],
+  "fullCore": {
+    "totals": [
+      "Totals: 269 passed, 0 failed, 0 skipped, 0 blacklisted, 601371ms"
+    ],
+    "wallSeconds": 601.414,
+    "stdoutSha256": "5f1572735378071df8b6238afb249de6f355a4ef7e559dfe442fa0208c31e341",
+    "stderrBytes": 0,
+    "warnings": [],
+    "accepted": true
+  },
+  "fullUi": {
+    "accepted": false,
+    "totals": [
+      "Totals: 127 passed, 1 failed, 0 skipped, 0 blacklisted, 298129ms"
+    ],
+    "stdoutSha256": "0bff98a9f442ab82c6650ca930f9d27b8b4facab8280c5713889c35c14122a1e",
+    "stderrBytes": 0,
+    "failure": "FAIL!  : NativeE2eeReadTest::uiServiceAutomaticOffscreenCollapsePreservesAnchorAndManualChoice() Received a warning that resulted in a failure:",
+    "warning": "There are still \"2\" items in the process of being created at engine destruction.",
+    "cause": "UNKNOWN; passive incubation/lifetime diagnostic planned; no warning suppression or retry acceptance",
+    "exactAuthorOracleCorrection": "Only exact #first8 lookup plus controller caption equality, all geometry oracles unchanged. Focused6 passed.",
+    "focusedStdoutSha256": "31f34163c2785e24b84d04127609ea4c35313570d4def19b4242001d71cbffbe"
+  },
+  "live": "BLOCKED: exact-project temporary Realm quota; no alternate project/lab/production substitution",
+  "platform": "Linux local synthetic checks only",
+  "historicalWarnings": "QMutex destruction and out-of-window mouse remain unresolved. New Qt incomplete item creation at engine destruction remains unresolved; no warning suppression.",
+  "peer": "Existing one-shot body and old optional Native-send mode preserved. Added optional public ciphertext probe is decrypted only after real Source Grant import; no private key transfer.",
+  "fullUiInitial": {
+    "accepted": false,
+    "totals": "124 passed, 4 failed; four obsolete full-UUID author lookups",
+    "stdoutSha256": "f1da53002343b8bb7aa449d985651b11cdf356dcb961748a36d32150b4eaf086"
+  },
+  "sourcePresentation": {
+    "acceptedScope": "Matched pre-click loaded Grant request/action row on actual synthetic public DTO/state; Source production row/helpers. No Source authority/crypto/dispatch or full shell claim.",
+    "manifestSha256": "5a4b6472b0d84c40ccc95ddc271230b53c5276aa9c6b996f529625c637085756",
+    "rootReviewSha256": "1d2a8abe4207da8bd9b0d69bedc7bd13d5d3b2fa58e1908fd58bbee6717a6d97",
+    "framesRootViewed": 6,
+    "buttonGeometry": [
+      {
+        "case": "owner-en-light",
+        "action": "Send key",
+        "nativeMinusSource": {
+          "x": -0.21875,
+          "y": 0,
+          "width": -0.0625,
+          "height": 0
+        }
+      },
+      {
+        "case": "owner-en-light",
+        "action": "Reject",
+        "nativeMinusSource": {
+          "x": -0.28125,
+          "y": 0,
+          "width": -0.0625,
+          "height": 0
+        }
+      },
+      {
+        "case": "admin-ru-dark",
+        "action": "\u041f\u0435\u0440\u0435\u0434\u0430\u0442\u044c \u043a\u043b\u044e\u0447",
+        "nativeMinusSource": {
+          "x": -0.1953125,
+          "y": 0,
+          "width": -0.078125,
+          "height": 0
+        }
+      },
+      {
+        "case": "admin-ru-dark",
+        "action": "\u041e\u0442\u043a\u043b\u043e\u043d\u0438\u0442\u044c",
+        "nativeMinusSource": {
+          "x": -0.2734375,
+          "y": 0,
+          "width": -0.0625,
+          "height": 0
+        }
+      }
+    ],
+    "taskBrowsersProfilesServerClosed": true
+  }
+}
