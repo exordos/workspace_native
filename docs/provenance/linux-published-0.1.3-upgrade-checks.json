@@ -1,0 +1,147 @@
+{
+  "scope": "Actual public Linux 0.1.2 to 0.1.3 anonymous installed upgrade on the current Ubuntu 26.04 / Wayland host; Root performed native CUA acceptance and independently reviewed artifacts",
+  "status": "ROOT_REVIEWED_ACTUAL_RELEASED_UPGRADE_PASS",
+  "publicRelease": {
+    "version": "0.1.3",
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.1.3",
+    "publishedAt": "2026-11-08T15:24:20Z",
+    "assetName": "Exordos-Workspace-Native-0.1.3-linux-x86_64.tar.gz",
+    "assetUrl": "https://github.com/exordos/workspace_native/releases/download/0.1.3/Exordos-Workspace-Native-0.1.3-linux-x86_64.tar.gz",
+    "bytes": 63621495,
+    "sha256": "1b0f557d7a74cb907489f37886c868f7e919962ceea3b765f84c4c8928215892",
+    "binarySha256": "9e4efc7a3d7c71e7a5ebdc421085fe91a0d68e9f7e5e577a3ac5c16c4a0bf342",
+    "gitHubDigestAndSha256sumsVerified": true,
+    "actualInstalledUpgradePending": false
+  },
+  "upgradeFrom": {
+    "version": "0.1.2",
+    "releaseUrl": "https://github.com/exordos/workspace_native/releases/tag/0.1.2",
+    "publishedAt": "2026-11-08T13:53:58Z",
+    "assetName": "Exordos-Workspace-Native-0.1.2-linux-x86_64.tar.gz",
+    "assetUrl": "https://github.com/exordos/workspace_native/releases/download/0.1.2/Exordos-Workspace-Native-0.1.2-linux-x86_64.tar.gz",
+    "bytes": 63560140,
+    "sha256": "6549d1d48627459e41fde699a4f4252a28e04e45341825fd680e5b309a49b349",
+    "binarySha256": "3bcba4a201844cbc205b717235443001f90053967eceef3c35fe1febe8403ca4"
+  },
+  "upgrade": {
+    "rootObservedCuaReceipts": 8,
+    "autoDownloadObserved": true,
+    "manualDownloadRequired": false,
+    "installAndRestartClicks": 1,
+    "oldNormalExit": 0,
+    "newNormalExit": 0,
+    "distinctSuccessorExecutableVerifiedByHarness": true,
+    "samePrimaryAfterSecondaryVerifiedByHarness": true,
+    "observedNewMetadataState": "current",
+    "additionalManualCheckRecoveryUsed": false,
+    "manualRecoverySource": "Root observation and retained action receipts",
+    "firstHttpRequestSuccessClaimed": false,
+    "networkRequestCountClaimed": false,
+    "earlierIntermittentMetadataCauseResolved": false,
+    "publicPidOwnedDbusMenuActions": true,
+    "physicalTrayClickClaimed": false,
+    "rawPngFilesSaved": false
+  },
+  "runtime": {
+    "oldAndNewChecksPassed": true,
+    "qmlModules": 10,
+    "selectedPackagedMappedLibrariesEach": 53,
+    "allSelectedMappingsInsideInstalledPrefix": true,
+    "mappingScope": "Qt, keychain, QML, plugins and Markdown; not all process or host libraries",
+    "runtimeVerifierSha256": "633bf1f14678ee5e8811b8b594786439811f2ba260f3ad877373c50e113baf3c"
+  },
+  "cache": {
+    "schema": 4,
+    "syntheticHistoryRows": 1,
+    "sqliteLogicalDigestBeforeAndAfter": "dd855390dd7b0e2d656e40edac1d8b8d9303f6b3f08b28939886fa30830d4d03",
+    "productionReadRowsDigestBeforeAndAfter": "bb23bd412e182ff0a3273b8da24d2644649b84de9c3b69f3beaaeb66318abcaf",
+    "productionReopenPassed": true,
+    "hashesUseDifferentEncodings": true,
+    "cacheHelperSha256": "34cb56c7556c0d17cb0b05b87a761c3237503e3f542919fcbc99144cc125a464",
+    "liveCredentialOrAuthenticatedHistoryAcceptance": false
+  },
+  "cleanup": {
+    "forcedTerminationNeeded": false,
+    "remainingOwnedProcessesOrChildrenRecorded": false,
+    "instanceLockRemainsRecorded": false,
+    "privateXdgRemovedRecorded": true,
+    "rootReportedIndependentFinalCleanupConfirmed": true,
+    "workerNormalExit": 0,
+    "rootIndependentFinalCleanupSha256": "3be2cf0fc56d229be4ec2cb549849663bed8f2f8b9eb403eee7815d195360e79",
+    "independentFinalProcessAndDirectoryCheckPassed": true
+  },
+  "diagnostics": {
+    "combinedApplicationLogLines": 275,
+    "categories": {
+      "portalAppIdRegistration": 2,
+      "atspiTextSelectionMethod": 49,
+      "atspiValueConversion": 168,
+      "atspiValueTextMethod": 56
+    },
+    "unclassifiedLines": 0,
+    "http2DiagnosticLinesObserved": 0,
+    "bindingLoopOrTypeReferenceErrorLinesObserved": 0,
+    "warningFreeRuntimeClaimed": false,
+    "portalAndAtspiCompletenessAccepted": false
+  },
+  "evidence": {
+    "v5SourceProposalIndexSha256": "6bc10f7d28678733a9cff31a08c1657777f78a2f1e16caa44e4a3ca4f0452e75",
+    "rawHashes": {
+      "RESULT.json": "e89b33e53f57e88a7ff5253697a4c8225f4f71eb6a31963cf7044b9352fe1ca8",
+      "ROOT-FINAL-REVIEW.json": "14a09f1f2dfc5ef8b73e402cddbd573fcd0d256ff99dccd2b6f182034ef3bf19",
+      "ROOT-LOG-REVIEW.json": "cd0a4b7fe25b610e241abfe3f3c0fcd02d9ceb718d7828f60b1e2145de199ff8",
+      "ROOT-WORKER-EXIT.json": "0fd58bf4bcf3e4595b84e53870544cbecd040504b0d50abec1e683d32e04daec",
+      "application.log": "2ed174c67a83e6e21eb589417a16c0921a29c57e38526d45ca4ce86ebdf127db",
+      "cache-reopen.log": "2e202ef5ff8274863512d8017d66ef5f55fe4082e4395d1de5163b1eb2411ed1",
+      "cache-seed.log": "2e202ef5ff8274863512d8017d66ef5f55fe4082e4395d1de5163b1eb2411ed1",
+      "downloaded-process.json": "f86c66ca9d9a3a0b0df476ff6b4f5e47f71ead2eaa9c0c8ea2d039cd5622b347",
+      "github-latest.json": "0f8d2faee6d90602603d5eb6592919b0a48342a9385a163ffc38282786e5a159",
+      "github-old-release.json": "27e6335054226e18a7bbdc8f984260acf196526b9474eba1077c89b2c02ab74b",
+      "initial-install.log": "dba24be0589e0f95e0742cb675ccd19611f1b52ea3aa27414df0f075e182d465",
+      "new-runtime.log": "6f94518f60a4e8b707007515e5db5655347f9ad67e1fc33810ebfd3811e78569",
+      "new-version-process.json": "d3e71bbdc8cdd882cde4251f228971fcb58341e98acb156aae959467e9aa33be",
+      "old-available-process.json": "f86c66ca9d9a3a0b0df476ff6b4f5e47f71ead2eaa9c0c8ea2d039cd5622b347",
+      "old-runtime.log": "6f94518f60a4e8b707007515e5db5655347f9ad67e1fc33810ebfd3811e78569",
+      "repository.json": "7814db5a5a50f70a39e015f8ae4cabbe024d3e9832ea26038fb47faa512d2e38",
+      "root-action-001.json": "47dedde041daf539e02314a9fd269f9433fc89bd481c72f5e07635dfe9c5143d",
+      "root-action-002.json": "dd4a60b22949d83ef8a32367d093733848652c156e7e617b4f1611fdbd62efd0",
+      "root-action-003.json": "4de00340378fd6979811b0cbe13ba0faba4fb7763b00f147d84a753fca0ec560",
+      "root-action-004.json": "70b5e627e6eb7123a3cb5d876df6ba715fced886694b3af050c4e4ed76ed72f4",
+      "root-action-005.json": "aa1629635a9406215fe411cf8a0f3d56cd9ee4f01637fe7626f0b0f29d148423",
+      "root-action-006.json": "4a371a4c2bbd94204efb1de5b05bcb774b88b1cb4e549c53fc18e4bded0f7e39",
+      "root-action-007.json": "3cc93917df4078d55a47dac7c0ca55f2dbf6c33c1f2ec822df3cf2fbf9b0f09b",
+      "root-action-008.json": "23fc55c78bc7c298c82b04c2996825db63a66edb020643f7623ed474221d9cfa",
+      "secondary.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "installed-v5-persistent-worker.log": "d892217b6350b88b0aa36b1707c089af4e8067ab1fc1c507d421323610830883",
+      "installed-v5-persistent-launcher.json": "160b7cd3d3486208263084030ad99b5b15e804c6b9c39e40ff298fb5924ec4d2"
+    }
+  },
+  "limits": [
+    "Anonymous upgrade and one synthetic public cache row only; no live account, credential-store or authenticated history migration acceptance",
+    "Root CUA observations and emitted frames are referenced by receipts; this read-only review did not inspect saved PNGs because none were saved",
+    "PID-owned public DBus Check and Quit actions are not physical tray clicks",
+    "Current metadata state required no additional manual recovery here; earlier intermittent failures remain unexplained and no transport fix is claimed",
+    "Portal and AT-SPI diagnostics remain; no warning-free runtime or complete accessibility acceptance",
+    "Receipt timestamps are acknowledgments, not a measurement of install or restart latency"
+  ],
+  "ci": {
+    "masterRun": 42494364791,
+    "tagRun": 42494364996,
+    "bothPassed": true
+  },
+  "downloadedRuntimeProbe": {
+    "passed": true,
+    "qmlModules": 10,
+    "codecs": [
+      "PNG",
+      "JPEG",
+      "GIF",
+      "WebP",
+      "SVG"
+    ],
+    "messageGrantCryptoAndTls": true,
+    "relevantMappedLibraries": 28,
+    "allInsideActualReleasedPrefix": true,
+    "resultSha256": "3a610bcad17a871c35f2358badd981fcaf27b4bc7afc4e57e3ff88aaf34dc1db"
+  }
+}

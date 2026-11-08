@@ -499,7 +499,7 @@ remain unexplained; no transport fix is claimed. See
 [published update checks](provenance/linux-published-0.1.1-upgrade-checks.json).
 
 The delivery priority is everyday usage. Composer Unicode emoji selection was
-delivered in 0.1.2; standalone received-image previews are the 0.1.3 candidate below.
+delivered in 0.1.2; standalone received-image previews are delivered in 0.1.3 below.
 Smaller tested releases take precedence over secondary presentation work. Full
 Linux parity remains the overall goal.
 
@@ -585,3 +585,20 @@ and message read-back. The Source host and author directory differ; full shell,
 all aspect ratios, tiny-height line metrics, animation and gallery/viewer remain
 open. These are synthetic local checks, not live-account/full Linux acceptance.
 See [received-image checks](provenance/received-image-checks.json).
+
+[0.1.3](https://github.com/exordos/workspace_native/releases/tag/0.1.3) is public.
+Both CI runs passed. The actual downloaded 63,621,495-byte archive matched its
+GitHub digest and SHA256SUMS; the ten-module, five-codec and crypto/TLS runtime
+probe passed against that released prefix. An installed 0.1.2 downloaded it
+automatically. One actual Install and restart click ended the old process normally
+and launched the exact 0.1.3 binary. Eight native CUA checkpoints covered both
+windows. The new version reported You're up to date without a manual retry;
+secondary launch retained the same primary and normal Quit passed.
+
+One synthetic schema-4 History row retained its logical digest and reopened through
+production NativeCache. Owned processes, the instance lock and private runtime
+directory were removed. This is anonymous installed-update acceptance on the
+current host, not authenticated history, credential preservation or full parity.
+Portal registration and AT-SPI inspection diagnostics are retained; the earlier
+intermittent metadata errors remain unexplained. See
+[published 0.1.3 update checks](provenance/linux-published-0.1.3-upgrade-checks.json).

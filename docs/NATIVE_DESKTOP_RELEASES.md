@@ -26,6 +26,15 @@ of one synthetic NativeCache History row. Authenticated account/history and
 secure-store preservation remain separate acceptance. Intermittent public check
 errors remain unexplained. See [published upgrade checks](provenance/linux-published-0.1.1-upgrade-checks.json).
 
+[0.1.3](https://github.com/exordos/workspace_native/releases/tag/0.1.3) adds bounded
+static received-image previews. Both CI runs and the actual public archive passed
+their checks. The installed 0.1.2 → 0.1.3 automatic download, one install action,
+restart, same-primary activation and normal quit passed. One synthetic NativeCache
+History row was preserved and reopened. The new version's metadata check succeeded
+without a manual retry; earlier intermittent failures remain unexplained.
+Authenticated account/history, credential preservation and full application parity
+remain separate. See [published 0.1.3 upgrade checks](provenance/linux-published-0.1.3-upgrade-checks.json).
+
 ## Build pipeline
 
 `.github/workflows/linux-release.yml` builds on master pushes, plain `X.Y.Z` tags

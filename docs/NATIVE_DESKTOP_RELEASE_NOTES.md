@@ -15,9 +15,11 @@ unfinished. Preview pixels are currently cached in memory; cold offline image
 restoration after restart is not yet accepted.
 
 Existing 0.1.1 and newer installations automatically download a found update and
-offer **Install and restart**. Public 0.1.0 → 0.1.1 and 0.1.1 → 0.1.2 upgrades passed on
-the current host with one synthetic cache row preserved. This release's actual
-installed upgrade will be verified after publication. Earlier intermittent
+offer **Install and restart**. The actual public 0.1.2 → 0.1.3 update passed on the
+current host: automatic download, one install action, restart into the new binary,
+normal quit and preservation of one synthetic cache row. The new version's update
+check succeeded without a manual retry. This anonymous check does not establish
+authenticated history or credential preservation. Earlier intermittent
 metadata-check errors remain unexplained.
 
 Download and extract the archive, then run `bash install.sh`. The per-user
