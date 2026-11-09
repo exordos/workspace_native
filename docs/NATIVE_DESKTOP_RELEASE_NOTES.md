@@ -1,3 +1,27 @@
+# Workspace Native 0.3.4 - Linux development preview
+
+Messages are now shareable. The message context menu gained **Copy link**,
+which puts the message's canonical web URL
+(`<server>/org/<organization>/project/<project>/message/<message>`) on the
+clipboard so a colleague can open that exact message. Opening an `ew://`
+deep link activates the running window (a second launch forwards the link
+to the primary instance) and navigates to the target: the topic opens, the
+message scrolls into view and its row is briefly highlighted; a message
+outside the loaded window is reached through bounded backward pagination.
+Every incoming link is validated strictly - scheme, route shape, unsafe
+characters and the message UUID - and a link for a foreign organization or
+project, or for an unavailable message, lands safely with a notice instead
+of navigating. The contract and its validation rules are documented in
+`docs/NATIVE_DESKTOP_MESSAGE_LINKS.md`.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.3...0.3.4](https://github.com/exordos/workspace_native/compare/0.3.3...0.3.4)
+
+---
+
 # Workspace Native 0.3.3 - Linux development preview
 
 An open conversation now stays coherent when a whole topic is renamed or moved to
