@@ -69,6 +69,19 @@ bool integer(const QJsonObject &json, const char *key, qint64 &target)
     return true;
 }
 
+std::optional<NativeDraftStore::Summary> summary(const QSqlQuery &query)
+{
+    NativeDraftStore::Summary row{query.value(0).toString(), query.value(1).toString(), query.value(2).toString(),
+        query.value(3).toLongLong(), static_cast<DraftRecord::Phase>(query.value(4).toInt()), query.value(5).toBool()};
+    if (!isUuid(row.uuid) || row.uuid != row.uuid.toLower() || !isUuid(row.stream) || !isUuid(row.topic)
+        || row.updatedAt < 0 || row.updatedAt > 9007199254740991LL || query.value(4).toInt() < 0
+        || query.value(4).toInt() > static_cast<int>(DraftRecord::Phase::Deleting)
+        || (query.value(5).toInt() != 0 && query.value(5).toInt() != 1)
+        || query.value(6).toString() != "integer" || query.value(7).toString() != "integer"
+        || query.value(8).toString() != "integer") return {};
+    return row;
+}
+
 std::optional<DraftRecord> decode(const QByteArray &bytes)
 {
     if (bytes.size() > NativeDraftStore::MaximumRecordBytes) return {};
@@ -94,6 +107,8 @@ std::optional<DraftRecord> decode(const QByteArray &bytes)
 }
 } // namespace
 
+qsizetype NativeDraftStore::serializedSize(const DraftRecord &r) { return encode(r).size(); }
+
 bool NativeDraftStore::valid(const DraftRecord &r)
 {
     const auto number = [](qint64 n) { return n >= 0 && n <= 9007199254740991LL; };
@@ -104,7 +119,7 @@ bool NativeDraftStore::valid(const DraftRecord &r)
         && (r.phase != DraftRecord::Phase::Saved || r.revision > 0)
         && (r.phase != DraftRecord::Phase::Conflict || r.conflictRevision > 0)
         && draftText(r.text) && draftText(r.createText) && draftText(r.conflictText)
-        && privateFreeContext(r.replySession) && encode(r).size() <= MaximumRecordBytes;
+        && privateFreeContext(r.replySession) && serializedSize(r) <= MaximumRecordBytes;
 }
 
 NativeDraftStore::NativeDraftStore(QString directory)
@@ -182,6 +197,9 @@ NativeDraftStore::Failure NativeDraftStore::open(const QString &owner)
         if (failure == Failure::None
             && !query.exec("SELECT uuid, stream, topic, updated_at, phase, consumed, payload FROM draft_records LIMIT 0"))
             failure = Failure::Corrupt;
+        if (failure == Failure::None && !query.exec("CREATE INDEX IF NOT EXISTS draft_conversation_order "
+                "ON draft_records (stream, topic, updated_at DESC, uuid DESC)"))
+            failure = Failure::Unavailable;
     }
     if (failure == Failure::None && !protectFiles()) failure = Failure::Unavailable;
     if (failure != Failure::None) close();
@@ -201,15 +219,10 @@ NativeDraftStore::Page NativeDraftStore::list(const QString &afterUuid, int limi
     if (!query.exec()) return {};
     Page result{Failure::None, {}, {}};
     while (query.next()) {
-        Summary row{query.value(0).toString(), query.value(1).toString(), query.value(2).toString(), query.value(3).toLongLong(),
-            static_cast<DraftRecord::Phase>(query.value(4).toInt()), query.value(5).toBool()};
-        if (!isUuid(row.uuid) || row.uuid != row.uuid.toLower() || !isUuid(row.stream) || !isUuid(row.topic)
-            || row.updatedAt < 0 || query.value(4).toInt() < 0 || query.value(4).toInt() > static_cast<int>(DraftRecord::Phase::Deleting)
-            || (query.value(5).toInt() != 0 && query.value(5).toInt() != 1)
-            || query.value(6).toString() != "integer" || query.value(7).toString() != "integer"
-            || query.value(8).toString() != "integer") return {Failure::Corrupt, {}, {}};
+        auto row = summary(query);
+        if (!row) return {Failure::Corrupt, {}, {}};
         if (result.rows.size() == limit) { result.next = result.rows.last().uuid; break; }
-        result.rows.append(std::move(row));
+        result.rows.append(std::move(*row));
     }
     return query.lastError().isValid() ? Page{Failure::Corrupt, {}, {}} : result;
 }
@@ -236,6 +249,29 @@ NativeDraftStore::Read NativeDraftStore::read(const QString &uuid)
 
 NativeDraftStore::Failure NativeDraftStore::put(const DraftRecord &record) { return apply({record}, {}); }
 NativeDraftStore::Failure NativeDraftStore::remove(const QString &uuid) { return apply({}, {uuid}); }
+
+NativeDraftStore::Read NativeDraftStore::latest(const QString &stream, const QString &topic)
+{
+    if (!available()) return {};
+    if (!isUuid(stream) || !isUuid(topic)) return {Failure::InvalidRecord, {}};
+    QString id;
+    {
+        QSqlQuery query(m_database);
+        query.setForwardOnly(true);
+        query.prepare("SELECT uuid, stream, topic, updated_at, phase, consumed, typeof(updated_at), typeof(phase), typeof(consumed) "
+            "FROM draft_records WHERE stream = ? AND topic = ? "
+            "ORDER BY updated_at DESC, uuid DESC");
+        query.addBindValue(stream); query.addBindValue(topic);
+        if (!query.exec()) return {};
+        while (query.next()) {
+            const auto row = summary(query);
+            if (!row) return {Failure::Corrupt, {}};
+            if (!row->consumed && row->phase != DraftRecord::Phase::Deleting) { id = row->uuid; break; }
+        }
+        if (query.lastError().isValid()) return {Failure::Corrupt, {}};
+    }
+    return id.isEmpty() ? Read{Failure::None, {}} : read(id);
+}
 
 NativeDraftStore::Failure NativeDraftStore::apply(const QVector<DraftRecord> &writes, const QStringList &removals)
 {

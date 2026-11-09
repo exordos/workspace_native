@@ -69,6 +69,19 @@ private slots:
         QCOMPARE(explicitEmpty.rows.first().uuid, page.rows.first().uuid);
     }
 
+    void latestUsesAnIndexedConversationAndIgnoresConsumedAndDeletingRows()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto a = record(messageId), b = record(returnedId), c = record(secondTopicId), d = record(topicId);
+        a.updatedAt = b.updatedAt = 10; c.updatedAt = 20; d.updatedAt = 30;
+        c.consumed = true; d.phase = DraftRecord::Phase::Deleting;
+        QCOMPARE(store.apply({a, b, c, d}, {}), Failure::None);
+        auto result = store.latest(streamId, topicId); QCOMPARE(result.failure, Failure::None); QVERIFY(result.record);
+        QCOMPARE(result.record->uuid, returnedId); // Deterministic UUID tie-break.
+        result = store.latest(streamId, secondTopicId); QCOMPARE(result.failure, Failure::None); QVERIFY(!result.record);
+        QCOMPARE(store.latest("bad", topicId).failure, Failure::InvalidRecord);
+    }
+
     void committedWalSurvivesARealProcessWithoutDestructors()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -245,6 +258,7 @@ private slots:
         QCOMPARE(store.put(record()), Failure::None);
         QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "UPDATE draft_records SET " + assignment));
         QCOMPARE(store.list().failure, Failure::Corrupt); QCOMPARE(store.read(returnedId).failure, Failure::Corrupt);
+        QCOMPARE(store.latest(streamId, topicId).failure, Failure::Corrupt);
     }
 
     void removalAndPrivateFilePermissionsSurviveReopen()

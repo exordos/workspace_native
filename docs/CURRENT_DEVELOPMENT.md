@@ -926,13 +926,24 @@ record/batch admission, process locks and explicit failure results. Exact text,
 reply state, pending create bodies and conflict/delete state survive reopen;
 a real process exit without destructors also preserves a committed WAL.
 
-Complete Domain75, API22 and Store31 local checks pass. The prior transport fails
+Complete Domain75, API22 and Store32 local checks pass. The prior transport fails
 both new revision-header rows, and the retained store pagination failure exposed
 SQL NULL binding of a default cursor; its default/explicit-empty regression now
 passes. Another regression requires a missing record table to fail opening the
 store, rather than reporting it as available. The application/controller still uses in-memory drafts. No persistent
 draft feature or 0.3.0 release is claimed yet. The next work and acceptance gates
 are in the [draft contract](NATIVE_DESKTOP_DRAFTS.md).
+
+The bounded `NativeDraftService` now runs SQLite on one private worker, preserves
+accepted-write ownership through account changes and suppresses stale read
+bodies. Its complete 16-result local suite verifies the main event loop under
+real writer contention, data/control admission limits, byte saturation, receiver
+and observer destruction, destructor draining and shutdown behind full queues.
+The indexed newest-restorable lookup shares metadata validation with listing;
+the malformed-consumed regression fails before its fix and passes afterward.
+The application still has no persistent-draft composer or server synchronization.
+The prior CI locale failure was reproduced without relaxing its stderr assertion;
+explicit C.UTF-8 configuration passed the complete Linux packaging workflow.
 
 ## Next ten Linux releases
 

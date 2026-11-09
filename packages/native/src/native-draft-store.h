@@ -61,10 +61,12 @@ public:
     bool available() const;
     Page list(const QString &afterUuid = {}, int limit = MaximumPageRows);
     Read read(const QString &uuid);
+    Read latest(const QString &stream, const QString &topic);
     Failure put(const DraftRecord &record);
     Failure remove(const QString &uuid);
     Failure apply(const QVector<DraftRecord> &writes, const QStringList &removals);
     static bool valid(const DraftRecord &record);
+    static qsizetype serializedSize(const DraftRecord &record);
 
 private:
     bool sameThread() const;

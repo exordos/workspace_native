@@ -1,8 +1,9 @@
 # Native drafts
 
 Persistent drafts are planned for 0.3.0. The wire parser, revision transport and
-durable storage backend are implemented; the running application's controller
-still holds drafts in memory. The storage coordinator, API synchronization,
+durable storage backend and bounded storage worker are implemented; the running
+application's controller still holds drafts in memory. The composer coordinator,
+API synchronization,
 actual Main integration and packaged acceptance remain required before release.
 This document describes the contract and acceptance targets, not complete parity.
 
@@ -54,7 +55,17 @@ pending/conflict bodies. The future coordinator must retain those private edits
 in memory and remove an earlier durable public snapshot rather than saving the
 protected plaintext.
 
-Storage work belongs on one worker. Metadata pages contain at most 100 small
+`NativeDraftService` constructs, uses and closes SQLite on its single private
+worker. Owner/generation leases fence late reads. Accepted writes keep their
+captured owner across account changes. Destroying a callback receiver suppresses
+its receipt while the accepted write still completes. Admission allows at most
+eight data jobs and 32 MiB of serialized record input, plus two small control
+jobs and one reserved shutdown barrier. Flush is a FIFO completion barrier;
+each Apply receipt reports actual durable success or failure. Shutdown rejects
+new work and drains accepted writes; destructor fallback also drains them
+without depending on GUI callbacks.
+
+Metadata pages contain at most 100 small
 summaries; individual record reads are capped at 4 MiB, and one atomic batch at
 100 records / 8 MiB. The SQLite page cache targets 2 MiB. These bounds describe
 component admission, not whole-application memory measurements. Drafts are unsent
@@ -76,10 +87,19 @@ diagnostic does not invalidate the subprocess test's strict empty-stderr check.
 The child check retains that assertion and reports its captured synthetic
 diagnostics on failure; it does not filter or suppress Qt messages.
 
+The service suite exercises the real worker, SQLite writer contention with a
+main-loop pulse, old-owner reads, accepted writes across owner changes, job and
+serialized-byte saturation, receiver destruction, observer-triggered teardown,
+destructor draining and shutdown behind full queues. Indexed conversation lookup
+returns the newest restorable UUID with a deterministic tie-break; malformed
+consumed metadata is an explicit corruption result rather than an empty draft.
+Local Store32 and Service16 results pass. Application composition and API
+synchronization remain separate gates.
+
 Before publishing 0.3.0, complete and verify:
 
-1. A debounced, bounded worker coordinator, flush on shutdown and owner changes,
-   visible persistence failures and late-result fencing.
+1. Debounced/coalesced composer state using the implemented bounded storage
+   service, owner/shutdown flush and visible per-write persistence failures.
 2. Bootstrap remote hydration, per-UUID serialization, fixed create retries,
    conditional updates/deletes, explicit conflict choices and pending recovery.
 3. Exact selected/newest draft restoration in the actual composer, keeping newer
