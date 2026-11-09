@@ -9337,6 +9337,117 @@ private slots:
         QCOMPARE(modelMessage(c, row.value("uuid").toString()).value("content").toString(), QString("Newer live body"));
     }
 
+    void deepLinkCopyProducesTheCanonicalUrl()
+    {
+        Fixture fixture;
+        auto row = message("Link me");
+        fixture.messages = [row](const Request &) { return Response{QJsonArray{row}}; };
+        QVERIFY(fixture.start());
+        const auto origin = fixture.server.origin();
+        const QString expected = origin.toString() + "/org/127.0.0.1-"
+            + QString::number(origin.port()) + "/project/" + projectId + "/message/" + messageId;
+        QCOMPARE(fixture.controller.messageLink(messageId), expected);
+        fixture.controller.copyMessageLink(messageId);
+        QCOMPARE(QGuiApplication::clipboard()->text(), expected);
+        QVERIFY(fixture.controller.messageLink("ffffffff-ffff-4fff-8fff-ffffffffffff").isEmpty());
+    }
+
+    void deepLinkOpensTargetTopicAndAnchorsTheMessage()
+    {
+        Fixture fixture; fixture.extraTopic = true; fixture.aggregateMessages = true;
+        const QString target = "77777777-7777-4777-8777-777777777777";
+        const auto origin = fixture.server.origin();
+        int lookups = 0;
+        QString lookupProject, lookupUuid;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) {
+                lookupProject = query.queryItemValue("project_id");
+                lookupUuid = query.queryItemValue("uuid");
+                ++lookups;
+                return Response{QJsonArray{message("Deep body", target, secondTopicId)}};
+            }
+            if (request.method == "GET" && query.queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{message("Deep body", target, secondTopicId)}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QSignalSpy anchors(&fixture.controller, &NativeController::anchorChanged);
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + target);
+        QTRY_COMPARE(fixture.controller.selectedTopic(), secondTopicId);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), target);
+        QVERIFY(anchors.count() >= 1);
+        QCOMPARE(lookups, 1);
+        QCOMPARE(lookupProject, projectId);
+        QCOMPARE(lookupUuid, target);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.anchorMessageId().isEmpty(), 4500);
+    }
+
+    void deepLinkForeignOrganizationOrProjectKeepsSelection()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const auto origin = fixture.server.origin();
+        QVERIFY(fixture.start());
+        const auto beforeStream = fixture.controller.selectedStream();
+        const auto beforeTopic = fixture.controller.selectedTopic();
+        fixture.controller.openMessageLink("ew://open/org/somewhere-else/project/" + projectId
+            + "/message/" + messageId);
+        QTest::qWait(200);
+        QCOMPARE(fixture.controller.selectedStream(), beforeStream);
+        QCOMPARE(fixture.controller.selectedTopic(), beforeTopic);
+        QVERIFY(fixture.controller.anchorMessageId().isEmpty());
+        QVERIFY(!fixture.controller.notice().isEmpty());
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e/message/" + messageId);
+        QTest::qWait(200);
+        QCOMPARE(fixture.controller.selectedStream(), beforeStream);
+        QCOMPARE(fixture.controller.selectedTopic(), beforeTopic);
+        QVERIFY(fixture.controller.anchorMessageId().isEmpty());
+        QVERIFY(!fixture.controller.notice().isEmpty());
+    }
+
+    void deepLinkMissingMessageLandsSafely()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        fixture.messages = [](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) return Response{QJsonArray{}};
+            if (request.method == "GET" && query.hasQueryItem("topic_uuid"))
+                return Response{QJsonArray{message("Current body")}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a");
+        QTest::qWait(300);
+        QCOMPARE(fixture.controller.selectedStream(), streamId);
+        QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QVERIFY(fixture.controller.anchorMessageId().isEmpty());
+        QVERIFY(!fixture.controller.notice().isEmpty());
+    }
+
+    void deepLinkBeforeLoginAppliesWhenTheSessionSettles()
+    {
+        Fixture fixture; fixture.extraTopic = true; fixture.aggregateMessages = true;
+        const QString target = "78787878-7878-4787-8787-787878787878";
+        fixture.messages = [&](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid"))
+                return Response{QJsonArray{message("Cold body", target, secondTopicId)}};
+            if (request.method == "GET" && query.queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{message("Cold body", target, secondTopicId)}};
+            return Response{QJsonArray{}};
+        };
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + target);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.selectedTopic(), secondTopicId);
+        QTRY_VERIFY(fixture.controller.anchorMessageId() == target
+            || fixture.controller.anchorMessageId().isEmpty()); // highlight may already have cleared
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

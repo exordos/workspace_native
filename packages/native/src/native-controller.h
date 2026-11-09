@@ -100,6 +100,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool draftsVisible READ draftsVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap draftPage READ draftPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
+    Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
 public:
     explicit NativeController(ApiClient *api, Session *session, QObject *parent = nullptr);
     ~NativeController() override;
@@ -189,6 +190,7 @@ public:
         : m_topic.isEmpty() ? QStringLiteral("stream") : QStringLiteral("topic"); }
     QString selectedStream() const { return m_stream; }
     QString selectedTopic() const { return m_topic; }
+    QString anchorMessageId() const { return m_anchorMessage; }
     QString draft() const;
     void setDraft(const QString &text);
     bool canCompose() const;
@@ -242,6 +244,9 @@ public:
     Q_INVOKABLE void checkPendingSend();
     Q_INVOKABLE void retryPendingSend();
     Q_INVOKABLE void copyMessage(const QString &id);
+    Q_INVOKABLE QString messageLink(const QString &id) const;
+    Q_INVOKABLE void copyMessageLink(const QString &id);
+    Q_INVOKABLE void openMessageLink(const QString &url);
     Q_INVOKABLE void starMessage(const QString &id);
     Q_INVOKABLE void deleteMessage(const QString &id);
     Q_INVOKABLE void editMessage(const QString &id, const QString &text);
@@ -256,6 +261,7 @@ signals:
     void chatKeyStoreOpenRequested();
     void archivedChatsChanged();
     void stateChanged();
+    void anchorChanged();
     void savedAccountsChanged();
     void draftChanged();
     void streamsChanged();
@@ -271,6 +277,13 @@ signals:
     void resynchronizeRequested();
 
 private:
+    void applyDeepLink(const QString &url);
+    void flushPendingDeepLink(bool settle = true);
+    void applyMessageRoute(const QString &org, const QString &project, const QString &message);
+    void setAnchorMessage(const QString &id);
+    void clearAnchor(const QString &notice = {});
+    void reanchorFromWindow();
+    static QString deepLinkUnavailableNotice();
     struct ProjectionContext;
     struct ChatAuthority {
         QString owner, stream, defaultTopic, currentKey, role, issuerOwner;
@@ -777,6 +790,14 @@ private:
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;
     QString m_topic;
+    QString m_anchorMessage;
+    QString m_pendingDeepLink;
+    bool m_deepLinkFlushScheduled = false;
+    QString m_pendingAnchorMessage;
+    QString m_pendingAnchorStream;
+    QString m_pendingAnchorTopic;
+    int m_anchorBudget = 0;
+    QTimer m_anchorHighlight;
     QString m_error;
     QString m_syncState;
     QString m_notice;

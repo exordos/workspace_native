@@ -147,6 +147,42 @@ private slots:
         QVERIFY(!primary.activationPending());
     }
 
+    void socketOpenLineForwardsOnlyValidatedDeepLinks()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("instance");
+        NativeInstance primary(path);
+        QCOMPARE(primary.acquireOrActivate(), NativeInstance::Outcome::Primary);
+        QSignalSpy activation(&primary, &NativeInstance::activationRequested);
+        const auto deliver = [&](const QByteArray &line) {
+            QLocalSocket socket;
+            socket.connectToServer(testEndpoint(path));
+            if (!socket.waitForConnected(1000)) return false;
+            socket.write(line);
+            if (!socket.waitForBytesWritten(1000)) return false;
+            QByteArray ack;
+            for (int i = 0; i < 40 && !ack.contains('\n'); ++i) {
+                QTest::qWait(50); // Pump the shared event loop so the primary accepts.
+                ack += socket.readAll();
+            }
+            socket.disconnectFromServer();
+            return ack == "ok\n";
+        };
+        const auto url = QByteArrayLiteral(
+            "ew://open/org/acme/project/9b7cf5e2-1c3d-4a6f-8e9b-2d4f6a8c0e11/message/f3a1b2c4-5d6e-7f80-91a2-b3c4d5e6f708");
+        QVERIFY(deliver("open " + url + "\n"));
+        QCOMPARE(activation.size(), 1);
+        QCOMPARE(activation.takeFirst().first().toString(), QString::fromUtf8(url));
+        QVERIFY(!deliver("open ew://evil.example/open/org/acme/project/1/message/2\n"));
+        QVERIFY(!deliver("open activate\n"));
+        QVERIFY(!deliver("close-all\n"));
+        QVERIFY(!deliver("open " + QByteArray(1200, 'a') + "\n"));
+        QCOMPARE(activation.size(), 0);
+        QVERIFY(deliver("activate\n"));
+        QCOMPARE(activation.size(), 1);
+        QVERIFY(activation.takeFirst().first().toString().isEmpty());
+    }
+
     void unavailableDirectoryFailsWithoutCreatingOtherNamespace()
     {
         QTemporaryDir directory;

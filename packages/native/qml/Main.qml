@@ -3296,6 +3296,25 @@ ApplicationWindow {
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                 }
+                function anchorToMessage(id) {
+                    if (!id)
+                        return;
+                    const wanted = serviceAliases[id] || id;
+                    for (let i = 0; i < count; ++i) {
+                        if (String(renderedMessages.get(i).entry.id) === wanted) {
+                            positionViewAtIndex(i, ListView.Contain);
+                            forceMeasuredLayout();
+                            return;
+                        }
+                    }
+                }
+                Connections {
+                    target: root.controller
+                    function onAnchorChanged() {
+                        if (root.controller.anchorMessageId)
+                            Qt.callLater(() => messageList.anchorToMessage(root.controller.anchorMessageId));
+                    }
+                }
                 function followSentMessage(id) {
                     for (let i = 0; i < count; ++i) {
                         if (String(renderedMessages.get(i).entry.id) !== id)
@@ -3758,6 +3777,20 @@ ApplicationWindow {
                             background: null
                             onClicked: root.controller.selectTopic(messageRow.modelData.topicId)
                         }
+                    }
+                    Rectangle {
+                        objectName: "messageHighlight-" + messageRow.modelData.id
+                        Accessible.ignored: true
+                        visible: root.controller.anchorMessageId === messageRow.modelData.id
+                        z: 1
+                        x: bubble.x - 3
+                        y: bubble.y - 3
+                        width: bubble.width + 6
+                        height: bubble.height + 6
+                        radius: 21
+                        color: "transparent"
+                        border.width: 2
+                        border.color: root.colors.accent
                     }
                     Rectangle {
                         id: bubble
@@ -6766,6 +6799,14 @@ ApplicationWindow {
         }
         MessageMenuSeparator {
             visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation
+        }
+        MessageMenuAction {
+            objectName: "copyMessageLinkAction"
+            visible: root.menuMessageReadable
+            enabled: visible
+            asset: "copy.svg"
+            text: qsTr("Copy link")
+            onTriggered: root.controller.copyMessageLink(root.menuMessageId)
         }
         MessageMenuAction {
             objectName: "copyMessageAction"

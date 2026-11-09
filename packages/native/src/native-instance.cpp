@@ -1,4 +1,5 @@
 #include "native-instance.h"
+#include "native-deeplink.h"
 
 #include <QCryptographicHash>
 #include <QDeadlineTimer>
@@ -24,7 +25,7 @@ NativeInstance::NativeInstance(QString directory, QObject *parent)
     connect(&m_server, &QLocalServer::newConnection, this, &NativeInstance::acceptConnections);
 }
 
-NativeInstance::Outcome NativeInstance::acquireOrActivate()
+NativeInstance::Outcome NativeInstance::acquireOrActivate(const QString &deepLink)
 {
     if (m_server.isListening()) return Outcome::Primary;
     if (m_directory.isEmpty() || QFileInfo(m_directory).isSymLink()
@@ -52,7 +53,10 @@ NativeInstance::Outcome NativeInstance::acquireOrActivate()
         QLocalSocket socket;
         socket.setReadBufferSize(4);
         socket.connectToServer(m_socket);
-        if (!socket.waitForConnected(1000) || socket.write("activate\n") != 9
+        QByteArray line = "activate\n";
+        if (!deepLink.isEmpty() && deepLink.toUtf8().size() <= 1018)
+            line = "open " + deepLink.toUtf8() + "\n";
+        if (!socket.waitForConnected(1000) || socket.write(line) != line.size()
             || (socket.bytesToWrite() && !socket.waitForBytesWritten(1000))) {
             m_error = tr("The running application did not confirm activation. Try again shortly.");
             return Outcome::Failed;
@@ -95,24 +99,38 @@ void NativeInstance::acceptConnections()
 {
     while (auto *socket = m_server.nextPendingConnection()) {
         socket->setParent(&m_server);
-        socket->setReadBufferSize(65);
+        socket->setReadBufferSize(4096);
         auto buffer = std::make_shared<QByteArray>();
         auto handled = std::make_shared<bool>(false);
         const auto read = [this, socket, buffer, handled] {
             if (*handled) return;
             *buffer += socket->readAll();
-            if (buffer->size() > 64) {
+            if (buffer->size() > 1024) {
                 *handled = true;
                 socket->abort();
                 return;
             }
             if (!buffer->contains('\n')) return;
             *handled = true;
+            QString deepLink;
+            bool accept = false;
             if (*buffer == "activate\n") {
+                accept = true;
+            } else if (buffer->startsWith("open ") && buffer->endsWith('\n')
+                       && buffer->mid(5, buffer->size() - 6).indexOf('\n') == -1) {
+                const auto raw = QString::fromUtf8(buffer->mid(5, buffer->size() - 6));
+                // The socket is a local untrusted boundary: only a URL that
+                // survives the external deep-link parser is forwarded.
+                if (parseExternalDeepLink(raw).has_value()) {
+                    accept = true;
+                    deepLink = raw;
+                }
+            }
+            if (accept) {
                 socket->write("ok\n");
                 socket->flush();
                 m_activationPending = true;
-                emit activationRequested();
+                emit activationRequested(deepLink);
             }
             socket->disconnectFromServer();
         };

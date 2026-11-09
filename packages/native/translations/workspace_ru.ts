@@ -68,6 +68,10 @@
             <translation>Копировать текст</translation>
         </message>
         <message>
+            <source>Copy link</source>
+            <translation>Копировать ссылку</translation>
+        </message>
+        <message>
             <source>Updating disk cache…</source>
             <translation>Обновление дискового кэша…</translation>
         </message>
@@ -1461,6 +1465,10 @@
         <message>
             <source>Downloading attachment…</source>
             <translation>Скачивание вложения…</translation>
+        </message>
+        <message>
+            <source>The requested message is unavailable.</source>
+            <translation>Запрошенное сообщение недоступно.</translation>
         </message>
         <message>
             <source>The attachment could not be saved. %1</source>

@@ -1,4 +1,5 @@
 #include "native-desktop.h"
+#include "native-deeplink.h"
 
 #include <QAction>
 #include <QApplication>
@@ -146,6 +147,132 @@ private slots:
         QTest::keyClick(&window, Qt::Key_Q, Qt::ControlModifier);
 #endif
         QTRY_COMPARE(quit.count(), 1);
+    }
+
+    void deepLinkAcceptsEveryWhitelistedRouteShape()
+    {
+        const QString uuid = "66666666-6666-4666-8666-666666666666";
+        const QString upperUuid = "66666666-6666-4666-8666-66666666666A";
+        const QList<QPair<QString, QString>> accepted = {
+            {"ew://open/", "/"},
+            {"ew://open", "/"},
+            {"ew://open/calendar", "/calendar"},
+            {"ew://open/calendar/", "/calendar/"},
+            {"ew://open/mail", "/mail"},
+            {"ew://open/calls?tab=1", "/calls?tab=1"},
+            {"ew://open/licenses#top", "/licenses#top"},
+            {"ew://open/settings", "/settings"},
+            {"ew://open/logs", "/logs"},
+            {"ew://open/org/acme", "/org/acme"},
+            {"ew://open/org/acme/", "/org/acme/"},
+            {"ew://open/org/acme/settings?x=1#h", "/org/acme/settings?x=1#h"},
+            {"ew://open/org/acme/project/p1/messenger", "/org/acme/project/p1/messenger"},
+            {"ew://open/org/acme/project/p1/inbox", "/org/acme/project/p1/inbox"},
+            {"ew://open/org/acme/project/p1/feed", "/org/acme/project/p1/feed"},
+            {"ew://open/org/acme/project/p1/activity/anything", "/org/acme/project/p1/activity/anything"},
+            {"ew://open/org/acme/project/p1/message/" + uuid, "/org/acme/project/p1/message/" + uuid},
+            {"ew://open/org/acme/project/p1/message/" + upperUuid, "/org/acme/project/p1/message/" + upperUuid},
+            {"ew://open/org/acme/project/p1/message/" + uuid + "?focused=1",
+                "/org/acme/project/p1/message/" + uuid + "?focused=1"},
+            {"ew://open/org/acme/project/p1/stream/aaaaaaaa", "/org/acme/project/p1/stream/aaaaaaaa"},
+            {"ew://open/org/acme/project/p1/stream/aaaaaaaa/topic/bbbbbbbb",
+                "/org/acme/project/p1/stream/aaaaaaaa/topic/bbbbbbbb"},
+            {"ew://open/org/acme/project/p1/stream/aaaaaaaa/topic/bbbbbbbb/?x=1#y",
+                "/org/acme/project/p1/stream/aaaaaaaa/topic/bbbbbbbb/?x=1#y"},
+            {"EW://open/calendar", "/calendar"},
+            {"ew://OPEN/calendar", "/calendar"},
+            {"ew://open/org/" + QString(506, 'a'), "/org/" + QString(506, 'a')},
+        };
+        for (const auto &[url, expected] : accepted) {
+            const auto route = workspace::parseExternalDeepLink(url);
+            QVERIFY2(route.has_value(), qPrintable(QStringLiteral("rejected: %1").arg(url)));
+            QCOMPARE(*route, expected);
+        }
+    }
+
+    void deepLinkRejectsEveryDocumentedEscapeAndShape()
+    {
+        const QString uuid = "66666666-6666-4666-8666-666666666666";
+        const QStringList rejected = {
+            QString(),
+            QString("   "),
+            QStringLiteral("ew://open/org/a\\b"),
+            QStringLiteral("ew://open/cal endar"),
+            QStringLiteral("ew://open/calendar\n"),
+            QStringLiteral("ew://open/cal\rendar"),
+            QStringLiteral("ew://open/cal\u0001endar"),
+            QStringLiteral("https://open/calendar"),
+            QStringLiteral("ew://evil/calendar"),
+            QStringLiteral("ew://open:8443/calendar"),
+            QStringLiteral("ew://user@open/calendar"),
+            QStringLiteral("ew://user:pass@open/calendar"),
+            QStringLiteral("ew://open//calendar"),
+            QStringLiteral("ew://open/other"),
+            QStringLiteral("ew://open/org"),
+            QStringLiteral("ew://open/unknown/settings"),
+            QStringLiteral("ew://open/calendar/extra"),
+            QStringLiteral("ew://open/org/acme/unknown"),
+            QStringLiteral("ew://open/org/acme/project/p1/unknown"),
+            QStringLiteral("ew://open/org/acme/project/p1/stream/s/topic/t/deeper"),
+            QStringLiteral("ew://open/org/acme/project/p1/message/not-a-uuid"),
+            QStringLiteral("ew://open/org/acme/project/p1/message/"),
+            QStringLiteral("ew://open/org/acme/project/p1/message/66666666-6666-4666-8666-66666666666"),
+            QStringLiteral("ew://open/org/a%2Fb"),
+            QStringLiteral("ew://open/org/a%2fb/settings"),
+            QStringLiteral("ew://open/settings%5Cx"),
+            QStringLiteral("ew://open/settings%00"),
+            QStringLiteral("ew://open/settings%0A"),
+            QStringLiteral("ew://open/settings%0d"),
+            QStringLiteral("ew://open/org/acme/project/p1/message/") + uuid + QStringLiteral("?x=%2F"),
+            QStringLiteral("ew://open/org/") + QString(508, 'a'),
+            QStringLiteral("javascript:alert(1)"),
+        };
+        for (const auto &value : rejected)
+            QVERIFY2(!workspace::parseExternalDeepLink(value).has_value(),
+                qPrintable(QStringLiteral("accepted: %1").arg(value)));
+    }
+
+    void messageRouteExtractionReadsTheMessageTriple()
+    {
+        const QString uuid = "66666666-6666-4666-8666-666666666666";
+        const QString project = "11111111-1111-4111-8111-111111111111";
+        const auto found = workspace::parseMessageRoute("/org/acme/project/" + project + "/message/" + uuid + "?x=1");
+        QVERIFY(found.has_value());
+        QCOMPARE(found->org, QString("acme"));
+        QCOMPARE(found->project, project);
+        QCOMPARE(found->message, uuid);
+        QVERIFY(!workspace::parseMessageRoute("/org/acme/project/" + project + "/stream/aaaaaaaa").has_value());
+        QVERIFY(!workspace::parseMessageRoute("/calendar").has_value());
+    }
+
+    void organizationRouteIdMatchesTheSourceDerivation()
+    {
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QUrl("https://app.example.com")), QString("app.example.com"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QUrl("https://App.Example.com:8443")),
+                 QString("app.example.com-8443"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QUrl("http://localhost:3000")), QString("localhost-3000"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QUrl("http://localhost:80")), QString("localhost"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QUrl("https://127.0.0.1:8080")), QString("127.0.0.1-8080"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QString("example.com")), QString("example.com"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QString("Example.com")), QString("example.com"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QString("exa_mple.com")), QString("exa-mple.com"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QString("!!!")), QString("org"));
+        QCOMPARE(workspace::orgRouteIdFromOrigin(QString("   ")), QString("org"));
+    }
+
+    void canonicalMessageUrlUsesTheSourceRouteShape()
+    {
+        const QString uuid = "66666666-6666-4666-8666-666666666666";
+        const QString project = "11111111-1111-4111-8111-111111111111";
+        QCOMPARE(workspace::encodeRouteSegment("abc-._~"), QString("abc-._~"));
+        QCOMPARE(workspace::encodeRouteSegment("a*b"), QString("a%2Ab"));
+        QCOMPARE(workspace::encodeRouteSegment("a b"), QString("a%20b"));
+        QCOMPARE(workspace::encodeRouteSegment("100%"), QString("100%25"));
+        QCOMPARE(workspace::encodeRouteSegment(QString::fromUtf8("ä")), QString("%C3%A4"));
+        QCOMPARE(workspace::messageRoute("acme", project, uuid),
+                 "/org/acme/project/" + project + "/message/" + uuid);
+        QCOMPARE(workspace::messageUrl(QUrl("http://127.0.0.1:8123"), project, uuid),
+                 QStringLiteral("http://127.0.0.1:8123/org/127.0.0.1-8123/project/%1/message/%2").arg(project, uuid));
     }
 };
 
