@@ -696,6 +696,16 @@ or checked within small documented tolerances, so the suite is portable across
 host font stacks (issue #16). The reference window-test stand is a bare Xvnc
 session at 1440x900 with a panel-less window manager.
 
+The two encrypted-read test binaries share one source file. CTest runs the core
+suite through `native-e2ee-read-test` and the visible slice through
+`native-e2ee-ui-test` with an explicit function list. Running
+`native-e2ee-ui-test` unfiltered executes both suites sequentially in one
+process (274 core plus 140 UI rows, measured 893 seconds on the reference
+GPU-less stand), so budget about 900 seconds or scope the run with
+`-functions`. A timeout kill during such a run prints no further result and
+only looks like a stall after the last printed PASS; it is not test-order
+coupling (issue #17).
+
 ### Updater metadata transport
 
 The updater's real-wire Linux regressions use separate QCore drivers with Node's
