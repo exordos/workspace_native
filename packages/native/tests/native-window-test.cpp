@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontInfo>
 #include <QJsonDocument>
 #include <QMimeDatabase>
@@ -906,6 +907,100 @@ static bool startComposerEmojiFixture(WindowChannelFixture &fixture,NativeContro
     controller.selectTopic(topicId);
     return QTest::qWaitFor([&]{return !controller.busy()&&controller.hasConversation();},2000);
 }
+
+class NativeDraftWorkload final : public QObject {
+    Q_OBJECT
+private slots:
+    void boundedOrdinaryComposerNavigation()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto topicFor = [](int i) { return QString("a3000000-0000-4000-8000-%1").arg(i, 12, 16, QLatin1Char('0')); };
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.target.path().endsWith("/stream_topics/")) {
+                QJsonArray rows{windowChannelTopic(topicId, streamId, "General")};
+                for (int i = 0; i < 160; ++i) {
+                    auto row = windowChannelTopic(topicFor(i), streamId, "Draft " + QString::number(i));
+                    row["is_default"] = false; rows.append(row);
+                }
+                return {rows};
+            }
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) return {QJsonArray{}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        NativeCacheService cache(directory.filePath("cache"), NativeCacheService::Policy{}, true);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useCache(&cache); controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        bindNativeCachePreferences(cache, preferences);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Draft workload teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-workload", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && !controller.streams().isEmpty());
+        QTRY_VERIFY(cache.available()); QCOMPARE(cache.appliedDiskLimitBytes(), 10000000000LL);
+        controller.setRealtimeMode(true); controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 161);
+        QElapsedTimer elapsed; elapsed.start(); QJsonArray samples;
+        const auto sample = [&](int conversations) {
+            const auto model = drafts.residency(); const auto memory = controller.draftMemory();
+            const auto history = cache.stats();
+            qint64 rss = -1;
+#ifdef Q_OS_LINUX
+            QFile status("/proc/self/status");
+            if (status.open(QIODevice::ReadOnly)) {
+                const auto match = QRegularExpression("VmRSS:\\s+(\\d+)").match(QString::fromUtf8(status.readAll()));
+                if (match.hasMatch()) rss = match.captured(1).toLongLong();
+            }
+#endif
+            samples.append(QJsonObject{{"conversations", conversations}, {"elapsed_ms", elapsed.elapsed()}, {"rss_kib", rss},
+                {"resident_records", model.records}, {"cached_records", model.cachedRecords}, {"cached_payload_bytes", model.cachedBytes},
+                {"cached_routes", model.cachedRoutes}, {"controller_text_entries", memory.entries}, {"controller_text_bytes", memory.textBytes},
+                {"history_cache_entries", history.entries}, {"history_cache_hits", qint64(history.hits)},
+                {"history_cache_stale_hits", qint64(history.staleHits)}});
+        };
+        sample(0);
+        for (int i = 0; i < 160; ++i) {
+            controller.selectTopic(topicFor(i)); QTRY_VERIFY(drafts.ready(streamId, topicFor(i)) && controller.canCompose());
+            QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+            auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer && composer->isEnabled());
+            composer->forceActiveFocus(Qt::OtherFocusReason);
+            const auto body = QString::number(i) + QString(39950, QChar(0x754c));
+            const auto requests = fixture.server.requests.size();
+            QInputMethodEvent input; input.setCommitString(body); QCoreApplication::sendEvent(composer, &input);
+            QCOMPARE(controller.draft(), body); QCOMPARE(fixture.server.requests.size(), requests);
+            if ((i + 1) % 32 == 0) {
+                bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+                bool historyDone = false; cache.flush(this, [&](bool okay) { historyDone = okay; }); QTRY_VERIFY(historyDone);
+                QTest::qWait(50); sample(i + 1);
+                QVERIFY(cache.stats().entries > 0);
+                QVERIFY(drafts.residency().cachedRecords <= NativeDrafts::MaximumCachedRecords);
+                QVERIFY(drafts.residency().cachedBytes <= NativeDrafts::MaximumCachedBytes);
+                QVERIFY(drafts.residency().cachedRoutes <= NativeDrafts::MaximumCachedRoutes);
+                QVERIFY(controller.draftMemory().entries <= 1);
+                QVERIFY(controller.draftMemory().verifiedRoutes <= NativeDrafts::MaximumCachedRoutes + 1);
+            }
+        }
+        controller.selectTopic(topicFor(0)); QTRY_VERIFY(drafts.ready(streamId, topicFor(0)) && controller.canCompose());
+        QCOMPARE(controller.draft(), QString("0") + QString(39950, QChar(0x754c)));
+        QTRY_VERIFY(cache.stats().hits + cache.stats().staleHits > 0);
+        QVERIFY(controller.error().isEmpty());
+        const QJsonObject report{{"scope", "Actual Main.qml/controller/cache/draft workers; synthetic local HTTP; not live account acceptance"},
+            {"samples", samples}, {"network_requests", fixture.server.requests.size()},
+            {"cache_limit_bytes", cache.appliedDiskLimitBytes()}};
+        const auto output = qEnvironmentVariable("CASSI_NATIVE_DRAFT_WORKLOAD_REPORT");
+        if (!output.isEmpty()) {
+            QVERIFY(QDir().mkpath(QFileInfo(output).absolutePath())); QFile file(output); QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(QJsonDocument(report).toJson());
+        }
+        bool stopped = false; shutdownNativeStorage(drafts, storage, cache, this, [&](bool okay) { stopped = okay; }); QTRY_VERIFY(stopped);
+    }
+};
 
 class NativeWindowTest final : public QObject {
     Q_OBJECT
@@ -9969,6 +10064,10 @@ int main(int argc, char **argv)
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
     QQuickStyle::setStyle("Basic");
+    if (qEnvironmentVariableIsSet("CASSI_NATIVE_DRAFT_WORKLOAD")) {
+        NativeDraftWorkload workload;
+        return QTest::qExec(&workload, argc, argv);
+    }
     if (qEnvironmentVariableIsSet("CASSI_NATIVE_CACHE_CHILD_PHASE")) {
         NativeCacheWindowWorker worker;
         return QTest::qExec(&worker, argc, argv);

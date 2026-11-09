@@ -3917,7 +3917,19 @@ bool NativeController::durableDraftRoute() const
 
 QString NativeController::draft() const
 {
-    return durableDraftRoute() ? m_draftStore->text(m_stream, m_topic) : m_drafts.value(conversationKey());
+    if (durableDraftRoute()) return m_draftStore->text(m_stream, m_topic);
+    const auto *stream = currentStream();
+    if (stream && !stream->encrypted && m_draftFallbackOwner == creationOwnerKey()
+        && m_draftFallbackRoute == conversationKey()) return m_draftFallback;
+    return m_drafts.value(conversationKey());
+}
+
+NativeController::DraftMemory NativeController::draftMemory() const
+{
+    DraftMemory result{int(m_drafts.size()), int(m_draftRoutes.size()), 0};
+    for (const auto &text : m_drafts) result.textBytes += text.size() * sizeof(QChar);
+    if (!m_draftFallbackRoute.isEmpty()) { ++result.entries; result.textBytes += m_draftFallback.size() * sizeof(QChar); }
+    return result;
 }
 
 QString NativeController::notice() const
@@ -3946,20 +3958,24 @@ void NativeController::synchronizeDrafts()
     const auto owner = creationOwnerKey();
     if (owner != m_draftOwner) {
         if (!m_draftOwner.isEmpty()) { m_drafts.clear(); m_draftRevisions.clear(); }
+        m_draftFallbackOwner.clear(); m_draftFallbackRoute.clear(); m_draftFallback.clear();
         m_draftOwner = owner; m_draftRoutes.clear(); m_draftFlushFailed = false;
         m_draftStore->setOwner(owner);
         if (!guard || !m_draftStore) return;
     }
+    for (const auto &route : m_draftRoutes.values())
+        if (!m_draftStore->retained(route.section('/', 0, 0), route.section('/', 1, 1))) m_draftRoutes.remove(route);
     const auto *stream = currentStream();
     const bool verified = !owner.isEmpty() && stream && !stream->encrypted && isUuid(m_topic)
         && m_catalogVerified && m_topicsVerified && !m_topicSeedUnverified
         && std::any_of(m_topics.cbegin(), m_topics.cend(), [this](const Topic &row) { return row.uuid == m_topic; });
     if (verified) {
-        const auto route = conversationKey(); const bool first = !m_draftRoutes.contains(route);
+        const auto route = conversationKey();
         m_draftRoutes.insert(route);
         m_draftStore->select(m_stream, m_topic);
         if (!guard || !m_draftStore) return;
-        if (first && m_drafts.contains(route)) m_draftStore->edit(m_stream, m_topic, m_drafts.value(route));
+        m_draftFallbackOwner = owner; m_draftFallbackRoute = route;
+        m_draftFallback = m_draftStore->text(m_stream, m_topic);
     } else if (stream && stream->encrypted) m_draftStore->select({}, {});
 }
 
@@ -3975,9 +3991,12 @@ void NativeController::useDrafts(NativeDrafts *drafts)
             if (!m_draftStore || owner != creationOwnerKey() || owner != m_draftOwner) return;
             const auto route = stream + '/' + topic;
             if (!m_draftRoutes.contains(route)) return;
-            m_drafts.insert(route, m_draftStore->text(stream, topic));
             const QPointer<NativeController> guard(this);
-            if (route == conversationKey()) emit draftChanged();
+            if (route == conversationKey() && currentStream() && !currentStream()->encrypted) {
+                m_draftFallbackOwner = owner; m_draftFallbackRoute = route;
+                m_draftFallback = m_draftStore->text(stream, topic);
+                emit draftChanged();
+            }
             if (guard) emit stateChanged();
         });
         m_draftStates = connect(drafts, &NativeDrafts::stateChanged, this, [this] { emit stateChanged(); });
@@ -4539,7 +4558,8 @@ void NativeController::attachFiles(const QVariantList &localUrls)
             m_error = tr("Choose a local file to attach.");
             continue;
         }
-        m_uploadQueue.enqueue({++m_nextFileOperation, url.toLocalFile(), m_stream, conversation});
+        m_uploadQueue.enqueue({++m_nextFileOperation, url.toLocalFile(), m_stream, conversation,
+            durableDraftRoute() ? m_draftStore->capture(m_stream, m_topic) : NativeDrafts::Token{}});
         ++m_uploads;
         ++m_pendingUploads[conversation];
         m_attachmentNotices[conversation] = tr("Uploading attachment…");
@@ -4564,7 +4584,9 @@ void NativeController::drainUploads()
         m_fileOperations.insert(task.intent, {service, 0});
         ++m_activeUploads;
         const auto operation = service->upload(task.path, task.stream, {},
-            [self, generation, epoch, intent = task.intent, conversation = task.conversation](const FileResult &result) {
+            [self, generation, epoch, intent = task.intent, conversation = task.conversation,
+             residency = task.draftResidency](const FileResult &result) {
+                Q_UNUSED(residency);
                 if (self)
                     self->finishUpload(intent, generation, epoch, conversation, result);
             });
@@ -4616,9 +4638,12 @@ void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 
             if (imageParagraph && !draft.endsWith("\n\n"))
                 draft += '\n';
         }
-        m_drafts.insert(conversation, draft + attachment + (imageParagraph ? "\n\n" : "\n"));
-        ++m_draftRevisions[conversation];
-        if (persistent) m_draftStore->edit(stream, topic, m_drafts.value(conversation));
+        const auto text = draft + attachment + (imageParagraph ? "\n\n" : "\n");
+        if (persistent) {
+            m_draftStore->edit(stream, topic, text);
+        } else {
+            m_drafts.insert(conversation, text); ++m_draftRevisions[conversation];
+        }
         if (!guard) return;
         m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
             ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
@@ -4828,6 +4853,7 @@ void NativeController::reset()
     interruptDirectChats();
     m_drafts.clear();
     m_draftRevisions.clear();
+    m_draftFallbackOwner.clear(); m_draftFallbackRoute.clear(); m_draftFallback.clear();
     m_pendingSends.clear();
     m_pendingUploads.clear();
     m_attachmentNotices.clear();
@@ -6329,10 +6355,12 @@ void NativeController::setDraft(const QString &text)
 {
     if ((m_topic.isEmpty() && (!currentStream() || !currentStream()->encrypted || !hasConversation())) || draft() == text)
         return;
-    m_drafts.insert(conversationKey(), text);
-    ++m_draftRevisions[conversationKey()];
     const QPointer<NativeController> guard(this);
-    if (durableDraftRoute()) m_draftStore->edit(m_stream, m_topic, text);
+    if (durableDraftRoute()) {
+        m_draftStore->edit(m_stream, m_topic, text);
+    } else {
+        m_drafts.insert(conversationKey(), text); ++m_draftRevisions[conversationKey()];
+    }
     if (!guard) return;
     emit draftChanged();
     emit stateChanged();

@@ -26,12 +26,166 @@ bool seed(const QString &path)
     NativeDraftStore store(path);
     return store.open(ownerA) == Failure::None && store.put(stored()) == Failure::None;
 }
+QString numberedTopic(int index)
+{
+    return QString("99000000-0000-4000-8000-%1").arg(index, 12, 16, QLatin1Char('0'));
+}
+bool seedMany(const QString &path, const QString &owner, int count)
+{
+    NativeDraftStore store(path);
+    if (store.open(owner) != Failure::None) return false;
+    QVector<DraftRecord> records;
+    for (int i = 0; i < count; ++i) {
+        auto record = stored(); record.uuid = numberedTopic(i); record.topic = numberedTopic(i);
+        record.text = "Body " + QString::number(i); records.append(record);
+    }
+    return store.apply(records, {}) == Failure::None;
+}
 }
 
 class NativeDraftsTest final : public QObject {
     Q_OBJECT
 private slots:
     void init() { QTest::failOnWarning(); }
+
+    void cleanDraftBodiesHaveABoundedRecordCacheAndReloadFromDisk()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        drafts.setOwner(ownerA);
+        for (int i = 0; i < NativeDrafts::MaximumCachedRecords + 12; ++i) {
+            const auto topic = numberedTopic(i); drafts.select(streamId, topic);
+            QTRY_VERIFY(drafts.ready(streamId, topic));
+            QVERIFY(drafts.edit(streamId, topic, "Body " + QString::number(i)));
+            bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        }
+        QTRY_VERIFY(drafts.residency().cachedRecords <= NativeDrafts::MaximumCachedRecords);
+        drafts.select(streamId, numberedTopic(0)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(0)));
+        QCOMPARE(drafts.text(), "Body 0");
+    }
+
+    void cleanDraftPayloadHasAByteBudgetIndependentOfRecordCount()
+    {
+        QTemporaryDir directory;
+        {
+            NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+            for (int i = 0; i < 48; ++i) {
+                auto record = stored(); record.uuid = numberedTopic(i); record.topic = numberedTopic(i);
+                record.text = QString::number(i) + QString(39995, QChar(0x754c));
+                QCOMPARE(store.put(record), Failure::None);
+            }
+        }
+        NativeDraftService service(directory.path()); NativeDrafts drafts(&service); drafts.setOwner(ownerA);
+        for (int i = 0; i < 48; ++i) {
+            const auto topic = numberedTopic(i); drafts.select(streamId, topic); QTRY_VERIFY(drafts.ready(streamId, topic));
+            QVERIFY(drafts.text().startsWith(QString::number(i)));
+        }
+        QTRY_VERIFY(drafts.residency().cachedBytes <= NativeDrafts::MaximumCachedBytes);
+        QVERIFY(drafts.residency().cachedRecords < 48);
+    }
+
+    void emptyConversationMetadataAlsoHasABound()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service); drafts.setOwner(ownerA);
+        for (int i = 0; i < NativeDrafts::MaximumCachedRoutes + 12; ++i) {
+            const auto topic = numberedTopic(i); drafts.select(streamId, topic); QTRY_VERIFY(drafts.ready(streamId, topic));
+            QVERIFY(drafts.text().isEmpty());
+        }
+        QTRY_VERIFY(drafts.residency().cachedRoutes <= NativeDrafts::MaximumCachedRoutes);
+    }
+
+    void unchangedEmptyEditsDoNotAccumulateIdleMetadata()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        drafts.setOwner(ownerA); drafts.select(streamId, topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        QTest::qWait(5);
+        for (int i = 0; i < NativeDrafts::MaximumCachedRoutes + 12; ++i)
+            QVERIFY(drafts.edit(streamId, numberedTopic(i), ""));
+        QTRY_VERIFY(drafts.residency().cachedRoutes <= NativeDrafts::MaximumCachedRoutes);
+    }
+
+    void lastSnapshotCopyReleasesResidencyAndDiskRestorationStillWorks()
+    {
+        QTemporaryDir directory; QVERIFY(seedMany(directory.path(), ownerA, 76));
+        NativeDraftService service(directory.path()); NativeDrafts drafts(&service); drafts.setOwner(ownerA);
+        drafts.select(streamId, numberedTopic(0)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(0)));
+        auto token = drafts.capture(streamId, numberedTopic(0)); auto copy = token; token = {};
+        for (int i = 1; i < 76; ++i) {
+            drafts.select(streamId, numberedTopic(i)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(i)));
+        }
+        QVERIFY(drafts.ready(streamId, numberedTopic(0))); QCOMPARE(drafts.text(streamId, numberedTopic(0)), "Body 0");
+        copy = {};
+        QTRY_VERIFY(!drafts.ready(streamId, numberedTopic(0)));
+        QVERIFY(drafts.residency().cachedRecords <= NativeDrafts::MaximumCachedRecords);
+        drafts.select(streamId, numberedTopic(0)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(0)));
+        QCOMPARE(drafts.text(), "Body 0");
+    }
+
+    void snapshotConsumptionAndNewerSameTextSurviveCachePressure()
+    {
+        QTemporaryDir directory; QVERIFY(seedMany(directory.path(), ownerA, 76));
+        NativeDraftService service(directory.path()); NativeDrafts drafts(&service); drafts.setOwner(ownerA);
+        drafts.select(streamId, numberedTopic(0)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(0)));
+        const auto token = drafts.capture(streamId, numberedTopic(0));
+        QVERIFY(drafts.edit(streamId, numberedTopic(0), "Intermediate"));
+        QVERIFY(drafts.edit(streamId, numberedTopic(0), "Body 0"));
+        for (int i = 1; i < 76; ++i) {
+            drafts.select(streamId, numberedTopic(i)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(i)));
+        }
+        QVERIFY(!drafts.consume(token)); QCOMPARE(drafts.text(streamId, numberedTopic(0)), "Body 0");
+        QVERIFY(drafts.consume(drafts.capture(streamId, numberedTopic(0))));
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        service.shutdown(); QTRY_VERIFY(service.stopped());
+        NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        QVERIFY(!store.latest(streamId, numberedTopic(0)).record);
+    }
+
+    void emptyAttachmentConversationCanBeRetainedThroughMetadataPressure()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        drafts.setOwner(ownerA); drafts.select(streamId, topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        auto token = drafts.capture(streamId, topicId); QVERIFY(token.residency); QVERIFY(token.uuid.isEmpty());
+        for (int i = 0; i < NativeDrafts::MaximumCachedRoutes + 12; ++i) {
+            drafts.select(streamId, numberedTopic(i)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(i)));
+        }
+        QVERIFY(drafts.ready(streamId, topicId)); QVERIFY(drafts.retained(streamId, topicId));
+        QVERIFY(drafts.edit(streamId, topicId, "Late attachment caption")); token = {};
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        drafts.select(streamId, topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        QCOMPARE(drafts.text(), "Late attachment caption");
+    }
+
+    void failedWritesAndProtectedInputAreNotEvictedByAnotherOwner()
+    {
+        QTemporaryDir directory; QVERIFY(seedMany(directory.path(), ownerB, 76));
+        NativeDraftStore lock(directory.path()); QCOMPARE(lock.open(ownerA), Failure::None);
+        NativeDraftService service(directory.path()); NativeDrafts drafts(&service); drafts.setOwner(ownerA);
+        drafts.select(streamId, topicId); QVERIFY(drafts.edit(streamId, topicId, "Uncommitted input"));
+        QVERIFY(drafts.edit(streamId, secondTopicId, ":::local test-only text:::"));
+        QTRY_VERIFY(drafts.failure() != Failure::None);
+        drafts.setOwner(ownerB);
+        for (int i = 0; i < 76; ++i) {
+            drafts.select(streamId, numberedTopic(i)); QTRY_VERIFY(drafts.ready(streamId, numberedTopic(i)));
+            QVERIFY(!drafts.text().contains("Uncommitted"));
+        }
+        drafts.setOwner(ownerA); drafts.select(streamId, topicId); QCOMPARE(drafts.text(), "Uncommitted input");
+        QCOMPARE(drafts.text(streamId, secondTopicId), ":::local test-only text:::");
+        lock.close(); bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        service.shutdown(); QTRY_VERIFY(service.stopped());
+        NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        QCOMPARE(store.latest(streamId, topicId).record->text, "Uncommitted input");
+        QVERIFY(!store.latest(streamId, secondTopicId).record);
+    }
+
+    void snapshotReleaseAfterModelDestructionIsSafe()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts::Token token;
+        {
+            NativeDrafts drafts(&service); drafts.setOwner(ownerA); drafts.select(streamId, topicId);
+            QVERIFY(drafts.edit(streamId, topicId, "Retain me")); token = drafts.capture(streamId, topicId);
+            bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        }
+        token = {}; QCoreApplication::processEvents();
+    }
 
     void inputIsCoalescedAndDurableAcrossTwoLifetimes()
     {

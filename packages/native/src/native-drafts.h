@@ -11,7 +11,23 @@ namespace workspace {
 class NativeDrafts final : public QObject {
     Q_OBJECT
 public:
-    struct Token { QString owner, stream, topic, uuid, snapshot, text; };
+    struct Token {
+        QString owner, stream, topic, uuid, snapshot, text;
+        // Retain the conversation/snapshot through an asynchronous send or
+        // attachment operation. Copies share one lifetime; no extra body copy.
+        std::shared_ptr<const void> residency{};
+    };
+    // Clean cache only. Current input and pending user work are retained
+    // separately; serialized payload bytes are not a process-RSS claim.
+    static constexpr int MaximumCachedRecords = 64;
+    static constexpr int MaximumCachedRoutes = 128;
+    static constexpr qsizetype MaximumCachedBytes = 4 * 1024 * 1024;
+    struct Residency {
+        int records = 0, cachedRecords = 0, routes = 0, cachedRoutes = 0, owners = 0;
+        qsizetype cachedBytes = 0;
+    };
+    Residency residency() const;
+    bool retained(const QString &stream, const QString &topic) const;
     using Done = std::function<void(bool)>;
     explicit NativeDrafts(NativeDraftService *storage, QObject *parent = nullptr);
     ~NativeDrafts() override;

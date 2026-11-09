@@ -968,6 +968,24 @@ development executable also exited its anonymous Wayland window through Ctrl+Q
 with code 0 and removed its temporary profile. These are local checks; live draft
 synchronization and installed primary-account acceptance remain open.
 
+## Bounded composer residency
+
+The draft model now has a global clean cache with 64-record, 4 MiB serialized
+payload and 128-conversation metadata limits. Current input, dirty saves and
+pending operation lifetimes stay resident; disk drafts are not evicted. Exact
+send snapshots and attachment captions survive pressure, and the controller now
+retains one ordinary-text fallback. The registered synthetic Main.qml workload
+checks 160 large-text conversations with the real history cache and records Linux
+RSS samples. API synchronization and installed primary-account acceptance remain
+open for 0.3.0. See [composer residency](NATIVE_DESKTOP_DRAFTS.md#composer-residency).
+
+The coherent local run passed Locale14, Store32, Service16, Composer24,
+Controller853, Window296 and Workload3 (1,238 Qt checks, no failures or skips).
+After 64–160 conversations the synthetic workload observed roughly 305–309 MiB
+RSS, with 34 evictable cached bodies, at most 128 cached routes and one controller
+text fallback. This is a measured workload result, not a general memory cap or
+installed primary-account acceptance.
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting

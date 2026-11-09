@@ -20,11 +20,26 @@ bool ownerValid(const QString &owner)
     static const QRegularExpression pattern("\\A[0-9a-f]{64}\\z");
     return pattern.match(owner).hasMatch();
 }
-struct Work { DraftRecord record; quint64 version = 0, durable = 0; };
+struct Hold {
+    QString uuid;
+    std::function<void()> released;
+    ~Hold() { if (released) released(); }
+};
+struct Work {
+    DraftRecord record;
+    quint64 version = 0, durable = 0;
+    mutable qsizetype cachedBytes = 0;
+    qsizetype bytes() const {
+        if (!cachedBytes) cachedBytes = NativeDraftStore::serializedSize(record);
+        return cachedBytes;
+    }
+};
 struct Owner {
     QHash<QString, Work> records;
     QHash<QString, QString> active, shadow;
     QHash<QString, quint64> edits;
+    QHash<QString, quint64> recent;
+    QHash<QString, QVector<std::weak_ptr<const Hold>>> holds;
     QSet<QString> loaded, bootstrap, revisit, completed, dirty, clearPending, invalidShadow;
     Failure failure = Failure::None;
 };
@@ -38,7 +53,7 @@ struct NativeDrafts::Private {
     QString owner, stream, topic, workerOwner;
     QTimer saveTimer;
     bool scheduled = false, opening = false, running = false;
-    quint64 version = 0, forceThrough = 0;
+    quint64 version = 0, forceThrough = 0, use = 0;
     qint64 timestamp = 0;
     QVector<Waiter> waiters;
 
@@ -74,6 +89,7 @@ struct NativeDrafts::Private {
     }
     void dirty(Owner &state, Work &work)
     {
+        work.cachedBytes = 0;
         work.version = ++version;
         state.dirty.insert(work.record.uuid);
     }
@@ -113,6 +129,101 @@ struct NativeDrafts::Private {
         const QString capturedOwner = targetOwner, stream = route.section('/', 0, 0), topic = route.section('/', 1, 1);
         emit q->changed(capturedOwner, stream, topic);
     }
+    void touch(Owner &state, const QString &route) { state.recent.insert(route, ++use); }
+    QSet<QString> routes(const Owner &state) const
+    {
+        auto result = state.loaded | state.bootstrap | state.completed | state.revisit | state.clearPending;
+        for (const auto &route : state.recent.keys()) result.insert(route);
+        for (const auto &route : state.active.keys()) result.insert(route);
+        for (const auto &route : state.shadow.keys()) result.insert(route);
+        for (const auto &route : state.holds.keys()) result.insert(route);
+        for (const auto &row : state.records) result.insert(key(row.record.stream, row.record.topic));
+        return result;
+    }
+    QSet<QString> protectedRoutes(const QString &identity, const Owner &state, bool bootstrap = true) const
+    {
+        auto result = state.clearPending | state.invalidShadow;
+        if (bootstrap) result |= state.bootstrap;
+        for (const auto &route : state.shadow.keys()) result.insert(route);
+        if (identity == owner && !stream.isEmpty()) result.insert(key(stream, topic));
+        for (auto row = state.records.cbegin(); row != state.records.cend(); ++row)
+            if (row->version != row->durable || state.dirty.contains(row.key()))
+                result.insert(key(row->record.stream, row->record.topic));
+        for (auto it = state.holds.cbegin(); it != state.holds.cend(); ++it)
+            if (std::any_of(it->cbegin(), it->cend(), [](const auto &hold) { return !hold.expired(); })) result.insert(it.key());
+        return result;
+    }
+    bool protectedRow(const Owner &state, const QString &id, const Work &work, const QSet<QString> &protectedRoutes) const
+    {
+        const auto route = key(work.record.stream, work.record.topic);
+        if (work.version != work.durable || state.dirty.contains(id)
+            || (state.active.value(route) == id && protectedRoutes.contains(route))) return true;
+        for (const auto &weak : state.holds.value(route))
+            if (const auto hold = weak.lock(); hold && hold->uuid == id) return true;
+        return false;
+    }
+    void unload(Owner &state, const QString &route)
+    {
+        state.active.remove(route); state.loaded.remove(route); state.edits.remove(route);
+        state.completed.remove(route); state.revisit.remove(route);
+    }
+    bool trim()
+    {
+        // No owner/map removal while an asynchronous operation captures it.
+        if (running || opening) return false;
+        bool changed = false;
+        struct Candidate { QString owner, id, route; quint64 use; qsizetype bytes = 0; };
+        const auto older = [](const Candidate &a, const Candidate &b) {
+            if (a.use != b.use) return a.use < b.use;
+            if (a.owner != b.owner) return a.owner < b.owner;
+            return a.id < b.id;
+        };
+        QVector<Candidate> rows; qsizetype bytes = 0;
+        for (auto state = owners.begin(); state != owners.end(); ++state) {
+            for (auto it = state->holds.begin(); it != state->holds.end();) {
+                auto &holds = it.value();
+                holds.erase(std::remove_if(holds.begin(), holds.end(), [](const auto &hold) { return hold.expired(); }), holds.end());
+                if (holds.isEmpty()) it = state->holds.erase(it); else ++it;
+            }
+            // Navigation does not queue reads of abandoned empty conversations.
+            const auto required = protectedRoutes(state.key(), *state, false);
+            for (const auto &route : state->bootstrap.values())
+                if (!required.contains(route) && !state->edits.value(route)) state->bootstrap.remove(route);
+            const auto protectedSet = protectedRoutes(state.key(), *state);
+            for (auto row = state->records.cbegin(); row != state->records.cend(); ++row) {
+                if (protectedRow(*state, row.key(), *row, protectedSet)) continue;
+                const auto route = key(row->record.stream, row->record.topic);
+                rows.append({state.key(), row.key(), route, state->recent.value(route), row->bytes()});
+                bytes += row->bytes();
+            }
+        }
+        std::sort(rows.begin(), rows.end(), older);
+        int count = rows.size();
+        for (const auto &row : rows) {
+            if (count <= NativeDrafts::MaximumCachedRecords && bytes <= NativeDrafts::MaximumCachedBytes) break;
+            auto &state = owners[row.owner];
+            if (state.active.value(row.route) == row.id) unload(state, row.route);
+            state.records.remove(row.id); --count; bytes -= row.bytes; changed = true;
+        }
+        QVector<Candidate> metadata;
+        for (auto state = owners.cbegin(); state != owners.cend(); ++state) {
+            const auto protectedSet = protectedRoutes(state.key(), *state);
+            for (const auto &route : routes(*state))
+                if (!protectedSet.contains(route)) metadata.append({state.key(), route, route, state->recent.value(route)});
+        }
+        std::sort(metadata.begin(), metadata.end(), older);
+        for (int i = 0; i < metadata.size() - NativeDrafts::MaximumCachedRoutes; ++i) {
+            const auto &entry = metadata[i]; auto &state = owners[entry.owner];
+            unload(state, entry.route); state.bootstrap.remove(entry.route); state.recent.remove(entry.route); state.holds.remove(entry.route);
+            for (auto row = state.records.begin(); row != state.records.end();)
+                if (key(row->record.stream, row->record.topic) == entry.route) row = state.records.erase(row); else ++row;
+            changed = true;
+        }
+        for (auto state = owners.begin(); state != owners.end();)
+            if (state.key() != owner && state->records.isEmpty() && routes(*state).isEmpty()) state = owners.erase(state);
+            else ++state;
+        return changed;
+    }
     void pump()
     {
         if (!storage) { if (!waiters.isEmpty()) finish(false); return; }
@@ -129,6 +240,9 @@ struct NativeDrafts::Private {
                 if (!guard) return;
             }
         }
+        const QPointer<NativeDrafts> trimGuard(q);
+        if (trim()) emit q->stateChanged();
+        if (!trimGuard) return;
         QString target;
         for (auto it = owners.cbegin(); it != owners.cend(); ++it) {
             if (it->failure != Failure::None) continue;
@@ -257,6 +371,27 @@ QString NativeDrafts::selectedStream() const { return d->stream; }
 QString NativeDrafts::selectedTopic() const { return d->topic; }
 QString NativeDrafts::text() const { return d->text(d->stream, d->topic); }
 QString NativeDrafts::text(const QString &stream, const QString &topic) const { return d->text(stream, topic); }
+NativeDrafts::Residency NativeDrafts::residency() const
+{
+    Residency result; result.owners = d->owners.size();
+    for (auto state = d->owners.cbegin(); state != d->owners.cend(); ++state) {
+        const auto protectedRoutes = d->protectedRoutes(state.key(), *state);
+        const auto routes = d->routes(*state);
+        result.routes += routes.size();
+        for (const auto &route : routes) if (!protectedRoutes.contains(route)) ++result.cachedRoutes;
+        for (auto row = state->records.cbegin(); row != state->records.cend(); ++row) {
+            ++result.records;
+            if (d->protectedRow(*state, row.key(), *row, protectedRoutes)) continue;
+            ++result.cachedRecords; result.cachedBytes += row->bytes();
+        }
+    }
+    return result;
+}
+bool NativeDrafts::retained(const QString &stream, const QString &topic) const
+{
+    const auto state = d->owners.constFind(d->owner);
+    return state != d->owners.cend() && state->recent.contains(key(stream, topic));
+}
 bool NativeDrafts::ready(const QString &stream, const QString &topic) const
 {
     const auto state = d->owners.constFind(d->owner);
@@ -291,6 +426,7 @@ void NativeDrafts::select(const QString &stream, const QString &topic)
     d->stream = nextStream; d->topic = nextTopic; d->forceThrough = d->version;
     if (!d->owner.isEmpty() && !nextStream.isEmpty()) {
         auto &state = d->owners[d->owner]; const auto route = key(nextStream, nextTopic);
+        d->touch(state, route);
         if (!state.loaded.contains(route)) state.bootstrap.insert(route);
     }
     d->schedule(); emit stateChanged();
@@ -299,7 +435,8 @@ bool NativeDrafts::edit(const QString &stream, const QString &topic, const QStri
 {
     if (d->owner.isEmpty() || !isUuid(stream) || !isUuid(topic)) return false;
     auto &state = d->owners[d->owner]; const auto route = key(stream, topic);
-    if (d->text(stream, topic) == text) return true;
+    d->touch(state, route);
+    if (d->text(stream, topic) == text) { d->schedule(); return true; }
     ++state.edits[route];
     const bool loaded = state.loaded.contains(route);
     if (!loaded) state.bootstrap.insert(route);
@@ -349,13 +486,22 @@ bool NativeDrafts::edit(const QString &stream, const QString &topic, const QStri
 }
 NativeDrafts::Token NativeDrafts::capture(const QString &stream, const QString &topic) const
 {
-    const auto state = d->owners.constFind(d->owner);
-    if (state == d->owners.cend() || state->shadow.contains(key(stream, topic))) return {};
+    auto state = d->owners.find(d->owner);
+    if (state == d->owners.end() || !isUuid(stream) || !isUuid(topic)) return {};
+    const auto route = key(stream, topic); d->touch(*state, route);
+    Token result{d->owner, stream, topic, {}, {}, {}};
     const auto row = state->records.constFind(state->active.value(key(stream, topic)));
-    if (row == state->records.cend() || row->record.consumed
-        || row->record.stream != stream || row->record.topic != topic) return {};
-    const auto &r = row->record;
-    return {d->owner, stream, topic, r.uuid, r.snapshot, r.text};
+    if (!state->shadow.contains(route) && row != state->records.cend() && !row->record.consumed
+        && row->record.stream == stream && row->record.topic == topic) {
+        const auto &r = row->record; result.uuid = r.uuid; result.snapshot = r.snapshot; result.text = r.text;
+    }
+    auto hold = std::make_shared<Hold>(); hold->uuid = result.uuid;
+    const QPointer<NativeDrafts> guard(d->q);
+    hold->released = [guard] {
+        if (guard) QTimer::singleShot(0, guard, [guard] { if (guard) guard->d->schedule(); });
+    };
+    state->holds[route].append(hold); result.residency = std::move(hold);
+    return result;
 }
 bool NativeDrafts::consume(const Token &token)
 {

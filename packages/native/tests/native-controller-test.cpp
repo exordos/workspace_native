@@ -8552,6 +8552,64 @@ private slots:
         QTRY_VERIFY(fixture.controller.draft().isEmpty());
     }
 
+    void controllerKeepsOnlyOneOrdinaryFallbackUnderDraftPressure()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        const auto topicFor = [](int i) { return QString("a1000000-0000-4000-8000-%1").arg(i, 12, 16, QLatin1Char('0')); };
+        fixture.topics = [&](const Request &) {
+            QJsonArray rows{creationTopic(topicId, streamId, "Initial")};
+            for (int i = 0; i < 80; ++i) rows.append(creationTopic(topicFor(i), streamId, "Draft " + QString::number(i)));
+            return Response{rows};
+        };
+        QVERIFY(fixture.start());
+        for (int i = 0; i < 80; ++i) {
+            const auto topic = topicFor(i); fixture.controller.selectTopic(topic);
+            QTRY_VERIFY(drafts.ready(streamId, topic));
+            const auto body = QString::number(i) + QString(39990, QChar(0x754c));
+            fixture.controller.setDraft(body);
+            bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+            QCOMPARE(fixture.controller.draft(), body);
+        }
+        const auto usage = fixture.controller.draftMemory();
+        QVERIFY2(usage.textBytes <= 3 * 40000 * qsizetype(sizeof(QChar)), qPrintable(QString::number(usage.textBytes)));
+        QVERIFY(usage.entries <= 1);
+        QVERIFY(usage.verifiedRoutes <= NativeDrafts::MaximumCachedRoutes + 1);
+        fixture.controller.selectTopic(topicFor(0)); QTRY_VERIFY(drafts.ready(streamId, topicFor(0)));
+        QCOMPARE(fixture.controller.draft(), QString("0") + QString(39990, QChar(0x754c)));
+    }
+
+    void pendingAttachmentKeepsItsCaptionAcrossMetadataEviction()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts); FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        const auto topicFor = [](int i) { return QString("a2000000-0000-4000-8000-%1").arg(i, 12, 16, QLatin1Char('0')); };
+        fixture.topics = [&](const Request &) {
+            QJsonArray rows{creationTopic(topicId, streamId, "Initial")};
+            for (int i = 0; i < 140; ++i) rows.append(creationTopic(topicFor(i), streamId, "Draft " + QString::number(i)));
+            return Response{rows};
+        };
+        QFile file(directory.filePath("fixture.txt")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("fixture"); file.close();
+        std::function<void()> complete; const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.files = [&](const Request &) {
+            Response response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "fixture.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 7},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}};
+            response.defer = [&](auto send) { complete = std::move(send); }; return response;
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Initial caption"); fixture.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(bool(complete)); fixture.controller.setDraft("Newer caption");
+        for (int i = 0; i < 140; ++i) {
+            fixture.controller.selectTopic(topicFor(i)); QTRY_VERIFY(drafts.ready(streamId, topicFor(i)));
+        }
+        QVERIFY(drafts.retained(streamId, topicId)); complete(); complete = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        fixture.controller.selectTopic(topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        QVERIFY(fixture.controller.draft().startsWith("Newer caption\n[fixture.txt]"));
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+    }
+
     void durableComposerRetainsNewerSameTextWhileSendIsBeingVerified_data()
     {
         QTest::addColumn<bool>("durable");

@@ -106,6 +106,8 @@ public:
     void useFiles(FileClient *client);
     void useCache(NativeCacheService *cache);
     void useDrafts(NativeDrafts *drafts);
+    struct DraftMemory { int entries = 0, verifiedRoutes = 0; qsizetype textBytes = 0; };
+    DraftMemory draftMemory() const;
     void reportDraftFlushFailure();
     void usePreferences(NativePreferences *preferences);
     QVariantMap ownStatus() const;
@@ -604,6 +606,7 @@ private:
         QString path;
         QString stream;
         QString conversation;
+        NativeDrafts::Token draftResidency{};
     };
     struct FileOperation {
         QPointer<FileClient> service;
@@ -748,6 +751,7 @@ private:
     QHash<QString, quint64> m_draftRevisions;
     QPointer<NativeDrafts> m_draftStore;
     QString m_draftOwner;
+    QString m_draftFallbackOwner, m_draftFallbackRoute, m_draftFallback;
     QSet<QString> m_draftRoutes;
     bool m_syncingDrafts = false, m_draftFlushFailed = false;
     QMetaObject::Connection m_draftChanges, m_draftStates, m_draftDestroyed, m_draftSelection;

@@ -3,8 +3,8 @@
 Persistent drafts are planned for 0.3.0. The wire parser, revision transport and
 durable storage backend, bounded storage worker and local composer integration
 are implemented. Main constructs the store/model and binds the existing composer
-to the verified account and ordinary conversation. API synchronization,
-bounded composer residency and packaged acceptance remain required before release.
+to the verified account and ordinary conversation. The clean composer cache now
+has bounded residency. API synchronization and packaged acceptance remain required before release.
 This document describes the contract and acceptance targets, not complete parity.
 
 ## Existing contract
@@ -98,6 +98,38 @@ input and restores the window with a persistence notice; it does not report
 successful shutdown or start the successor. This wiring and its component/window
 checks do not establish installed-process or live-service acceptance.
 
+## Composer residency
+
+The GUI model keeps at most 64 evictable clean records, 4 MiB of their serialized
+payloads and 128 evictable conversation-metadata entries across accounts. Current
+input, uncommitted writes, private/invalid input and actual pending operations
+are retained separately. These are clean-cache limits, not a universal RSS cap.
+Eviction removes only RAM state; the existing owner-bound SQLite data is retained.
+An evicted conversation reloads from disk without a draft API navigation request.
+
+Send tokens share an opaque residency lifetime. Queued and in-flight attachment
+operations retain the same kind of lifetime, including when the conversation was
+empty. The model holds weak references; releasing the last operation copy queues
+trimming without a periodic timer. Dirty writes and failed saves remain protected.
+The controller keeps one current ordinary-text fallback instead of retaining every
+saved body. Encrypted/unbound unsent editor work keeps its existing RAM behavior.
+
+Record pressure, byte pressure and empty-conversation metadata each have retained
+failing regressions from the unbounded implementation. Tests also cover idle
+same-empty edits, exact send snapshots under pressure, last-copy release,
+attachment captions, failed writes across owners and model destruction. The
+controller regression runs its prior source with only a diagnostics accessor and
+reproduces retained text growing across 80 conversations.
+
+The separately registered `native-native-draft-workload` exercises actual
+Main.qml, the controller, draft workers and a working history cache against local
+synthetic HTTP. It enters large texts in 160 conversations, checks the clean
+budgets and one-text controller fallback, returns to an evicted conversation and
+requires a history-cache hit. Linux `/proc/self/status` samples observe process
+RSS; they are workload measurements, not cross-platform or installed-account
+acceptance. The report is written under the build's `Testing` directory. The
+history-cache default remains decimal 10 GB.
+
 ## Verification and remaining gates
 
 The registered domain, API and draft-store suites cover owner/route admission,
@@ -145,6 +177,6 @@ Before publishing 0.3.0, complete and verify:
    local-only reply/edit context and removal of inaccessible conversation data.
 6. Real Source/Native matched screenshots, primary-account process restart,
    cross-client synchronization and the installed update into the public package.
-7. Bounded residency for clean composer bodies and a measured full-application
-   input/navigation workload; the worker's admission limits alone do not prove
-   whole-application memory use.
+7. Repeat resource/load acceptance with the installed primary-account package.
+   Clean-residency and synthetic Main.qml workload checks cover the local path;
+   the cache limits alone do not prove a general process-memory bound.

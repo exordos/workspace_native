@@ -230,8 +230,14 @@ if(BUILD_TESTING)
         elseif(test STREQUAL "native-window")
             # Include the direct-chat keyboard, recovery and rendering cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 360)
+        elseif(test STREQUAL "native-drafts")
+            # Full record/byte/metadata pressure plus retained-operation cases.
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
         endif()
     endforeach()
+    add_test(NAME native-native-draft-workload COMMAND native-window-test)
+    set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
+        ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
