@@ -75,7 +75,8 @@ private slots:
         QProcess process;
         process.start(QCoreApplication::applicationFilePath(), {"--draft-store-write-and-exit", directory.path()});
         QVERIFY(process.waitForFinished(10000)); QCOMPARE(process.exitStatus(), QProcess::NormalExit); QCOMPARE(process.exitCode(), 0);
-        QVERIFY(process.readAllStandardError().isEmpty());
+        const auto diagnostics = process.readAllStandardError();
+        QVERIFY2(diagnostics.isEmpty(), diagnostics.constData());
         NativeDraftStore reopened(directory.path()); QCOMPARE(reopened.open(ownerA), Failure::None);
         const auto loaded = reopened.read(returnedId); QCOMPARE(loaded.failure, Failure::None); QVERIFY(loaded.record);
         QCOMPARE(loaded.record->text, record().text); QCOMPARE(loaded.record->replySession, record().replySession);

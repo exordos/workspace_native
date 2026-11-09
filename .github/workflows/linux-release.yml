@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 45
     env:
       DEBIAN_FRONTEND: noninteractive
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     steps:
       - name: Install documented build and runtime dependencies
         shell: bash

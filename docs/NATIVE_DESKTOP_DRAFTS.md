@@ -71,6 +71,10 @@ fragment rejection and corruption. A real child process commits a draft and exit
 without destructors; a new store instance then reopens its committed WAL. The
 default-null-cursor regression must enumerate the same rows as an explicitly
 empty cursor. Linux packaging CI runs these suites before producing an artifact.
+The CI job uses `C.UTF-8` for both LANG and LC_ALL so Qt's startup locale
+diagnostic does not invalidate the subprocess test's strict empty-stderr check.
+The child check retains that assertion and reports its captured synthetic
+diagnostics on failure; it does not filter or suppress Qt messages.
 
 Before publishing 0.3.0, complete and verify:
 
