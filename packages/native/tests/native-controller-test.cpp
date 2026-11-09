@@ -2871,6 +2871,82 @@ private slots:
         QCOMPARE(retained->row, moved);
     }
 
+    void wholeTopicMoveFollowsCanonicalAndEvictsVacatedBucket()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), NativeCache::Policy{}, true);
+        Fixture fixture; fixture.controller.useCache(&cache);
+        int vacatedGets = 0, movedGets = 0;
+        fixture.streams = [](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", otherArchiveId}, {"project_id", projectId}, {"name", "Receiving channel"}, {"encryption", false}}}};
+        };
+        fixture.topics = [](const Request &request) {
+            const auto movedSide = request.target.toString().contains(otherArchiveId);
+            return Response{QJsonArray{creationTopic(topicId, movedSide ? otherArchiveId : streamId,
+                movedSide ? "Moved topic" : "Native topic")}};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            const auto stream = query.queryItemValue("stream_uuid");
+            if (stream == streamId) ++vacatedGets; else ++movedGets;
+            auto a = historyMessage(1); auto b = historyMessage(2);
+            if (!stream.isEmpty()) { a["stream_uuid"] = stream; b["stream_uuid"] = stream; }
+            return Response{QJsonArray{a, b}};
+        };
+        // Manual start: the fixture's default flow expects a single-stream catalog.
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QVERIFY(QTest::qWaitFor([&]{return fixture.controller.projects().size()==1;},2000));
+        fixture.controller.openProject(projectId);
+        QVERIFY(QTest::qWaitFor([&]{return fixture.controller.streams().size()==2;},2000));
+        fixture.controller.selectStream(streamId);
+        QVERIFY(QTest::qWaitFor([&]{return !fixture.controller.topics().isEmpty();},2000));
+        fixture.controller.selectTopic(topicId);
+        QVERIFY(QTest::qWaitFor([&]{return !fixture.controller.busy();},2000));
+        QTRY_VERIFY(cache.available());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        const auto lease = cache.lease();
+        QVERIFY(cache.put(lease, {NativeCache::Kind::History, streamId, topicId, {}}, {historyMessage(1)}, "vacated-older"));
+        QVERIFY(cache.put(lease, {NativeCache::Kind::History, streamId, {}, {}}, {historyMessage(1), historyMessage(2)}));
+        auto foreign = historyMessage(9);
+        foreign["stream_uuid"] = otherArchiveId; foreign["topic_uuid"] = secondTopicId;
+        QVERIFY(cache.put(lease, {NativeCache::Kind::History, otherArchiveId, secondTopicId, {}}, {foreign}));
+        QVERIFY(flushCache(cache));
+        QVERIFY(cacheEntry(cache, lease, {NativeCache::Kind::History, streamId, topicId, {}}));
+        QVERIFY(cacheEntry(cache, lease, {NativeCache::Kind::History, streamId, {}, {}}));
+        QVERIFY2(cacheEntry(cache, lease, {NativeCache::Kind::History, otherArchiveId, secondTopicId, {}}), "pre: unrelated page must be seeded");
+        const auto vacatedBaseline = vacatedGets;
+        const auto movedTopic = creationTopic(topicId, otherArchiveId, "Moved topic");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated", movedTopic)));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.selectedStream(), otherArchiveId, 4000);
+        QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QVERIFY(flushCache(cache));
+        QVERIFY2(!cacheEntry(cache, lease, {NativeCache::Kind::History, streamId, topicId, {}}),
+            "A whole-topic move is authoritative; the vacated topic bucket must not hydrate the former route");
+        QVERIFY2(!cacheEntry(cache, lease, {NativeCache::Kind::History, streamId, {}, {}}),
+            "The vacated stream aggregate bucket must not hydrate messages that moved to another channel");
+        QVERIFY(cacheEntry(cache, lease, {NativeCache::Kind::History, otherArchiveId, secondTopicId, {}}));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QCOMPARE(fixture.controller.messages().size(), 2);
+        const auto firstId = historyMessage(1).value("uuid").toString();
+        const auto secondId = historyMessage(2).value("uuid").toString();
+        QCOMPARE(modelMessage(fixture.controller, firstId).size() > 0, true);
+        QCOMPARE(modelMessage(fixture.controller, secondId).size() > 0, true);
+        QCOMPARE(vacatedGets, vacatedBaseline);
+        const auto stormGets = fixture.totalHistoryGets();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated", creationTopic(topicId, otherArchiveId, "Storm one"), 21)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated", creationTopic(topicId, otherArchiveId, "Storm two"), 22)));
+        QCOMPARE(fixture.controller.selectedStream(), otherArchiveId);
+        QCOMPARE(fixture.controller.selectedTopic(), topicId);
+        QCOMPARE(fixture.controller.messages().size(), 2);
+        QCOMPARE(fixture.totalHistoryGets(), stormGets);
+        int movedTopicRows = 0;
+        for (const auto &row : fixture.controller.topics())
+            if (row.toMap().value("id").toString() == topicId) ++movedTopicRows;
+        QCOMPARE(movedTopicRows, 1);
+    }
+
     void delayedOldHistoryCannotResurrectMovedPlacement() {
         Fixture fixture; auto row=message("Current placement"); int reads=0;
         fixture.messages=[&](const Request &request)->Response {
