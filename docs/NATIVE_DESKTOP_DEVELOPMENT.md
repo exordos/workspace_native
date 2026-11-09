@@ -689,6 +689,13 @@ The vault tests check key ownership, disabled plaintext fallback, serialized
 save/forget and rotation. Preferences tests recreate the settings object and
 exercise Qt style-hint changes and separate owner restoration.
 
+Geometry oracles pin the source design only where values are font-independent
+(fixed pixel sizes, spacing and radii). Values that follow the resolved UI font -
+wrapped line counts, line heights and text-sized widths - are derived at runtime
+or checked within small documented tolerances, so the suite is portable across
+host font stacks (issue #16). The reference window-test stand is a bare Xvnc
+session at 1440x900 with a panel-less window manager.
+
 ### Updater metadata transport
 
 The updater's real-wire Linux regressions use separate QCore drivers with Node's
