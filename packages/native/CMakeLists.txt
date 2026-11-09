@@ -344,10 +344,16 @@ if(BUILD_TESTING)
         uiOrdinaryManagerRejectsFromTheActualMainAction
         uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
         uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction)
-    # Original108 cases plus13 mounted resolver/disclosure data. Measured old108
-    # 216.090s +new15 focused65.412s, with25% headroom rounded up to30s:360s.
-    # Individual assertion waits stay unchanged.
-    set_tests_properties(native-native-e2ee-ui PROPERTIES TIMEOUT 360)
+    # The explicit UI list measured 310s green and 548s when failing QTRY waits
+    # added time on the GPU-less reference stand (llvmpipe, bare Xvnc 1440x900
+    # plus openbox), so the old 360s ceiling timeout-killed healthy runs there.
+    # A timeout kill prints no further result and was misread as an
+    # order-dependent stall (issues #17 and #18). Worst observed 548s plus 25%
+    # headroom rounded up to 30s: 720s. Running this binary unfiltered also
+    # executes the 274 core rows in the same process (measured 893s total), so
+    # keep the explicit function list here and budget about 900s for direct
+    # full-binary runs. Individual assertion waits stay unchanged.
+    set_tests_properties(native-native-e2ee-ui PROPERTIES TIMEOUT 720)
     if(UNIX AND NOT APPLE)
         # Run only against staging through verify-installed-runtime.py --probe.
         # This helper is not installed into the delivered application.
