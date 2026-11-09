@@ -1,3 +1,21 @@
+# Workspace Native 0.3.1 - Linux development preview
+
+This release changes verification only; product behavior, storage and APIs are
+unchanged from 0.3.0. The window geometry checks previously pinned one
+maintainer machine's font metrics and failed on other font stacks. The status
+dialog oracles now derive the wrapped description line count at runtime, and
+font-derived heights and text-sized widths use documented small tolerances.
+The full window suite is green on this Ubuntu 26.04 reference host with the
+bare Xvnc plus openbox stand.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.0...0.3.1](https://github.com/exordos/workspace_native/compare/0.3.0...0.3.1)
+
+---
+
 # Workspace Native 0.3.0 — Linux development preview
 
 Ordinary conversation drafts now survive restart and synchronize with Workspace.
