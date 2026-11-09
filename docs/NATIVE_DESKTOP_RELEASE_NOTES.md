@@ -1,3 +1,26 @@
+# Workspace Native 0.3.5 - Linux development preview
+
+Session credential storage is now proven against a regular desktop profile, not
+only a disposable test keyring. The opt-in secure-store acceptance group
+(`native-secure-store-platform`, enabled with
+`-DWORKSPACE_NATIVE_PLATFORM_TESTS=ON`) gained
+`persistentProfileSurvivesKeyringDaemonRestart`: a real GNOME Keyring daemon
+serving a durable on-disk profile must keep a saved sign-in token available
+across its own restart, both before and after rotation, and a falsification
+control proves reads come from the on-disk keyring rather than daemon memory.
+Both platform groups also passed against the host's real persistent login
+keyring. No user-visible behavior changed; this release is verification and
+regression coverage (acceptance record in `docs/NATIVE_DESKTOP_CRYPTO.md`,
+locked-keyring sessions tracked in issue #28).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.4...0.3.5](https://github.com/exordos/workspace_native/compare/0.3.4...0.3.5)
+
+---
+
 # Workspace Native 0.3.4 - Linux development preview
 
 Messages are now shareable. The message context menu gained **Copy link**,

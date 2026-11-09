@@ -149,8 +149,30 @@ key/receipts/removed request, then delete the granted key, remove the exact OS
 master and confirm its absence. The bare
 credential-adapter test passed against the same provider. The private provider,
 bus and data were removed afterward. This is provider integration acceptance;
-it does not establish the user's existing desktop keyring, other providers or
-other operating systems.
+other providers and other operating systems are not covered by it.
+
+For issue #12 both opt-in groups also ran against this host's regular desktop
+session - the persistent, PAM-unlocked `login.keyring` of the logged-in user -
+and both passed: exact bytes and the encrypted vault survive separate worker
+processes, rotation and deletion were confirmed, and only disposable test keys
+were written. The same group now additionally carries
+`persistentProfileSurvivesKeyringDaemonRestart`: a real `gnome-keyring-daemon`
+starts on a private session bus over a durable on-disk profile provisioned the
+way graphical login provisions one (`--unlock` with a disposable harness
+passphrase). A stored token survives separate worker processes and a restart of
+the keyring daemon itself, both before and after rotation. A deliberate
+falsification control moves the on-disk keyring files aside across a restart:
+the token is then absent, and it returns when the files are restored, so reads
+demonstrably come from the durable on-disk keyring rather than daemon memory.
+The private bus, daemon and profile are destroyed afterwards; the user's own
+desktop keyring is never written by that case.
+
+A keyring profile that was never provisioned requires the interactive
+provisioning prompt, so a headless harness must perform the login-time unlock
+step first. When a desktop keyring is locked or absent and no prompt provider is
+present, an OS-store write waits on that prompt indefinitely; regular Linux
+desktop sessions unlock the keyring through PAM at login, and issue #28 tracks
+the app-side behavior for locked-profile sessions separately.
 
 To run deliberately against an available OS credential store, configure with
 `-DWORKSPACE_NATIVE_PLATFORM_TESTS=ON`, then run:
@@ -250,8 +272,10 @@ nullable generations, exact receipts, separate-process request restoration,
 owner/API/material changes, archive intersections, realtime reconnect and bounded
 500-row preparation. Earlier reader Runtime and TLS fixtures ran under ASan/UBSan/LSan;
 the current issuer/order changes have not yet had that full sanitizer run.
-Separate provider tests use a private GNOME Keyring instance; they do not establish
-integration with the user's existing desktop keyring.
+Separate provider tests use a private GNOME Keyring instance; the credential
+adapter and chat-key-vault platform groups additionally passed against the
+user's existing desktop keyring and a durable on-disk profile as recorded in
+the credential-store acceptance section above.
 
 ## Initial issuer workflow
 
