@@ -1,3 +1,23 @@
+# Workspace Native 0.3.2 - Linux development preview
+
+This release changes verification only; product behavior, storage and APIs are
+unchanged from 0.3.1. The encrypted UI test group timeout of 360 seconds was
+tuned on a GPU-equipped host and timeout-killed healthy runs on GPU-less
+hosts, which looked like an order-dependent test stall. Measurements on the
+reference stand show the explicit group needs at most 548 seconds (raised to
+720 with headroom) and a direct unfiltered binary run executes both encrypted
+suites in one process in 893 seconds; both budgets are now recorded in the
+development documentation. The full local suite is green on this Ubuntu 26.04
+reference host with the bare Xvnc plus openbox stand.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.1...0.3.2](https://github.com/exordos/workspace_native/compare/0.3.1...0.3.2)
+
+---
+
 # Workspace Native 0.3.1 - Linux development preview
 
 This release changes verification only; product behavior, storage and APIs are
