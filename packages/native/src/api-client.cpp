@@ -439,6 +439,7 @@ void ApiClient::finish(QNetworkReply *reply)
                 } else {
                     result.data = document.isArray() ? QJsonValue(document.array())
                                                      : QJsonValue(document.object());
+                    result.etag = reply->rawHeader("ETag");
                 }
             } else if (result.status != 204 && pending->expectsJson) {
                 result.error = ApiClient::tr("Server returned an empty response.");

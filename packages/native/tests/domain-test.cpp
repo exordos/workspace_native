@@ -11,6 +11,99 @@ using namespace workspace::test;
 class DomainTest final : public QObject {
     Q_OBJECT
 private slots:
+    void ownedDraftSnapshotKeepsCanonicalTextRevisionAndMicrosecondOrder()
+    {
+        const QJsonObject raw{{"uuid", returnedId}, {"project_id", projectId}, {"user_uuid", userId},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}, {"revision", 17},
+            {"created_at", "2026-01-02T10:00:00.000001Z"}, {"updated_at", "2026-01-02T10:00:01.123456Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", "**Draft**\n  preserved\n"}}}};
+        const auto parsed = parseDraft(raw, projectId, userId, "\"17\"");
+        QVERIFY(parsed);
+        QCOMPARE(parsed->uuid, returnedId); QCOMPARE(parsed->project, projectId); QCOMPARE(parsed->user, userId);
+        QCOMPARE(parsed->stream, streamId); QCOMPARE(parsed->topic, topicId);
+        QCOMPARE(parsed->content, QString("**Draft**\n  preserved\n"));
+        QCOMPARE(parsed->revision, 17); QCOMPARE(parsed->etag, QByteArray("\"17\""));
+        QCOMPARE(parsed->createdAt, raw.value("created_at").toString());
+        QCOMPARE(parsed->updatedAt, raw.value("updated_at").toString());
+        QCOMPARE(parsed->updatedMicros, QDateTime::fromString("2026-01-02T10:00:01.123Z", Qt::ISODateWithMs)
+            .toMSecsSinceEpoch() * 1000 + 456);
+        const auto listItem = parseDraft(raw, projectId, userId);
+        QVERIFY(listItem); QCOMPARE(listItem->etag, parsed->etag);
+        QVERIFY(!parseDraft(raw, secondTopicId, userId));
+        QVERIFY(!parseDraft(raw, projectId, secondTopicId));
+    }
+
+    void draftWireAdmission_data()
+    {
+        QTest::addColumn<QString>("field"); QTest::addColumn<QJsonValue>("value");
+        for (const auto *field : {"uuid", "stream_uuid", "topic_uuid", "project_id", "user_uuid"}) {
+            QTest::newRow(qPrintable(QString(field) + "-invalid")) << QString(field) << QJsonValue("invalid");
+            QTest::newRow(qPrintable(QString(field) + "-absent")) << QString(field) << QJsonValue(QJsonValue::Undefined);
+        }
+        QTest::newRow("foreign-project") << QString("project_id") << QJsonValue(secondTopicId);
+        QTest::newRow("foreign-user") << QString("user_uuid") << QJsonValue(secondTopicId);
+        for (const auto *field : {"created_at", "updated_at"}) {
+            QTest::newRow(qPrintable(QString(field) + "-invalid")) << QString(field) << QJsonValue("not-a-date");
+            QTest::newRow(qPrintable(QString(field) + "-absent")) << QString(field) << QJsonValue(QJsonValue::Undefined);
+        }
+        QTest::newRow("revision-missing") << QString("revision") << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("revision-zero") << QString("revision") << QJsonValue(0);
+        QTest::newRow("revision-negative") << QString("revision") << QJsonValue(-1);
+        QTest::newRow("revision-fraction") << QString("revision") << QJsonValue(1.5);
+        QTest::newRow("revision-string") << QString("revision") << QJsonValue("1");
+        QTest::newRow("revision-null") << QString("revision") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("revision-unsafe") << QString("revision") << QJsonValue(9007199254740992.0);
+        QTest::newRow("payload-missing") << QString("payload") << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("payload-array") << QString("payload") << QJsonValue(QJsonArray{});
+        QTest::newRow("payload-ciphertext") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "e2ee"}, {"content", "opaque"}});
+        QTest::newRow("content-number") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "markdown"}, {"content", 123}});
+        QTest::newRow("content-empty") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "markdown"}, {"content", ""}});
+        QTest::newRow("content-python-space") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "markdown"}, {"content", QString(QChar(0x85)) + '\n'}});
+        QTest::newRow("content-too-long") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "markdown"}, {"content", QString(40001, 'a')}});
+        QTest::newRow("content-unpaired") << QString("payload")
+            << QJsonValue(QJsonObject{{"kind", "markdown"}, {"content", QString(QChar(0xd800))}});
+    }
+    void draftWireAdmission()
+    {
+        QFETCH(QString, field); QFETCH(QJsonValue, value);
+        QJsonObject raw{{"uuid", returnedId}, {"project_id", projectId}, {"user_uuid", userId},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}, {"revision", 1},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:01Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", "Draft"}}}};
+        raw[field] = value;
+        QVERIFY(!parseDraft(raw, projectId, userId));
+    }
+
+    void draftRevisionHeaderAndUnicodeBoundaries_data()
+    {
+        QTest::addColumn<QByteArray>("etag"); QTest::addColumn<QString>("text"); QTest::addColumn<bool>("accepted");
+        QTest::newRow("strong") << QByteArray("\"1\"") << QString("Draft") << true;
+        QTest::newRow("collection-fallback") << QByteArray() << QString("Draft") << true;
+        QTest::newRow("weak") << QByteArray("W/\"1\"") << QString("Draft") << false;
+        QTest::newRow("other-revision") << QByteArray("\"2\"") << QString("Draft") << false;
+        QTest::newRow("missing-quotes") << QByteArray("1") << QString("Draft") << false;
+        QTest::newRow("leading-zero") << QByteArray("\"01\"") << QString("Draft") << false;
+        QTest::newRow("unicode-limit") << QByteArray("\"1\"") << QString::fromUtf8("😀").repeated(40000) << true;
+        QTest::newRow("unicode-over-limit") << QByteArray("\"1\"") << QString::fromUtf8("😀").repeated(40001) << false;
+        QTest::newRow("bom-is-backend-content") << QByteArray("\"1\"") << QString(QChar(0xfeff)) << true;
+    }
+    void draftRevisionHeaderAndUnicodeBoundaries()
+    {
+        QFETCH(QByteArray, etag); QFETCH(QString, text); QFETCH(bool, accepted);
+        const QJsonObject raw{{"uuid", returnedId}, {"project_id", projectId}, {"user_uuid", userId},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}, {"revision", 1},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:01Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}};
+        const auto parsed = parseDraft(raw, projectId, userId, etag);
+        QCOMPARE(parsed.has_value(), accepted);
+        if (parsed) QCOMPARE(parsed->content, text);
+    }
+
     void wireDeviceLimitsCountCodePointsNotUtf16Units()
     {
         const auto nonBmp = QString::fromUtf8("😀");

@@ -916,6 +916,24 @@ credential-provider and update profiles were removed. Authenticated upgrade
 preservation, permanent desktop credential-provider configuration and complete
 feature/pixel parity remain open. See [current restoration and update coverage](provenance/linux-session-restore-0.2.0-checks.json).
 
+## Persistent draft foundation
+
+The draft wire parser and HTTP revision transport now retain owned canonical
+snapshots and the current strong ETag, including 412 conflicts. The local
+`NativeDraftStore` backend preserves editor and synchronization metadata in
+owner-bound, transactionally updated SQLite files. It has bounded metadata pages,
+record/batch admission, process locks and explicit failure results. Exact text,
+reply state, pending create bodies and conflict/delete state survive reopen;
+a real process exit without destructors also preserves a committed WAL.
+
+Complete Domain75, API22 and Store31 local checks pass. The prior transport fails
+both new revision-header rows, and the retained store pagination failure exposed
+SQL NULL binding of a default cursor; its default/explicit-empty regression now
+passes. Another regression requires a missing record table to fail opening the
+store, rather than reporting it as available. The application/controller still uses in-memory drafts. No persistent
+draft feature or 0.3.0 release is claimed yet. The next work and acceptance gates
+are in the [draft contract](NATIVE_DESKTOP_DRAFTS.md).
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting

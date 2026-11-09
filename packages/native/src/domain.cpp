@@ -383,6 +383,38 @@ std::optional<Message> parseMessage(const QJsonObject &json, const QString &proj
     return message;
 }
 
+std::optional<Draft> parseDraft(const QJsonObject &json, const QString &project,
+                               const QString &user, const QByteArray &etag)
+{
+    Draft draft;
+    draft.uuid = json.value("uuid").toString();
+    draft.project = json.value("project_id").toString();
+    draft.user = json.value("user_uuid").toString();
+    draft.stream = json.value("stream_uuid").toString();
+    draft.topic = json.value("topic_uuid").toString();
+    const auto payload = json.value("payload").toObject();
+    const auto revision = counter(json, "revision");
+    draft.createdAt = json.value("created_at").toString();
+    draft.updatedAt = json.value("updated_at").toString();
+    const auto updated = optionalUpdatedMicros(json);
+    if (!isUuid(project) || !isUuid(user) || draft.project != project || draft.user != user
+        || !isUuid(draft.uuid) || !isUuid(draft.stream) || !isUuid(draft.topic)
+        || !revision || *revision < 1 || !updated || !json.contains("updated_at")
+        || !QDateTime::fromString(draft.createdAt, Qt::ISODateWithMs).isValid()
+        || payload.value("kind").toString() != "markdown" || !wireText(payload, "content", 1, 40000)) return {};
+    draft.content = payload.value("content").toString();
+    // Preserve the server's canonical text, including Python's trimming rules.
+    // The body must still contain a non-whitespace code point.
+    if (std::all_of(draft.content.cbegin(), draft.content.cend(), pythonSpace)) return {};
+    draft.revision = *revision;
+    draft.updatedMicros = *updated;
+    draft.etag = '"' + QByteArray::number(draft.revision) + '"';
+    // Collection rows omit ETag. A supplied header must agree exactly with the
+    // revision; weak/malformed/mismatched tags cannot authorize an overwrite.
+    if (!etag.isEmpty() && etag != draft.etag) return {};
+    return draft;
+}
+
 QVector<Message> mergeMessages(const QVector<Message> &existing, const QVector<Message> &incoming)
 {
     QHash<QString, Message> byUuid;

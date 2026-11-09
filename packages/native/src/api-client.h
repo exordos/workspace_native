@@ -23,6 +23,9 @@ struct ApiResult {
     int status = 0;
     QByteArray nextMarker;
     QString error;
+    // Kept on canonical HTTP errors too: draft conflicts carry the current
+    // snapshot and its strong revision. Never retained for cancelled requests.
+    QByteArray etag{};
 
     bool ok() const { return status >= 200 && status < 300 && error.isEmpty(); }
 };

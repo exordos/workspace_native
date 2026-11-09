@@ -131,6 +131,45 @@ class ApiClientTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void draftRevisionHeadersSurviveRealConditionalHttpResponses_data()
+    {
+        QTest::addColumn<int>("status");
+        QTest::newRow("success") << 200;
+        QTest::newRow("stale-revision") << 412;
+    }
+    void draftRevisionHeadersSurviveRealConditionalHttpResponses()
+    {
+        QFETCH(int, status);
+        HttpFixture fixture; fixture.status = status;
+        fixture.payload = "{\"revision\":7,\"payload\":{\"kind\":\"markdown\",\"content\":\"remote text\"}}";
+        fixture.extraHeaders = "eTaG: \"7\"\r\n";
+        ApiClient client(nullptr, true); QVERIFY(client.setServer(fixture.origin())); client.setAccessToken("synthetic-token");
+        const auto result = runRequest(client, "PUT", "/api/workspace/v1/messenger/drafts/synthetic-draft", {}, {},
+            false, {{"If-Match", "\"6\""}});
+        QCOMPARE(fixture.requests.size(), 1);
+        QCOMPARE(requestHeader(fixture.requests.first(), "If-Match"), QByteArray("\"6\""));
+        QCOMPARE(result.status, status); QCOMPARE(result.ok(), status == 200);
+        QCOMPARE(result.etag, QByteArray("\"7\""));
+        QCOMPARE(result.data.toObject().value("revision").toInt(), 7);
+        QCOMPARE(result.data.toObject().value("payload").toObject().value("content").toString(), QString("remote text"));
+        QVERIFY(result.nextMarker.isEmpty());
+    }
+
+    void cancelledDraftResponseCannotPublishARevisionForAnotherSession()
+    {
+        HttpFixture fixture; fixture.hold = true; fixture.extraHeaders = "ETag: \"99\"\r\n";
+        fixture.payload = "{\"revision\":99}";
+        ApiClient client(nullptr, true); QVERIFY(client.setServer(fixture.origin())); client.setAccessToken("old-synthetic-token");
+        int calls = 0; ApiResult result;
+        client.request("GET", "/api/workspace/v1/messenger/drafts/old", {}, {}, [&](const ApiResult &r) { result = r; ++calls; });
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.requests.size(), 1, 2000);
+        client.setAccessToken("new-synthetic-token");
+        QTRY_COMPARE_WITH_TIMEOUT(calls, 1, 2000);
+        QCOMPARE(result.status, 0); QVERIFY(result.etag.isEmpty()); QVERIFY(result.data.isNull() || result.data.isUndefined());
+        fixture.release();
+        QCoreApplication::processEvents(); QCOMPARE(calls, 1);
+    }
+
     void requestHandleCancellationAbortsOnlyItsHeldTcpReply()
     {
         HttpFixture fixture;

@@ -103,6 +103,19 @@ struct ReactionFact {
     QString emoji;
 };
 
+// Server-owned ordinary Markdown draft, scoped to the verified project/user.
+// Local editor state and pending synchronization never enter this wire DTO.
+struct Draft {
+    QString uuid, project, user, stream, topic, content;
+    qint64 revision = 0;
+    QByteArray etag;
+    QString createdAt, updatedAt;
+    qint64 updatedMicros = 0;
+};
+
+std::optional<Draft> parseDraft(const QJsonObject &json, const QString &project,
+                               const QString &user, const QByteArray &etag = {});
+
 bool validReactionName(const QString &name);
 QString canonicalReactionName(const QString &input);
 QString reactionUnicode(const QString &name);
