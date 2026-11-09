@@ -3020,6 +3020,71 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::newRow("strike") << int(Qt::Key_X) << int(Qt::ControlModifier | Qt::ShiftModifier) << QString("~~");
     }
 
+    void durableComposerRestoresActualInputAcrossWindowAndControllerLifetimes()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
+                return {QJsonArray{}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString first = "  Draft from the native composer\nТекст 😀  ";
+        const QString second = "Second conversation input";
+        for (int lifetime = 0; lifetime < 2; ++lifetime) {
+            NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+            NativeCacheService cache(directory.filePath("cache"));
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            controller.useDrafts(&drafts);
+            NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Draft composer teardown", __FILE__, __LINE__);
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+            QVERIFY(QTest::qWaitForWindowActive(window));
+            QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+            QVERIFY(controller.error().isEmpty());
+            QTRY_VERIFY(drafts.ready(streamId, topicId));
+            QPointer<QQuickItem> composer = item(window->contentItem(), "messageComposer");
+            QVERIFY(composer && composer->isEnabled());
+            if (lifetime == 0) {
+                click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Space); QTest::keyClick(window, Qt::Key_Space);
+                QTRY_COMPARE(composer->property("text").toString(), "  ");
+                QCOMPARE(controller.draft(), "  ");
+                QInputMethodEvent input; input.setCommitString(first.mid(2));
+                QCoreApplication::sendEvent(composer, &input);
+            }
+            QTRY_COMPARE(composer->property("text").toString(), first);
+            QCOMPARE(controller.draft(), first);
+            controller.selectTopic(secondTopicId); QTRY_VERIFY(drafts.ready(streamId, secondTopicId));
+            if (lifetime == 0) {
+                QTRY_VERIFY(composer->property("text").toString().isEmpty());
+                click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+                for (const auto character : second.toLatin1()) QTest::keyClick(window, character);
+            }
+            QTRY_COMPARE(composer->property("text").toString(), second);
+            controller.selectTopic(topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
+            QTRY_VERIFY(!controller.busy()); QVERIFY(controller.error().isEmpty());
+            QTRY_COMPARE(composer->property("text").toString(), first);
+            const auto captures = qEnvironmentVariable("CASSI_NATIVE_DRAFT_CAPTURE");
+            if (!captures.isEmpty()) {
+                QVERIFY(QDir().mkpath(captures));
+                QVERIFY(window->grabWindow().save(QDir(captures).filePath(QString("composer-lifetime-%1.png").arg(lifetime))));
+            }
+            // Exercise the same final storage barrier called by Main for quit
+            // and updater restart, including the last keystroke before debounce.
+            bool done = false, okay = false;
+            shutdownNativeStorage(drafts, storage, cache, this, [&](bool success) { okay = success; done = true; });
+            QTRY_VERIFY_WITH_TIMEOUT(done, 3000); QVERIFY(okay);
+            QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+        }
+    }
+
     void composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown()
     {
         QFETCH(int, key); QFETCH(int, modifiers); QFETCH(QString, marker);

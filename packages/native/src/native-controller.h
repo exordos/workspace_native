@@ -5,6 +5,7 @@
 #include "native-cache-service.h"
 #include "session.h"
 #include "native-chat-key-vault.h"
+#include "native-drafts.h"
 
 #include <QHash>
 #include <QSet>
@@ -104,6 +105,8 @@ public:
     void useRealtime(RealtimeClient *client);
     void useFiles(FileClient *client);
     void useCache(NativeCacheService *cache);
+    void useDrafts(NativeDrafts *drafts);
+    void reportDraftFlushFailure();
     void usePreferences(NativePreferences *preferences);
     QVariantMap ownStatus() const;
     QString ownStatusContextKey() const;
@@ -182,7 +185,7 @@ public:
         : m_topic.isEmpty() ? QStringLiteral("stream") : QStringLiteral("topic"); }
     QString selectedStream() const { return m_stream; }
     QString selectedTopic() const { return m_topic; }
-    QString draft() const { return m_drafts.value(conversationKey()); }
+    QString draft() const;
     void setDraft(const QString &text);
     bool canCompose() const;
     bool canSend() const;
@@ -196,11 +199,7 @@ public:
     bool topicClosed() const;
     bool canReopenTopic() const;
     bool fileBusy() const { return m_uploads > 0 || m_downloads > 0; }
-    QString notice() const {
-        const auto attachment = m_attachmentNotices.value(conversationKey());
-        if (attachment.isEmpty()) return m_notice;
-        return m_notice.isEmpty() ? attachment : attachment + '\n' + m_notice;
-    }
+    QString notice() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -628,6 +627,9 @@ private:
         NativeChatKeyVault::Lease vaultLease;
         ProjectionContext projection;
         quint64 deletion = 0, selection = 0, catalog = 0, accessRevision = 0, ticket = 0;
+        NativeDrafts::Token draftToken{};
+        bool draftCaptured = false;
+        quint64 draftRevision = 0;
     };
     QString encryptedSendTarget() const;
     bool encryptedSendOwned(const SendIntent &intent, bool writing) const;
@@ -743,6 +745,14 @@ private:
     QHash<QString, TopicCreation> m_topicCreations;
     quint64 m_nextTopicCreation = 0;
     QHash<QString, QString> m_drafts;
+    QHash<QString, quint64> m_draftRevisions;
+    QPointer<NativeDrafts> m_draftStore;
+    QString m_draftOwner;
+    QSet<QString> m_draftRoutes;
+    bool m_syncingDrafts = false, m_draftFlushFailed = false;
+    QMetaObject::Connection m_draftChanges, m_draftStates, m_draftDestroyed, m_draftSelection;
+    bool durableDraftRoute() const;
+    void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
     QHash<QString, int> m_pendingUploads;
     QHash<QString, QString> m_attachmentNotices;

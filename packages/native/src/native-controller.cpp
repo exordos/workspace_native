@@ -3907,6 +3907,92 @@ void NativeController::staleReadConversation(const QString &stream, const QStrin
     staleCache(NativeCache::Kind::Topics, stream);
 }
 
+bool NativeController::durableDraftRoute() const
+{
+    const auto *stream = currentStream();
+    return m_draftStore && m_draftStore->owner() == creationOwnerKey()
+        && !m_draftOwner.isEmpty() && stream && !stream->encrypted
+        && m_draftRoutes.contains(conversationKey());
+}
+
+QString NativeController::draft() const
+{
+    return durableDraftRoute() ? m_draftStore->text(m_stream, m_topic) : m_drafts.value(conversationKey());
+}
+
+QString NativeController::notice() const
+{
+    QStringList notices;
+    const auto attachment = m_attachmentNotices.value(conversationKey());
+    if (!attachment.isEmpty()) notices.append(attachment);
+    if (!m_notice.isEmpty()) notices.append(m_notice);
+    if (m_draftStore && (m_draftFlushFailed || m_draftStore->failure() != NativeDraftService::Failure::None))
+        notices.append(tr("The draft could not be saved on this computer. Your input is still in memory. Retry before quitting."));
+    return notices.join('\n');
+}
+
+void NativeController::reportDraftFlushFailure()
+{
+    m_draftFlushFailed = true;
+    emit stateChanged();
+}
+
+void NativeController::synchronizeDrafts()
+{
+    if (!m_draftStore || m_syncingDrafts) return;
+    m_syncingDrafts = true;
+    const QPointer<NativeController> guard(this);
+    const auto syncing = qScopeGuard([guard] { if (guard) guard->m_syncingDrafts = false; });
+    const auto owner = creationOwnerKey();
+    if (owner != m_draftOwner) {
+        if (!m_draftOwner.isEmpty()) { m_drafts.clear(); m_draftRevisions.clear(); }
+        m_draftOwner = owner; m_draftRoutes.clear(); m_draftFlushFailed = false;
+        m_draftStore->setOwner(owner);
+        if (!guard || !m_draftStore) return;
+    }
+    const auto *stream = currentStream();
+    const bool verified = !owner.isEmpty() && stream && !stream->encrypted && isUuid(m_topic)
+        && m_catalogVerified && m_topicsVerified && !m_topicSeedUnverified
+        && std::any_of(m_topics.cbegin(), m_topics.cend(), [this](const Topic &row) { return row.uuid == m_topic; });
+    if (verified) {
+        const auto route = conversationKey(); const bool first = !m_draftRoutes.contains(route);
+        m_draftRoutes.insert(route);
+        m_draftStore->select(m_stream, m_topic);
+        if (!guard || !m_draftStore) return;
+        if (first && m_drafts.contains(route)) m_draftStore->edit(m_stream, m_topic, m_drafts.value(route));
+    } else if (stream && stream->encrypted) m_draftStore->select({}, {});
+}
+
+void NativeController::useDrafts(NativeDrafts *drafts)
+{
+    if (m_draftStore == drafts) return;
+    disconnect(m_draftChanges); disconnect(m_draftStates); disconnect(m_draftDestroyed); disconnect(m_draftSelection);
+    m_draftStore = drafts; m_draftOwner.clear(); m_draftRoutes.clear();
+    const QPointer<NativeController> guard(this);
+    if (drafts) {
+        m_draftChanges = connect(drafts, &NativeDrafts::changed, this,
+            [this](const QString &owner, const QString &stream, const QString &topic) {
+            if (!m_draftStore || owner != creationOwnerKey() || owner != m_draftOwner) return;
+            const auto route = stream + '/' + topic;
+            if (!m_draftRoutes.contains(route)) return;
+            m_drafts.insert(route, m_draftStore->text(stream, topic));
+            const QPointer<NativeController> guard(this);
+            if (route == conversationKey()) emit draftChanged();
+            if (guard) emit stateChanged();
+        });
+        m_draftStates = connect(drafts, &NativeDrafts::stateChanged, this, [this] { emit stateChanged(); });
+        m_draftSelection = connect(this, &NativeController::stateChanged, this, &NativeController::synchronizeDrafts);
+        m_draftDestroyed = connect(drafts, &QObject::destroyed, this, [this] {
+            m_draftStore.clear(); m_draftRoutes.clear(); m_draftOwner.clear();
+            emit stateChanged();
+        });
+        synchronizeDrafts();
+    }
+    if (!guard) return;
+    emit draftChanged();
+    if (guard) emit stateChanged();
+}
+
 void NativeController::useCache(NativeCacheService *cache)
 {
     if (m_cache == cache) return;
@@ -4437,6 +4523,7 @@ bool NativeController::canAttach() const
 {
     const auto *stream = currentStream();
     return m_files && authoritativeRoute() && stream && !stream->encrypted && !m_topic.isEmpty()
+        && (!durableDraftRoute() || m_draftStore->ready(m_stream, m_topic))
         && !topicClosed() && !m_sending;
 }
 
@@ -4515,7 +4602,13 @@ void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 
         label.replace('\n', ' ');
         const auto prefix = result.metadata.kind() == FileKind::File ? QString{} : QStringLiteral("!");
         const auto attachment = prefix + '[' + label + "](<" + result.metadata.urn() + ">)";
-        auto draft = m_drafts.value(conversation);
+        const auto stream = conversation.section('/', 0, 0), topic = conversation.section('/', 1, 1);
+        const auto capturedStream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&stream](const Stream &row) { return row.uuid == stream; });
+        const bool persistent = m_draftStore && m_draftStore->owner() == creationOwnerKey()
+            && capturedStream != m_streams.cend() && !capturedStream->encrypted
+            && m_draftRoutes.contains(conversation);
+        auto draft = persistent ? m_draftStore->text(stream, topic) : m_drafts.value(conversation);
         const bool imageParagraph = result.metadata.kind() == FileKind::Image;
         if (!draft.isEmpty()) {
             if (!draft.endsWith('\n'))
@@ -4524,6 +4617,9 @@ void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 
                 draft += '\n';
         }
         m_drafts.insert(conversation, draft + attachment + (imageParagraph ? "\n\n" : "\n"));
+        ++m_draftRevisions[conversation];
+        if (persistent) m_draftStore->edit(stream, topic, m_drafts.value(conversation));
+        if (!guard) return;
         m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
             ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
         if (conversation == conversationKey())
@@ -4731,6 +4827,7 @@ void NativeController::reset()
     interruptChannelCreations();
     interruptDirectChats();
     m_drafts.clear();
+    m_draftRevisions.clear();
     m_pendingSends.clear();
     m_pendingUploads.clear();
     m_attachmentNotices.clear();
@@ -5991,6 +6088,7 @@ void NativeController::sendEncryptedText()
     if (!canSend()) return;
     SendIntent intent;
     intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces); intent.text = draft(); intent.encrypted = true;
+    intent.draftRevision = m_draftRevisions.value(conversationKey());
     intent.owner = ownerKey(); intent.user = m_session->user(); intent.project = m_session->project();
     intent.stream = m_stream; intent.routeTopic = m_topic; intent.topic = encryptedSendTarget();
     intent.key = m_chatSendKey; intent.deletion = m_chatSendDeletion; intent.vault = m_chatKeys;
@@ -6095,7 +6193,8 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     if (m_activeEncryptedSend == conversation + '/' + id + '/' + QString::number(ticket)) {
         m_activeEncryptedSend.clear(); m_sending = false;
     }
-    if (m_drafts.value(conversation) == intent.text) m_drafts.remove(conversation);
+    if (m_drafts.value(conversation) == intent.text && m_draftRevisions.value(conversation) == intent.draftRevision)
+        m_drafts.remove(conversation);
     m_attachmentNotices.remove(conversation);
     const QPointer<NativeController> guard(this);
     const auto owned = [&] {
@@ -6153,6 +6252,8 @@ bool NativeController::canSend() const
         return canCompose() && !m_sending && m_pendingSends.value(conversationKey()).uuid.isEmpty()
             && !draft().trimmed().isEmpty() && boundedText(draft(), 40000);
     return authoritativeRoute() && stream && !stream->encrypted && !m_topic.isEmpty()
+        && (!durableDraftRoute() || m_draftStore->ready(m_stream, m_topic))
+        && !draft().contains(":::")
         && !m_pendingSends.value(conversationKey()).encrypted
         && !topicClosed() && !m_sending && m_pendingUploads.value(conversationKey()) == 0
         && !draft().trimmed().isEmpty() && draft().size() <= 40000;
@@ -6229,6 +6330,10 @@ void NativeController::setDraft(const QString &text)
     if ((m_topic.isEmpty() && (!currentStream() || !currentStream()->encrypted || !hasConversation())) || draft() == text)
         return;
     m_drafts.insert(conversationKey(), text);
+    ++m_draftRevisions[conversationKey()];
+    const QPointer<NativeController> guard(this);
+    if (durableDraftRoute()) m_draftStore->edit(m_stream, m_topic, text);
+    if (!guard) return;
     emit draftChanged();
     emit stateChanged();
 }
@@ -6267,6 +6372,7 @@ void NativeController::collection(const QString &path, QUrlQuery query,
 
 void NativeController::refresh()
 {
+    if (m_draftStore) { m_draftFlushFailed = false; m_draftStore->retry(); }
     if (m_realtimeMode) {
         emit resynchronizeRequested();
         return;
@@ -6940,7 +7046,13 @@ void NativeController::send()
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
     if (intent.uuid.isEmpty() || intent.text != text) {
-        intent = {QUuid::createUuid().toString(QUuid::WithoutBraces), text};
+        intent = SendIntent{};
+        intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces); intent.text = text;
+        intent.draftRevision = m_draftRevisions.value(conversation);
+        if (durableDraftRoute()) {
+            intent.draftCaptured = true;
+            intent.draftToken = m_draftStore->capture(m_stream, m_topic);
+        }
         m_pendingSends.insert(conversation, intent);
     }
     ++m_messageFields[intent.uuid].pending;
@@ -6984,8 +7096,12 @@ void NativeController::send()
             projectCanonical(confirmation.data.toObject(), NativeCache::Projection::Insert, context);
             if (m_pendingSends.value(conversation).uuid == intent.uuid)
                 m_pendingSends.remove(conversation);
-            if (m_drafts.value(conversation) == text)
-                m_drafts.remove(conversation);
+            const QPointer<NativeController> draftGuard(this);
+            if (intent.draftCaptured) {
+                if (m_draftStore) m_draftStore->consume(intent.draftToken);
+            } else if (m_drafts.value(conversation) == text
+                       && m_draftRevisions.value(conversation) == intent.draftRevision) m_drafts.remove(conversation);
+            if (!draftGuard) return;
             m_attachmentNotices.remove(conversation);
             if (conversation == conversationKey()) {
                 ++m_messageRevision;

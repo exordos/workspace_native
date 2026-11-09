@@ -8179,7 +8179,10 @@ private slots:
 
     void attachmentUploadKeepsItsConversationAndEscapesMarkdown()
     {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
         Fixture fixture;
+        fixture.controller.useDrafts(&drafts);
         fixture.extraTopic = true;
         FileClient files(&fixture.api);
         fixture.controller.useFiles(&files);
@@ -8195,6 +8198,7 @@ private slots:
                 {"size_bytes", bytes.size()}, {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 200, 200, {}};
         };
         QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
         fixture.controller.setDraft("Initial text");
         QVERIFY(fixture.controller.canAttach());
         fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
@@ -8202,7 +8206,7 @@ private slots:
         QVERIFY(!fixture.controller.canSend());
         fixture.controller.selectTopic(secondTopicId);
         fixture.controller.setDraft("Second draft");
-        QVERIFY(fixture.controller.canSend());
+        QTRY_VERIFY(fixture.controller.canSend());
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QCOMPARE(fixture.controller.draft(), "Second draft");
         fixture.controller.selectTopic(topicId);
@@ -8212,6 +8216,38 @@ private slots:
         QVERIFY(rendered.value("html").toString().contains("urn:file:" + returnedId));
         QVERIFY(rendered.value("plain").toString().contains("report[one](two).txt"));
         QVERIFY(fixture.controller.canSend());
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        draftStorage.shutdown(); QTRY_VERIFY(draftStorage.stopped());
+        NativeDraftStore store(draftDirectory.path()); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
+        QVERIFY(store.latest(streamId, topicId).record->text.contains("urn:file:" + returnedId));
+    }
+
+    void lateOrdinaryUploadDoesNotReplaceAnEncryptedMemoryDraft()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts); FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QFile input(directory.filePath("attachment.txt")); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("fixture"); input.close();
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.files = [&](const Request &) {
+            Response response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "attachment.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 7},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}};
+            response.defer = [&](auto send) { complete = std::move(send); }; return response;
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Ordinary input"); fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(bool(complete)); fixture.encrypted = true; fixture.controller.refresh();
+        QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(fixture.controller.streams().first().toMap().value("encrypted").toBool()
+            || fixture.controller.streams().first().toMap().value("encryption").toBool());
+        fixture.controller.setDraft("Encrypted memory input"); complete(); complete = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QVERIFY(fixture.controller.draft().startsWith("Encrypted memory input\n[attachment.txt]"));
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        storage.shutdown(); QTRY_VERIFY(storage.stopped());
+        NativeDraftStore store(directory.filePath("drafts")); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
+        QCOMPARE(store.latest(streamId, topicId).record->text, "Ordinary input");
     }
 
     void logoutClearsPendingAttachmentUiAndLateDrafts()
@@ -8514,6 +8550,118 @@ private slots:
         QTRY_COMPARE(firstTopicUuids.size(), 2);
         QCOMPARE(firstTopicUuids.at(0), firstTopicUuids.at(1));
         QTRY_VERIFY(fixture.controller.draft().isEmpty());
+    }
+
+    void durableComposerRetainsNewerSameTextWhileSendIsBeingVerified_data()
+    {
+        QTest::addColumn<bool>("durable");
+        QTest::newRow("memory") << false;
+        QTest::newRow("disk") << true;
+    }
+
+    void durableComposerRetainsNewerSameTextWhileSendIsBeingVerified()
+    {
+        QFETCH(bool, durable);
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        Fixture fixture; fixture.extraTopic = true;
+        if (durable) fixture.controller.useDrafts(&drafts);
+        QJsonObject saved; std::function<void()> confirm;
+        const auto release = qScopeGuard([&] { if (confirm) confirm(); });
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                saved = message(request.body.value("payload").toObject().value("content").toString(), returnedId);
+                return Response{saved};
+            }
+            if (request.target.path().endsWith(returnedId)) {
+                Response response{saved}; response.defer = [&](auto send) { confirm = std::move(send); }; return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); if (durable) QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("A"); fixture.controller.send(); QTRY_VERIFY(bool(confirm));
+        fixture.controller.setDraft("B"); fixture.controller.setDraft("A");
+        fixture.controller.selectTopic(secondTopicId); fixture.controller.selectTopic(topicId);
+        confirm(); confirm = {};
+        QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(fixture.controller.draft(), "A");
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+    }
+
+    void durableSendConsumesOnlyAfterCanonicalReadBack()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        QJsonObject saved; bool allowReadBack = false;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                saved = message(request.body.value("payload").toObject().value("content").toString(), returnedId);
+                return Response{saved};
+            }
+            if (request.target.path().endsWith(returnedId)) return Response{allowReadBack ? saved : QJsonObject{}, allowReadBack ? 200 : 503};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Confirmed only"); fixture.controller.send();
+        QTRY_VERIFY(!fixture.controller.error().isEmpty()); QCOMPARE(fixture.controller.draft(), "Confirmed only");
+        allowReadBack = true; fixture.controller.send(); QTRY_VERIFY(fixture.controller.draft().isEmpty());
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        service.shutdown(); QTRY_VERIFY(service.stopped());
+        NativeDraftStore store(directory.path()); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
+        QVERIFY(!store.latest(streamId, topicId).record);
+    }
+
+    void draftStorageFailureDoesNotCancelMessaging()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        const auto identity = QJsonDocument(QJsonArray{fixture.api.server().toString(QUrl::FullyEncoded), projectId, userId})
+            .toJson(QJsonDocument::Compact);
+        const auto owner = QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
+        NativeDraftStore lock(directory.path()); QCOMPARE(lock.open(owner), NativeDraftService::Failure::None);
+        fixture.controller.useDrafts(&drafts);
+        QTRY_VERIFY(drafts.failure() != NativeDraftService::Failure::None);
+        QVERIFY(fixture.controller.error().isEmpty()); QVERIFY(!fixture.controller.notice().isEmpty());
+        fixture.controller.setDraft("Keep input despite a storage failure");
+        QTRY_VERIFY(drafts.failure() != NativeDraftService::Failure::None);
+        QCOMPARE(fixture.controller.draft(), "Keep input despite a storage failure");
+        QVERIFY(fixture.controller.canSend());
+        lock.close(); drafts.retry();
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
+        QTRY_VERIFY(fixture.controller.notice().isEmpty());
+    }
+
+    void protectedFragmentsAreNotSentAsOrdinaryPlaintext()
+    {
+        Fixture fixture; QVERIFY(fixture.start()); fixture.controller.setDraft(":::test-only protected fragment:::");
+        QVERIFY(!fixture.controller.canSend()); fixture.controller.send();
+        QVERIFY(std::none_of(fixture.server.requests.cbegin(), fixture.server.requests.cend(), [](const Request &r) {
+            return r.method == "POST" && r.target.path().contains("/messages/");
+        }));
+    }
+
+    void durableDraftsFollowTheVerifiedAccountAcrossLogoutAndLogin()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); NativeDrafts drafts(&service);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        const auto anotherUser = secondTopicId;
+        bool other = false;
+        fixture.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (other && request.target.path().endsWith("/actions/introspect"))
+                response.data = QJsonObject{{"project_id", projectId}, {"user_info", QJsonObject{{"uuid", anotherUser}}}};
+            return response;
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        const auto firstOwner = drafts.owner();
+        fixture.controller.setDraft("First account input");
+        fixture.controller.logout(); QVERIFY(fixture.controller.draft().isEmpty()); QVERIFY(drafts.owner().isEmpty());
+        other = true; QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        QVERIFY(drafts.owner() != firstOwner); QVERIFY(fixture.controller.draft().isEmpty());
+        fixture.controller.setDraft("Second account input");
+        fixture.controller.logout(); other = false; QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId)); QCOMPARE(drafts.owner(), firstOwner);
+        QTRY_COMPARE(fixture.controller.draft(), "First account input");
+        bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
     }
 
     void sendConfirmationClearsMatchingDraftAfterRouteRoundTrip()

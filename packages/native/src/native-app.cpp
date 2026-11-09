@@ -4,6 +4,7 @@
 #include "native-markdown.h"
 #include "native-preferences.h"
 #include "native-cache-service.h"
+#include "native-drafts.h"
 #include "avatar-images.h"
 #include "message-images.h"
 #include <QQuickImageProvider>
@@ -30,6 +31,40 @@ static void initializeLocaleResources()
 }
 
 namespace workspace {
+
+void shutdownNativeStorage(NativeDrafts &drafts, NativeDraftService &draftStorage,
+                           NativeCacheService &cache, QObject *receiver, std::function<void(bool)> done)
+{
+    if (!receiver) return;
+    const QPointer<QObject> recipient(receiver);
+    const QPointer<NativeDraftService> store(&draftStorage);
+    const QPointer<NativeCacheService> history(&cache);
+    drafts.flush(receiver, [recipient, store, history, done = std::move(done)](bool okay) {
+        if (!recipient) return;
+        if (!okay || !store || !history) { if (done) done(false); return; }
+        struct Pending {
+            bool finished = false;
+            QMetaObject::Connection draft, cache, draftLost, cacheLost;
+        };
+        const auto pending = std::make_shared<Pending>();
+        const auto finish = [pending, recipient, store, history, done] {
+            if (!recipient || pending->finished) return;
+            const bool lost = !store || !history;
+            if (!lost && (!store->stopped() || !history->stopped())) return;
+            pending->finished = true;
+            QObject::disconnect(pending->draft); QObject::disconnect(pending->cache);
+            QObject::disconnect(pending->draftLost); QObject::disconnect(pending->cacheLost);
+            if (done) done(!lost);
+        };
+        pending->draft = QObject::connect(store, &NativeDraftService::shutdownFinished, recipient, finish);
+        pending->cache = QObject::connect(history, &NativeCacheService::shutdownFinished, recipient, finish);
+        pending->draftLost = QObject::connect(store, &QObject::destroyed, recipient, finish);
+        pending->cacheLost = QObject::connect(history, &QObject::destroyed, recipient, finish);
+        store->shutdown();
+        if (history) history->shutdown();
+        finish();
+    });
+}
 
 void bindNativeChatKeys(NativeChatKeyVault &keys, Session &session, ApiClient &api,
                         NativeController &controller, const QString &deviceName)

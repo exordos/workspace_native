@@ -1211,6 +1211,10 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>The draft could not be saved on this computer. Your input is still in memory. Retry before quitting.</source>
+            <translation>Не удалось сохранить черновик на этом компьютере. Введённый текст остаётся в памяти. Повторите попытку перед выходом.</translation>
+        </message>
+        <message>
             <source>Failed to update status</source>
             <translation>Не удалось обновить статус</translation>
         </message>

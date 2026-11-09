@@ -1,18 +1,19 @@
 # Native drafts
 
 Persistent drafts are planned for 0.3.0. The wire parser, revision transport and
-durable storage backend and bounded storage worker are implemented; the running
-application's controller still holds drafts in memory. The composer coordinator,
-API synchronization,
-actual Main integration and packaged acceptance remain required before release.
+durable storage backend, bounded storage worker and local composer integration
+are implemented. Main constructs the store/model and binds the existing composer
+to the verified account and ordinary conversation. API synchronization,
+bounded composer residency and packaged acceptance remain required before release.
 This document describes the contract and acceptance targets, not complete parity.
 
 ## Existing contract
 
-The current committed Source [draft API](https://github.com/exordos/workspace_ui/blob/a8cb5c990cedd57bba19085ff96007e744d2d16e/packages/web/src/entities/draft/draft.api.ts),
+The pinned Source [draft API](https://github.com/exordos/workspace_ui/blob/a8cb5c990cedd57bba19085ff96007e744d2d16e/packages/web/src/entities/draft/draft.api.ts)
+uses stable client UUIDs and the existing Messenger resource. Its earlier
 [chat synchronization](https://github.com/exordos/workspace_ui/blob/a8cb5c990cedd57bba19085ff96007e744d2d16e/packages/web/src/entities/draft/draft-chat-sync.lib.ts)
 and [hydration](https://github.com/exordos/workspace_ui/blob/a8cb5c990cedd57bba19085ff96007e744d2d16e/packages/web/src/pages/chat/chat-page-draft-sync.hook.ts)
-use stable client UUIDs and the existing Messenger resource:
+are historical references; the composer entity below is the editor reference.
 
 | Operation | Contract |
 | --- | --- |
@@ -32,8 +33,8 @@ timestamps, Unicode bounds and an exact supplied strong ETag. Missing collection
 ETags derive from each row's revision. Transport retains the ETag on canonical
 HTTP errors but never on cancelled, redirected or stale-session responses.
 
-The separately pinned [composer draft entity](https://github.com/exordos/workspace_ui/blob/95495b10b828f853c9e770b47216073eb973fa95/packages/web/src/entities/composer-draft/composer-draft.model.ts)
-also defines local snapshot identities, reply tabs, consumed/delete records and
+The pinned [composer draft entity](https://github.com/exordos/workspace_ui/blob/95495b10b828f853c9e770b47216073eb973fa95/packages/web/src/entities/composer-draft/composer-draft.model.ts)
+defines local snapshot identities, reply tabs, consumed/delete records and
 400 ms disk / 1000 ms remote debouncing. These fields are local editor metadata;
 the wire API accepts only Markdown text. Pending uncommitted Source work is not
 part of this implementation's reference contract.
@@ -51,8 +52,8 @@ failures remain explicit failures; they do not masquerade as empty successful re
 Records preserve exact text, reply-session JSON, a snapshot identity, current
 revision, a frozen pending create body, conflict alternatives and consumed/delete
 state. Private `:::` editor fragments are rejected in text, reply context and
-pending/conflict bodies. The future coordinator must retain those private edits
-in memory and remove an earlier durable public snapshot rather than saving the
+pending/conflict bodies. The composer retains those private edits in memory and
+marks an earlier durable public snapshot for removal rather than saving the
 protected plaintext.
 
 `NativeDraftService` constructs, uses and closes SQLite on its single private
@@ -71,6 +72,31 @@ summaries; individual record reads are capped at 4 MiB, and one atomic batch at
 component admission, not whole-application memory measurements. Drafts are unsent
 user work, so the history cache's LRU must not evict them. The configurable 10 GB
 history-cache default and existing cache schema remain unchanged.
+
+## Local composer
+
+`NativeDrafts` coalesces ordinary input with a 400 ms timer and uses the existing
+worker for all SQLite access. Initial reads cannot replace newer input; clearing
+before initial hydration also disposes of the prior selected disk row. Account
+changes retain captured writes while the foreground editor follows only the
+verified current owner. Route switches force earlier input through the worker
+without forcing each new keystroke. Exact local whitespace is preserved.
+Whitespace-only input remains in memory so users can type an initial indent;
+it does not become a durable empty body.
+
+The controller captures a snapshot when creating a send intent and consumes only
+that snapshot after canonical message read-back. A later edit remains, including
+changing A to B and back to A while confirmation is pending. The same revision
+rule also protects the existing in-memory editor. Attachment completions update
+their captured ordinary conversation. Encrypted conversation drafts retain the
+existing memory boundary.
+
+Main calls the shared storage-shutdown helper for Quit and updater restart. It
+flushes the model's coalesced input and per-write receipts before stopping the
+draft and history workers. A failed flush leaves both workers available, retains
+input and restores the window with a persistence notice; it does not report
+successful shutdown or start the successor. This wiring and its component/window
+checks do not establish installed-process or live-service acceptance.
 
 ## Verification and remaining gates
 
@@ -93,8 +119,17 @@ serialized-byte saturation, receiver destruction, observer-triggered teardown,
 destructor draining and shutdown behind full queues. Indexed conversation lookup
 returns the newest restorable UUID with a deterministic tie-break; malformed
 consumed metadata is an explicit corruption result rather than an empty draft.
-Local Store32 and Service16 results pass. Application composition and API
-synchronization remain separate gates.
+Local Store32 and Service16 results pass. The model tests cover coalescing,
+hydration/clear ordering, account/route changes, distinct-draft revisit, exact send
+snapshots, private input, write failures and the actual Main shutdown helper.
+Four retained failing model checks precede the corresponding fixes; a separate
+controller regression reproduces the prior same-text send-clearing defect.
+The real Main.qml field is also exercised across two window/controller/worker
+lifetimes, including initial spaces entered as native key events. The development
+executable also opened its anonymous Wayland form and exited through real Ctrl+Q
+with code 0; its isolated profile was removed. Live API synchronization and
+installed-process checks remain separate
+gates.
 
 Before publishing 0.3.0, complete and verify:
 
@@ -110,3 +145,6 @@ Before publishing 0.3.0, complete and verify:
    local-only reply/edit context and removal of inaccessible conversation data.
 6. Real Source/Native matched screenshots, primary-account process restart,
    cross-client synchronization and the installed update into the public package.
+7. Bounded residency for clean composer bodies and a measured full-application
+   input/navigation workload; the worker's admission limits alone do not prove
+   whole-application memory use.

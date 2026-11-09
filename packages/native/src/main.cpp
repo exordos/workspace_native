@@ -6,6 +6,7 @@
 #include "native-controller.h"
 #include "native-desktop.h"
 #include "native-cache-service.h"
+#include "native-drafts.h"
 #include "native-instance.h"
 #include "native-updater.h"
 #include "native-preferences.h"
@@ -58,6 +59,8 @@ int main(int argc, char **argv)
     workspace::MessageImages messageImages(&api, &session, &files);
     workspace::NativePreferences preferences;
     workspace::NativeCacheService cache;
+    workspace::NativeDraftService draftStorage;
+    workspace::NativeDrafts drafts(&draftStorage);
     workspace::bindNativeCachePreferences(cache, preferences);
     workspace::NativeController controller(&api, &session);
 #if defined(Q_OS_MACOS)
@@ -69,6 +72,7 @@ int main(int argc, char **argv)
 #endif
     workspace::bindNativeChatKeys(chatKeys, session, api, controller, deviceName);
     controller.useCache(&cache);
+    controller.useDrafts(&drafts);
     controller.useFiles(&files);
     workspace::RealtimeClient realtime(&api, &session);
     controller.useRealtime(&realtime);
@@ -80,22 +84,36 @@ int main(int argc, char **argv)
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
     workspace::NativeDesktop desktop(window);
     QString restartExecutable;
-    const auto beginShutdown = [&cache, &chatKeys, &controller, &app, window] {
+    bool shuttingDown = false;
+    const auto beginShutdown = [&cache, &chatKeys, &controller, &app, &drafts, &draftStorage,
+                                &shuttingDown, &restartExecutable, window] {
+        if (shuttingDown) return;
+        shuttingDown = true;
         window->hide();
-        controller.setChatKeyStoreOpening(false);
-        chatKeys.close();
-        if (cache.stopped()) app.quit();
-        else cache.shutdown();
+        workspace::shutdownNativeStorage(drafts, draftStorage, cache, &app,
+                         [&chatKeys, &controller, &app, &shuttingDown, &restartExecutable, window](bool okay) {
+            if (!okay) {
+                shuttingDown = false; restartExecutable.clear();
+                controller.reportDraftFlushFailure();
+                window->show(); window->requestActivate();
+                return;
+            }
+            controller.setChatKeyStoreOpening(false);
+            chatKeys.close();
+            app.quit();
+        });
     };
     QObject::connect(&app, &QGuiApplication::lastWindowClosed, &cache, beginShutdown);
     QObject::connect(&desktop, &workspace::NativeDesktop::quitRequested, &cache, beginShutdown);
     QObject::connect(&updater, &workspace::NativeUpdater::restartRequested, &cache,
-                     [&restartExecutable, beginShutdown](const QString &executable) {
+                     [&restartExecutable, &shuttingDown, beginShutdown](const QString &executable) {
+        if (shuttingDown) return;
         restartExecutable = executable;
         beginShutdown();
     });
     QObject::connect(&desktop, &workspace::NativeDesktop::checkForUpdatesRequested, &updater,
-                     [&updater, window] {
+                     [&updater, &shuttingDown, window] {
+        if (shuttingDown) return;
         window->setProperty("updatesVisible", true);
         window->show();
         window->requestActivate();
@@ -108,9 +126,8 @@ int main(int argc, char **argv)
     QObject::connect(&updateChecks, &QTimer::timeout, &updater, &workspace::NativeUpdater::check);
     updateChecks.start();
 #endif
-    QObject::connect(&cache, &workspace::NativeCacheService::shutdownFinished, &app, &QCoreApplication::quit);
     preferences.attachWindow(window);
-    const auto activate = [&preferences] { preferences.activateWindow(); };
+    const auto activate = [&preferences, &shuttingDown] { if (!shuttingDown) preferences.activateWindow(); };
     QObject::connect(&desktop, &workspace::NativeDesktop::activateRequested, &app, activate);
     QObject::connect(&preferences, &workspace::NativePreferences::localeChanged,
                      &desktop, &workspace::NativeDesktop::refreshLabels);

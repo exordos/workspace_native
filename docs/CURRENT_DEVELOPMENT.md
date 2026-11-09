@@ -930,8 +930,9 @@ Complete Domain75, API22 and Store32 local checks pass. The prior transport fail
 both new revision-header rows, and the retained store pagination failure exposed
 SQL NULL binding of a default cursor; its default/explicit-empty regression now
 passes. Another regression requires a missing record table to fail opening the
-store, rather than reporting it as available. The application/controller still uses in-memory drafts. No persistent
-draft feature or 0.3.0 release is claimed yet. The next work and acceptance gates
+store, rather than reporting it as available. This storage foundation did not
+initially change the composer. No complete persistent-draft feature or 0.3.0
+release is claimed yet. The next work and acceptance gates
 are in the [draft contract](NATIVE_DESKTOP_DRAFTS.md).
 
 The bounded `NativeDraftService` now runs SQLite on one private worker, preserves
@@ -941,9 +942,31 @@ real writer contention, data/control admission limits, byte saturation, receiver
 and observer destruction, destructor draining and shutdown behind full queues.
 The indexed newest-restorable lookup shares metadata validation with listing;
 the malformed-consumed regression fails before its fix and passes afterward.
-The application still has no persistent-draft composer or server synchronization.
+The worker foundation initially had no composer or server synchronization.
 The prior CI locale failure was reproduced without relaxing its stderr assertion;
 explicit C.UTF-8 configuration passed the complete Linux packaging workflow.
+
+The local composer is now wired through Main, the controller and the real
+Main.qml field. Ordinary text is coalesced over 400 ms, restored through the
+worker and preserved across route/account changes. Confirmed sends consume only
+the captured snapshot; a newer edit survives even when it returns to the same
+text. The existing memory-only editor follows that same revision rule. Normal
+Quit and updater restart flush actual write receipts before both storage workers
+stop, and a failed flush retains input for retry. New local model, HTTP/controller
+and two-lifetime window checks cover these paths. Server draft synchronization,
+bounded composer residency, live primary-account checks and the installed update
+remain required before publishing 0.3.0. See the [draft contract](NATIVE_DESKTOP_DRAFTS.md).
+
+The final local candidate passed all six complete affected suites: Locale14,
+Store32, Service16, Composer15, Controller851 and Window296, without failed or
+skipped Qt results or runtime warnings. The window scenario enters leading
+spaces as native key events and restores exact text across two independent
+window/controller/worker lifetimes. Separate retained failures precede fixes for
+late hydration, early clearing, distinct-draft revisit, initial whitespace,
+same-text send confirmation and late attachment completion. The actual
+development executable also exited its anonymous Wayland window through Ctrl+Q
+with code 0 and removed its temporary profile. These are local checks; live draft
+synchronization and installed primary-account acceptance remain open.
 
 ## Next ten Linux releases
 
