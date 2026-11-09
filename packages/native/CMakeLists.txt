@@ -225,8 +225,12 @@ if(BUILD_TESTING)
             # This is the whole-suite budget, not a request timeout.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 700)
         elseif(test STREQUAL "native-cache")
-            # The complete 69-case SAN run takes 49.4s; individual waits are unchanged.
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
+            # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
+            # across solo runs, and the suite-context run was killed at the old 90s
+            # ceiling after printing PASS for the whole list. 150s = worst measured
+            # runtime plus suite-load headroom (issues #16/#17/#18/#22: never tune a
+            # ceiling to single-digit margins of one host's runtime).
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 150)
         elseif(test STREQUAL "native-window")
             # Include the direct-chat keyboard, recovery and rendering cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 360)
