@@ -1,8 +1,10 @@
 #include "session-vault.h"
 
 #include <QCoreApplication>
+#include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
+#include <QDBusObjectPath>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -18,6 +20,38 @@
 
 using namespace workspace;
 
+// A minimal responding Secret Service prompt provider (issue #28). The daemon
+// routes interactive prompts to whoever owns the well-known name
+// org.gnome.keyring.SystemPrompter (observed on-wire). This provider answers the
+// daemon's calls so a real UI could still arrive, but never completes a prompt,
+// simulating a human who has not answered yet. Signatures mirrored from the
+// daemon traffic: BeginPrompting(o), PerformPrompt(o,s,a{sv}), StopPrompting(o).
+class HarnessPromptProvider final : public QObject {
+    Q_OBJECT
+public:
+    int beginCount = 0;
+    int performCount = 0;
+};
+
+class HarnessPromptProviderAdaptor final : public QDBusAbstractAdaptor {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.gnome.keyring.internal.Prompter")
+public:
+    explicit HarnessPromptProviderAdaptor(HarnessPromptProvider *provider)
+        : QDBusAbstractAdaptor(provider), m_provider(provider) {}
+
+public slots:
+    void BeginPrompting(const QDBusObjectPath &prompt)
+    { Q_UNUSED(prompt); ++m_provider->beginCount; }
+    void PerformPrompt(const QDBusObjectPath &prompt, const QString &type, const QVariantMap &hints)
+    { Q_UNUSED(prompt); Q_UNUSED(type); Q_UNUSED(hints); ++m_provider->performCount; }
+    void StopPrompting(const QDBusObjectPath &prompt)
+    { Q_UNUSED(prompt); }
+
+private:
+    HarnessPromptProvider *m_provider;
+};
+
 // This opt-in test uses an actual OS store and only its unique disposable key.
 // Test material travels over a private child stdin pipe, never arguments/files.
 static int worker(QCoreApplication &app, const QStringList &arguments)
@@ -31,11 +65,23 @@ static int worker(QCoreApplication &app, const QStringList &arguments)
     KeychainSessionSecretStore store;
     QTimer deadline;
     deadline.setSingleShot(true);
-    QObject::connect(&deadline, &QTimer::timeout, &app, [&] { app.exit(3); });
+    // For "slow-write" the deadline firing IS the expected outcome: the store
+    // must stay pending while a registered prompt provider could still let a
+    // human finish an interactive unlock (issue #28).
+    QObject::connect(&deadline, &QTimer::timeout, &app, [&] { app.exit(operation == "slow-write" ? 0 : 3); });
     deadline.start(15000);
     QTimer::singleShot(0, &store, [&] {
         using Error = SessionSecretStore::Error;
-        if (operation == "write" && expected.size() == 32) {
+        if ((operation == "locked-write" || operation == "slow-write") && expected.size() == 32) {
+            store.write(key, expected, [&](Error error) {
+                app.exit(operation == "slow-write" ? 20 : error == Error::Locked ? 0 : 10 + int(error));
+            });
+        } else if (operation == "locked-read" && expected.size() == 32) {
+            store.read(key, [&](QByteArray actual, Error error) {
+                actual.fill(0);
+                app.exit(error == Error::Locked ? 0 : 10 + int(error));
+            });
+        } else if (operation == "write" && expected.size() == 32) {
             store.write(key, expected, [&](Error error) { app.exit(error == Error::None ? 0 : 10 + int(error)); });
         } else if (operation == "read" && expected.size() == 32) {
             store.read(key, [&](QByteArray actual, Error error) {
@@ -118,17 +164,25 @@ class SecureStorePlatformTest final : public QObject {
         return true;
     }
 
-    bool startKeyringDaemon(const QProcessEnvironment &environment)
+    bool startKeyringDaemon(const QProcessEnvironment &environment, bool provision = true)
     {
         auto *daemon = new QProcess(this);
         daemon->setProgram(m_keyringExecutable);
-        daemon->setArguments({"--foreground", "--unlock", "--components=secrets"});
+        // provision=false reproduces the issue #28 scenario: a daemon whose
+        // login keyring is locked or never provisioned and nobody answers prompts.
+        daemon->setArguments(provision
+            ? QStringList{"--foreground", "--unlock", "--components=secrets"}
+            : QStringList{"--foreground", "--components=secrets"});
         daemon->setProcessEnvironment(environment);
         daemon->start();
         if (!daemon->waitForStarted(5000)) {
             m_harnessError = "The private keyring daemon did not start: " + daemon->errorString();
             daemon->deleteLater();
             return false;
+        }
+        if (!provision) {
+            m_keyringDaemon = daemon;
+            return true;
         }
         // Provision the profile the way PAM does at graphical login: unlock (or
         // on first creation, protect) the login keyring with the disposable
@@ -181,6 +235,27 @@ class SecureStorePlatformTest final : public QObject {
             QThread::msleep(150);
         }
         return false;
+    }
+
+    // One disposable desktop profile (private HOME + runtime dir) pointed at the
+    // private session bus, shared by every real-keyring scenario below.
+    bool prepareProfileEnvironment(const QString &profileHome, QProcessEnvironment &environment)
+    {
+        const auto runDirectory = profileHome + "/run";
+        if (!QDir().mkpath(runDirectory)) return false;
+        if (!QFile::setPermissions(runDirectory,
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner))
+            return false;
+        environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("HOME", profileHome);
+        environment.insert("XDG_RUNTIME_DIR", runDirectory);
+        environment.insert("DBUS_SESSION_BUS_ADDRESS", m_busAddress);
+        environment.remove("XDG_DATA_HOME");
+        environment.remove("XDG_CONFIG_HOME");
+        environment.remove("XDG_CONFIG_DIR");
+        environment.remove("GNOME_KEYRING_CONTROL");
+        environment.remove("SSH_AUTH_SOCK");
+        return true;
     }
 
     QStringList keyringFiles(const QString &profileHome) const
@@ -254,20 +329,9 @@ private slots:
             QSKIP("A regular desktop Secret Service provider (dbus-daemon + gnome-keyring-daemon) is not installed");
         QTemporaryDir profile;
         QVERIFY(profile.isValid());
-        const auto runDirectory = profile.path() + "/run";
-        QVERIFY(QDir().mkpath(runDirectory));
-        QVERIFY(QFile::setPermissions(runDirectory,
-            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
         QVERIFY2(startPrivateBus(), qPrintable(m_harnessError));
-        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-        environment.insert("HOME", profile.path());
-        environment.insert("XDG_RUNTIME_DIR", runDirectory);
-        environment.insert("DBUS_SESSION_BUS_ADDRESS", m_busAddress);
-        environment.remove("XDG_DATA_HOME");
-        environment.remove("XDG_CONFIG_HOME");
-        environment.remove("XDG_CONFIG_DIR");
-        environment.remove("GNOME_KEYRING_CONTROL");
-        environment.remove("SSH_AUTH_SOCK");
+        QProcessEnvironment environment;
+        QVERIFY(prepareProfileEnvironment(profile.path(), environment));
         QVERIFY2(startKeyringDaemon(environment), qPrintable(m_harnessError));
         QVERIFY2(waitForSecretService(), "The private keyring daemon did not publish org.freedesktop.secrets");
         const auto key = "cassi-native-acceptance-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -301,6 +365,102 @@ private slots:
         QVERIFY2(run(key, "missing", {}, &environment), "The deleted token remained readable");
         original.fill(0);
         rotated.fill(0);
+        stopHarness();
+    }
+
+    // Issue #28, unprovisioned profile: a fresh profile whose login keyring was
+    // never provisioned and no prompt provider exists must surface the definite
+    // Locked error instead of leaving the QtKeychain job pending forever.
+    void unprovisionedKeyringWithoutPromptProviderFailsFast()
+    {
+        if (m_dbusExecutable.isEmpty() || m_keyringExecutable.isEmpty())
+            QSKIP("A regular desktop Secret Service provider (dbus-daemon + gnome-keyring-daemon) is not installed");
+        QTemporaryDir profile;
+        QVERIFY(profile.isValid());
+        QVERIFY2(startPrivateBus(), qPrintable(m_harnessError));
+        QProcessEnvironment environment;
+        QVERIFY(prepareProfileEnvironment(profile.path(), environment));
+        QVERIFY2(startKeyringDaemon(environment, false), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The private keyring daemon did not publish org.freedesktop.secrets");
+        const auto key = "cassi-native-acceptance-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto material = QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122();
+        QVERIFY2(run(key, "locked-write", material, &environment),
+            "A write to an unprovisioned keyring without a prompt provider must fail fast with the definite Locked error");
+        QVERIFY2(run(key, "locked-read", material, &environment),
+            "A read against the same unprovisioned keyring must fail fast with the definite Locked error");
+        // Falsification control: the fast-fail must not have stored anything.
+        // Provisioning the same profile the way PAM does must still confirm absence.
+        stopKeyringDaemon();
+        QVERIFY2(startKeyringDaemon(environment, true), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The provisioned keyring daemon did not publish org.freedesktop.secrets");
+        QVERIFY2(run(key, "missing", {}, &environment), "The fast-failed write must not have persisted anything");
+        material.fill(0);
+        stopHarness();
+    }
+
+    // Issue #28, locked profile: an existing login keyring that is locked again
+    // (daemon restarted without unlock, as in a locked screen session) fails fast
+    // for both directions and recovers completely once the keyring is unlocked.
+    void lockedLoginKeyringFailsFastAndRecoversAfterUnlock()
+    {
+        if (m_dbusExecutable.isEmpty() || m_keyringExecutable.isEmpty())
+            QSKIP("A regular desktop Secret Service provider (dbus-daemon + gnome-keyring-daemon) is not installed");
+        QTemporaryDir profile;
+        QVERIFY(profile.isValid());
+        QVERIFY2(startPrivateBus(), qPrintable(m_harnessError));
+        QProcessEnvironment environment;
+        QVERIFY(prepareProfileEnvironment(profile.path(), environment));
+        QVERIFY2(startKeyringDaemon(environment), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The private keyring daemon did not publish org.freedesktop.secrets");
+        const auto key = "cassi-native-acceptance-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto material = QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122();
+        QVERIFY2(run(key, "write", material, &environment), "The provisioned keyring did not confirm the token write");
+        stopKeyringDaemon();
+        QVERIFY2(startKeyringDaemon(environment, false), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The locked keyring daemon did not publish org.freedesktop.secrets");
+        QVERIFY2(run(key, "locked-read", material, &environment),
+            "A read against a locked login keyring without a prompt provider must fail fast with the definite Locked error");
+        QVERIFY2(run(key, "locked-write", material, &environment),
+            "A write against a locked login keyring without a prompt provider must fail fast with the definite Locked error");
+        stopKeyringDaemon();
+        QVERIFY2(startKeyringDaemon(environment, true), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The unlocked keyring daemon did not publish org.freedesktop.secrets");
+        QVERIFY2(run(key, "read", material, &environment), "The token must be readable again once the keyring is unlocked");
+        QVERIFY2(run(key, "delete", {}, &environment), "Test cleanup on the private profile was not confirmed");
+        material.fill(0);
+        stopHarness();
+    }
+
+    // Issue #28 boundedness rule: with a registered prompt provider the daemon
+    // could still deliver a real unlock dialog, so the store must stay pending
+    // for the human instead of failing fast. The provider is simulated by taking
+    // the well-known name the daemon addresses prompts to (observed on-wire).
+    void registeredPromptProviderSuspendsFastFailForSlowUnlock()
+    {
+        if (m_dbusExecutable.isEmpty() || m_keyringExecutable.isEmpty())
+            QSKIP("A regular desktop Secret Service provider (dbus-daemon + gnome-keyring-daemon) is not installed");
+        QTemporaryDir profile;
+        QVERIFY(profile.isValid());
+        QVERIFY2(startPrivateBus(), qPrintable(m_harnessError));
+        QProcessEnvironment environment;
+        QVERIFY(prepareProfileEnvironment(profile.path(), environment));
+        QVERIFY2(startKeyringDaemon(environment, false), qPrintable(m_harnessError));
+        QVERIFY2(waitForSecretService(), "The private keyring daemon did not publish org.freedesktop.secrets");
+        auto providerConnection = QDBusConnection::connectToBus(m_busAddress, "harness-prompt-provider");
+        QVERIFY(providerConnection.isConnected());
+        HarnessPromptProvider provider;
+        new HarnessPromptProviderAdaptor(&provider);
+        QVERIFY(providerConnection.registerObject("/org/gnome/keyring/Prompter", &provider));
+        QVERIFY(providerConnection.registerService("org.gnome.keyring.SystemPrompter"));
+        const auto key = "cassi-native-acceptance-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto material = QUuid::createUuid().toRfc4122() + QUuid::createUuid().toRfc4122();
+        QVERIFY2(run(key, "slow-write", material, &environment),
+            "With a registered prompt provider the store must wait for the interactive prompt instead of failing fast");
+        QVERIFY(providerConnection.unregisterService("org.gnome.keyring.SystemPrompter"));
+        QVERIFY2(run(key, "locked-write", material, &environment),
+            "Without the prompt provider the same keyring must fail fast again");
+        material.fill(0);
+        QDBusConnection::disconnectFromBus("harness-prompt-provider");
         stopHarness();
     }
 

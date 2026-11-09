@@ -25,7 +25,7 @@ struct SavedAccount {
 
 class SessionSecretStore : public QObject {
 public:
-    enum class Error { None, NotFound, Unavailable, Denied, Failed };
+    enum class Error { None, NotFound, Unavailable, Denied, Failed, Locked };
     using Completion = std::function<void(Error)>;
     using Loaded = std::function<void(QByteArray, Error)>;
 

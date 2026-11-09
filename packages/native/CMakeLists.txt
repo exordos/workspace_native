@@ -12,7 +12,7 @@ if(UNIX AND NOT APPLE)
     find_program(WORKSPACE_NATIVE_PATCHELF_EXECUTABLE patchelf REQUIRED)
     set(QT_DEPLOY_USE_PATCHELF ON)
 endif()
-find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql)
+find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus)
 find_package(Qt6Keychain REQUIRED)
 find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
@@ -41,7 +41,7 @@ add_library(workspace-native-core STATIC
     src/native-controller.cpp src/native-controller.h)
 target_include_directories(workspace-native-core PUBLIC src)
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql)
-target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto Qt6::DBus)
 qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE resources
     FILES resources/unicode_emoji.json resources/emoji_picker.json
         resources/emoji_picker_navigation.svg resources/emoji_picker_search.svg
@@ -370,7 +370,10 @@ if(BUILD_TESTING)
         add_executable(secure-store-platform-test tests/secure-store-platform-test.cpp)
         target_link_libraries(secure-store-platform-test PRIVATE workspace-native-core Qt6::Test Qt6::DBus)
         add_test(NAME native-secure-store-platform COMMAND secure-store-platform-test)
-        set_tests_properties(native-secure-store-platform PROPERTIES TIMEOUT 150 LABELS "platform;secure-store")
+        # The issue #28 scenarios add three more keyring daemon start/stop cycles
+        # plus one deliberate 15 s interactive-wait sample on top of the original
+        # flows, so the old 150 s ceiling no longer leaves headroom on slow hosts.
+        set_tests_properties(native-secure-store-platform PROPERTIES TIMEOUT 300 LABELS "platform;secure-store")
         add_executable(native-chat-key-vault-platform-test tests/native-chat-key-vault-platform-test.cpp)
         target_link_libraries(native-chat-key-vault-platform-test PRIVATE workspace-native-core Qt6::Test)
         add_test(NAME native-chat-key-vault-platform COMMAND native-chat-key-vault-platform-test)

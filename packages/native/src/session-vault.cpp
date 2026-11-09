@@ -3,14 +3,22 @@
 
 #include <qt6keychain/keychain.h>
 #include <QCryptographicHash>
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusArgument>
+#include <QDBusMessage>
+#include <QDBusObjectPath>
+#include <QDBusVariant>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QList>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QVariant>
 
 namespace workspace {
 namespace {
@@ -73,8 +81,86 @@ QString secretErrorText(SessionSecretStore::Error error)
     case Error::Unavailable: return SessionVault::tr("The operating system's secure credential store is unavailable.");
     case Error::Denied: return SessionVault::tr("Access to the operating system's secure credential store was denied.");
     case Error::Failed: return SessionVault::tr("The secure credential operation failed.");
+    case Error::Locked: return SessionVault::tr("The desktop login keyring is locked. Unlock it to manage saved sign-ins.");
     }
     return SessionVault::tr("The secure credential operation failed.");
+}
+
+// Issue #28: with GNOME Keyring and no prompt provider, an operation that needs
+// the login keyring unprovisioned or locked makes the daemon open an interactive
+// prompt that nobody can answer, and the QtKeychain job stays pending forever.
+// On-wire, the daemon (bus name org.gnome.keyring) routes prompts to the
+// well-known provider name org.gnome.keyring.SystemPrompter, the default
+// collection is /org/freedesktop/secrets/collection/login, and both the missing
+// login collection (daemon will ask to create it) and Locked=true (daemon will
+// ask to unlock it) precede that unanswerable prompt. Every inconclusive probe
+// outcome fails open so this check can only shorten a deadlock, never break a
+// working store. It must never impose a timeout on a store where a prompt
+// provider exists: a human typing the keyring password may take arbitrarily long.
+SessionSecretStore::Error evaluateKeyringPromptDeadlock()
+{
+    using Error = SessionSecretStore::Error;
+    const auto bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) return Error::None;
+    auto *iface = bus.interface();
+    if (!iface) return Error::None;
+    const auto registered = [iface](const char *name) {
+        return iface->isServiceRegistered(QLatin1String(name))
+            == QDBusConnectionInterface::ServiceRegistered;
+    };
+    if (!registered("org.freedesktop.secrets")) return Error::None;
+    if (!registered("org.gnome.keyring")) return Error::None;
+    if (registered("org.gnome.keyring.SystemPrompter")) return Error::None;
+
+    const auto propertyRead = [&bus](const char *path, const char *interface, const char *property) {
+        auto call = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.secrets"),
+            QLatin1String(path), QStringLiteral("org.freedesktop.DBus.Properties"),
+            QStringLiteral("Get"));
+        call.setArguments({QLatin1String(interface), QLatin1String(property)});
+        const auto reply = bus.call(call, QDBus::Block, 2000);
+        if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty())
+            return QVariant{};
+        auto value = reply.arguments().first();
+        // Properties.Get answers with a signature 'v': Qt surfaces the outer
+        // QDBusVariant wrapper, which must be unwrapped before any conversion.
+        if (value.canConvert<QDBusVariant>()) value = value.value<QDBusVariant>().variant();
+        return value;
+    };
+    const auto collections = propertyRead("/org/freedesktop/secrets",
+        "org.freedesktop.Secret.Service", "Collections");
+    // A D-Bus 'ao' inside a variant arrives as a QDBusArgument stream in Qt 6;
+    // a plain list is accepted too so this stays robust across Qt versions.
+    QList<QDBusObjectPath> paths;
+    bool pathsReadable = false;
+    if (collections.canConvert<QDBusArgument>()) {
+        const auto argument = collections.value<QDBusArgument>();
+        if (argument.currentType() == QDBusArgument::ArrayType) {
+            pathsReadable = true;
+            argument.beginArray();
+            while (!argument.atEnd()) {
+                QDBusObjectPath path;
+                argument >> path;
+                paths.append(path);
+            }
+            argument.endArray();
+        }
+    } else if (collections.canConvert<QList<QDBusObjectPath>>()) {
+        pathsReadable = true;
+        paths = collections.value<QList<QDBusObjectPath>>();
+    }
+    if (!pathsReadable) return Error::None;
+    bool defaultCollectionExists = false;
+    for (const auto &path : paths) {
+        if (path.path() == QLatin1String("/org/freedesktop/secrets/collection/login")) {
+            defaultCollectionExists = true;
+            break;
+        }
+    }
+    if (!defaultCollectionExists) return Error::Locked;
+    const auto locked = propertyRead("/org/freedesktop/secrets/collection/login",
+        "org.freedesktop.Secret.Collection", "Locked");
+    if (!locked.canConvert<bool>()) return Error::None;
+    return locked.toBool() ? Error::Locked : Error::None;
 }
 } // namespace
 
@@ -86,6 +172,11 @@ KeychainSessionSecretStore::KeychainSessionSecretStore(QObject *parent, JobStart
 
 void KeychainSessionSecretStore::write(const QString &key, const QByteArray &secret, Completion done)
 {
+    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
+        const auto error = deadlock;
+        QTimer::singleShot(0, this, [done, error] { done(error); });
+        return;
+    }
     auto *job = new QKeychain::WritePasswordJob(Service, this);
     job->setInsecureFallback(false);
     job->setKey(key);
@@ -98,6 +189,11 @@ void KeychainSessionSecretStore::write(const QString &key, const QByteArray &sec
 
 void KeychainSessionSecretStore::read(const QString &key, Loaded done)
 {
+    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
+        const auto error = deadlock;
+        QTimer::singleShot(0, this, [done, error] { done({}, error); });
+        return;
+    }
     auto *job = new QKeychain::ReadPasswordJob(Service, this);
     job->setInsecureFallback(false);
     job->setKey(key);
@@ -110,6 +206,11 @@ void KeychainSessionSecretStore::read(const QString &key, Loaded done)
 
 void KeychainSessionSecretStore::remove(const QString &key, Completion done)
 {
+    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
+        const auto error = deadlock;
+        QTimer::singleShot(0, this, [done, error] { done(error); });
+        return;
+    }
     auto *job = new QKeychain::DeletePasswordJob(Service, this);
     job->setInsecureFallback(false);
     job->setKey(key);
