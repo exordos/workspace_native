@@ -7,6 +7,7 @@
 #include "native-desktop.h"
 #include "native-cache-service.h"
 #include "native-drafts.h"
+#include "native-deeplink.h"
 #include "native-instance.h"
 #include "native-updater.h"
 #include "native-preferences.h"
@@ -32,6 +33,14 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationVersion(WORKSPACE_NATIVE_VERSION);
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
     QApplication app(argc, argv);
+    // Source parity: the last argument that validates as an external deep link
+    // wins on cold start, mirroring the Electron startup argv scan.
+    QString startupDeepLink;
+    for (int i = 1; i < argc; ++i) {
+        const auto argument = QString::fromLocal8Bit(argv[i]);
+        if (workspace::parseExternalDeepLink(argument).has_value())
+            startupDeepLink = argument;
+    }
     // A direct SSL dependency keeps Qt's TLS backend and message crypto on the
     // bundled OpenSSL pair before transitive system libraries can load another.
     if (OPENSSL_init_ssl(0, nullptr) != 1) {
@@ -41,7 +50,7 @@ int main(int argc, char **argv)
     app.setQuitOnLastWindowClosed(false);
     QQuickStyle::setStyle("Basic");
     workspace::NativeInstance instance;
-    const auto outcome = instance.acquireOrActivate();
+    const auto outcome = instance.acquireOrActivate(startupDeepLink);
     if (outcome == workspace::NativeInstance::Outcome::Secondary) return 0;
     if (outcome == workspace::NativeInstance::Outcome::Failed) {
         qCritical("%s", qPrintable(instance.error()));
@@ -149,8 +158,13 @@ int main(int argc, char **argv)
         if (controller.ownerKey() != badgeOwner) updateUnread();
     });
     updateUnread();
-    QObject::connect(&instance, &workspace::NativeInstance::activationRequested, &app, activate);
+    QObject::connect(&instance, &workspace::NativeInstance::activationRequested, &app,
+        [&controller, activate](const QString &deepLink) {
+            activate();
+            if (!deepLink.isEmpty()) controller.openMessageLink(deepLink);
+        });
     if (instance.activationPending()) activate();
+    if (!startupDeepLink.isEmpty()) controller.openMessageLink(startupDeepLink);
     QTimer::singleShot(0, &session, &workspace::Session::resumeCurrentAccount);
     const int code = app.exec();
     if (!restartExecutable.isEmpty()) {

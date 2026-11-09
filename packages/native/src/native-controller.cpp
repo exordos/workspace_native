@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "native-deeplink.h"
 #include "native-preferences.h"
 #include "native-markdown.h"
 #include "native-chat-key-vault.h"
@@ -4502,6 +4503,15 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(this, &NativeController::messagesChanged, this, &NativeController::scheduleChatControls);
     connect(this, &NativeController::streamsChanged, this, &NativeController::archivedChatsChanged);
     connect(this, &NativeController::stateChanged, this, &NativeController::archivedChatsChanged);
+    connect(this, &NativeController::stateChanged, this, [this] { flushPendingDeepLink(); });
+    connect(this, &NativeController::messagesChanged, this, [this] { reanchorFromWindow(); });
+    connect(this, &NativeController::stateChanged, this, [this] { reanchorFromWindow(); });
+    m_anchorHighlight.setSingleShot(true);
+    connect(&m_anchorHighlight, &QTimer::timeout, this, [this] {
+        if (m_anchorMessage.isEmpty()) return;
+        m_anchorMessage.clear();
+        emit anchorChanged();
+    });
 
     connect(session, &Session::signedOut, this, &NativeController::reset);
     connect(session, &Session::error, this, [this](const QString &message) {
@@ -4916,6 +4926,10 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    // A cold-start deep link is user intent captured before the session
+    // settled; it survives login transitions and is consumed on apply.
+    m_deepLinkFlushScheduled = false;
+    clearAnchor();
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();
     const QPointer<NativeController> guard(this);
@@ -7276,6 +7290,163 @@ void NativeController::copyMessage(const QString &id)
             QGuiApplication::clipboard()->setText(renderer.render(prepared->content).value("plain").toString());
         }
     }
+}
+
+QString NativeController::messageLink(const QString &id) const
+{
+    if (!authenticated()) return {};
+    const auto *message = findMessage(id);
+    if (!message) return {};
+    return workspace::messageUrl(m_api->server(), message->project, message->uuid);
+}
+
+void NativeController::copyMessageLink(const QString &id)
+{
+    const auto link = messageLink(id);
+    if (!link.isEmpty()) QGuiApplication::clipboard()->setText(link);
+}
+
+void NativeController::openMessageLink(const QString &url)
+{
+    if (!authenticated() || busy()) {
+        m_pendingDeepLink = url;
+        return;
+    }
+    applyDeepLink(url);
+}
+
+void NativeController::applyDeepLink(const QString &url)
+{
+    const auto route = workspace::parseExternalDeepLink(url);
+    if (!route.has_value()) return;
+    const auto message = workspace::parseMessageRoute(*route);
+    if (!message.has_value()) return; // Other whitelisted routes only activate the window.
+    applyMessageRoute(message->org, message->project, message->message);
+}
+
+void NativeController::flushPendingDeepLink(bool settle)
+{
+    // Wait until the session and the default conversation restore have
+    // settled; otherwise a selection storm would trample the anchor.
+    if (m_pendingDeepLink.isEmpty() || !authenticated() || busy()
+        || m_session->project().isEmpty() || streams().isEmpty() || m_stream.isEmpty()
+        || m_topic.isEmpty() || !m_conversationRestore.isEmpty())
+        return;
+    if (settle && !m_deepLinkFlushScheduled) {
+        // Settle first: cold-start arguments arrive long before the resume
+        // flow finishes its own navigation bursts.
+        m_deepLinkFlushScheduled = true;
+        QTimer::singleShot(750, this, [this] {
+            m_deepLinkFlushScheduled = false;
+            flushPendingDeepLink(false);
+        });
+        return;
+    }
+    const auto url = m_pendingDeepLink;
+    m_pendingDeepLink.clear();
+    applyDeepLink(url);
+}
+
+void NativeController::applyMessageRoute(const QString &org, const QString &project,
+                                         const QString &target)
+{
+    // The current preview binds one server origin and one project token; a link
+    // for another organization or project lands safely without navigation.
+    if (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
+        || project.compare(m_session->project(), Qt::CaseInsensitive) != 0) {
+        clearAnchor(deepLinkUnavailableNotice());
+        return;
+    }
+    m_pendingAnchorMessage = target;
+    m_pendingAnchorStream = m_stream;
+    m_pendingAnchorTopic = m_topic;
+    m_anchorBudget = 8;
+    if (findMessage(target)) {
+        reanchorFromWindow();
+        return;
+    }
+    request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", target}},
+        [this, target](const ApiResult &result) {
+        if (m_pendingAnchorMessage != target) return;
+        const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
+        const auto parsed = rows.isEmpty() ? std::optional<Message>{}
+            : parseMessage(rows.first().toObject(), m_session->project());
+        if (!parsed || parsed->uuid != target) {
+            clearAnchor(deepLinkUnavailableNotice());
+            return;
+        }
+        if (m_pendingAnchorMessage != target) return;
+        m_pendingAnchorStream = parsed->stream;
+        m_pendingAnchorTopic = parsed->topic;
+        if (parsed->topic.isEmpty()) {
+            if (parsed->stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
+            else selectStream(parsed->stream);
+        } else if (parsed->stream == m_stream && parsed->topic == m_topic) {
+            reanchorFromWindow();
+        } else {
+            openTopic(parsed->topic);
+        }
+    });
+}
+
+void NativeController::setAnchorMessage(const QString &id)
+{
+    if (m_anchorMessage == id) return;
+    m_anchorMessage = id;
+    emit anchorChanged();
+}
+
+void NativeController::clearAnchor(const QString &notice)
+{
+    m_pendingAnchorMessage.clear();
+    m_pendingAnchorStream.clear();
+    m_pendingAnchorTopic.clear();
+    m_anchorBudget = 0;
+    m_anchorHighlight.stop();
+    const bool hadAnchor = !m_anchorMessage.isEmpty();
+    m_anchorMessage.clear();
+    if (hadAnchor) emit anchorChanged();
+    if (!notice.isEmpty()) {
+        m_notice = notice;
+        emit stateChanged();
+    }
+}
+
+void NativeController::reanchorFromWindow()
+{
+    if (m_pendingAnchorMessage.isEmpty()) return;
+    if (m_stream != m_pendingAnchorStream || m_topic != m_pendingAnchorTopic) {
+        clearAnchor(); // Navigation moved on; the anchor no longer has a home.
+        return;
+    }
+    if (findMessage(m_pendingAnchorMessage)) {
+        const auto target = m_pendingAnchorMessage;
+        m_pendingAnchorMessage.clear();
+        m_pendingAnchorStream.clear();
+        m_pendingAnchorTopic.clear();
+        m_anchorBudget = 0;
+        setAnchorMessage(target);
+        m_anchorHighlight.start(2500);
+        return;
+    }
+    if (busy()) return; // A live page owns the next reanchor pass.
+    if (m_anchorBudget > 0) {
+        --m_anchorBudget;
+        if (canLoadOlder()) {
+            loadOlder();
+            return;
+        }
+        // Topic switching commits its selection before the first history
+        // page lands; give the in-flight page a short bounded grace.
+        QTimer::singleShot(120, this, [this] { reanchorFromWindow(); });
+        return;
+    }
+    clearAnchor(deepLinkUnavailableNotice());
+}
+
+QString NativeController::deepLinkUnavailableNotice()
+{
+    return tr("The requested message is unavailable.");
 }
 
 void NativeController::quoteMessage(const QString &id)

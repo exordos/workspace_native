@@ -7626,6 +7626,16 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         QTRY_VERIFY(item(content, "message-" + messageId));
         auto *bubble = item(content, "message-" + messageId);
+        if (scenario == "menu-peer-actions") {
+            // Deep link to a visible message anchors it, highlights the row
+            // and releases the anchor again without switching topics.
+            controller.openMessageLink("ew://open/org/127.0.0.1-"
+                + QString::number(server.origin().port())
+                + "/project/" + projectId + "/message/" + messageId);
+            QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), messageId, 3000);
+            auto *highlight = item(content, "messageHighlight-" + messageId);
+            QTRY_VERIFY(highlight && highlight->isVisible());
+        }
         if (scenario.startsWith("menu-")) {
             preferences.setMode(scenario == "menu-source-dark" ? "dark" : "light");
             QTest::mouseClick(window, Qt::RightButton, {}, bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
@@ -7635,15 +7645,19 @@ mv -Tf "$root/.current-new" "$root/current"
             auto *reply = item(content, "replyMessageAction");
             auto *edit = item(content, "editMessageAction");
             auto *remove = item(content, "deleteMessageAction");
-            QVERIFY(copy && reply && edit && remove);
+            auto *copyLink = item(content, "copyMessageLinkAction");
+            QVERIFY(copy && reply && edit && remove && copyLink);
             if (scenario == "menu-no-extra-star") {
                 QVERIFY2(!window->findChild<QObject *>("starMessageAction"),
                     "Pinned source full caller has no Star action in the message context menu");
             } else if (scenario == "menu-keyboard-reply") {
-                // End lands on Copy text; arrows skip separators and the
-                // peer's hidden Edit/Delete rows. Source has no Star row.
+                // End lands on Copy text; Copy link sits between Reply and
+                // Copy text, and arrows skip separators and the peer's hidden
+                // Edit/Delete rows. Source has no Star row.
                 QTest::keyClick(window, Qt::Key_End);
                 QTRY_VERIFY(copy->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Up);
+                QTRY_VERIFY(copyLink->hasActiveFocus());
                 QTest::keyClick(window, Qt::Key_Up);
                 QTRY_VERIFY(reply->hasActiveFocus());
                 QTest::keyClick(window, Qt::Key_End);
@@ -7658,17 +7672,20 @@ mv -Tf "$root/.current-new" "$root/current"
             } else if (scenario == "menu-encrypted-actions") {
                 QVERIFY2(!reply->isVisible() && !copy->isVisible() && !edit->isVisible() && !remove->isVisible(),
                     "Locked message bodies must not expose unsupported Reply/Copy/Edit/Delete actions");
+                QVERIFY(!copyLink->isVisible());
                 QVERIFY(item(content, "moreReactionsButton")->isEnabled());
             } else if (scenario == "menu-peer-actions") {
                 QVERIFY(!controller.messages().first().toMap().value("own").toBool());
                 QVERIFY2(!edit->isVisible() && !remove->isVisible(), "Source hides Edit/Delete for peer messages");
                 QVERIFY(!edit->isEnabled() && !remove->isEnabled());
+                QVERIFY(copyLink->isVisible() && copyLink->isEnabled());
             } else if (scenario == "menu-own-actions") {
                 QVERIFY(edit->isVisible() && edit->isEnabled());
                 QVERIFY(remove->isVisible() && remove->isEnabled());
                 // Opening makes Menu visible before its scheduled row polish.
                 // Assert the same actual source order after layout, not a timer.
                 QTRY_VERIFY2(reply->mapToScene(QPointF()).y() < copy->mapToScene(QPointF()).y(), "Source Reply precedes Copy text");
+                QTRY_VERIFY(copyLink->mapToScene(QPointF()).y() < copy->mapToScene(QPointF()).y());
                 QTRY_VERIFY(copy->mapToScene(QPointF()).y() < edit->mapToScene(QPointF()).y());
                 QTRY_VERIFY(edit->mapToScene(QPointF()).y() < remove->mapToScene(QPointF()).y());
             } else if (scenario == "menu-emoji-ink") {

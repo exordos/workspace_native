@@ -24,6 +24,7 @@ add_library(workspace-native-core STATIC
     src/workspace-reference.cpp src/workspace-reference.h
     src/file-client.cpp src/file-client.h
     src/native-markdown.cpp src/native-markdown.h
+    src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
     src/native-preferences.cpp src/native-preferences.h

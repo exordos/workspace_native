@@ -7,20 +7,22 @@
 
 namespace workspace {
 
-// A second launch activates the existing preview. IPC accepts no routes,
-// credentials, commands or arbitrary payloads.
+// A second launch activates the existing preview. IPC accepts only the
+// literal "activate" line or one "open <ew-url>" line capped at 1024 bytes;
+// the primary re-validates every URL with the deep-link parser. No credentials,
+// commands or arbitrary payloads cross this channel.
 class NativeInstance final : public QObject {
     Q_OBJECT
 public:
     enum class Outcome { Primary, Secondary, Failed };
     explicit NativeInstance(QString directory = {}, QObject *parent = nullptr);
-    Outcome acquireOrActivate();
+    Outcome acquireOrActivate(const QString &deepLink = {});
     void release();
     QString error() const { return m_error; }
     bool activationPending() const { return m_activationPending; }
 
 signals:
-    void activationRequested();
+    void activationRequested(QString deepLink);
 
 private:
     void acceptConnections();
