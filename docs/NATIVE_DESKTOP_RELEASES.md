@@ -57,6 +57,11 @@ Release, deploys the actual QML runtime, exercises the packaged five-codec
 (including SVG), encryption and TLS probe, and uploads the archive and checksums.
 Tag runs also publish those files in this repository's GitHub Releases using
 the workflow's repository-scoped token. Application packages contain no token.
+Each release body carries only the released version's own section of
+`docs/NATIVE_DESKTOP_RELEASE_NOTES.md`, extracted by
+`packages/native/scripts/release-notes.py`. That document stays a newest-first
+aggregate in the repository and is never published as a whole, so a release does
+not repeat earlier versions.
 
 The tag, configured CMake version and source project version must agree.
 `main.cpp` receives the version from CMake. A source version bump cannot relabel

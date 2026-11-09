@@ -52,6 +52,7 @@ jobs:
           set -euo pipefail
           python3 packages/native/tests/linux-installer-test.py -v
           python3 packages/native/tests/linux-package-test.py -v
+          python3 packages/native/tests/release-notes-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash
@@ -130,7 +131,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 packages/native/scripts/release-notes.py \
+            --version "${GITHUB_REF_NAME}" \
+            --out "build/release-notes-${GITHUB_REF_NAME}.md"
           gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
             --verify-tag --title "Workspace Native ${GITHUB_REF_NAME} — Linux preview" \
-            --notes-file docs/NATIVE_DESKTOP_RELEASE_NOTES.md \
+            --notes-file "build/release-notes-${GITHUB_REF_NAME}.md" \
             dist/linux/*.tar.gz dist/linux/SHA256SUMS
