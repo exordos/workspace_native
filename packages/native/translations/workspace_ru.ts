@@ -1913,6 +1913,10 @@
             <translation>Доступ к защищённому хранилищу учётных данных операционной системы запрещён.</translation>
         </message>
         <message>
+            <source>The desktop login keyring is locked. Unlock it to manage saved sign-ins.</source>
+            <translation>Связка ключей для входа в систему заблокирована. Разблокируйте её, чтобы управлять сохранёнными учётными записями.</translation>
+        </message>
+        <message>
             <source>The secure credential operation failed.</source>
             <translation>Не удалось выполнить операцию с защищённым хранилищем.</translation>
         </message>

@@ -169,10 +169,19 @@ desktop keyring is never written by that case.
 
 A keyring profile that was never provisioned requires the interactive
 provisioning prompt, so a headless harness must perform the login-time unlock
-step first. When a desktop keyring is locked or absent and no prompt provider is
-present, an OS-store write waits on that prompt indefinitely; regular Linux
-desktop sessions unlock the keyring through PAM at login, and issue #28 tracks
-the app-side behavior for locked-profile sessions separately.
+step first. Issue #28 established that when the desktop keyring is locked or
+absent and no prompt provider is registered, the daemon's interactive prompt is
+never answered and OS-store writes stayed pending forever. The session vault
+now bounds that case with a Secret Service pre-flight: when the default login
+collection is missing or locked and GNOME Keyring's prompt address
+`org.gnome.keyring.SystemPrompter` has no owner, the operation completes
+immediately with a definite, actionable locked error instead of hanging. No
+timeout is ever applied while a prompt provider exists - a human at the unlock
+prompt may take as long as needed - and every inconclusive probe fails open.
+Regular Linux desktop sessions unlock the keyring through PAM at login and are
+unaffected. The opt-in `native-secure-store-platform` group holds this contract
+with unprovisioned-profile, locked-profile-recovering-after-unlock and
+registered-prompt-provider scenarios.
 
 To run deliberately against an available OS credential store, configure with
 `-DWORKSPACE_NATIVE_PLATFORM_TESTS=ON`, then run:
