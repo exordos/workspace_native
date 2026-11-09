@@ -1,3 +1,30 @@
+# Workspace Native 0.3.6 - Linux development preview
+
+Secret Service operations no longer wait forever when there is nobody left to
+answer. If the desktop login keyring was locked or had never been provisioned
+and no prompt provider was registered, the GNOME Keyring daemon opened an
+interactive prompt that nothing could answer, and saving or restoring a sign-in
+stayed pending indefinitely (issue #28). The session vault now runs a bounded
+Secret Service pre-flight before each credential operation: when the default
+login collection is missing or locked and no prompt address has an owner, the
+operation completes immediately with a definite, actionable error - "The
+desktop login keyring is locked. Unlock it to manage saved sign-ins." -
+instead of hanging. Every inconclusive probe fails open; with a prompt provider
+present the operation is never interrupted, so a real user typing a keyring
+password keeps all the time they need, and normal unlocked desktop sessions
+behave exactly as before. Three new opt-in acceptance scenarios cover the
+unprovisioned profile, a locked profile that recovers after unlocking and a
+registered prompt provider suspending the fast-fail
+(`docs/NATIVE_DESKTOP_CRYPTO.md`).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.5...0.3.6](https://github.com/exordos/workspace_native/compare/0.3.5...0.3.6)
+
+---
+
 # Workspace Native 0.3.5 - Linux development preview
 
 Session credential storage is now proven against a regular desktop profile, not
