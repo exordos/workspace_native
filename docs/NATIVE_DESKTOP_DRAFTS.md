@@ -1,10 +1,10 @@
 # Native drafts
 
-Persistent drafts are planned for 0.3.0. The wire parser, revision transport and
-durable storage backend, bounded storage worker and local composer integration
-are implemented. Main constructs the store/model and binds the existing composer
+Persistent ordinary drafts are implemented for 0.3.0. The wire parser, revision transport and
+durable storage backend, bounded storage worker, local composer integration and
+conditional API synchronization are implemented. Main constructs the store/model and binds the existing composer
 to the verified account and ordinary conversation. The clean composer cache now
-has bounded residency. API synchronization and packaged acceptance remain required before release.
+has bounded residency. Acceptance requirements and their scope are listed below.
 This document describes the contract and acceptance targets, not complete parity.
 
 ## Existing contract
@@ -25,7 +25,9 @@ are historical references; the composer entity below is the editor reference.
 
 The [backend contract](https://github.com/exordos/workspace_backend/blob/32d21ab35fe136c49882c85b3d5e9c49ecc5b0d4/docs/workspace_api.md#drafts)
 limits non-empty canonical Markdown to 40,000 Unicode code points. A stale
-revision returns 412 with the current body and ETag. No draft CRUD emits ordinary
+revision returns 412 with an owned DTO in the `current` envelope and its ETag.
+Native accepts that envelope and the older direct DTO shape, subject to the same
+project/user/route and strong-revision checks. No draft CRUD emits ordinary
 messages or realtime events. Navigation therefore uses hydrated local state;
 other-client changes require a reload or explicit refetch. Native draft parsing
 verifies the expected project/user, all resource identities, numeric revision,
@@ -97,6 +99,44 @@ draft and history workers. A failed flush leaves both workers available, retains
 input and restores the window with a persistence notice; it does not report
 successful shutdown or start the successor. This wiring and its component/window
 checks do not establish installed-process or live-service acceptance.
+
+## Server synchronization and the Drafts page
+
+The controller binds synchronization only after verifying the account and stream
+catalog. The verified session token scopes requests to the exact project; each
+returned DTO is checked against that project and user. The draft endpoint does
+not accept project_id as a query filter. One HTTP operation at a time
+serializes each UUID; collection import uses 100-row pages and removes absent
+Saved records only after a complete successful collection. It preserves local,
+failed, deleting and conflicted work. Ordinary navigation reads local storage;
+startup and explicit Drafts refresh fetch remote changes. Refresh waits behind
+an in-flight mutation instead of cancelling a save.
+
+Remote saves coalesce for one second. The first create body and UUID reach disk
+before POST, and uncertain retries retain both. Conditional PUT/DELETE use the
+accepted strong revision. Consumed records reach disk before DELETE. A later
+edit, including the same text with a different snapshot, remains editable.
+Transient failures back off; rejected writes remain visible until another edit
+or explicit user action. Private promotion retains only deletion metadata and
+uses exact GET to reconcile an uncertain prior create without replaying plaintext.
+
+The Drafts activity page shows at most 100 previews ordered by local update time
+and UUID, with Previous/Next navigation. Each preview contains at most 160 UTF-16
+units plus an ellipsis; full bodies are read on the worker only when needed.
+Cards open their exact UUID through verified topic resolution. Conflicts offer
+server/local/delete choices; a failed consumed deletion offers retry. Actions
+are owner/snapshot fenced and cannot overwrite input typed after the click.
+Only the Drafts activity is enabled by this feature. Native quotes remain part
+of the saved Markdown. The format preserves reply-session JSON, but Source reply
+tabs and inline-edit sessions remain unfinished. Encrypted draft text retains
+its existing memory-only boundary.
+
+Authoritative access changes remove inaccessible local records on the worker,
+independently of the draft endpoint being available. This removal is scoped to
+the captured owner. A still-accessible stream becoming encrypted stops ordinary
+synchronization and retains its prior ordinary record; newly typed encrypted
+input stays in controller memory. The schema and decimal 10 GB history-cache default remain
+unchanged; draft work is stored separately from the evictable history cache.
 
 ## Composer residency
 

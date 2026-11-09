@@ -1211,6 +1211,14 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Drafts could not be synchronized. Refresh to retry.</source>
+            <translation>Не удалось синхронизировать черновики. Обновите список для повторной попытки.</translation>
+        </message>
+        <message>
+            <source>Yesterday</source>
+            <translation>Вчера</translation>
+        </message>
+        <message>
             <source>The draft could not be saved on this computer. Your input is still in memory. Retry before quitting.</source>
             <translation>Не удалось сохранить черновик на этом компьютере. Введённый текст остаётся в памяти. Повторите попытку перед выходом.</translation>
         </message>
@@ -2135,6 +2143,89 @@
         <message>
             <source>Retry</source>
             <translation>Повторить</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeDraftsPage</name>
+        <message>
+            <source>Waiting to save</source>
+            <translation>Ожидает сохранения</translation>
+        </message>
+        <message>
+            <source>Saving</source>
+            <translation>Сохраняется</translation>
+        </message>
+        <message>
+            <source>Could not delete</source>
+            <translation>Не удалось удалить</translation>
+        </message>
+        <message>
+            <source>Could not save</source>
+            <translation>Не удалось сохранить</translation>
+        </message>
+        <message>
+            <source>Conflict: remote version was kept</source>
+            <translation>Конфликт: сохранена версия с сервера</translation>
+        </message>
+        <message>
+            <source>Deleting</source>
+            <translation>Удаляется</translation>
+        </message>
+        <message>
+            <source>Drafts</source>
+            <translation>Черновики</translation>
+        </message>
+        <message>
+            <source>Refresh</source>
+            <translation>Обновить</translation>
+        </message>
+        <message>
+            <source>Close drafts</source>
+            <translation>Закрыть черновики</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>No drafts yet</source>
+            <translation>Черновиков пока нет</translation>
+        </message>
+        <message>
+            <source>Edit draft</source>
+            <translation>Редактировать черновик</translation>
+        </message>
+        <message>
+            <source>Direct chat</source>
+            <translation>Личный чат</translation>
+        </message>
+        <message>
+            <source>Channel</source>
+            <translation>Канал</translation>
+        </message>
+        <message>
+            <source>Delete draft</source>
+            <translation>Удалить черновик</translation>
+        </message>
+        <message>
+            <source>Use server version</source>
+            <translation>Принять версию сервера</translation>
+        </message>
+        <message>
+            <source>Keep my version</source>
+            <translation>Оставить мою версию</translation>
+        </message>
+        <message>
+            <source>Retry deletion</source>
+            <translation>Повторить удаление</translation>
+        </message>
+        <message>
+            <source>Previous</source>
+            <translation>Назад</translation>
+        </message>
+        <message>
+            <source>Next</source>
+            <translation>Далее</translation>
         </message>
     </context>
 </TS>

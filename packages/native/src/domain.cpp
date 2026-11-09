@@ -285,6 +285,9 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
     if (complete) stream.security = StreamCryptoMetadata{json.value("owner").toString(), json.value("user_uuid").toString(),
         json.value("source_name").toString(), json.value("current_encryption_key_uuid").toString(),
         json.value("default_topic_uuid").toString(), json.value("provider_uuid").toString(), json.value("provider_identity").toString()};
+    const auto color = json.value("color").toDouble(-1);
+    if (json.value("color").isDouble() && std::isfinite(color) && color >= 0 && color <= 0xffffff && std::floor(color) == color)
+        stream.color = quint32(color);
     return stream;
 }
 

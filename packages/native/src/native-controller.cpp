@@ -17,6 +17,7 @@
 #include <QJsonArray>
 #include <QPointer>
 #include <QUuid>
+#include <QLocale>
 #include <algorithm>
 
 namespace workspace {
@@ -3943,6 +3944,87 @@ QString NativeController::notice() const
     return notices.join('\n');
 }
 
+QVariantMap NativeController::draftPage() const
+{
+    if (!m_draftStore || !authenticated() || m_draftStore->owner() != creationOwnerKey())
+        return {{"rows", QVariantList{}}, {"loading", false}, {"error", QString{}}, {"canNext", false}, {"canPrevious", false}};
+    auto page = m_draftStore->page(); QVariantList rows;
+    static const QStringList phases{"local", "saving", "saved", "failed", "conflict", "deleting"};
+    for (const auto &value : page.value("rows").toList()) {
+        auto row = value.toMap(); const auto streamId = row.value("stream").toString(), topicId = row.value("topic").toString();
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &s) { return s.uuid == streamId; });
+        if (stream == m_streams.cend() || stream->encrypted) continue;
+        const bool direct = stream->privateStream && isUuid(stream->directUser);
+        const auto name = sourceTrimmed(stream->name).isEmpty() ? streamId : sourceTrimmed(stream->name);
+        row["streamName"] = name; row["topicName"] = topicId; row["direct"] = direct; row["initial"] = name.left(1);
+        if (streamId == m_stream) for (const auto &topic : m_topics) if (topic.uuid == topicId) row["topicName"] = topic.name;
+        row["avatarUrl"] = direct ? userAvatar(stream->directUser) : QString{};
+        row["avatarColor"] = !direct && stream->color ? QString("#%1").arg(*stream->color, 6, 16, QLatin1Char('0')) : QString{};
+        const auto time = QDateTime::fromMSecsSinceEpoch(row.value("updatedAt").toLongLong()).toLocalTime();
+        const auto today = QDate::currentDate();
+        row["time"] = time.date() == today ? time.toString("HH:mm")
+            : time.date() == today.addDays(-1) ? tr("Yesterday") + ' ' + time.toString("HH:mm")
+            : QLocale::system().toString(time.date(), QLocale::system().language() == QLocale::Russian ? "d MMM" : "MMM d");
+        row["phase"] = phases.value(row.value("phase").toInt()); rows.append(row);
+    }
+    page["rows"] = rows;
+    const auto remote = m_draftStore->remoteStatus();
+    page["loading"] = page.value("loading").toBool() || remote.busy;
+    page["error"] = page.value("error").toBool() || remote.failure != NativeDrafts::RemoteFailure::None
+        ? tr("Drafts could not be synchronized. Refresh to retry.") : QString{};
+    return page;
+}
+
+void NativeController::showDrafts()
+{
+    if (!authenticated() || !m_catalogVerified || !m_draftStore) return;
+    m_draftsVisible = true; const QPointer<NativeController> guard(this);
+    m_draftStore->showPage();
+    if (guard && m_draftStore) m_draftStore->refetchRemote();
+    if (guard) emit stateChanged();
+}
+void NativeController::closeDrafts()
+{
+    if (!m_draftsVisible) return;
+    m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage(); emit stateChanged();
+}
+void NativeController::refreshDrafts()
+{
+    if (!m_draftsVisible || !authenticated() || !m_draftStore) return;
+    const QPointer<NativeController> guard(this); m_draftStore->showPage();
+    if (guard && m_draftStore) m_draftStore->refetchRemote();
+}
+void NativeController::nextDraftPage() { if (m_draftsVisible && m_draftStore) m_draftStore->nextPage(); }
+void NativeController::previousDraftPage() { if (m_draftsVisible && m_draftStore) m_draftStore->previousPage(); }
+void NativeController::openDraft(const QString &id)
+{
+    if (!m_draftStore || !authenticated() || !m_catalogVerified) return;
+    QVariantMap selected;
+    for (const auto &value : m_draftStore->page().value("rows").toList())
+        if (value.toMap().value("id").toString() == id) { selected = value.toMap(); break; }
+    if (selected.isEmpty() || selected.value("consumed").toBool()) return;
+    const auto stream = selected.value("stream").toString(), topic = selected.value("topic").toString();
+    if (std::none_of(m_streams.cbegin(), m_streams.cend(), [&](const Stream &s) { return s.uuid == stream && !s.encrypted; })) return;
+    m_draftsVisible = false; m_draftStore->hidePage();
+    m_draftOpenId = id; m_draftOpenStream = stream; m_draftOpenTopic = topic;
+    m_draftOpenOwner = creationOwnerKey(); m_draftOpenGeneration = m_api->generation();
+    m_selectingDraftRoute = true; const QPointer<NativeController> guard(this);
+    openTopic(topic, stream);
+    if (!guard) return;
+    m_selectingDraftRoute = false; synchronizeDrafts(); emit stateChanged();
+}
+void NativeController::deleteDraft(const QString &id)
+{
+    if (m_draftsVisible && authenticated() && m_draftStore) m_draftStore->actOnDraft(id, NativeDrafts::Action::Delete);
+}
+void NativeController::resolveDraft(const QString &id, const QString &action)
+{
+    if (!m_draftsVisible || !authenticated() || !m_draftStore) return;
+    if (action == "server") m_draftStore->actOnDraft(id, NativeDrafts::Action::Server);
+    else if (action == "local") m_draftStore->actOnDraft(id, NativeDrafts::Action::Local);
+    else if (action == "delete") m_draftStore->actOnDraft(id, NativeDrafts::Action::Delete);
+}
+
 void NativeController::reportDraftFlushFailure()
 {
     m_draftFlushFailed = true;
@@ -3957,6 +4039,7 @@ void NativeController::synchronizeDrafts()
     const auto syncing = qScopeGuard([guard] { if (guard) guard->m_syncingDrafts = false; });
     const auto owner = creationOwnerKey();
     if (owner != m_draftOwner) {
+        m_draftsVisible = false; m_draftOpenId.clear();
         if (!m_draftOwner.isEmpty()) { m_drafts.clear(); m_draftRevisions.clear(); }
         m_draftFallbackOwner.clear(); m_draftFallbackRoute.clear(); m_draftFallback.clear();
         m_draftOwner = owner; m_draftRoutes.clear(); m_draftFlushFailed = false;
@@ -3965,6 +4048,14 @@ void NativeController::synchronizeDrafts()
     }
     for (const auto &route : m_draftRoutes.values())
         if (!m_draftStore->retained(route.section('/', 0, 0), route.section('/', 1, 1))) m_draftRoutes.remove(route);
+    QSet<QString> ordinaryStreams, accessibleStreams;
+    if (!owner.isEmpty() && m_catalogVerified)
+        for (const auto &row : m_streams) {
+            accessibleStreams.insert(row.uuid); if (!row.encrypted) ordinaryStreams.insert(row.uuid);
+        }
+    m_draftStore->useRemote(!owner.isEmpty() && m_catalogVerified ? m_api : nullptr,
+        m_session ? m_session->project() : QString{}, m_session ? m_session->user() : QString{}, ordinaryStreams, accessibleStreams);
+    if (!guard || !m_draftStore) return;
     const auto *stream = currentStream();
     const bool verified = !owner.isEmpty() && stream && !stream->encrypted && isUuid(m_topic)
         && m_catalogVerified && m_topicsVerified && !m_topicSeedUnverified
@@ -3976,7 +4067,14 @@ void NativeController::synchronizeDrafts()
         if (!guard || !m_draftStore) return;
         m_draftFallbackOwner = owner; m_draftFallbackRoute = route;
         m_draftFallback = m_draftStore->text(m_stream, m_topic);
+        if (!m_draftOpenId.isEmpty() && m_draftOpenOwner == owner && m_draftOpenGeneration == m_api->generation()
+            && m_draftOpenStream == m_stream && m_draftOpenTopic == m_topic) {
+            const auto id = m_draftOpenId; m_draftOpenId.clear(); m_draftStore->actOnDraft(id, NativeDrafts::Action::Open);
+        }
     } else if (stream && stream->encrypted) m_draftStore->select({}, {});
+    if (!m_draftOpenId.isEmpty() && !m_selectingDraftRoute && !m_topicOpening.active && m_topicsVerified
+        && (m_draftOpenOwner != owner || m_draftOpenGeneration != m_api->generation()
+            || m_draftOpenStream != m_stream || m_draftOpenTopic != m_topic)) m_draftOpenId.clear();
 }
 
 void NativeController::useDrafts(NativeDrafts *drafts)
@@ -4818,6 +4916,8 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    m_draftsVisible = false; m_draftOpenId.clear();
+    if (m_draftStore) m_draftStore->hidePage();
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();
     if (!guard) return;
@@ -5739,6 +5839,7 @@ void NativeController::persistStreams()
             {"unread_count", stream.unread}, {"active_unread_count", stream.activeUnread}, {"passive_unread_count", stream.passiveUnread},
             {"last_message_uuid", stream.lastMessage.isEmpty() ? QJsonValue::Null : QJsonValue(stream.lastMessage)}};
         if (!stream.notificationMode.isEmpty()) row["notification_mode"] = stream.notificationMode;
+        if (stream.color) row["color"] = int(*stream.color);
         if (stream.updatedMicros) row["updated_at"] = QDateTime::fromMSecsSinceEpoch(stream.updatedMicros / 1000, QTimeZone::UTC)
             .toString("yyyy-MM-dd'T'HH:mm:ss.") + QString("%1").arg(stream.updatedMicros % 1000000, 6, 10, QLatin1Char('0')) + 'Z';
         rows.append(row);
@@ -6529,6 +6630,8 @@ void NativeController::reloadSnapshot()
 
 void NativeController::selectStream(const QString &id)
 {
+    if (!m_selectingDraftRoute) m_draftOpenId.clear();
+    m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     activateStream(id);
 }
 
@@ -6689,6 +6792,7 @@ void NativeController::finishTopicOpening(quint64 ticket, const QString &error)
 
 void NativeController::openTopic(const QString &id, const QString &)
 {
+    if (!m_selectingDraftRoute) m_draftOpenId.clear();
     const auto target = id.toLower();
     if (m_topicOpening.active && m_topicOpening.requested == target
         && topicOpeningContext(m_topicOpening.ticket)) return;
@@ -6828,6 +6932,8 @@ void NativeController::noteTopicOpeningStream(const Stream &stream)
 
 void NativeController::selectTopic(const QString &id)
 {
+    if (!m_selectingDraftRoute) m_draftOpenId.clear();
+    m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;

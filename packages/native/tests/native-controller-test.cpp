@@ -8247,7 +8247,8 @@ private slots:
         bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
         storage.shutdown(); QTRY_VERIFY(storage.stopped());
         NativeDraftStore store(directory.filePath("drafts")); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
-        QCOMPARE(store.latest(streamId, topicId).record->text, "Ordinary input");
+        const auto prior = store.latest(streamId, topicId); QVERIFY(prior.record);
+        QCOMPARE(prior.record->text, "Ordinary input");
     }
 
     void logoutClearsPendingAttachmentUiAndLateDrafts()

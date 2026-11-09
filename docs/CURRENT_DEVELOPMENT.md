@@ -986,10 +986,31 @@ RSS, with 34 evictable cached bodies, at most 128 cached routes and one controll
 text fallback. This is a measured workload result, not a general memory cap or
 installed primary-account acceptance.
 
+## Ordinary draft synchronization and activity
+
+The 0.3.0 candidate synchronizes ordinary drafts with the verified project/user,
+serializes conditional writes and durable consumed deletions, freezes uncertain
+creates, and exposes exact-UUID cards and conflict/retry actions. The page uses
+100 bounded previews; navigation and residency remain local. A still-accessible
+stream becoming encrypted retains earlier ordinary work and stops its ordinary
+sync; newly typed encrypted text remains in memory. Native quote Markdown is
+saved; Source reply tabs and inline-edit sessions remain unfinished.
+
+Live primary-account checks exercised Source-to-native hydration, exact card
+opening, native-to-Source updates, normal process restart with a real isolated
+OS credential service and exact restored text. Live API evidence also reproduced
+an unsupported project query and a 412 `current` envelope; both have retained
+regressions. Complete local suites, the final public package and authenticated
+update acceptance are recorded separately as they finish.
+
+Development stops after acceptance of this feature, at the user's request.
+Subsequent rows below are deferred planning, not scheduled or authorized ongoing
+work after the pause.
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting
-after the published 0.2.0. New features increase MINOR; corrections to existing functionality
+after the 0.3.0 draft feature. Development is paused after that feature. New features increase MINOR; corrections to existing functionality
 increase PATCH, following the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases).
 Bug-fix releases can appear between these ten feature releases. Each row is
 planned work, not a claim of implementation or acceptance.
@@ -1002,13 +1023,13 @@ full parity matrix or resume other platforms.
 
 | Priority | Planned version | Main capability and acceptance target |
 | --- | --- | --- |
-| 1 | 0.3.0 | Persistent drafts: retain and restore per-conversation text and reply/edit context across restart, with the Source draft lifecycle and account/project isolation. |
-| 2 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
-| 3 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
-| 4 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
-| 5 | 0.7.0 | Participant presentation: accept real Gravatar images and live presence updates on the account, sidebar, header and message surfaces. |
-| 6 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last behavior, preserving the prior draft and confirmed server result. |
-| 7 | 0.9.0 | Replies and quote navigation: preserve reply context and open/highlight the original message, including unloaded history. |
-| 8 | 0.10.0 | Multi-message forwarding: selection, destination choice and canonical confirmation without duplicate sends. |
-| 9 | 0.11.0 | Media viewer: open received images and attachments from the message, navigate media and save the original with bounded resource use. |
-| 10 | 0.12.0 | Durable outgoing messages: retain pending sends across restart, reconcile uncertain results by stable identity and recover without duplicates. |
+| 1 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
+| 2 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
+| 3 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
+| 4 | 0.7.0 | Participant presentation: real Gravatar images and live presence on account, sidebar, header and messages. |
+| 5 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last, preserving the prior draft and confirmed server result. |
+| 6 | 0.9.0 | Replies and quote navigation: Source reply context and opening/highlighting the original message, including unloaded history. |
+| 7 | 0.10.0 | Multi-message forwarding: selection, destination and canonical confirmation without duplicate sends. |
+| 8 | 0.11.0 | Media viewer: open received images/attachments, navigate media and save originals with bounded resource use. |
+| 9 | 0.12.0 | Durable outgoing messages: pending sends across restart and reconciliation without duplicates. |
+| 10 | 0.13.0 | Global message search: account/project-scoped results, filters and exact conversation/message navigation. |

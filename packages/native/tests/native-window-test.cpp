@@ -372,6 +372,73 @@ public:
     }
 };
 
+// Draft HTTP remains synthetic and is layered over the same catalog, topics,
+// session and actual Main.qml harness as ordinary conversation tests.
+class WindowDraftFixture final : public WindowChannelFixture {
+public:
+    QHash<QString, QJsonObject> drafts;
+    int draftLists = 0, draftPuts = 0, draftDeletes = 0;
+    bool ownedDraftRequests = true, holdNextPut = false;
+    QVector<QByteArray> mutationRevisions;
+    std::function<void()> pendingPut;
+
+    static QJsonObject row(const QString &id, const QString &text, int revision = 1, int second = 1)
+    {
+        return {{"uuid", id}, {"project_id", projectId}, {"user_uuid", userId}, {"stream_uuid", streamId},
+            {"topic_uuid", topicId}, {"revision", revision}, {"created_at", "2026-01-02T10:00:00.000Z"},
+            {"updated_at", QString("2026-01-02T10:00:%1.123456Z").arg(second, 2, 10, QLatin1Char('0'))},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}};
+    }
+    static Response snapshot(const QJsonObject &value, int status = 200)
+    {
+        Response response{status == 412 ? QJsonObject{{"current", value}} : value, status};
+        response.headers.insert("ETag", '"' + QByteArray::number(value.value("revision").toInt()) + '"');
+        return response;
+    }
+    WindowDraftFixture()
+    {
+        sourceScene = true;
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (!path.startsWith("/api/workspace/v1/messenger/drafts/")) return fallback(request);
+            ownedDraftRequests &= !QUrlQuery(request.target).hasQueryItem("project_id");
+            if (!ownedDraftRequests) return {QJsonObject{}, 403};
+            const auto id = path.section('/', -1);
+            if (request.method == "GET" && id.isEmpty()) {
+                ++draftLists; QJsonArray rows;
+                auto ids = drafts.keys(); ids.sort();
+                for (const auto &key : ids) rows.append(drafts.value(key));
+                return {rows};
+            }
+            if (!drafts.contains(id)) return {QJsonObject{}, 404};
+            if (request.method == "GET") return snapshot(drafts[id]);
+            mutationRevisions.append(request.headers.value("if-match"));
+            if (request.method == "PUT") ++draftPuts;
+            if (request.method == "DELETE") ++draftDeletes;
+            const auto revision = '"' + QByteArray::number(drafts[id].value("revision").toInt()) + '"';
+            if (request.headers.value("if-match") != revision) return snapshot(drafts[id], 412);
+            if (request.method == "PUT") {
+                drafts[id]["payload"] = request.body.value("payload");
+                drafts[id]["revision"] = drafts[id].value("revision").toInt() + 1;
+                auto response = snapshot(drafts[id]);
+                if (holdNextPut) {
+                    holdNextPut = false;
+                    response.defer = [this](auto send) { pendingPut = std::move(send); };
+                }
+                return response;
+            }
+            if (request.method == "DELETE") { drafts.remove(id); return {QJsonObject{}, 204}; }
+            return {QJsonObject{}, 405};
+        };
+    }
+    void finishPut()
+    {
+        auto send = std::move(pendingPut); pendingPut = {};
+        if (send) send();
+    }
+};
+
 static QString windowDirectId(const QString &peer = channelPeer)
 {
     QStringList pair{peer.toLower(), userId.toLower()}; pair.sort();
@@ -419,8 +486,10 @@ public:
     QJsonArray archived;
     int restorePosts=0,restoreGets=0,archiveCatalogStatus=200,archiveCatalogDelay=0;
     int restoreStatus=200,restoreGetStatus=200,restoreDelay=0;
-    bool applyRestore=true;
+    bool applyRestore=true,holdRestores=false;
     QMap<QString,int> rowStatuses,rowDelays;
+    QMap<QString,std::function<void()>> pendingRestores;
+    void finishRestore(const QString &id) { auto send=pendingRestores.take(id);if(send)send(); }
     WindowArchiveFixture() {
         sourceScene=true;
         const QStringList names{"Stored Alice","Archived team","Design channel with a deliberately long synthetic name that needs to elide inside an archived row","Encrypted archive","Provider archive"};
@@ -444,7 +513,9 @@ public:
                 if(path.endsWith("/streams/"+id+"/actions/unarchive/invoke")) {
                     ++restorePosts;
                     if(applyRestore) { row["is_archived"]=false;row["updated_at"]="2026-01-02T10:01:00Z";archived[n]=row; }
-                    return {row,rowStatuses.value(id,restoreStatus),rowDelays.value(id,restoreDelay)};
+                    Response response{row,rowStatuses.value(id,restoreStatus),rowDelays.value(id,restoreDelay)};
+                    if(holdRestores)response.defer=[this,id](auto send){pendingRestores[id]=std::move(send);};
+                    return response;
                 }
                 if(path.endsWith("/streams/"+id)) { ++restoreGets; return {row,restoreGetStatus}; }
             }
@@ -531,6 +602,9 @@ static void openChannelNewChat(QQuickWindow *window)
     QTRY_VERIFY(visibleItem("createChatTab-1"));
     click(window, visibleItem("createChatTab-1"));
     QTRY_VERIFY(visibleItem("channelNameInput"));
+    auto *dialog = window->findChild<QObject *>("createChatDialog"); QVERIFY(dialog);
+    QTRY_VERIFY(dialog->property("opened").toBool());
+    QSignalSpy painted(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!painted.isEmpty());
 }
 
 static const QString linkRequestedId = "98000000-0000-4000-8000-000000000001";
@@ -3001,7 +3075,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.directPeer().value("displayName").toString(),QString("Alice Synthetic"));
         QTRY_VERIFY(visibleItem("directConversationName"));
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(),QString("Alice Synthetic"));
-        QCOMPARE(visibleItem("conversationHeader")->height(),qreal(56));
+        QTRY_COMPARE(visibleItem("conversationHeader")->height(),qreal(56));
         QTRY_VERIFY(visibleItem("message-avatar-"+messageId));
         if (encryptedDirect) {
             // Source and unchanged Main place the locked-key footer before the
@@ -3178,6 +3252,181 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_VERIFY_WITH_TIMEOUT(done, 3000); QVERIFY(okay);
             QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
         }
+    }
+
+    void draftsActualMainPageRestoresExactCardAndKeepsSavingInputEditable_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void draftsActualMainPageRestoresExactCardAndKeepsSavingInputEditable()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowDraftFixture fixture;
+        const QString newerId = "78000000-0000-4000-8000-000000000001";
+        fixture.drafts[returnedId] = WindowDraftFixture::row(returnedId, "Older exact draft <tag>", 1, 1);
+        fixture.drafts[newerId] = WindowDraftFixture::row(newerId, "Newest conversation draft", 1, 2);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        NativeCacheService cache(directory.filePath("cache"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("draft-page.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Draft page teardown", __FILE__, __LINE__);
+        });
+        auto release = qScopeGuard([&] { fixture.finishPut(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(drafts.ready(streamId, topicId) && !drafts.remoteStatus().busy);
+        QTRY_COMPARE(controller.draft(), QString("Newest conversation draft"));
+        auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *activity = view("activity-drafts"); QVERIFY(activity && activity->isEnabled());
+        for (const auto *name : {"activity-inbox", "activity-favorites", "activity-starred", "activity-mentions"}) {
+            auto *unsupported = view(QLatin1String(name)); QVERIFY(unsupported); QVERIFY(!unsupported->isEnabled());
+        }
+        click(window, activity);
+        QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
+        QTRY_VERIFY(view("draft-card-" + returnedId) && view("draft-card-" + newerId));
+        QVERIFY(!composer->isVisible()); QVERIFY(!composer->isEnabled());
+        QCOMPARE(view("draft-preview-" + returnedId)->property("text").toString(), QString("Older exact draft <tag>"));
+        QCOMPARE(view("draft-preview-" + returnedId)->property("textFormat").toInt(), int(Qt::PlainText));
+        QVERIFY(hasVisibleText(window->contentItem(), "Product team"));
+        QVERIFY(hasVisibleText(window->contentItem(), "General Topic"));
+        QVERIFY(hasVisibleText(window->contentItem(), locale == "ru" ? "Черновики" : "Drafts"));
+        QVERIFY(hasVisibleText(window->contentItem(), locale == "ru" ? "Канал" : "Channel"));
+        const auto captures = qEnvironmentVariable("CASSI_NATIVE_DRAFT_PAGE_CAPTURE_DIR");
+        if (!captures.isEmpty()) {
+            QVERIFY(QDir().mkpath(captures));
+            QVERIFY(window->grabWindow().save(QDir(captures).filePath("drafts-" + locale + '-' + mode + ".png")));
+        }
+        click(window, view("draftsCloseButton"));
+        QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible());
+        QCOMPARE(controller.draft(), QString("Newest conversation draft"));
+        click(window, view("activity-drafts")); QTRY_VERIFY(view("draft-open-" + returnedId));
+        click(window, view("draft-open-" + returnedId));
+        QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible() && composer->isEnabled());
+        QTRY_COMPARE(composer->property("text").toString(), QString("Older exact draft <tag>"));
+        QCOMPARE(drafts.capture(streamId, topicId).uuid, returnedId);
+
+        // Hold a real conditional write, then open the same saving snapshot from
+        // its real card. Navigation remains usable; conflicting delete stays off.
+        fixture.holdNextPut = true;
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent input; input.setCommitString("Saving input remains editable");
+        QCoreApplication::sendEvent(composer, &input);
+        QTRY_COMPARE(controller.draft(), QString("Saving input remains editable"));
+        QTRY_VERIFY_WITH_TIMEOUT(bool(fixture.pendingPut), 5000);
+        click(window, view("activity-drafts"));
+        QTRY_VERIFY(view("draft-open-" + returnedId) && view("draft-delete-" + returnedId));
+        QVERIFY(view("draft-open-" + returnedId)->isEnabled());
+        QVERIFY(view("draft-edit-" + returnedId)->isEnabled());
+        QVERIFY(!view("draft-delete-" + returnedId)->isEnabled());
+        QCOMPARE(view("draft-status-" + returnedId)->property("text").toString(), locale == "ru" ? QString("Сохраняется") : QString("Saving"));
+        click(window, view("draft-open-" + returnedId));
+        QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible() && composer->isEnabled());
+        QCOMPARE(controller.draft(), QString("Saving input remains editable"));
+        fixture.finishPut();
+        QTRY_VERIFY(!drafts.remoteStatus().busy);
+        QTRY_COMPARE(drafts.remoteStatus().phase, DraftRecord::Phase::Saved);
+        click(window, view("activity-drafts")); QTRY_VERIFY(controller.draftsVisible());
+        click(window, view("topic-" + secondTopicId));
+        QTRY_VERIFY(!controller.draftsVisible() && controller.selectedTopic() == secondTopicId && !controller.busy());
+        QCOMPARE(fixture.draftPuts, 1); QCOMPARE(fixture.draftDeletes, 0);
+        QCOMPARE(fixture.mutationRevisions, QVector<QByteArray>{QByteArray("\"1\"")});
+        QVERIFY(fixture.ownedDraftRequests); QCOMPARE(fixture.posts, 0);
+        for (const auto &request : fixture.server.requests)
+            QVERIFY(request.method != "POST" || !request.target.path().endsWith("/messages/"));
+        drafts.pauseRemote(true); bool stopped = false, okay = false;
+        shutdownNativeStorage(drafts, storage, cache, this, [&](bool success) { okay = success; stopped = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(stopped, 5000); QVERIFY(okay);
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+    }
+
+    void draftsActualMainConflictButtonsUseConditionalOwnedActions_data()
+    {
+        QTest::addColumn<QString>("action");
+        QTest::newRow("server") << QString("server");
+        QTest::newRow("local") << QString("local");
+        QTest::newRow("delete") << QString("delete");
+    }
+
+    void draftsActualMainConflictButtonsUseConditionalOwnedActions()
+    {
+        QFETCH(QString, action); WindowDraftFixture fixture;
+        fixture.drafts[returnedId] = WindowDraftFixture::row(returnedId, "Initial server draft");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        NativeCacheService cache(directory.filePath("cache"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("draft-conflict.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Draft conflict teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(drafts.ready(streamId, topicId) && !drafts.remoteStatus().busy);
+        QTRY_COMPARE(controller.draft(), QString("Initial server draft"));
+        fixture.drafts[returnedId] = WindowDraftFixture::row(returnedId, "Changed on another client", 2, 3);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *composer = view("messageComposer"); QVERIFY(composer);
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent input; input.setCommitString("My conflicting draft"); QCoreApplication::sendEvent(composer, &input);
+        QTRY_VERIFY_WITH_TIMEOUT(drafts.remoteStatus().conflict, 5000);
+        QCOMPARE(controller.draft(), QString("My conflicting draft"));
+        click(window, view("activity-drafts"));
+        QTRY_VERIFY(view("draft-use-server-" + returnedId) && view("draft-keep-local-" + returnedId)
+            && view("draft-delete-server-" + returnedId));
+        QCOMPARE(view("draft-preview-" + returnedId)->property("text").toString(), QString("My conflicting draft"));
+        QCOMPARE(view("draft-status-" + returnedId)->property("text").toString(), QString("Conflict: remote version was kept"));
+        QVERIFY(!view("draft-delete-" + returnedId));
+        const auto captures = qEnvironmentVariable("CASSI_NATIVE_DRAFT_PAGE_CAPTURE_DIR");
+        if (!captures.isEmpty()) {
+            QVERIFY(QDir().mkpath(captures));
+            QVERIFY(window->grabWindow().save(QDir(captures).filePath("draft-conflict-" + action + ".png")));
+        }
+        const auto button = action == "server" ? "draft-use-server-" : action == "local" ? "draft-keep-local-" : "draft-delete-server-";
+        click(window, view(QLatin1String(button) + returnedId));
+        if (action == "delete") {
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.draftDeletes, 1, 5000);
+            QTRY_VERIFY(!fixture.drafts.contains(returnedId));
+            QTRY_VERIFY(!view("draft-card-" + returnedId));
+            QTRY_VERIFY(hasVisibleText(window->contentItem(), "No drafts yet"));
+            QCOMPARE(fixture.draftPuts, 1);
+        } else {
+            QTRY_COMPARE_WITH_TIMEOUT(drafts.remoteStatus().phase, DraftRecord::Phase::Saved, 5000);
+            const auto expected = action == "server" ? QString("Changed on another client") : QString("My conflicting draft");
+            QCOMPARE(fixture.draftPuts, action == "server" ? 1 : 2); QCOMPARE(fixture.draftDeletes, 0);
+            QCOMPARE(fixture.drafts[returnedId].value("payload").toObject().value("content").toString(), expected);
+            QTRY_VERIFY(view("draft-open-" + returnedId)); click(window, view("draft-open-" + returnedId));
+            QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible());
+            QTRY_COMPARE(composer->property("text").toString(), expected);
+            QCOMPARE(drafts.capture(streamId, topicId).uuid, returnedId);
+        }
+        QCOMPARE(fixture.mutationRevisions.first(), QByteArray("\"1\""));
+        if (action != "server") QCOMPARE(fixture.mutationRevisions.last(), QByteArray("\"2\""));
+        QVERIFY(fixture.ownedDraftRequests); QCOMPARE(fixture.posts, 0);
+        for (const auto &request : fixture.server.requests)
+            QVERIFY(request.method != "POST" || !request.target.path().endsWith("/messages/"));
+        drafts.pauseRemote(true); bool stopped = false, okay = false;
+        shutdownNativeStorage(drafts, storage, cache, this, [&](bool success) { okay = success; stopped = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(stopped, 5000); QVERIFY(okay);
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
     }
 
     void composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown()
@@ -4366,11 +4615,20 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void archiveDifferentRowFailuresUseTheCurrentViewAndCompletionOrder() {
         QTemporaryDir directory;NativePreferences preferences(directory.filePath("p.ini"));WindowArchiveFixture fixture;
-        fixture.applyRestore=false;fixture.restoreStatus=403;fixture.rowDelays[archiveWindowId]=450;fixture.rowDelays[archiveRowId(2)]=220;
+        fixture.applyRestore=false;fixture.restoreStatus=403;fixture.holdRestores=true;
+        const auto release=qScopeGuard([&]{for(const auto &id:fixture.pendingRestores.keys())fixture.finishRestore(id);});
         ApiClient api(nullptr,true);Session session(&api);NativeController controller(&api,&session);QQmlApplicationEngine engine;loadNativeUi(engine,&controller,&preferences);
         auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);QVERIFY(QTest::qWaitForWindowExposed(window));session.login(fixture.server.origin(),"synthetic","synthetic");QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);QTRY_VERIFY(controller.channelMembersVerified());openArchive(window);
-        click(window,visibleItem("archive-restore-"+archiveWindowId));click(window,visibleItem("archive-restore-"+archiveRowId(2)));QTRY_COMPARE(fixture.restorePosts,2);
-        QTRY_COMPARE(window->property("archiveErrorTarget").toString(),archiveRowId(2));QTRY_COMPARE(window->property("archiveErrorTarget").toString(),archiveWindowId);
+        click(window,visibleItem("archive-restore-"+archiveWindowId));
+        QTRY_COMPARE(fixture.restorePosts,1);
+        QSignalSpy pendingFrame(window,&QQuickWindow::frameSwapped);window->update();QTRY_VERIFY(!pendingFrame.isEmpty());
+        // The first pending state replaces delegates. Resolve the next row only
+        // after that frame; both HTTP requests still overlap and complete out of order.
+        QVERIFY(controller.canUnarchiveChat(archiveRowId(2)));
+        click(window,visibleItem("archive-restore-"+archiveRowId(2)));QTRY_COMPARE(fixture.restorePosts,2);
+        QTRY_COMPARE(fixture.pendingRestores.size(),2);
+        fixture.finishRestore(archiveRowId(2));QTRY_COMPARE(window->property("archiveErrorTarget").toString(),archiveRowId(2));
+        fixture.finishRestore(archiveWindowId);QTRY_COMPARE(window->property("archiveErrorTarget").toString(),archiveWindowId);
         QCOMPARE(controller.archivedChats().size(),5);QVERIFY(visibleItem("archiveRestoreAlert"));
         click(window,visibleItem("channelCancelButton"));openArchive(window);QVERIFY(!visibleItem("archiveRestoreAlert"));
         QVERIFY(window->property("archiveErrorTarget").toString().isEmpty());QCOMPARE(fixture.restorePosts,2);window->close();

@@ -1,3 +1,29 @@
+# Workspace Native 0.3.0 — Linux development preview
+
+Ordinary conversation drafts now survive restart and synchronize with Workspace.
+The Drafts activity opens the exact saved draft and offers server/local/delete
+choices when another client changes it. Failed deletions remain available for
+retry. Sending consumes only the confirmed snapshot; newer input stays editable.
+
+Local input coalesces over 400 ms and remote saves over one second. Navigation
+uses local storage, with bounded clean-memory residency and 100-card preview
+pages. Refresh waits for an active save. Unsent work is kept separately from the
+configurable decimal 10 GB history cache and is not evicted by its LRU.
+
+Native quotes remain part of saved Markdown. Source reply tabs and inline-edit
+sessions remain unfinished. Encrypted draft text keeps its existing memory-only
+behavior. Complete feature/pixel parity, other Linux distributions, Windows and
+macOS remain unfinished. This preview targets Ubuntu 26.04 x86_64 / glibc 2.43 or
+newer. Remembered sign-in requires a working operating-system credential store.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.2.0…0.3.0](https://github.com/exordos/workspace_native/compare/0.2.0...0.3.0)
+
+---
+
 # Workspace Native 0.2.0 — Linux development preview
 
 Reopening the application now restores the last verified saved account, project

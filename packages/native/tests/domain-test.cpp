@@ -11,6 +11,20 @@ using namespace workspace::test;
 class DomainTest final : public QObject {
     Q_OBJECT
 private slots:
+    void optionalChannelColorIsTypedAndBounded()
+    {
+        const QJsonObject base{{"uuid", streamId}, {"project_id", projectId}, {"name", "Colored channel"}, {"encryption", false}};
+        for (int color : {0, 0x57d169, 0xffffff}) {
+            auto row = base; row["color"] = color; const auto parsed = parseStream(row, projectId);
+            QVERIFY(parsed); QVERIFY(parsed->color); QCOMPARE(*parsed->color, quint32(color));
+        }
+        for (const auto &value : {QJsonValue("#57d169"), QJsonValue(-1), QJsonValue(0x1000000), QJsonValue(1.5), QJsonValue(QJsonValue::Null)}) {
+            auto row = base; row["color"] = value; const auto parsed = parseStream(row, projectId);
+            QVERIFY(parsed); QVERIFY(!parsed->color);
+        }
+        QVERIFY(!parseStream(base, projectId)->color);
+    }
+
     void ownedDraftSnapshotKeepsCanonicalTextRevisionAndMicrosecondOrder()
     {
         const QJsonObject raw{{"uuid", returnedId}, {"project_id", projectId}, {"user_uuid", userId},

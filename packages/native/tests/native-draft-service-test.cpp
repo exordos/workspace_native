@@ -256,6 +256,36 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(afterStop, 2000);
     }
 
+    void previewReadsAreBoundedAndFencedByTheForegroundOwner()
+    {
+        QTemporaryDir directory; NativeDraftService service(directory.path()); QVERIFY(service.open(ownerA));
+        QTRY_VERIFY(service.available()); const auto lease = service.lease(); bool saved = false;
+        QVERIFY(service.apply(lease, {record()}, {}, this, [&](Failure f) { saved = f == Failure::None; })); QTRY_VERIFY(saved);
+        bool loaded = false; NativeDraftStore::PreviewPage preview;
+        QVERIFY(service.previews(lease, {}, this, [&](auto p) { preview = p; loaded = true; })); QTRY_VERIFY(loaded);
+        QCOMPARE(preview.failure, Failure::None); QCOMPARE(preview.rows.size(), 1); QCOMPARE(preview.rows.first().text, record().text);
+        bool settled = false; QVERIFY(service.previews(lease, {}, this, [&](auto p) { preview = p; settled = true; }));
+        QVERIFY(service.open(ownerB)); QTRY_VERIFY(settled && service.available());
+        QCOMPARE(preview.failure, Failure::Unavailable); QVERIFY(preview.rows.isEmpty());
+        int invalid = 0; QVERIFY(!service.previews(service.lease(), QString(129, 'x'), this, [&](auto p) {
+            if (p.failure == Failure::InvalidRecord) ++invalid;
+        })); QTRY_COMPARE(invalid, 1);
+    }
+
+    void acceptedStreamRevocationKeepsItsOwnerAndDrainsOnDestruction()
+    {
+        QTemporaryDir directory;
+        {
+            NativeDraftService service(directory.path()); QVERIFY(service.open(ownerA)); QTRY_VERIFY(service.available());
+            const auto lease = service.lease(); bool saved = false; auto other = record(messageId); other.stream = secondTopicId;
+            QVERIFY(service.apply(lease, {record(), other}, {}, this, [&](Failure f) { saved = f == Failure::None; })); QTRY_VERIFY(saved);
+            QVERIFY(service.retainStreams(lease, {streamId})); QVERIFY(service.open(ownerB));
+        }
+        NativeDraftStore a(directory.path()); QCOMPARE(a.open(ownerA), Failure::None);
+        QVERIFY(a.read(returnedId).record); QVERIFY(!a.read(messageId).record);
+        NativeDraftStore b(directory.path()); QCOMPARE(b.open(ownerB), Failure::None); QVERIFY(b.list().rows.isEmpty());
+    }
+
     void invalidReadAddressesNeverEnterTheBoundedWorkerQueue()
     {
         QTemporaryDir directory; NativeDraftService service(directory.path()); QVERIFY(service.open(ownerA));

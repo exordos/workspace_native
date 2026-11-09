@@ -1,8 +1,11 @@
 #pragma once
 
 #include "native-draft-service.h"
+#include "api-client.h"
 #include <QObject>
 #include <memory>
+#include <optional>
+#include <QVariantMap>
 
 namespace workspace {
 
@@ -42,6 +45,28 @@ public:
     bool edit(const QString &stream, const QString &topic, const QString &text);
     Token capture(const QString &stream, const QString &topic) const;
     bool consume(const Token &token);
+    // Verified account/catalog admission comes from the controller. Reads are
+    // bootstrap/explicit-refetch only, never conversation navigation.
+    void useRemote(ApiClient *api, const QString &project, const QString &user,
+                   const QSet<QString> &ordinaryStreams, std::optional<QSet<QString>> accessibleStreams = std::nullopt);
+    void refetchRemote();
+    void pauseRemote(bool paused);
+    enum class RemoteFailure { None, Unavailable, InvalidResponse, Rejected };
+    struct RemoteStatus {
+        bool enabled = false, busy = false, conflict = false;
+        DraftRecord::Phase phase = DraftRecord::Phase::Local;
+        RemoteFailure failure = RemoteFailure::None;
+        QString serverText;
+    };
+    RemoteStatus remoteStatus() const;
+    bool resolveConflict(bool useServer);
+    void showPage();
+    void hidePage();
+    void nextPage();
+    void previousPage();
+    QVariantMap page() const;
+    enum class Action { Open, Delete, Server, Local };
+    bool actOnDraft(const QString &id, Action action);
     NativeDraftService::Failure failure() const;
     void retry();
     // Wait for coalesced input and every write receipt, rather than merely the

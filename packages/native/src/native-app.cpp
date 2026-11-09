@@ -39,9 +39,15 @@ void shutdownNativeStorage(NativeDrafts &drafts, NativeDraftService &draftStorag
     const QPointer<QObject> recipient(receiver);
     const QPointer<NativeDraftService> store(&draftStorage);
     const QPointer<NativeCacheService> history(&cache);
-    drafts.flush(receiver, [recipient, store, history, done = std::move(done)](bool okay) {
+    const QPointer<NativeDrafts> model(&drafts);
+    drafts.pauseRemote(true);
+    drafts.flush(receiver, [recipient, store, history, model, done = std::move(done)](bool okay) {
         if (!recipient) return;
-        if (!okay || !store || !history) { if (done) done(false); return; }
+        if (!okay || !store || !history) {
+            if (model) model->pauseRemote(false);
+            if (done) done(false);
+            return;
+        }
         struct Pending {
             bool finished = false;
             QMetaObject::Connection draft, cache, draftLost, cacheLost;

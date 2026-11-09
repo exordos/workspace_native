@@ -2,6 +2,7 @@
 #include "domain.h"
 
 #include <QDir>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -56,7 +57,9 @@ QByteArray encode(const DraftRecord &r)
         {"snapshot", r.snapshot}, {"text", r.text}, {"replySession", r.replySession}, {"updatedAt", r.updatedAt},
         {"revision", r.revision}, {"phase", static_cast<int>(r.phase)}, {"consumed", r.consumed},
         {"createPending", r.createPending}, {"createText", r.createText},
-        {"conflictText", r.conflictText}, {"conflictRevision", r.conflictRevision}}).toJson(QJsonDocument::Compact);
+        {"conflictText", r.conflictText}, {"conflictRevision", r.conflictRevision},
+        {"serverUpdatedAt", r.serverUpdatedAt}, {"privateDeletion", r.privateDeletion},
+        {"privateCreateUncertain", r.privateCreateUncertain}}).toJson(QJsonDocument::Compact);
 }
 
 bool integer(const QJsonObject &json, const char *key, qint64 &target)
@@ -103,6 +106,13 @@ std::optional<DraftRecord> decode(const QByteArray &bytes)
     r.replySession = json.value("replySession").toObject(); r.consumed = json.value("consumed").toBool();
     r.createPending = json.value("createPending").toBool(); r.createText = json.value("createText").toString();
     r.conflictText = json.value("conflictText").toString();
+    // Format-1 records written before remote synchronization omit these fields.
+    if ((json.contains("serverUpdatedAt") && !json.value("serverUpdatedAt").isString())
+        || (json.contains("privateDeletion") && !json.value("privateDeletion").isBool())
+        || (json.contains("privateCreateUncertain") && !json.value("privateCreateUncertain").isBool())) return {};
+    r.serverUpdatedAt = json.value("serverUpdatedAt").toString();
+    r.privateDeletion = json.value("privateDeletion").toBool();
+    r.privateCreateUncertain = json.value("privateCreateUncertain").toBool();
     return NativeDraftStore::valid(r) ? std::optional<DraftRecord>(r) : std::nullopt;
 }
 } // namespace
@@ -118,6 +128,11 @@ bool NativeDraftStore::valid(const DraftRecord &r)
         && phase >= 0 && phase <= static_cast<int>(DraftRecord::Phase::Deleting)
         && (r.phase != DraftRecord::Phase::Saved || r.revision > 0)
         && (r.phase != DraftRecord::Phase::Conflict || r.conflictRevision > 0)
+        && (r.serverUpdatedAt.isEmpty() || QDateTime::fromString(r.serverUpdatedAt, Qt::ISODateWithMs).isValid())
+        && (!r.privateDeletion || (r.consumed && (r.phase == DraftRecord::Phase::Deleting || r.phase == DraftRecord::Phase::Failed)
+            && r.text.isEmpty() && r.replySession.isEmpty() && !r.createPending && r.createText.isEmpty()
+            && r.conflictText.isEmpty() && !r.conflictRevision))
+        && (!r.privateCreateUncertain || (r.privateDeletion && !r.revision))
         && draftText(r.text) && draftText(r.createText) && draftText(r.conflictText)
         && privateFreeContext(r.replySession) && serializedSize(r) <= MaximumRecordBytes;
 }
@@ -248,7 +263,70 @@ NativeDraftStore::Read NativeDraftStore::read(const QString &uuid)
 }
 
 NativeDraftStore::Failure NativeDraftStore::put(const DraftRecord &record) { return apply({record}, {}); }
+NativeDraftStore::PreviewPage NativeDraftStore::previews(const QString &after)
+{
+    if (!available()) return {};
+    qint64 time = 0; QString id;
+    if (!after.isEmpty()) {
+        const auto parts = after.split('/'); bool okay = false;
+        if (parts.size() != 2) return {Failure::InvalidRecord, {}, {}};
+        time = parts[0].toLongLong(&okay); id = parts[1];
+        if (!okay || time < 0 || time > 9007199254740991LL || parts[0] != QString::number(time)
+            || !isUuid(id) || id != id.toLower()) return {Failure::InvalidRecord, {}, {}};
+    }
+    QVector<Summary> rows;
+    {
+        QSqlQuery query(m_database); query.setForwardOnly(true);
+        query.prepare("SELECT uuid, stream, topic, updated_at, phase, consumed, typeof(updated_at), typeof(phase), typeof(consumed) "
+            "FROM draft_records " + (after.isEmpty() ? QString{} : QString("WHERE updated_at < ? OR (updated_at = ? AND uuid < ?) "))
+            + "ORDER BY updated_at DESC, uuid DESC LIMIT 101");
+        if (!after.isEmpty()) { query.addBindValue(time); query.addBindValue(time); query.addBindValue(id); }
+        if (!query.exec()) return {};
+        while (query.next()) {
+            const auto row = summary(query); if (!row) return {Failure::Corrupt, {}, {}};
+            rows.append(*row);
+        }
+        if (query.lastError().isValid()) return {Failure::Corrupt, {}, {}};
+    }
+    PreviewPage result{Failure::None, {}, {}};
+    if (rows.size() > MaximumPageRows) {
+        rows.removeLast(); result.next = QString::number(rows.last().updatedAt) + '/' + rows.last().uuid;
+    }
+    static const QRegularExpression spaces("\\s+", QRegularExpression::UseUnicodePropertiesOption);
+    for (const auto &row : rows) {
+        const auto full = read(row.uuid); if (full.failure != Failure::None || !full.record) return {Failure::Corrupt, {}, {}};
+        auto text = full.record->text; text.replace(spaces, " "); text = text.trimmed();
+        if (text.size() > 160) { text.truncate(160); if (text.back().isHighSurrogate()) text.chop(1); text += QChar(0x2026); }
+        result.rows.append({row.uuid, row.stream, row.topic, full.record->snapshot, text, row.updatedAt, row.phase, row.consumed});
+    }
+    return result;
+}
 NativeDraftStore::Failure NativeDraftStore::remove(const QString &uuid) { return apply({}, {uuid}); }
+
+NativeDraftStore::Failure NativeDraftStore::retainStreams(const QSet<QString> &authorized)
+{
+    if (!available()) return Failure::Unavailable;
+    for (const auto &stream : authorized) if (!isUuid(stream)) return Failure::InvalidRecord;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    bool okay;
+    {
+        QSqlQuery query(m_database);
+        okay = query.exec("CREATE TEMP TABLE IF NOT EXISTS draft_authorized_streams (stream TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID")
+            && query.exec("DELETE FROM draft_authorized_streams");
+        if (okay) {
+            query.prepare("INSERT INTO draft_authorized_streams VALUES (?)");
+            for (const auto &stream : authorized) {
+                query.bindValue(0, stream);
+                if (!query.exec()) { okay = false; break; }
+            }
+        }
+        if (okay) okay = query.exec("DELETE FROM draft_records WHERE NOT EXISTS "
+            "(SELECT 1 FROM draft_authorized_streams WHERE stream=draft_records.stream)");
+        if (okay) okay = query.exec("DROP TABLE draft_authorized_streams");
+    }
+    if (!okay || !m_database.commit()) { m_database.rollback(); return Failure::Unavailable; }
+    return protectFiles() ? Failure::None : Failure::Unavailable;
+}
 
 NativeDraftStore::Read NativeDraftStore::latest(const QString &stream, const QString &topic)
 {

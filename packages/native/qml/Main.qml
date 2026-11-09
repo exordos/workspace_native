@@ -255,7 +255,7 @@ ApplicationWindow {
         messageMenu.close();
         root.controller.requestChatKey(String(message.encryptionKeyUuid));
     }
-    readonly property bool composerAvailable: root.controller.authenticated && (root.selectedStreamEncrypted ? root.controller.canCompose : root.controller.selectedTopic.length > 0 && !root.controller.topicClosed)
+    readonly property bool composerAvailable: root.controller.authenticated && !root.controller.draftsVisible && (root.selectedStreamEncrypted ? root.controller.canCompose : root.controller.selectedTopic.length > 0 && !root.controller.topicClosed)
     property string composerEmojiContext: ""
     property string composerEmojiStream: ""
     property string composerEmojiTopic: ""
@@ -1266,7 +1266,7 @@ ApplicationWindow {
                 glyphSize: 32
                 cornerRadius: 12
                 iconColor: root.colors["icon-active"]
-                onClicked: root.sidebarQuery = ""
+                onClicked: { root.controller.closeDrafts(); root.sidebarQuery = ""; }
             }
             NativeIconButton {
                 colors: root.colors
@@ -2108,6 +2108,7 @@ ApplicationWindow {
                 objectName: "signOutButton"
                 onClicked: {
                     accountPopup.close();
+                    root.controller.closeDrafts();
                     root.controller.logout();
                 }
             }
@@ -2180,7 +2181,7 @@ ApplicationWindow {
                                 width: 32
                                 height: 32
                                 glyphSize: 32
-                                onClicked: root.sidebarQuery = ""
+                                onClicked: { root.controller.closeDrafts(); root.sidebarQuery = ""; }
                             }
                             Text {
                                 x: -2
@@ -2311,13 +2312,19 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         Layout.preferredHeight: 32
-                        enabled: false
+                        enabled: modelData.id === "drafts"
+                        selected: modelData.id === "drafts" && root.controller.draftsVisible
                         asset: modelData.asset
                         glyphSize: modelData.size
-                        help: qsTr("%1 is not implemented yet").arg(modelData.name)
+                        help: modelData.id === "drafts" ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
+                        onClicked: {
+                            if (modelData.id === "drafts") root.controller.showDrafts();
+                        }
                         background: Rectangle {
                             radius: 6
-                            color: root.colors["card-bg"]
+                            color: root.colors[parent.selected ? "card-bg-active" : "card-bg"]
+                            border.width: parent.visualFocus ? 1 : 0
+                            border.color: root.colors.accent
                         }
                     }
                 }
@@ -2369,7 +2376,7 @@ ApplicationWindow {
                         padding: 10
                         horizontalPadding: 10
                         verticalPadding: 10
-                        onClicked: root.controller.selectStream(streamDelegate.modelData.id)
+                        onClicked: { root.controller.closeDrafts(); root.controller.selectStream(streamDelegate.modelData.id); }
                         Keys.onMenuPressed: event => {
                             root.openStreamMenu(streamDelegate.modelData.id, streamButton, streamButton.mapToItem(root.contentItem, streamButton.width, streamButton.height / 2));
                             event.accepted = true;
@@ -2476,7 +2483,7 @@ ApplicationWindow {
                             padding: 0
                             horizontalPadding: 0
                             verticalPadding: 0
-                            onClicked: root.controller.selectTopic(modelData.id)
+                            onClicked: { root.controller.closeDrafts(); root.controller.selectTopic(modelData.id); }
                             background: Rectangle {
                                 radius: 6
                                 color: root.controller.selectedTopic === topicButton.modelData.id ? root.colors["card-bg-active"] : topicButton.hovered ? root.colors["sidebar-item-hover"] : root.colors["card-bg"]
@@ -2551,6 +2558,7 @@ ApplicationWindow {
 
         ColumnLayout {
             id: conversation
+            visible: !root.controller.draftsVisible
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
@@ -5034,6 +5042,14 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+        NativeDraftsPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.draftsVisible
+            loadActive: root.visible && root.controller.authenticated
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
     }
     component MessageBoundaryRow: Item {

@@ -61,6 +61,7 @@ struct Stream {
     bool privateStream = false;
     qint64 updatedMicros = 0;
     std::optional<StreamCryptoMetadata> security;
+    std::optional<quint32> color{};
 };
 
 struct Topic {

@@ -97,6 +97,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool canReopenTopic READ canReopenTopic NOTIFY stateChanged)
     Q_PROPERTY(bool fileBusy READ fileBusy NOTIFY stateChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY stateChanged)
+    Q_PROPERTY(bool draftsVisible READ draftsVisible NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap draftPage READ draftPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
 public:
     explicit NativeController(ApiClient *api, Session *session, QObject *parent = nullptr);
@@ -202,6 +204,8 @@ public:
     bool canReopenTopic() const;
     bool fileBusy() const { return m_uploads > 0 || m_downloads > 0; }
     QString notice() const;
+    bool draftsVisible() const { return m_draftsVisible; }
+    QVariantMap draftPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -213,6 +217,14 @@ public:
     Q_INVOKABLE void selectTopic(const QString &id);
     Q_INVOKABLE void openTopic(const QString &id, const QString &streamHint = {});
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE void showDrafts();
+    Q_INVOKABLE void closeDrafts();
+    Q_INVOKABLE void refreshDrafts();
+    Q_INVOKABLE void nextDraftPage();
+    Q_INVOKABLE void previousDraftPage();
+    Q_INVOKABLE void openDraft(const QString &id);
+    Q_INVOKABLE void deleteDraft(const QString &id);
+    Q_INVOKABLE void resolveDraft(const QString &id, const QString &action);
     Q_INVOKABLE void loadOlder();
     Q_INVOKABLE void reopenTopic();
     Q_INVOKABLE bool canStartDirectChatWith(const QString &peer) const;
@@ -754,6 +766,9 @@ private:
     QString m_draftFallbackOwner, m_draftFallbackRoute, m_draftFallback;
     QSet<QString> m_draftRoutes;
     bool m_syncingDrafts = false, m_draftFlushFailed = false;
+    bool m_draftsVisible = false, m_selectingDraftRoute = false;
+    QString m_draftOpenId, m_draftOpenStream, m_draftOpenTopic, m_draftOpenOwner;
+    quint64 m_draftOpenGeneration = 0;
     QMetaObject::Connection m_draftChanges, m_draftStates, m_draftDestroyed, m_draftSelection;
     bool durableDraftRoute() const;
     void synchronizeDrafts();

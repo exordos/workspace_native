@@ -10,6 +10,7 @@
 #include <QTest>
 #include <QUuid>
 #include <cstdlib>
+#include <algorithm>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -50,6 +51,7 @@ private slots:
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
         auto expected = record(); expected.createPending = true; expected.createText = "original POST";
+        expected.serverUpdatedAt = "2026-01-02T10:00:01.123456Z";
         expected.text = "new input after the first POST"; expected.phase = DraftRecord::Phase::Saving;
         {
             NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
@@ -61,12 +63,113 @@ private slots:
         QCOMPARE(r.text, expected.text); QCOMPARE(r.createText, expected.createText); QVERIFY(r.createPending);
         QCOMPARE(r.snapshot, expected.snapshot); QCOMPARE(r.replySession, expected.replySession);
         QCOMPARE(r.stream, streamId); QCOMPARE(r.topic, topicId); QCOMPARE(r.updatedAt, expected.updatedAt);
+        QCOMPARE(r.serverUpdatedAt, expected.serverUpdatedAt);
         QCOMPARE(r.phase, DraftRecord::Phase::Saving);
         const auto page = reopened.list(); QCOMPARE(page.failure, Failure::None); QCOMPARE(page.rows.size(), 1);
         QCOMPARE(page.rows.first().uuid, expected.uuid); QVERIFY(page.next.isEmpty());
         const auto explicitEmpty = reopened.list(QStringLiteral(""));
         QCOMPARE(explicitEmpty.failure, Failure::None); QCOMPARE(explicitEmpty.rows.size(), 1);
         QCOMPARE(explicitEmpty.rows.first().uuid, page.rows.first().uuid);
+    }
+
+    void formatOneWithoutOptionalRemoteMetadataStillReadsExactly()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        const auto expected = record(); QCOMPARE(store.put(expected), Failure::None); store.close();
+        QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"),
+            "UPDATE draft_records SET payload=CAST(json_remove(payload,'$.serverUpdatedAt','$.privateDeletion','$.privateCreateUncertain') AS BLOB)"));
+        QCOMPARE(store.open(ownerA), Failure::None); const auto result = store.read(expected.uuid); QVERIFY(result.record);
+        QCOMPARE(result.record->text, expected.text); QCOMPARE(result.record->updatedAt, expected.updatedAt);
+        QVERIFY(result.record->serverUpdatedAt.isEmpty()); QVERIFY(!result.record->privateDeletion); QVERIFY(!result.record->privateCreateUncertain);
+    }
+
+    void metadataOnlyPrivateDeletionSurvivesReopen()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto expected = record(); expected.text.clear(); expected.replySession = {};
+        expected.consumed = true; expected.phase = DraftRecord::Phase::Deleting;
+        expected.privateDeletion = true; expected.privateCreateUncertain = true;
+        QCOMPARE(store.put(expected), Failure::None); store.close(); QCOMPARE(store.open(ownerA), Failure::None);
+        const auto result = store.read(expected.uuid); QVERIFY(result.record);
+        QVERIFY(result.record->privateDeletion); QVERIFY(result.record->privateCreateUncertain);
+        QVERIFY(result.record->text.isEmpty()); QVERIFY(result.record->createText.isEmpty()); QVERIFY(result.record->replySession.isEmpty());
+        QVERIFY(!store.latest(streamId, topicId).record);
+    }
+
+    void failedPrivateDeletionKeepsOnlyRetryMetadata()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto r = record(); r.text.clear(); r.replySession = {}; r.consumed = true;
+        r.privateDeletion = true; r.revision = 4; r.phase = DraftRecord::Phase::Failed;
+        QCOMPARE(store.put(r), Failure::None); store.close(); QCOMPARE(store.open(ownerA), Failure::None);
+        const auto loaded = store.read(r.uuid); QVERIFY(loaded.record); QVERIFY(loaded.record->privateDeletion);
+        QCOMPARE(loaded.record->phase, DraftRecord::Phase::Failed); QVERIFY(loaded.record->text.isEmpty());
+        QVERIFY(!store.latest(streamId, topicId).record);
+    }
+
+    void previewPagesAreBoundedOrderedAndDoNotRetainFullBodies()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        QVector<DraftRecord> input;
+        for (int i = 0; i < 205; ++i) {
+            auto r = record(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            r.updatedAt = i / 3; r.text = "  line\n\t" + QString(153, 'x') + QString::fromUtf8("😀") + QString(1000, 'y');
+            r.consumed = i % 4 == 0; input.append(r);
+        }
+        for (int i = 0; i < input.size(); i += 100) QCOMPARE(store.apply(input.mid(i, 100), {}), Failure::None);
+        std::sort(input.begin(), input.end(), [](const auto &a, const auto &b) {
+            return a.updatedAt == b.updatedAt ? a.uuid > b.uuid : a.updatedAt > b.updatedAt;
+        });
+        QSet<QString> ids; QString cursor; int offset = 0;
+        do {
+            const auto page = store.previews(cursor); QCOMPARE(page.failure, Failure::None);
+            QCOMPARE(page.rows.size(), qMin(100, 205-offset));
+            for (const auto &r : page.rows) {
+                QCOMPARE(r.uuid, input[offset].uuid); QCOMPARE(r.snapshot, input[offset].snapshot);
+                QCOMPARE(r.consumed, input[offset].consumed); QVERIFY(!ids.contains(r.uuid)); ids.insert(r.uuid); ++offset;
+                QVERIFY(r.text.size() <= 161); QVERIFY(r.text.endsWith(QChar(0x2026)));
+                QVERIFY(!r.text.at(r.text.size()-2).isHighSurrogate()); QVERIFY(!r.text.contains('\n')); QVERIFY(!r.text.contains('\t'));
+            }
+            cursor = page.next;
+        } while (!cursor.isEmpty());
+        QCOMPARE(offset, 205); QCOMPARE(ids.size(), 205);
+        for (const auto &bad : QStringList{"bad", "01/"+returnedId, "-1/"+returnedId, "1/not-a-uuid"})
+            QCOMPARE(store.previews(bad).failure, Failure::InvalidRecord);
+        QCOMPARE(store.read(input.first().uuid).record->text, input.first().text);
+    }
+
+    void authoritativeStreamsRemoveOnlyInaccessibleOwnerData()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto allowed = record(), removed = record(messageId); removed.stream = secondTopicId;
+        QCOMPARE(store.apply({allowed, removed}, {}), Failure::None);
+        QCOMPARE(store.retainStreams({"invalid"}), Failure::InvalidRecord); QVERIFY(store.read(removed.uuid).record);
+        QCOMPARE(store.retainStreams({streamId}), Failure::None); QVERIFY(store.read(allowed.uuid).record); QVERIFY(!store.read(removed.uuid).record);
+        store.close(); QCOMPARE(store.open(ownerB), Failure::None); QCOMPARE(store.put(removed), Failure::None);
+        store.close(); QCOMPARE(store.open(ownerA), Failure::None); QCOMPARE(store.retainStreams({}), Failure::None);
+        QVERIFY(store.list().rows.isEmpty()); store.close(); QCOMPARE(store.open(ownerB), Failure::None); QVERIFY(store.read(removed.uuid).record);
+    }
+
+    void invalidRemoteMetadataCannotReplaceAnExistingRecord_data()
+    {
+        QTest::addColumn<int>("mutation");
+        for (int i = 0; i < 5; ++i) QTest::newRow(qPrintable(QString::number(i))) << i;
+    }
+    void invalidRemoteMetadataCannotReplaceAnExistingRecord()
+    {
+        QFETCH(int, mutation); QTemporaryDir directory; NativeDraftStore store(directory.path());
+        QCOMPARE(store.open(ownerA), Failure::None); const auto original = record(); QCOMPARE(store.put(original), Failure::None);
+        auto next = original;
+        switch (mutation) {
+        case 0: next.serverUpdatedAt = "not-a-server-time"; break;
+        case 1: next.privateCreateUncertain = true; break;
+        case 2: next.privateDeletion = true; break;
+        case 3: next.privateDeletion = true; next.consumed = true; next.phase = DraftRecord::Phase::Deleting; break;
+        case 4:
+            next.privateDeletion = next.privateCreateUncertain = next.consumed = true;
+            next.phase = DraftRecord::Phase::Deleting; next.text.clear(); next.replySession = {}; next.revision = 3; break;
+        }
+        QCOMPARE(store.put(next), Failure::InvalidRecord); QCOMPARE(store.read(original.uuid).record->text, original.text);
     }
 
     void latestUsesAnIndexedConversationAndIgnoresConsumedAndDeletingRows()

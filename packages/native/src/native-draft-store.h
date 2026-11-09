@@ -4,6 +4,7 @@
 #include <QSqlDatabase>
 #include <QStringList>
 #include <QVector>
+#include <QSet>
 #include <memory>
 #include <optional>
 
@@ -25,6 +26,11 @@ struct DraftRecord {
     QString createText;
     QString conflictText;
     qint64 conflictRevision = 0;
+    // Server time is independent of the local editor's millisecond ordering.
+    QString serverUpdatedAt;
+    // A public draft promoted to private input retains only deletion metadata.
+    bool privateDeletion = false;
+    bool privateCreateUncertain = false;
 };
 
 // Durable unsent work is separate from the evictable history cache. This
@@ -48,6 +54,17 @@ public:
         Failure failure = Failure::Unavailable;
         std::optional<DraftRecord> record;
     };
+    struct Preview {
+        QString uuid, stream, topic, snapshot, text;
+        qint64 updatedAt = 0;
+        DraftRecord::Phase phase = DraftRecord::Phase::Local;
+        bool consumed = false;
+    };
+    struct PreviewPage {
+        Failure failure = Failure::Unavailable;
+        QVector<Preview> rows;
+        QString next;
+    };
     static constexpr qsizetype MaximumRecordBytes = 4 * 1024 * 1024;
     static constexpr int MaximumPageRows = 100;
     static constexpr qsizetype MaximumBatchBytes = 8 * 1024 * 1024;
@@ -62,9 +79,11 @@ public:
     Page list(const QString &afterUuid = {}, int limit = MaximumPageRows);
     Read read(const QString &uuid);
     Read latest(const QString &stream, const QString &topic);
+    PreviewPage previews(const QString &after = {});
     Failure put(const DraftRecord &record);
     Failure remove(const QString &uuid);
     Failure apply(const QVector<DraftRecord> &writes, const QStringList &removals);
+    Failure retainStreams(const QSet<QString> &authorized);
     static bool valid(const DraftRecord &record);
     static qsizetype serializedSize(const DraftRecord &record);
 

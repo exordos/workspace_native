@@ -14,11 +14,12 @@ namespace workspace {
 namespace {
 using Failure = NativeDraftStore::Failure;
 std::atomic<quint64> Issuer{0};
-enum class Op { Open, Close, Read, Latest, List, Apply, Flush, Stop };
+enum class Op { Open, Close, Read, Latest, List, Preview, Apply, Retain, Flush, Stop };
 struct Result {
     Failure failure = Failure::Unavailable;
     NativeDraftStore::Read read;
     NativeDraftStore::Page page;
+    NativeDraftStore::PreviewPage previews;
 };
 struct Job {
     Op op = Op::Flush;
@@ -26,11 +27,12 @@ struct Job {
     QString id, stream, topic;
     QVector<DraftRecord> writes;
     QStringList removals;
+    QSet<QString> authorized;
     qsizetype bytes = 0;
     QPointer<QObject> receiver;
     std::function<void(Result)> done;
-    bool data() const { return op == Op::Read || op == Op::Latest || op == Op::List || op == Op::Apply; }
-    bool optional() const { return op == Op::Read || op == Op::Latest || op == Op::List || op == Op::Open || op == Op::Close; }
+    bool data() const { return op == Op::Read || op == Op::Latest || op == Op::List || op == Op::Preview || op == Op::Apply || op == Op::Retain; }
+    bool optional() const { return op == Op::Read || op == Op::Latest || op == Op::List || op == Op::Preview || op == Op::Open || op == Op::Close; }
 };
 class DraftWorker final : public QObject {
 public:
@@ -53,12 +55,14 @@ public:
                 case Op::Read: result.read = store->read(job.id); result.failure = result.read.failure; break;
                 case Op::Latest: result.read = store->latest(job.stream, job.topic); result.failure = result.read.failure; break;
                 case Op::List: result.page = store->list(job.id); result.failure = result.page.failure; break;
+                case Op::Preview: result.previews = store->previews(job.id); result.failure = result.previews.failure; break;
                 case Op::Apply: result.failure = store->apply(job.writes, job.removals); break;
+                case Op::Retain: result.failure = store->retainStreams(job.authorized); break;
                 default: break;
                 }
             }
         }
-        result.read.failure = result.page.failure = result.failure;
+        result.read.failure = result.page.failure = result.previews.failure = result.failure;
         return result;
     }
     QString directory, owner;
@@ -104,8 +108,8 @@ struct NativeDraftService::Private {
         if (!job.receiver || !job.done) return;
         // A rejected input must not retain large caller-owned record/address
         // buffers until its small asynchronous failure receipt is delivered.
-        job.writes.clear(); job.removals.clear(); job.id.clear(); job.stream.clear(); job.topic.clear();
-        Result result; result.failure = result.read.failure = result.page.failure = reason;
+        job.writes.clear(); job.removals.clear(); job.authorized.clear(); job.id.clear(); job.stream.clear(); job.topic.clear();
+        Result result; result.failure = result.read.failure = result.page.failure = result.previews.failure = reason;
         const QPointer<NativeDraftService> guard(q);
         QTimer::singleShot(0, q, [guard, job = std::move(job), result]() mutable {
             if (guard) guard->d->deliver(std::move(job), result);
@@ -153,8 +157,8 @@ struct NativeDraftService::Private {
         if (job.op == Op::Open && current(job.lease)) {
             failure = result.failure; available = failure == Failure::None;
         }
-        if ((job.op == Op::Read || job.op == Op::Latest || job.op == Op::List) && !current(job.lease)) {
-            result = {}; result.failure = result.read.failure = result.page.failure = Failure::Unavailable;
+        if ((job.op == Op::Read || job.op == Op::Latest || job.op == Op::List || job.op == Op::Preview) && !current(job.lease)) {
+            result = {}; result.failure = result.read.failure = result.page.failure = result.previews.failure = Failure::Unavailable;
         }
         const bool finished = job.op == Op::Stop;
         if (finished) { stopped = true; available = false; thread.quit(); }
@@ -177,7 +181,7 @@ NativeDraftService::~NativeDraftService()
     auto pending = std::move(d->queue);
     if (d->thread.isRunning() && !d->stopped) {
         QMetaObject::invokeMethod(d->worker, [worker = d->worker, pending = std::move(pending)] {
-            for (const auto &job : pending) if (job.op == Op::Apply) worker->run(job);
+            for (const auto &job : pending) if (job.op == Op::Apply || job.op == Op::Retain) worker->run(job);
             Job stop; stop.op = Op::Stop; worker->run(stop);
         }, Qt::BlockingQueuedConnection);
     }
@@ -235,6 +239,14 @@ bool NativeDraftService::list(const Lease &lease, const QString &afterUuid, QObj
     }
     return d->enqueue(std::move(job));
 }
+bool NativeDraftService::previews(const Lease &lease, const QString &after, QObject *receiver, PreviewDone done)
+{
+    Job job; job.op = Op::Preview; job.lease = lease; job.id = after; job.receiver = receiver ? receiver : this;
+    job.done = [done = std::move(done)](Result r) { if (done) done(std::move(r.previews)); };
+    if (!d->current(lease) || !d->available) { d->reject(std::move(job), Failure::Unavailable); return false; }
+    if (after.size() > 128) { d->reject(std::move(job), Failure::InvalidRecord); return false; }
+    return d->enqueue(std::move(job));
+}
 bool NativeDraftService::apply(const Lease &lease, const QVector<DraftRecord> &writes, const QStringList &removals, QObject *receiver, Done done)
 {
     Job job; job.op = Op::Apply; job.lease = lease; job.writes = writes; job.removals = removals;
@@ -253,6 +265,18 @@ bool NativeDraftService::apply(const Lease &lease, const QVector<DraftRecord> &w
         ids.insert(id);
     }
     if (job.bytes > NativeDraftStore::MaximumBatchBytes) { d->reject(std::move(job), Failure::Capacity); return false; }
+    return d->enqueue(std::move(job));
+}
+bool NativeDraftService::retainStreams(const Lease &lease, const QSet<QString> &authorized, QObject *receiver, Done done)
+{
+    Job job; job.op = Op::Retain; job.lease = lease; job.authorized = authorized;
+    job.receiver = receiver ? receiver : this; job.done = [done = std::move(done)](Result r) { if (done) done(r.failure); };
+    if (!d->current(lease)) { d->reject(std::move(job), Failure::Unavailable); return false; }
+    for (const auto &stream : authorized) {
+        if (!isUuid(stream)) { d->reject(std::move(job), Failure::InvalidRecord); return false; }
+        job.bytes += stream.size() * sizeof(QChar);
+        if (job.bytes > NativeDraftStore::MaximumBatchBytes) { d->reject(std::move(job), Failure::Capacity); return false; }
+    }
     return d->enqueue(std::move(job));
 }
 bool NativeDraftService::flush(QObject *receiver, Done done)

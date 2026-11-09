@@ -17,6 +17,7 @@ public:
     using Done = std::function<void(Failure)>;
     using ReadDone = std::function<void(NativeDraftStore::Read)>;
     using PageDone = std::function<void(NativeDraftStore::Page)>;
+    using PreviewDone = std::function<void(NativeDraftStore::PreviewPage)>;
     static constexpr int MaximumDataJobs = 8;
     static constexpr int MaximumControlJobs = 2; // Stop has one reserved barrier.
     static constexpr qsizetype MaximumPendingBytes = 32 * 1024 * 1024;
@@ -34,8 +35,11 @@ public:
     bool read(const Lease &lease, const QString &uuid, QObject *receiver, ReadDone done);
     bool latest(const Lease &lease, const QString &stream, const QString &topic, QObject *receiver, ReadDone done);
     bool list(const Lease &lease, const QString &afterUuid, QObject *receiver, PageDone done);
+    bool previews(const Lease &lease, const QString &after, QObject *receiver, PreviewDone done);
     bool apply(const Lease &lease, const QVector<DraftRecord> &writes, const QStringList &removals,
                QObject *receiver = nullptr, Done done = {});
+    bool retainStreams(const Lease &lease, const QSet<QString> &authorized,
+                       QObject *receiver = nullptr, Done done = {});
     // FIFO completion barrier. Per-Apply receipts report durable success/failure.
     bool flush(QObject *receiver, Done done);
     void shutdown();
