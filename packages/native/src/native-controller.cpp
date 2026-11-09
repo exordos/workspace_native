@@ -5348,7 +5348,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             m_topics.erase(std::remove_if(m_topics.begin(), m_topics.end(), [&](const Topic &row) { return row.uuid == id; }), m_topics.end());
             if (follow) { m_topicsVerified = false; m_topicSeedUnverified = true; }
             staleCache(NativeCache::Kind::Topics, oldStream);
-            staleCache(NativeCache::Kind::History, oldStream, id);
+            // The vacated conversation is an authoritative membership loss, not
+            // an offline-replayable change: drop its history pages (topic and
+            // former-stream aggregate) so the former route cannot hydrate
+            // messages that no longer live there. The destination keeps its
+            // saved pages stale below and revalidates normally.
+            invalidateConversation(oldStream, id, false);
             staleCache(NativeCache::Kind::History, streamId, id);
             emit topicsChanged();
             if (!openingGuard || openingOwner != creationOwnerKey() || openingGeneration != m_api->generation()

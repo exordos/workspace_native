@@ -81,7 +81,12 @@ retained list completeness, draft preservation, no global catalog reloads,
 supersession at both resolver stages, and reentrant callbacks. A visible Qt window
 test hit-tests and clicks actual message links for known, unknown, moved,
 failed and superseded routes. The input signal must be observed before route and
-request-count assertions.
+request-count assertions. A whole-topic move regression additionally asserts that
+the canonical open follows the event DTO, the vacated topic and former-stream
+aggregate cache buckets are gone while unrelated cached windows keep their
+pages, the followed window's messages stay in place without any request to the
+vacated route, and a rename storm over the receiving stream neither duplicates
+messages or topic rows nor issues further history reads.
 
 These local fixtures verify the implemented client behavior. They do not establish
 that a deployed backend resolves arbitrary deleted or merged UUIDs. The client

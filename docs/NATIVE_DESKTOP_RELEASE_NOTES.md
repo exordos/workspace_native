@@ -1,3 +1,24 @@
+# Workspace Native 0.3.3 - Linux development preview
+
+An open conversation now stays coherent when a whole topic is renamed or moved to
+another channel. The follow previously kept the destination usable but left the
+vacated route's cached history readable offline, so revisiting the old channel
+could show messages that no longer belong there. The vacated topic bucket and
+the former channel's aggregate bucket are now dropped as an authoritative
+membership change, mirroring the deleted-conversation rule; unrelated cached
+windows are untouched, the followed window keeps its loaded messages and
+pagination boundaries, and a rename storm over the receiving channel neither
+duplicates nor drops messages or topic rows. The follow contract and its new
+regression coverage are documented in `docs/NATIVE_DESKTOP_TOPIC_NAVIGATION.md`.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.2...0.3.3](https://github.com/exordos/workspace_native/compare/0.3.2...0.3.3)
+
+---
+
 # Workspace Native 0.3.2 - Linux development preview
 
 This release changes verification only; product behavior, storage and APIs are
