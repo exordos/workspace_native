@@ -6809,6 +6809,24 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void captureAggregateScene(QQuickWindow *window, const QString &scenario, const QJsonArray &bubbles = {})
+    {
+        const auto captureDirectory = qEnvironmentVariable("CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR");
+        if (captureDirectory.isEmpty())
+            return;
+        QTest::mouseMove(window, QPoint(1100, 800));
+        QTest::qWait(150);
+        QVERIFY(window->grabWindow().save(QDir(captureDirectory).filePath("native-aggregate-v15-" + scenario + ".png")));
+        QFile output(QDir(captureDirectory).filePath("native-aggregate-v15-" + scenario + "-metrics.json"));
+        QVERIFY(output.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        output.write(QJsonDocument(QJsonObject{{"synthetic", true}, {"httpVerified", true},
+            {"dateFixtureSeam", false}, {"constructor", "QApplication"},
+            {"viewport", QJsonArray{window->width(), window->height()}},
+            {"devicePixelRatio", window->devicePixelRatio()},
+            {"sceneGraphApi", static_cast<int>(window->rendererInterface()->graphicsApi())},
+            {"fontFamily", QFontInfo(QGuiApplication::font()).family()}, {"bubbles", bubbles}}).toJson());
+    }
+
     void aggregateStreamUsesSourceGroupsAndTopicChoices_data()
     {
         QTest::addColumn<QString>("scenario");
@@ -7014,6 +7032,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(!controller.messages().last().toMap()["read"].toBool());
             QTest::qWait(400);
             QCOMPARE(readAnchors.size(), 2);
+            captureAggregateScene(window, scenario);
             other.show();
             other.requestActivate();
             QVERIFY(QTest::qWaitForWindowActive(&other));
@@ -7070,6 +7089,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(!visibleItem("message-author-" + idFor(10)));
             QVERIFY(!visibleItem("message-divider-" + idFor(8)));
             QVERIFY(!visibleItem("message-divider-" + idFor(9)));
+            captureAggregateScene(window, scenario);
         } else {
             // Source full-frame group positions relative to the same chat
             // viewport origin, not a wrapper's unrelated desktop coordinate.
@@ -7086,20 +7106,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 metrics.append(QJsonObject{{"id", idFor(number)}, {"x", point.x()}, {"y", point.y()},
                     {"width", bubble->width()}, {"height", bubble->height()}});
             }
-            const auto captureDirectory = qEnvironmentVariable("CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR");
-            if (!captureDirectory.isEmpty()) {
-                QTest::mouseMove(window, QPoint(1100, 800));
-                QTest::qWait(150);
-                QVERIFY(window->grabWindow().save(QDir(captureDirectory).filePath("native-aggregate-v15-" + scenario + ".png")));
-                QFile output(QDir(captureDirectory).filePath("native-aggregate-v15-" + scenario + "-metrics.json"));
-                QVERIFY(output.open(QIODevice::WriteOnly | QIODevice::Truncate));
-                output.write(QJsonDocument(QJsonObject{{"synthetic", true}, {"httpVerified", true},
-                    {"dateFixtureSeam", false}, {"constructor", "QApplication"},
-                    {"viewport", QJsonArray{window->width(), window->height()}},
-                    {"devicePixelRatio", window->devicePixelRatio()},
-                    {"sceneGraphApi", static_cast<int>(window->rendererInterface()->graphicsApi())},
-                    {"fontFamily", QFontInfo(QGuiApplication::font()).family()}, {"bubbles", metrics}}).toJson());
-            }
+            captureAggregateScene(window, scenario, metrics);
             if (scenario == "en-light") {
                 auto *ownBubble = item(window->contentItem(), "message-" + idFor(4));
                 QVERIFY(ownBubble);
