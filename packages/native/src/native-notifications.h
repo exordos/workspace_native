@@ -119,7 +119,8 @@ public:
                                                const NotificationTitleContext &title);
     QList<QString> consumeByTag(const QString &tag);
     NotificationReadOutcome consumeRead(const QList<QString> &messageUuids, const QString &owner);
-    void dropOwner(const QString &owner);
+    QStringList dropOwner(const QString &owner);
+    int tagCount() const { return int(m_byTag.size()); }
     int count(const QString &tag) const;
     QStringList tags() const;
 
@@ -175,10 +176,16 @@ public:
 
     void ingest(const NotificationCandidate &candidate);
     void onMessagesClosed(const QString &owner, const QList<QString> &messageUuids);
+    // Account transition: close every banner the owner still has open and
+    // drop its pending/pending-decision state (closeAllActiveMessageNotifications).
+    void onOwnerRetired(const QString &owner);
     void click(const QString &tag);
 
     // Observability for tests and future diagnostics.
     int aggregateCount(const QString &tag) const { return m_registry.count(tag); }
+    int processedCount() const { return int(m_processed.size()); }
+    int pendingCount() const { return int(m_pending.size()); }
+    int trackedTagCount() const { return m_registry.tagCount(); }
     QStringList activeTags() const { return m_registry.tags(); }
     static QString formatTitle(const NotificationTitleContext &context, int count);
     static QString fallbackTagFor(const QString &owner, const QString &messageUuid)
@@ -196,6 +203,7 @@ private:
     };
 
     void ingestNow(const NotificationCandidate &candidate);
+    void markProcessed(const QString &key);
     void showGeneric(const NotificationCandidate &candidate);
     void retryPending();
     void scheduleGraceRetry();
@@ -207,6 +215,7 @@ private:
     NotificationAggregateRegistry m_registry;
     NotificationDedup m_dedup;
     QSet<QString> m_processed;         // owner::messageUuid decisions
+    QStringList m_processedOrder;      // insertion order for eviction
     QHash<QString, QPair<QString, QString>> m_fallbackRoutes; // tag -> (stream, topic)
     QHash<QString, Pending> m_pending;
     QTimer m_graceTimer;

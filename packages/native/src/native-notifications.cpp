@@ -25,6 +25,9 @@ const char *kTriggerStream = "stream";
 // The reference shell truncates both segments to MAX_NOTIFICATION_LENGTH = 200
 // in notifications:show (main.ts:1118-1127).
 constexpr qsizetype kMaxNotificationLength = 200;
+constexpr int kProcessedCap = 2048;      // owner::message decisions remembered
+constexpr int kPendingCap = 64;          // candidates waiting on metadata
+constexpr int kAggregateTagsCap = 128;   // live aggregate tags
 
 QString clip200(const QString &text)
 {
@@ -151,6 +154,20 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
         candidate.content.trimmed(), candidate.streamUuid, candidate.topicUuid, title,
         candidate.createdMicros});
     m_messageToTag.insert(scope, tag);
+    if (m_byTag.size() > kAggregateTagsCap) {
+        // Evict the entry whose newest row is coldest: aggregate banners are a
+        // rolling window, not an archive (bounds tenant-driven client memory).
+        QString coldestTag;
+        qint64 coldest = 0;
+        for (auto it = m_byTag.constBegin(); it != m_byTag.constEnd(); ++it) {
+            qint64 newest = 0;
+            for (const auto &row : it->messages)
+                newest = qMax(newest, row.createdMicros);
+            if (coldestTag.isEmpty() || newest < coldest) { coldestTag = it.key(); coldest = newest; }
+        }
+        if (!coldestTag.isEmpty() && coldestTag != tag)
+            consumeByTag(coldestTag);
+    }
     return snapshot(tag, entry);
 }
 
@@ -237,17 +254,19 @@ NotificationReadOutcome NotificationAggregateRegistry::consumeRead(
     return outcome;
 }
 
-void NotificationAggregateRegistry::dropOwner(const QString &owner)
+QStringList NotificationAggregateRegistry::dropOwner(const QString &owner)
 {
     const auto prefix = QStringLiteral("bucket:") + owner + QStringLiteral("::");
+    QStringList drained;
     for (auto it = m_byTag.begin(); it != m_byTag.end();) {
-        if (it.key().startsWith(prefix)) it = m_byTag.erase(it);
+        if (it.key().startsWith(prefix)) { drained << it.key(); it = m_byTag.erase(it); }
         else ++it;
     }
     for (auto it = m_messageToTag.begin(); it != m_messageToTag.end();) {
         if (it.value().startsWith(prefix)) it = m_messageToTag.erase(it);
         else ++it;
     }
+    return drained;
 }
 
 int NotificationAggregateRegistry::count(const QString &tag) const
@@ -332,6 +351,12 @@ void NotificationService::ingest(const NotificationCandidate &candidate)
     const bool metadataKnown = m_resolver ? m_resolver(resolved) : true;
     if (!metadataKnown) {
         m_pending.insert(key, Pending{resolved, nowMs()});
+        while (m_pending.size() > kPendingCap) {
+            auto oldest = m_pending.begin();
+            for (auto it = m_pending.begin(); it != m_pending.end(); ++it)
+                if (it->observedMs < oldest->observedMs) oldest = it;
+            m_pending.erase(oldest);
+        }
         scheduleGraceRetry();
         return;
     }
@@ -345,12 +370,12 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
     if (m_processed.contains(key))
         return;
     if (m_dedup.contains(candidate.owner, candidate.messageUuid)) {
-        m_processed.insert(key);
+        markProcessed(key);
         return;
     }
     const auto decision = notification_policy::shouldNotify(candidate, false);
     if (!decision.notify) {
-        m_processed.insert(key);
+        markProcessed(key);
         return;
     }
     auto named = candidate;
@@ -370,13 +395,13 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
     }
     const auto snap = m_registry.upsert(named, title);
     if (!snap) {
-        m_processed.insert(key);
+        markProcessed(key);
         return;
     }
     m_transport->show(snap->tag, formatTitle(snap->titleContext, snap->count), snap->body);
     if (!m_windowFocused)
         m_transport->requestAttention();
-    m_processed.insert(key);
+    markProcessed(key);
     m_dedup.insert(candidate.owner, candidate.messageUuid);
 }
 
@@ -390,7 +415,7 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
     if (!m_windowFocused)
         m_transport->requestAttention();
-    m_processed.insert(candidate.owner + QStringLiteral("::") + candidate.messageUuid);
+    markProcessed(candidate.owner + QStringLiteral("::") + candidate.messageUuid);
     m_dedup.insert(candidate.owner, candidate.messageUuid);
 }
 
@@ -435,6 +460,43 @@ void NotificationService::retryPending()
         m_graceTimer.start(qMax<long long>(qMin<long long>(m_retryMs, earliest), 1));
 }
 
+void NotificationService::markProcessed(const QString &key)
+{
+    if (m_processed.contains(key))
+        return;
+    m_processed.insert(key);
+    m_processedOrder.append(key);
+    while (m_processedOrder.size() > kProcessedCap)
+        m_processed.remove(m_processedOrder.takeFirst());
+}
+
+void NotificationService::onOwnerRetired(const QString &owner)
+{
+    if (owner.isEmpty())
+        return;
+    // The reference signs out by closing every live banner of the owner first
+    // (closeAllActiveMessageNotifications), so old message content can never
+    // outlive the account that produced it.
+    if (m_transport) {
+        for (const auto &tag : m_registry.dropOwner(owner))
+            m_transport->closeByTag(tag);
+    } else {
+        m_registry.dropOwner(owner);
+    }
+    const auto scope = owner + QStringLiteral("::");
+    for (auto it = m_pending.begin(); it != m_pending.end();) {
+        if (it.key().startsWith(scope)) it = m_pending.erase(it);
+        else ++it;
+    }
+    QStringList keptOrder;
+    for (const auto &key : m_processedOrder) {
+        if (key.startsWith(scope)) m_processed.remove(key);
+        else keptOrder.append(key);
+    }
+    m_processedOrder = keptOrder;
+    m_fallbackRoutes.clear();
+}
+
 void NotificationService::onMessagesClosed(const QString &owner, const QList<QString> &messageUuids)
 {
     if (!m_transport)
@@ -476,14 +538,17 @@ QString NotificationService::formatTitle(const NotificationTitleContext &context
     if (context.direct) {
         if (count <= 1)
             return clip200(context.senderName);
-        return clip200(tr("%n message", "%n messages", count) + mid + context.conversationName);
+        const auto plural = count == 1 ? tr("%n message", "", count) : tr("%n messages", "", count);
+        return clip200(plural + mid + context.conversationName);
     }
     const auto base = context.topicName.isEmpty()
         ? context.channelName
         : context.channelName + mid + context.topicName;
     if (count <= 1)
         return clip200(context.senderName + mid + base);
-    return clip200(tr("%n message from %1", "%n messages from %1", count).arg(context.senderName) + mid + base);
+    const auto plural = count == 1 ? tr("%n message from %1", "", count)
+                                   : tr("%n messages from %1", "", count);
+    return clip200(plural.arg(context.senderName) + mid + base);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,8 +673,13 @@ bool DBusNotificationTransport::show(const QString &tag, const QString &title, c
         QStringLiteral("org.freedesktop.Notifications"), QStringLiteral("Notify"));
     const auto appName = QCoreApplication::applicationName().isEmpty()
         ? QStringLiteral("Exordos Workspace") : QCoreApplication::applicationName();
-    call.setArguments({appName, QString{}, clippedTitle, clippedBody, QStringList{},
-                       QVariantMap{{QStringLiteral("suppress-sound"), true}}, -1});
+    // org.freedesktop.Notifications.Notify(s app, u replaces_id, s icon,
+    // s summary, s body, as actions, a{sv} hints, i expire_timeout). The
+    // explicit default action guarantees ActionInvoked routing on servers
+    // that do not synthesize it.
+    call.setArguments({appName, QVariant::fromValue(quint32{0}), QString{}, clippedTitle,
+        clippedBody, QStringList{QStringLiteral("default"), QString{}},
+        QVariantMap{{QStringLiteral("suppress-sound"), true}}, -1});
     const auto reply = bus.call(call, QDBus::Block, 1000);
     if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty())
         return false;
