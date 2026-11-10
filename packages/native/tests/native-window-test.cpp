@@ -374,7 +374,7 @@ public:
 
 // Draft HTTP remains synthetic and is layered over the same catalog, topics,
 // session and actual Main.qml harness as ordinary conversation tests.
-class WindowDraftFixture final : public WindowChannelFixture {
+class WindowDraftFixture : public WindowChannelFixture {
 public:
     QHash<QString, QJsonObject> drafts;
     int draftLists = 0, draftPuts = 0, draftDeletes = 0;
@@ -3564,6 +3564,98 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, view("inboxCloseButton"));
         QVERIFY(!controller.inboxVisible());
         QVERIFY(view("messageComposer"));
+    }
+
+    // Issue #54: switching sidebar destinations in the mounted window keeps
+    // exactly one page visible and exactly one sidebar entry selected, and
+    // closing the active page restores the conversation column. Draft card
+    // content survives Drafts -> Mentions -> Drafts.
+    void draftsMentionsSidebarNavigationKeepsOnePageActive()
+    {
+        class WindowDraftMentionsFixture final : public WindowDraftFixture {
+        public:
+            QJsonArray mentions;
+            WindowDraftMentionsFixture()
+            {
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("mentioned"))
+                        return {mentions};
+                    return fallback(request);
+                };
+            }
+        };
+        WindowDraftMentionsFixture fixture;
+        fixture.drafts[returnedId] = WindowDraftFixture::row(returnedId, "Kept across navigation", 1, 1);
+        const QString mentionId = "75000000-0000-4500-8500-000000000001";
+        auto mention = message("Deploy finished", mentionId, topicId);
+        mention["author_uuid"] = channelPeer;
+        mention["is_own"] = false;
+        mention["read"] = false;
+        mention["mentioned"] = true;
+        fixture.mentions = {mention};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        NativeCacheService cache(directory.filePath("cache"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("nav-exclusivity.ini"));
+        preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        auto release = qScopeGuard([&] { fixture.finishPut(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(drafts.ready(streamId, topicId) && !drafts.remoteStatus().busy);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto selected = [&](const QString &id) {
+            auto *chip = view("activity-" + id);
+            return chip && chip->property("selected").toBool();
+        };
+        const auto page = [&](const QString &name) { return item(window->contentItem(), name); };
+        QVERIFY(view("activity-drafts") && view("activity-mentions")->isEnabled()
+            && view("activity-inbox")->isEnabled());
+        // Drafts opens alone with exactly the drafts entry selected.
+        click(window, view("activity-drafts"));
+        QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
+        QTRY_VERIFY(view("draft-card-" + returnedId));
+        QVERIFY(selected("drafts"));
+        QVERIFY(!selected("mentions") && !selected("inbox"));
+        // Clicking Mentions replaces the drafts page: one page, one selection.
+        click(window, view("activity-mentions"));
+        QTRY_VERIFY(controller.mentionsVisible() && view("nativeMentionsPage"));
+        QVERIFY(!controller.draftsVisible());
+        QVERIFY(!page("nativeDraftsPage") || !page("nativeDraftsPage")->isVisible());
+        QVERIFY(selected("mentions"));
+        QVERIFY(!selected("drafts") && !selected("inbox"));
+        // Back to Drafts: the page replaces Mentions and the draft card survived.
+        click(window, view("activity-drafts"));
+        QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
+        QVERIFY(!controller.mentionsVisible());
+        QVERIFY(!page("nativeMentionsPage") || !page("nativeMentionsPage")->isVisible());
+        QTRY_VERIFY(view("draft-card-" + returnedId));
+        QCOMPARE(controller.draft(), QString("Kept across navigation"));
+        // Inbox also replaces the active page.
+        click(window, view("activity-inbox"));
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        QVERIFY(!controller.draftsVisible());
+        QVERIFY(selected("inbox"));
+        QVERIFY(!selected("drafts") && !selected("mentions"));
+        // Closing the active page restores the conversation with no selection.
+        click(window, view("inboxCloseButton"));
+        QTRY_VERIFY(!controller.inboxVisible() && !controller.draftsVisible()
+            && !controller.mentionsVisible());
+        QVERIFY(view("messageComposer"));
+        QVERIFY(!selected("inbox") && !selected("drafts") && !selected("mentions"));
+        drafts.pauseRemote(true); bool stopped = false, okay = false;
+        shutdownNativeStorage(drafts, storage, cache, this, [&](bool success) { okay = success; stopped = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(stopped, 5000); QVERIFY(okay);
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
     }
 
     void draftsActualMainConflictButtonsUseConditionalOwnedActions_data()

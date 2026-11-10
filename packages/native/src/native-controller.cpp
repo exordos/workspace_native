@@ -3988,10 +3988,21 @@ NativeController::MentionCollection &NativeController::mentionCollection(const Q
                                                                    : QStringLiteral("all")];
 }
 
+void NativeController::closeOtherContentPages(ContentPage keep)
+{
+    if (keep != ContentPage::Drafts)
+        closeDrafts();
+    if (keep != ContentPage::Mentions)
+        closeMentions();
+    if (keep != ContentPage::Inbox)
+        closeInbox();
+}
+
 void NativeController::showMentions()
 {
     if (!authenticated())
         return;
+    closeOtherContentPages(ContentPage::Mentions);
     m_mentionsVisible = true;
     auto &collection = mentionCollection(m_mentionsFilter);
     // Initial load blocks the list; a re-open keeps cached rows and refreshes
@@ -4357,6 +4368,7 @@ void NativeController::showInbox()
 {
     if (!authenticated())
         return;
+    closeOtherContentPages(ContentPage::Inbox);
     m_inboxVisible = true;
     emit stateChanged();
     hydrateInboxTopics();
@@ -4555,6 +4567,7 @@ QVariantMap NativeController::inboxPage() const
 void NativeController::showDrafts()
 {
     if (!authenticated() || !m_catalogVerified || !m_draftStore) return;
+    closeOtherContentPages(ContentPage::Drafts);
     m_draftsVisible = true; const QPointer<NativeController> guard(this);
     m_draftStore->showPage();
     if (guard && m_draftStore) m_draftStore->refetchRemote();
