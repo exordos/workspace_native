@@ -315,6 +315,32 @@ speed benefit, and its cancellation/rollback behavior was not acceptance-tested.
 The phase split explains this eviction workload only; it does not diagnose the
 separate 9 GB run, whose obsolete entries had already been removed.
 
+## Warm-navigation and aggregate baseline
+
+The Window226 warm-navigation witness became a repeatable per-release gate
+(issue #13). `packages/native/scripts/warm-navigation-benchmark.py` drives the
+`warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests` case through the
+new `CASSI_NATIVE_TEST_PERF_METRICS` seam, samples peak RSS externally from
+`/proc/<pid>/status`, and checks exact request gates against
+`packages/native/tests/warm-navigation-benchmark.json`: four topic selections
+produce at most two topic-history GETs, two stream selections at most one
+aggregate-history GET and one topic-list GET, and at least four cache hits.
+Timing and RSS gates are measured bands per the issue #16 rule. The contract
+and reproduction steps live in `docs/NATIVE_DESKTOP_PERF_BASELINES.md`; the
+scenario runs outside CTest and its tooling test runs in the release workflow's
+Python check step.
+
+Reference stand measurement (Xvnc at 1440x900 plus panel-less openbox,
+llvmpipe), 2026-11-10, two independent runs: total navigation 845/846 ms,
+per-phase 51-155 ms with at most 2 ms spread between runs, peak RSS
+277,068/277,144 KiB, requests topic/aggregate/list 2/1/1, cache hits 4.
+
+### Navigation regression log
+
+| Release | Total navigation ms | Peak RSS KiB | Requests topic/aggregate/list | Cache hits | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| 0.3.8 | 846 | 277,144 | 2 / 1 / 1 | 4 | PASS |
+
 ## Remaining acceptance
 
 - Complete whole-application acceptance with the current projection, controller,
