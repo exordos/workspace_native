@@ -1,3 +1,29 @@
+# Workspace Native 0.3.7 - Linux development preview
+
+Visual parity claims are now mechanical instead of eyeballed. A per-screen
+matched-screenshot acceptance harness drives the documented windowed capture
+seams for fourteen screens - the conversation scene, message context menu and
+reaction picker in light and dark, both saved-history revalidation states, and
+all six aggregate-view scenarios - compares every capture with pair-mode
+comparison semantics (crop only, never rescale, per-channel mean difference,
+changed-pixel count, SHA-256 of every compared byte), and prints a
+PASS/FAIL/NOT_RUN verdict per screen with a machine-readable report
+(`docs/NATIVE_DESKTOP_SCREENSHOT_ACCEPTANCE.md`, issue #14). Approved baselines
+are committed as fixtures; tolerance bands are calibrated from repeat
+measurements on the reference stand per the issue #16 rule, and reference-side
+slots report NOT_RUN until isolated source fixtures exist. The aggregate
+capture seam additionally records the identity/day-divider and read-marker
+frames that previously had no screenshot seam. No user-visible product
+behaviour changed.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.6...0.3.7](https://github.com/exordos/workspace_native/compare/0.3.6...0.3.7)
+
+---
+
 # Workspace Native 0.3.6 - Linux development preview
 
 Secret Service operations no longer wait forever when there is nobody left to
