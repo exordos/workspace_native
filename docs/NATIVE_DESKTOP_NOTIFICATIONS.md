@@ -141,3 +141,31 @@ aggregate route suppresses the whole stream).
    "You have a new message" after the metadata grace window.
 7. Attention: an unfocused delivery triggers the attention indication once and
    it clears when the window gains focus; a focused delivery never triggers it.
+
+## Transport hardening (review round, pre-merge)
+
+- `Notify` is sent with the exact spec signature
+  `(s app, u replaces_id, s icon, s summary, s body, as actions, a{sv} hints, i expire)`;
+  the earlier seven-argument form was rejected by real daemons. The client
+  declares the `default` action explicitly so `ActionInvoked` routing is
+  guaranteed even on servers that do not synthesize it.
+- Mute policy never runs on guessed metadata: topics outside the loaded
+  catalog (background streams) are fetched on demand (`stream_topics/{uuid}`)
+  and the candidate holds in the grace window until the detail resolves;
+  failures are remembered per topic so a broken endpoint costs one request,
+  not a retry storm.
+- Sign-out closes every banner of the retiring owner before the session
+  clears (`closeAllActiveMessageNotifications` parity): old message content
+  can never outlive its account, and pending candidates of the old owner are
+  dropped.
+- Client-side stores are bounded: 2048 decided messages (FIFO), 64 pending
+  candidates (oldest first), 128 live aggregate tags (coldest evicted).
+- Plural wording follows the repository convention (singular/plural are two
+  source strings, `tr("%n messages", "", count)`), because Qt's second `tr`
+  argument is disambiguation, not a plural source.
+
+New acceptance cases: 8. the session-bus `Notify` call matches the spec
+signature and declares the default action (fake service on the bus);
+9. a muted topic that is absent from the loaded catalog stays silent;
+10. sign-out closes the owner's live banners; 11. decided/pending stores stay
+bounded under message floods.

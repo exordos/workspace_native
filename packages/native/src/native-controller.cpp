@@ -5274,9 +5274,13 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
             candidate.senderName = author->name;
         if (!candidate.streamKnown)
             return false; // stream metadata is missing -> grace, then generic
-        if (!candidate.streamPrivate && candidate.streamMode != QLatin1String("all_messages")
-            && !candidate.topicKnown)
-            return false; // the topic may still switch this to "follow"
+        if (!candidate.streamPrivate && !candidate.topicKnown) {
+            // Topic mute overrides the stream default. The catalog only covers
+            // the selected stream, so resolve background topics on demand; the
+            // grace window already bounds what an unreachable detail costs.
+            requestTopicMetadata(candidate.topicUuid);
+            return false;
+        }
         return true;
     });
     // resolveGenericNotificationAccountLabel: username, separator, domain -
@@ -5924,6 +5928,9 @@ void NativeController::forgetSavedAccount(const QString &id)
 
 void NativeController::logout()
 {
+    // Banners must not outlive the account that produced them (the reference
+    // closes every active owner notification on sign-out).
+    m_notifications.onOwnerRetired(creationOwnerKey());
     const QPointer<NativeController> self(this);
     const QPointer<Session> session(m_session);
     bool accepted = true;
@@ -8078,6 +8085,35 @@ void NativeController::noteTopicOpeningStream(const Stream &stream)
     const auto previous = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &row) { return row.uuid == stream.uuid; });
     if (previous == m_streams.cend() || topicOpeningSecurity(*previous) != topicOpeningSecurity(stream))
         interruptTopicOpening();
+}
+
+void NativeController::requestTopicMetadata(const QString &topicUuid)
+{
+    if (topicUuid.isEmpty() || m_topicMetadataInFlight.contains(topicUuid)
+        || m_topicMetadataFailed.contains(topicUuid))
+        return;
+    m_topicMetadataInFlight.insert(topicUuid);
+    const auto owner = creationOwnerKey();
+    request("GET", messenger + "/stream_topics/" + topicUuid, QJsonValue{}, QUrlQuery{},
+        [this, topicUuid, owner](const ApiResult &result) {
+            m_topicMetadataInFlight.remove(topicUuid);
+            if (!authenticated() || creationOwnerKey() != owner)
+                return;
+            const auto json = result.error.isEmpty() ? result.data.toObject() : QJsonObject{};
+            const auto topic = json.isEmpty()
+                ? std::optional<Topic>{}
+                : parseTopic(json, m_session->project(), json.value("stream_uuid").toString());
+            if (!topic) {
+                if (m_topicMetadataFailed.size() < 512)
+                    m_topicMetadataFailed.insert(topicUuid);
+                return;
+            }
+            for (const auto &row : m_topics)
+                if (row.uuid == topic->uuid)
+                    return;
+            m_topics.append(*topic);
+            emit stateChanged();
+        });
 }
 
 void NativeController::selectTopic(const QString &id)

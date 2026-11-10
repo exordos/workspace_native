@@ -729,6 +729,9 @@ private:
                     QJsonArray accumulated = {}, QSet<QByteArray> markers = {},
                     std::function<void()> failed = {});
     void loadTopics();
+    // Notification metadata backfill: topics of background streams are not in
+    // the active catalog, so mute policy fetches the detail on demand.
+    void requestTopicMetadata(const QString &topicUuid);
     void loadMessages(bool older = false);
     void historyPage(bool older, quint64 selection, quint64 revision,
                      std::optional<Message> boundary, QByteArray marker,
@@ -797,6 +800,8 @@ private:
     QString userPresence(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
     QHash<QString, UserPresentation> m_names;
+    QSet<QString> m_topicMetadataInFlight;
+    QSet<QString> m_topicMetadataFailed;
     QString m_viewerDirectoryName, m_viewerDirectoryOwner;
     QPointer<NativePreferences> m_statusPreferences;
     QString m_conversationPreferenceOwner;

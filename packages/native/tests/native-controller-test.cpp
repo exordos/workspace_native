@@ -10,6 +10,8 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QSignalSpy>
+#include <QDBusConnection>
+#include <QDBusAbstractAdaptor>
 #include <QStringList>
 #include <QMetaProperty>
 #include <QCryptographicHash>
@@ -823,6 +825,50 @@ public:
     void requestAttention() override { ++attentionRequests; }
     void clearAttention() override { ++attentionClears; }
     QString lastTag() const { return shows.isEmpty() ? QString{} : shows.last().tag; }
+};
+
+// Minimal session-bus stand-in for org.freedesktop.Notifications so the wire
+// signature of Notify/CloseNotification is verifiable without a real daemon.
+class FakeFreedesktopNotifications final : public QObject
+{
+    Q_OBJECT
+public:
+    struct NotifyCall
+    {
+        QString app;
+        uint replacesId = 0;
+        QString icon;
+        QString summary;
+        QString body;
+        QStringList actions;
+        QVariantMap hints;
+        int timeout = 0;
+    };
+    QList<NotifyCall> notifyCalls;
+    QList<uint> closedIds;
+};
+
+class FakeFreedesktopNotificationsAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.Notifications")
+public:
+    explicit FakeFreedesktopNotificationsAdaptor(FakeFreedesktopNotifications *owner)
+        : QDBusAbstractAdaptor(owner), m_owner(owner) {}
+
+public slots:
+    uint Notify(const QString &app, uint replacesId, const QString &icon,
+        const QString &summary, const QString &body, const QStringList &actions,
+        const QVariantMap &hints, int timeout)
+    {
+        m_owner->notifyCalls.push_back(
+            {app, replacesId, icon, summary, body, actions, hints, timeout});
+        return 100u + quint32(m_owner->notifyCalls.size());
+    }
+    void CloseNotification(uint id) { m_owner->closedIds.append(id); }
+
+private:
+    FakeFreedesktopNotifications *m_owner;
 };
 
 static QJsonObject notificationStreamDto(const QString &mode = QStringLiteral("all_messages"))
@@ -11135,20 +11181,15 @@ private slots:
         // Count wording is delegated to Qt plural catalogs (the locale guard
         // verifies the catalog); the structural contract is count + place.
         QCOMPARE(NotificationService::formatTitle(dm, 1), QStringLiteral("X"));
-        const QString plural = NotificationService::formatTitle(dm, 2);
-        const QString head = plural.split(mid).first().trimmed();
-        QVERIFY2(head == QStringLiteral("2 message") || head == QStringLiteral("2 messages"),
-            qPrintable(plural));
-        QVERIFY(plural.contains(mid + QStringLiteral("Personal notes")));
+        QCOMPARE(NotificationService::formatTitle(dm, 2),
+            QStringLiteral("2 messages") + mid + QStringLiteral("Personal notes"));
         NotificationTitleContext channel;
         channel.senderName = QStringLiteral("X");
         channel.channelName = QStringLiteral("Native channel");
         channel.topicName = QStringLiteral("Native topic");
-        const QString channelPlural = NotificationService::formatTitle(channel, 2);
-        QVERIFY2(channelPlural.startsWith(QStringLiteral("2 message from X"))
-                || channelPlural.startsWith(QStringLiteral("2 messages from X")),
-            qPrintable(channelPlural));
-        QVERIFY(channelPlural.contains(mid + QStringLiteral("Native channel") + mid + QStringLiteral("Native topic")));
+        QCOMPARE(NotificationService::formatTitle(channel, 2),
+            QStringLiteral("2 messages from X") + mid + QStringLiteral("Native channel")
+                + mid + QStringLiteral("Native topic"));
         channel.topicName.clear();
         QCOMPARE(NotificationService::formatTitle(channel, 1), QStringLiteral("X") + mid + QStringLiteral("Native channel"));
         // Electron caps notification text at 200 characters (main.ts).
@@ -11182,12 +11223,7 @@ private slots:
         QCOMPARE(sent.shows.size(), 2);
         QCOMPARE(sent.shows[0].title, QStringLiteral("X") + mid + place);
         QCOMPARE(sent.shows[0].body, QStringLiteral("Message 500"));
-        // The aggregate line reuses the same aggregate title as the reference;
-        // plural wording itself is delegated to the Qt catalogs.
-        const QString aggregateTitle = sent.shows[1].title;
-        QVERIFY(aggregateTitle.startsWith(QStringLiteral("2 message from X"))
-                || aggregateTitle.startsWith(QStringLiteral("2 messages from X")));
-        QVERIFY(aggregateTitle.endsWith(mid + place));
+        QCOMPARE(sent.shows[1].title, QStringLiteral("2 messages from X") + mid + place);
         QCOMPARE(sent.shows[1].body, QStringLiteral("Message 501"));
         QCOMPARE(sent.shows[1].tag, sent.shows[0].tag);
         // Re-delivering the same event changes nothing (processed marker + dedup).
@@ -11383,6 +11419,111 @@ private slots:
         // Clicking a dead tag does nothing further.
         service->click(tag);
         QCOMPARE(sent.shows.size(), 1);
+        service->setTransport(nullptr);
+    }
+
+    void dbusNotifyCallMatchesTheFreedesktopSignature()
+    {
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected())
+            QSKIP("the session bus is unavailable");
+        FakeFreedesktopNotifications daemon;
+        new FakeFreedesktopNotificationsAdaptor(&daemon);
+        if (!bus.registerObject(QStringLiteral("/org/freedesktop/Notifications"), &daemon))
+            QSKIP("cannot export the fake notification service");
+        if (!bus.registerService(QStringLiteral("org.freedesktop.Notifications")))
+            QSKIP("a real notification daemon owns org.freedesktop.Notifications");
+        workspace::DBusNotificationTransport transport([] { return quintptr{}; });
+        QVERIFY(transport.show(QStringLiteral("tag:signature"), QStringLiteral("Title text"),
+            QStringLiteral("Body text")));
+        QCOMPARE(daemon.notifyCalls.size(), 1);
+        const auto &call = daemon.notifyCalls.first();
+        QCOMPARE(call.summary, QStringLiteral("Title text"));
+        QCOMPARE(call.body, QStringLiteral("Body text"));
+        QCOMPARE(call.replacesId, 0u);
+        // Click routing only survives daemons that do not synthesize the
+        // implicit default action when the client declares it explicitly.
+        QVERIFY(call.actions.contains(QStringLiteral("default")));
+        transport.closeByTag(QStringLiteral("tag:signature"));
+        QTRY_VERIFY_WITH_TIMEOUT(daemon.closedIds.size() == 1, 2000);
+        bus.unregisterObject(QStringLiteral("/org/freedesktop/Notifications"));
+        bus.unregisterService(QStringLiteral("org.freedesktop.Notifications"));
+    }
+
+    void mutedBackgroundTopicSilencesNotifications()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.counters = [](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/stream_topics/" + secondTopicId)
+                return Response{notificationTopicDto(secondTopicId,
+                    QStringLiteral("Quiet topic"), QStringLiteral("mute"))};
+            if (path == "/api/workspace/v1/messenger/stream_topics/" + topicId)
+                return Response{notificationTopicDto()};
+            return Response{notificationStreamDto()};
+        };
+        QVERIFY(fixture.start()); // the visible conversation is topicId
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        service->setMetadataGrace(2000, 150);
+        auto arrival = incomingDto(historyMessage(500), notificationAuthor);
+        // Background topic outside the loaded catalog: the mute state is only
+        // visible through the detail endpoint, which the resolver must consult.
+        arrival["topic_uuid"] = secondTopicId;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 13)));
+        QTest::qWait(2600); // beyond the grace window a misjudged candidate would have shown
+        QVERIFY(sent.shows.isEmpty());
+        service->setTransport(nullptr);
+    }
+
+    void signOutClosesActiveNotifications()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        auto arrival = incomingDto(historyMessage(500), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 13)));
+        QCOMPARE(sent.shows.size(), 1);
+        const auto tag = sent.lastTag();
+        fixture.controller.logout();
+        // Banners must not outlive the account that produced them.
+        QVERIFY(sent.closed.contains(tag));
+        service->setTransport(nullptr);
+    }
+
+    void notificationStateStaysBounded()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        QVERIFY(fixture.start()); // visible topicId suppresses candidates, decisions recorded
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        for (int i = 0; i < 300; ++i) {
+            const auto dto = incomingDto(historyMessage(600 + i), notificationAuthor);
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", dto, 1000 + i)));
+        }
+        QCOMPARE(sent.shows.size(), 0);
+        QVERIFY(service->processedCount() <= 2048);
+        // Unknown-stream candidates hold on the grace window: that store is
+        // bounded too (a hostile sender cannot exhaust client memory).
+        service->setMetadataGrace(60000, 50);
+        for (int i = 0; i < 100; ++i) {
+            auto dto = incomingDto(historyMessage(1600 + i), notificationAuthor);
+            dto["stream_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999999");
+            dto["topic_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999999");
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", dto, 5000 + i)));
+        }
+        QVERIFY(service->pendingCount() <= 64);
         service->setTransport(nullptr);
     }
 };
