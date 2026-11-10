@@ -8103,10 +8103,26 @@ void NativeController::clearAnchor(const QString &notice)
     }
 }
 
+bool NativeController::topicOpeningOwnsPendingAnchor() const
+{
+    // True while the in-flight topic-opening operation is the one that was
+    // started for the pending anchor's destination (issue #55). Its
+    // intermediate pre-commit stateChanged emissions are owned transitions,
+    // not the user navigating away, so they must not cancel the anchor.
+    if (m_pendingAnchorTopic.isEmpty() || !m_topicOpening.active) return false;
+    if (!topicOpeningContext(m_topicOpening.ticket)) return false;
+    const auto destination = m_pendingAnchorTopic.toLower();
+    return m_topicOpening.requested.toLower() == destination
+        || (m_topicOpening.canonical && m_topicOpening.canonical->uuid.toLower() == destination);
+}
+
 void NativeController::reanchorFromWindow()
 {
     if (m_pendingAnchorMessage.isEmpty()) return;
     if (m_stream != m_pendingAnchorStream || m_topic != m_pendingAnchorTopic) {
+        // An owned deep-link transition to the anchor's own destination is in
+        // progress: keep the anchor and let the committed route reanchor it.
+        if (topicOpeningOwnsPendingAnchor()) return;
         clearAnchor(); // Navigation moved on; the anchor no longer has a home.
         return;
     }

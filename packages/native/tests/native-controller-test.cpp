@@ -9384,6 +9384,66 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.anchorMessageId().isEmpty(), 4500);
     }
 
+    void deepLinkOpensUncataloguedTopicAndAnchorsTheMessage()
+    {
+        // Issue #55: the target topic lives in another channel and is absent
+        // from the currently loaded topic catalog, so openTopic() runs
+        // beginTopicOpening(). Its intermediate pre-commit stateChanged
+        // emissions must not cancel the pending anchor, and the bounded
+        // older-history search must still reach the message.
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString otherStream = "39393939-3939-4939-8939-393939393939";
+        const QString ghostTopic = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        const QString target = "7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c7c";
+        // ghostTopic (and its channel) are absent from the loaded catalogs;
+        // both are resolved through their detail GETs while the deep link runs.
+        fixture.topics = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream)
+                return Response{QJsonArray{QJsonObject{{"uuid", ghostTopic}, {"project_id", projectId},
+                    {"stream_uuid", otherStream}, {"name", "Ghost topic"}}}};
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        auto targetRow = message("Deep uncatalogued body", target, ghostTopic);
+        targetRow.insert("stream_uuid", otherStream);
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/streams/" + otherStream)
+                return Response{creationChannel(otherStream, "Second channel")};
+            // Delayed topic metadata: the canonical GET lands after beginTopicOpening()
+            // has already emitted its own stateChanged signals.
+            if (request.target.path() == "/api/workspace/v1/messenger/stream_topics/" + ghostTopic)
+                return Response{creationTopic(ghostTopic, otherStream, "Ghost topic"), 200, 250, {}};
+            return fallback(request);
+        };
+        int olderPages = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) return Response{QJsonArray{targetRow}};
+            if (query.queryItemValue("topic_uuid") == ghostTopic) {
+                if (query.hasQueryItem("page_marker")) {
+                    ++olderPages;
+                    return Response{QJsonArray{targetRow}, 200, 0, {}};
+                }
+                auto filler = message("Newer ghost row", "7d7d7d7d-7d7d-4d7d-8d7d-7d7d7d7d7d7d", ghostTopic);
+                filler.insert("stream_uuid", otherStream);
+                return Response{QJsonArray{filler}, 200, 0, {{"X-Pagination-Marker", "older-1"}}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QSignalSpy anchors(&fixture.controller, &NativeController::anchorChanged);
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + target);
+        QTRY_COMPARE(fixture.controller.selectedStream(), otherStream);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.selectedTopic(), ghostTopic, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.anchorMessageId(), target, 5000);
+        QVERIFY(anchors.count() >= 1);
+        QVERIFY(olderPages >= 1); // The target was only on an older page.
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.anchorMessageId().isEmpty(), 4500);
+    }
+
     void deepLinkForeignOrganizationOrProjectKeepsSelection()
     {
         Fixture fixture; fixture.aggregateMessages = true;
