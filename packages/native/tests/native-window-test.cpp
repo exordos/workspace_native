@@ -5696,16 +5696,31 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window));
         auto *content = window->contentItem();
         session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QElapsedTimer clock;
+        clock.start();
+        QJsonArray perfPhases;
+        qint64 perfTotalMs = 0;
+        const auto perfPhase = [&](const QString &name, qint64 ms) {
+            perfTotalMs += ms;
+            perfPhases.append(QJsonObject{{"name", name}, {"ms", ms}});
+        };
         QTRY_COMPARE(session.projects().size(), 1);
+        perfPhase("sign-in", clock.restart());
         click(window, item(content, "project-" + projectId));
         QTRY_COMPARE(controller.streams().size(), 1);
+        perfPhase("project-open", clock.restart());
         click(window, item(content, "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), 2);
+        perfPhase("stream-open-1-cold", clock.restart());
+        const QStringList topicPhaseNames{QStringLiteral("topic-select-1-cold"),
+            QStringLiteral("topic-select-2-cold"), QStringLiteral("topic-select-3-warm")};
+        int topicPhaseIndex = 0;
         for (const auto &id : {topicId, secondTopicId, topicId}) {
             click(window, item(content, "topic-" + id));
             QTRY_VERIFY(!controller.busy());
             QTRY_VERIFY(item(content, "message-content-" + (id == topicId ? messageId : returnedId)));
             QVERIFY(!controller.cacheStale());
+            perfPhase(topicPhaseNames[topicPhaseIndex++], clock.restart());
         }
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
@@ -5714,15 +5729,29 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 2);
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 2);
+        perfPhase("stream-open-2-warm", clock.restart());
         click(window, item(content, "topic-" + secondTopicId));
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(item(content, "message-content-" + returnedId));
+        perfPhase("topic-select-4-warm", clock.restart());
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
         QCOMPARE(topicGets, 1);
         QTRY_VERIFY(cache.stats().hits >= 3);
         qInfo("Warm navigation: 4 topic selections, topic-history GETs=%d; 2 stream selections, aggregate-history GETs=%d, topic-list GETs=%d; cache hits=%llu",
             historyGets, aggregateGets, topicGets, static_cast<unsigned long long>(cache.stats().hits));
+        const auto perfMetricsPath = qEnvironmentVariable("CASSI_NATIVE_TEST_PERF_METRICS");
+        if (!perfMetricsPath.isEmpty()) {
+            QFile metrics(perfMetricsPath);
+            QVERIFY(metrics.open(QIODevice::WriteOnly));
+            const auto data = QJsonDocument(QJsonObject{{"version", 1},
+                {"case", QStringLiteral("warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests")}, {"synthetic", true},
+                {"requests", QJsonObject{{"topic-history", historyGets}, {"aggregate-history", aggregateGets}, {"topic-list", topicGets}}},
+                {"cacheHits", static_cast<double>(cache.stats().hits)},
+                {"phases", perfPhases},
+                {"totalMs", static_cast<double>(perfTotalMs)}}).toJson();
+            QCOMPARE(metrics.write(data), data.size());
+        }
         window->close();
     }
 
