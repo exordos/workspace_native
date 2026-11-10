@@ -8122,8 +8122,13 @@ void NativeController::requestTopicMetadata(const QString &topicUuid)
             // Stored in the notification backfill, never in m_topics: a
             // background topic must not reshape the active UI catalog.
             if (std::none_of(m_topics.cbegin(), m_topics.cend(),
-                    [&](const Topic &row) { return row.uuid == topic->uuid; }))
+                    [&](const Topic &row) { return row.uuid == topic->uuid; })) {
+                // Cache semantics with a session bound: long-lived sessions
+                // must not accumulate one entry per ever-seen background topic.
+                if (m_topicNotificationBackfill.size() >= 256)
+                    m_topicNotificationBackfill.erase(m_topicNotificationBackfill.begin());
                 m_topicNotificationBackfill.insert(topic->uuid, *topic);
+            }
         });
 }
 

@@ -209,3 +209,13 @@ list (the pollution repro reverted to the old append fails this guard).
 New acceptance cases: 14. per-bucket row bound with an honest display count;
 15. sign-out closes generic fallback banners (RED observed: the generic banner
 survived logout before the fix).
+
+## Reviewer round 4 hardening
+
+- The notification topic backfill map is bounded (256 entries, oldest evicted);
+  it is a lookup cache, so dropping an entry only costs a later re-fetch.
+- Generic fallback banner tracking is a FIFO with a hard bound: once 256
+  generic banners are live, showing a new one closes the oldest. No shown
+  banner can end up untracked, so sign-out closes every remaining one
+  (regression case drives 300 generic banners; RED observed with the old
+  capped-skip tracking - banners past the cap survived logout).

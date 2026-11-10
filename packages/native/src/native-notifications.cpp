@@ -437,8 +437,16 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     const auto body = m_genericBody ? m_genericBody() : QString();
     m_transport->show(tag, tr("You have a new message"), body);
     m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
-    if (m_liveFallbackTags[candidate.owner].size() < 256)
-        m_liveFallbackTags[candidate.owner].insert(tag);
+    m_liveFallbackTags[candidate.owner].insert(tag);
+    m_fallbackOrder.append(qMakePair(candidate.owner, tag));
+    // Overflow must not leave untracked banners open: the oldest generic
+    // banner is closed to free a tracking slot.
+    while (m_fallbackOrder.size() > 256) {
+        const auto oldest = m_fallbackOrder.takeFirst();
+        if (m_liveFallbackTags[oldest.first].remove(oldest.second))
+            m_transport->closeByTag(oldest.second);
+        m_fallbackRoutes.remove(oldest.second);
+    }
     if (!m_windowFocused)
         m_transport->requestAttention();
     markProcessed(candidate.owner + QStringLiteral("::") + candidate.messageUuid);
