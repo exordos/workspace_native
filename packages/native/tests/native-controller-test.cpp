@@ -10719,6 +10719,24 @@ private slots:
         QCOMPARE(repeatedCount, discoveryCount);
     }
 
+    void loginWizardAdvanceNormalizesRealmToOrigin()
+    {
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        // Discovery and sign-in must both act on the normalized origin, the
+        // way the reference submits `new URL(realm).origin` after the check.
+        const auto noisy = origin + "/join/team?next=1";
+        controller.organizationInputChanged(noisy);
+        controller.continueFromOrganization(noisy);
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.loginStep(), QStringLiteral("credentials"));
+        QCOMPARE(controller.organizationRealm(), origin);
+        controller.login(controller.organizationRealm(), QStringLiteral("synthetic-user"),
+            QStringLiteral("synthetic-password"), QString{});
+        QTRY_COMPARE(controller.projects().size(), 1);
+    }
+
     void loginWizardStaleDiscoveryIsIgnored()
     {
         Fixture fixture;
