@@ -1,3 +1,21 @@
+# Workspace Native 0.3.13 - Linux development preview
+
+A message deep link whose target topic is not yet in the loaded topic catalog
+now reaches the message. The anchor used to be cancelled while the client
+resolved that topic: the topic opened, but the requested message was neither
+scrolled to nor highlighted, and the bounded search through older history
+never ran. The owned topic-resolution transition now keeps the pending anchor
+through its intermediate states, so only unrelated navigation, a superseded
+link or sign-out cancel it (issue #55).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.12...0.3.13](https://github.com/exordos/workspace_native/compare/0.3.12...0.3.13)
+
+---
+
 # Workspace Native 0.3.12 - Linux development preview
 
 A deleted mention now disappears from Activity as soon as the deletion is
