@@ -1,3 +1,24 @@
+# Workspace Native 0.3.12 - Linux development preview
+
+A deleted mention now disappears from Activity as soon as the deletion is
+confirmed. Previously a mention that had arrived through the HTTP message
+collection stayed on screen - card and preview included, and still clickable -
+until the Mentions page was refetched, even though the server had deleted the
+message. A confirmed `message.deleted` event now removes the row from the
+open All and Unread collections in place without any refetch, covers a
+message that is present in both the fetched and the live sources, and a
+tombstone keeps an in-flight page response generated before the deletion from
+putting the card back. Reading a non-deleted message still keeps its card
+(issue #56).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.11...0.3.12](https://github.com/exordos/workspace_native/compare/0.3.11...0.3.12)
+
+---
+
 # Workspace Native 0.3.11 - Linux development preview
 
 Sidebar destinations are now mutually exclusive. Opening Drafts, Mentions or
