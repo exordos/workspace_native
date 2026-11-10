@@ -30,6 +30,9 @@ self-contained so the repository does not depend on the handoff tree:
 - inputs converted to RGB, `ImageChops.difference`, per-channel mean
   (`mean_absolute_channel_difference`) and an identical-pixels check on the
   difference bounding box;
+- the harness additionally reports `changed_pixels` (pixels differing in any
+  channel) and an optional `max_changed_pixels` cap, so a localized visual
+  change cannot hide under a frame-wide mean;
 - SHA-256 and original size of every compared file are recorded in the report,
   so a report names the exact bytes it compared.
 
@@ -57,13 +60,18 @@ machine copy of the same list.
 Font-derived pixels must never be asserted from one host's hardcoded metrics.
 Therefore every screen records its tolerance explicitly:
 
-- `requires_identical_pixels: true` where two independent captures on the
-  reference stand reproduce byte-identical images (proven by the promotion
-  run; the report shows it);
-- otherwise `max_mean_abs_channel_difference` with a numeric band and a
-  `tolerance_reason` naming the fluctuating pixel source (for example a
-  mid-animation indicator frame captured at a fixed wall-clock point). A band
-  is never widened without naming that cause.
+- `requires_identical_pixels: true` may be used once two independent captures
+  on the reference stand have proven a screen byte-reproducible. Empirically
+  (2026-11-10 stand) no screen is yet byte-reproducible: independent runs
+  differ by roughly 60-1000 pixels of 1,296,000, pure sub-pixel text
+  antialiasing flicker in QML repaints under llvmpipe, and a whole frame-wide
+  per-channel mean never above 0.0005/255;
+- every screen therefore carries `max_mean_abs_channel_difference` (0.01,
+  about 20x the measured flicker mean) plus `max_changed_pixels` (2000,
+  4000 for the visibly busier read-marker frame) with a `tolerance_reason`
+  naming that fluctuating pixel source and the measurement. A band is never
+  widened without naming the cause, and a failure above these bands demands
+  review, never automatic re-approval.
 
 The reference stand is the documented bare Xvnc `:30` at 1440x900 with the
 panel-less openbox WM, `QT_QPA_PLATFORM=xcb`, `LC_ALL=C.UTF-8`, DPR 1. The
