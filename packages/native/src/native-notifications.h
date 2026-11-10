@@ -121,10 +121,18 @@ public:
     NotificationReadOutcome consumeRead(const QList<QString> &messageUuids, const QString &owner);
     QStringList dropOwner(const QString &owner);
     int tagCount() const { return int(m_byTag.size()); }
+    // Tags dropped by the aggregate bound; the service closes their banners.
+    QStringList takeEvicted()
+    {
+        QStringList out;
+        out.swap(m_evicted);
+        return out;
+    }
     int count(const QString &tag) const;
     QStringList tags() const;
 
 private:
+    QStringList m_evicted; // tags removed by the aggregate bound
     struct Entry {
         struct Row {
             QString body;

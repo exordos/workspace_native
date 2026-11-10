@@ -165,8 +165,12 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
                 newest = qMax(newest, row.createdMicros);
             if (coldestTag.isEmpty() || newest < coldest) { coldestTag = it.key(); coldest = newest; }
         }
-        if (!coldestTag.isEmpty() && coldestTag != tag)
+        if (!coldestTag.isEmpty() && coldestTag != tag) {
             consumeByTag(coldestTag);
+            // The desktop banner of an evicted aggregate would otherwise stay
+            // open untracked forever (no tag close, no future update).
+            m_evicted.append(coldestTag);
+        }
     }
     return snapshot(tag, entry);
 }
@@ -394,6 +398,13 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
         title.topicName = named.topicName.trimmed();
     }
     const auto snap = m_registry.upsert(named, title);
+    // Aggregate eviction must not leave the evicted desktop banner open and
+    // untracked: close it on the transport as the registry drops it.
+    for (const auto &evicted : m_registry.takeEvicted()) {
+        if (snap && evicted == snap->tag)
+            continue;
+        m_transport->closeByTag(evicted);
+    }
     if (!snap) {
         markProcessed(key);
         return;

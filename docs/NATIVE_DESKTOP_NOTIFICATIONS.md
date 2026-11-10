@@ -169,3 +169,22 @@ signature and declares the default action (fake service on the bus);
 9. a muted topic that is absent from the loaded catalog stays silent;
 10. sign-out closes the owner's live banners; 11. decided/pending stores stay
 bounded under message floods.
+
+## Reviewer round 2 hardening
+
+- Aggregate eviction now also closes the evicted banner on the transport.
+  A coldest-evicted bucket previously lost its registry entry while the desktop
+  banner stayed open untracked forever (no tag close, no future update).
+- Topic metadata backfill is kept in a notification-only map instead of being
+  appended to the active stream's topic catalog. `topics()` renders every
+  catalog row, so the old append leaked background-stream topics into the
+  conversation list UI. Active-catalog rows win over backfilled rows.
+- The number of concurrent topic metadata backfill requests is capped at 8 per
+  pass; the next grace tick retries whatever did not get a slot, so a flood of
+  unknown topics cannot fan out into an unbounded request burst.
+- Owner retirement additionally clears the backfill map and the in-flight set.
+
+New acceptance cases: 12. eviction tag-closes the evicted aggregate's banner
+(132 distinct-author buckets past the bound against the recording transport);
+13. a backfilled background topic never reshapes the active catalog's topic
+list (the pollution repro reverted to the old append fails this guard).
