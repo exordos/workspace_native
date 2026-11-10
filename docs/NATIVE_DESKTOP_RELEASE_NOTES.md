@@ -1,3 +1,22 @@
+# Workspace Native 0.3.14 - Linux development preview
+
+An Inbox row now follows a topic that moves between streams. Previously a
+whole-topic move left the unread row under its old stream - the destination
+ignored the move event when it had not already contained that topic - and
+clicking the stale row could open the topic at its obsolete location. A
+complete topic update now reconciles every Inbox slot: the vacated stream's
+card disappears, a not-yet-hydrated destination is refetched so its row shows
+the server's counters, and later read and delete events affect the surviving
+row wherever the topic now lives (issue #65).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.13...0.3.14](https://github.com/exordos/workspace_native/compare/0.3.13...0.3.14)
+
+---
+
 # Workspace Native 0.3.13 - Linux development preview
 
 A message deep link whose target topic is not yet in the loaded topic catalog
