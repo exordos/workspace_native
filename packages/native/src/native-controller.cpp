@@ -4491,7 +4491,10 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             if (pending != m_inboxPlacementEvents.cend()) {
                 if (pending->stream != streamUuid) continue;
                 ids.insert(topic->uuid);
-                topics.append(topic->updatedMicros > pending->updatedMicros ? *topic : *pending);
+                // Only a STRICTLY newer event DTO overrides the snapshot; on
+                // a timestamp tie the fetched row reflects the later state
+                // (reads do not bump updated_at), so the snapshot wins.
+                topics.append(topic->updatedMicros >= pending->updatedMicros ? *topic : *pending);
                 continue;
             }
             ids.insert(topic->uuid);

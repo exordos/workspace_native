@@ -10403,6 +10403,55 @@ private slots:
             QStringLiteral("3"));
     }
 
+    // Reviewer follow-up (PR #75): the placement overlay supplements a fetch
+    // that started AFTER the event too. When the fetch reflects a later read
+    // whose updated_at ties with the event's, the snapshot counters must win
+    // - the topic left the inbox and must not reappear unread.
+    void inboxSlotSnapshotCountersWinOverEqualTimestampPlacementEvent()
+    {
+        const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");
+        const auto beta = QStringLiteral("a1000000-0000-4000-8000-0000000000b2");
+        const auto moved = QStringLiteral("b1000000-0000-4000-8000-0000000000c3");
+        Fixture fixture;
+        fixture.streams = [&](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 3, 3, 0),
+            inboxStream(beta, "Beta", 0, 0, 0)}}; };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == alpha)
+                return Response{QJsonArray{
+                    inboxTopic(moved, alpha, "Migration", 3, 3, 0, "2026-06-22T11:30:00Z")}};
+            if (stream == beta)
+                // Fetched after the move event: the topic was read while
+                // resolving; the server keeps the same updated_at.
+                return Response{QJsonArray{
+                    inboxTopic(moved, beta, "Migration", 0, 0, 0, "2026-06-22T11:30:00Z")}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        // Beta carries no unread at open, so only Alpha hydrates a slot.
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, moved] {
+            return !inboxRow(fixture.controller.inboxPage(), "channels", alpha, moved).isEmpty();
+        }, 4000));
+        // The move event arrives at 11:30Z with unread counters; the
+        // destination refetch then answers with the fresher read state at
+        // the same updated_at.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, beta, "Migration", 3, 3, 0, "2026-06-22T11:30:00Z"), 80)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(beta, "Beta", 3, 3, 0), 81)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 82)));
+        QVERIFY(QTest::qWaitFor([&fixture, alpha] {
+            return inboxCard(fixture.controller.inboxPage(), "channels", alpha).isEmpty();
+        }, 4000));
+        // The topic is read at its destination: no topic row may appear.
+        QTest::qWait(250);
+        QVERIFY2(inboxRow(fixture.controller.inboxPage(), "channels", beta, moved).isEmpty(),
+            "A tie on updated_at let the event DTO overwrite fresher read counters");
+    }
+
     void delayedInboxSlotCannotResurrectDeletedTopic()
     {
         const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");

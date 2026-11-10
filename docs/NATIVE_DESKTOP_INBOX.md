@@ -162,8 +162,10 @@ may have been generated BEFORE a placement event yet land AFTER it. Owned
 placement events therefore record the DTO per topic
 (`m_inboxPlacementEvents`) and tombstones record a UUID marker
 (`m_inboxDeletedTopics`); slot hydration reconciles every snapshot against
-them: tombstoned rows are dropped, rows the events moved to another stream
-are dropped, a newer event DTO replaces the stale snapshot row, and a move
+them: tombstoned rows and rows the events moved to another stream are
+dropped, a strictly newer event DTO replaces the stale snapshot row (on a
+timestamp tie the fetched row reflects the later state - reads do not bump
+`updated_at` - so the snapshot wins), and a move
 INTO the stream observed while its fetch was in flight is applied even
 though the pre-move snapshot cannot contain it. Records are kept until
 `resetInbox()` (bounded by distinct moved/deleted topics of the session) so
@@ -257,6 +259,10 @@ has landed.
     event applies, then the stale snapshot is released: the vacated stream
     must not return, the deleted topic must not return, the destination row
     stays intact.
+13. `inboxSlotSnapshotCountersWinOverEqualTimestampPlacementEvent` — the
+    destination refetch starts AFTER the move event and answers with the
+    read state at the event's exact `updated_at`: the tie must not let the
+    event DTO re-mark the topic unread.
 
 `native-native-window` (tests/native-window-test.cpp):
 
