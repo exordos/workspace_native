@@ -3306,10 +3306,11 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         auto *activity = view("activity-drafts"); QVERIFY(activity && activity->isEnabled());
-        for (const auto *name : {"activity-inbox", "activity-favorites", "activity-starred"}) {
+        for (const auto *name : {"activity-favorites", "activity-starred"}) {
             auto *unsupported = view(QLatin1String(name)); QVERIFY(unsupported); QVERIFY(!unsupported->isEnabled());
         }
         QVERIFY(view("activity-mentions")->isEnabled()); // enabled by issue #42
+        QVERIFY(view("activity-inbox")->isEnabled()); // enabled by issue #44
         click(window, activity);
         QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
         QTRY_VERIFY(view("draft-card-" + returnedId) && view("draft-card-" + newerId));
