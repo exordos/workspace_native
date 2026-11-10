@@ -2313,15 +2313,19 @@ ApplicationWindow {
                         Layout.minimumWidth: 0
                         Layout.preferredHeight: 32
                         enabled: modelData.id === "drafts" || modelData.id === "mentions"
+                            || modelData.id === "inbox"
                         selected: modelData.id === "drafts" && root.controller.draftsVisible
                             || modelData.id === "mentions" && root.controller.mentionsVisible
+                            || modelData.id === "inbox" && root.controller.inboxVisible
                         asset: modelData.asset
                         glyphSize: modelData.size
                         help: modelData.id === "drafts" || modelData.id === "mentions"
+                            || modelData.id === "inbox"
                             ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
                         onClicked: {
                             if (modelData.id === "drafts") root.controller.showDrafts();
                             else if (modelData.id === "mentions") root.controller.showMentions();
+                            else if (modelData.id === "inbox") root.controller.showInbox();
                         }
                         background: Rectangle {
                             radius: 6
@@ -2562,6 +2566,7 @@ ApplicationWindow {
         ColumnLayout {
             id: conversation
             visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
+                && !root.controller.inboxVisible
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
@@ -5092,6 +5097,13 @@ ApplicationWindow {
             colors: root.colors
             visible: root.controller.mentionsVisible
             loadActive: root.visible && root.controller.authenticated
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
+        NativeInboxPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.inboxVisible
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

@@ -1215,6 +1215,10 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>All messages</source>
+            <translation>Все сообщения</translation>
+        </message>
+        <message>
             <source>Drafts could not be synchronized. Refresh to retry.</source>
             <translation>Не удалось синхронизировать черновики. Обновите список для повторной попытки.</translation>
         </message>
@@ -2297,6 +2301,37 @@
         <message>
             <source>Private</source>
             <translation>Личное</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeInboxPage</name>
+        <message>
+            <source>Inbox</source>
+            <translation>Входящие</translation>
+        </message>
+        <message>
+            <source>Close inbox</source>
+            <translation>Закрыть входящие</translation>
+        </message>
+        <message>
+            <source>Direct messages</source>
+            <translation>Личные сообщения</translation>
+        </message>
+        <message>
+            <source>Channels</source>
+            <translation>Каналы</translation>
+        </message>
+        <message>
+            <source>No unread messages</source>
+            <translation>Нет непрочитанных сообщений</translation>
+        </message>
+        <message>
+            <source>Failed to load inbox</source>
+            <translation>Не удалось загрузить входящие</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
         </message>
     </context>
 </TS>
