@@ -1,3 +1,26 @@
+# Workspace Native 0.3.10 - Linux development preview
+
+The sidebar Inbox chip now opens the inbox page. Unread traffic is grouped into
+Direct messages and Channels exactly as the reference orders them: every stream
+with active unreads becomes a card carrying its aggregate counter, and the card
+lists one row per unread topic sorted by last activity, each with its own badge
+(counts above 1000 render as "1k+"). A stream whose unread total cannot be
+attributed to a topic falls back to a single stream row, and an untitled direct
+topic is labelled "All messages". Opening a row navigates to that conversation
+and unmounts the page; the close control returns to the previous conversation
+without navigating. Realtime read and message events recompute the counters in
+place - no polling - and a `/{org}/project/{project}/inbox` deep link opens the
+page directly. Muted and passive traffic stays out of the inbox by design, using
+active unread counts only (`docs/NATIVE_DESKTOP_INBOX.md`, issue #44).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.9...0.3.10](https://github.com/exordos/workspace_native/compare/0.3.9...0.3.10)
+
+---
+
 # Workspace Native 0.3.9 - Linux development preview
 
 The Activity surface gained its Mentions page. The sidebar Mentions chip opens a
