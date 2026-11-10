@@ -1,3 +1,27 @@
+# Workspace Native 0.3.8 - Linux development preview
+
+Navigation request contracts are now enforced per release instead of
+remembered. A warm-navigation benchmark harness drives the verified-cache
+navigation window test through a new measurement seam and records exact
+request counters - four topic selections reduced to two topic-history GETs,
+two stream selections reduced to one aggregate-history and one topic-list
+GET, with four cache hits - alongside per-phase timings, externally sampled
+peak RSS and a machine-readable report. Request gates are exact; timing and
+RSS gates are measured tolerance bands per the issue #16 rule, calibrated
+from repeat measurements on the reference stand. The baseline registry, an
+approved capture with provenance and a 23-case tooling test ship with the
+tree; re-running the scenario takes one command per release and a failed gate
+blocks it (`docs/NATIVE_DESKTOP_PERF_BASELINES.md`, issue #13). No
+user-visible product behaviour changed.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.7...0.3.8](https://github.com/exordos/workspace_native/compare/0.3.7...0.3.8)
+
+---
+
 # Workspace Native 0.3.7 - Linux development preview
 
 Visual parity claims are now mechanical instead of eyeballed. A per-screen
