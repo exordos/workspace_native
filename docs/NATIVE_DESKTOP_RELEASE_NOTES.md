@@ -1,3 +1,23 @@
+# Workspace Native 0.3.15 - Linux development preview
+
+The login card now opens with organization discovery, mirroring the desktop
+web client. You enter the organization's server address first; the app checks
+it against the server's public settings, shows the realm name and icon, and
+only then mounts the username and password fields - a failed check keeps them
+hidden, and editing the address discards a completed check. The server field
+suggests organizations previously used on this device (most recent first,
+persisted locally), and a packager can preconfigure a default organization
+through the WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL and
+WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME build options (issue #58).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.14...0.3.15](https://github.com/exordos/workspace_native/compare/0.3.14...0.3.15)
+
+---
+
 # Workspace Native 0.3.14 - Linux development preview
 
 An Inbox row now follows a topic that moves between streams. Previously a
