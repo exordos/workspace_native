@@ -157,6 +157,19 @@ share `hydrateInboxStream()` (guards: authenticated, known non-archived
 stream, slot absent, not already hydrating, stale-owner/generation/catalog
 guard on the response).
 
+In-flight snapshot race (reviewer follow-up on the #65 PR). A slot response
+may have been generated BEFORE a placement event yet land AFTER it. Owned
+placement events therefore record the DTO per topic
+(`m_inboxPlacementEvents`) and tombstones record a UUID marker
+(`m_inboxDeletedTopics`); slot hydration reconciles every snapshot against
+them: tombstoned rows are dropped, rows the events moved to another stream
+are dropped, a newer event DTO replaces the stale snapshot row, and a move
+INTO the stream observed while its fetch was in flight is applied even
+though the pre-move snapshot cannot contain it. Records are kept until
+`resetInbox()` (bounded by distinct moved/deleted topics of the session) so
+a late source-side snapshot stays filtered even after the destination slot
+has landed.
+
 - `src/native-controller.h/.cpp`
   - `Q_PROPERTY(bool inboxVisible ...)`, `Q_PROPERTY(QVariantMap inboxPage ...)`
     (both `NOTIFY stateChanged`); invokables `showInbox()`, `closeInbox()`,
@@ -238,6 +251,12 @@ guard on the response).
     refetches the destination, so the row carries the FETCHED counters (the
     fixture returns counters distinct from the event DTO to distinguish the
     two), and navigation opens the topic at the destination.
+12. `delayedInboxSlotCannotResurrectMovedTopic` /
+    `delayedInboxSlotCannotResurrectDeletedTopic` — the first slot fetch is
+    held with the mock server's deterministic defer gate; the move/delete
+    event applies, then the stale snapshot is released: the vacated stream
+    must not return, the deleted topic must not return, the destination row
+    stays intact.
 
 `native-native-window` (tests/native-window-test.cpp):
 

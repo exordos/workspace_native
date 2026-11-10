@@ -863,6 +863,13 @@ private:
     void hydrateInboxTopics();
     void hydrateInboxStream(const QString &stream);
     bool inboxSlotTopicEvent(const QString &kind, const Topic &topic, bool ownsPlacement = false);
+    // #65: authoritative placement events observed while a slot fetch is in
+    // flight. A newer event DTO overrides a stale snapshot row; a move-out or
+    // deletion drops the row. Entries are applied whenever a slot lands and
+    // kept until resetInbox(), bounding their count by distinct moved/deleted
+    // topics of the session.
+    QHash<QString, Topic> m_inboxPlacementEvents;
+    QSet<QString> m_inboxDeletedTopics;
     bool inboxSlotStreamRead(const QString &stream);
     void resetInbox();
     bool durableDraftRoute() const;
