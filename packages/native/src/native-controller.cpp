@@ -3976,6 +3976,367 @@ QVariantMap NativeController::draftPage() const
     return page;
 }
 
+// ---- Activity mentions page (#42, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md) ----
+//
+// Reference contract (workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af):
+// queries and page sizes per activity-mentions.api.ts:20-21,60-134; collection
+// and cursor semantics per activity-page.ui.tsx:178-247,411-516.
+
+NativeController::MentionCollection &NativeController::mentionCollection(const QString &filter)
+{
+    return m_mentionsCollections[filter == QLatin1String("unread") ? QStringLiteral("unread")
+                                                                   : QStringLiteral("all")];
+}
+
+void NativeController::showMentions()
+{
+    if (!authenticated())
+        return;
+    m_mentionsVisible = true;
+    auto &collection = mentionCollection(m_mentionsFilter);
+    // Initial load blocks the list; a re-open keeps cached rows and refreshes
+    // (activity-page.ui.tsx:283-297 hasCurrentMessages branch).
+    if (collection.rows.isEmpty() && !collection.inflight)
+        collection.loading = true;
+    emit stateChanged();
+    loadMentionCollection(m_mentionsFilter, false);
+    if (!m_mentionIndexReady && !m_mentionIndexWalking)
+        loadMentionIndex();
+}
+
+void NativeController::closeMentions()
+{
+    if (!m_mentionsVisible)
+        return;
+    m_mentionsVisible = false;
+    emit stateChanged();
+}
+
+void NativeController::selectMentionsFilter(const QString &filter)
+{
+    const auto normalized = filter == QLatin1String("unread") ? QStringLiteral("unread")
+                                                              : QStringLiteral("all");
+    if (normalized == m_mentionsFilter)
+        return;
+    m_mentionsFilter = normalized;
+    auto &collection = mentionCollection(normalized);
+    if (collection.rows.isEmpty() && !collection.inflight)
+        collection.loading = true;
+    emit stateChanged();
+    loadMentionCollection(normalized, false);
+}
+
+void NativeController::loadMoreMentions()
+{
+    const auto found = m_mentionsCollections.constFind(m_mentionsFilter);
+    if (found == m_mentionsCollections.cend())
+        return;
+    const auto &collection = *found;
+    if (!collection.hasMore || collection.inflight || collection.loading
+        || collection.marker.isEmpty())
+        return;
+    loadMentionCollection(m_mentionsFilter, true);
+}
+
+void NativeController::retryMentions()
+{
+    auto &collection = mentionCollection(m_mentionsFilter);
+    collection.error = false;
+    collection.paginationError = false;
+    if (collection.rows.isEmpty() && !collection.inflight)
+        collection.loading = true;
+    emit stateChanged();
+    loadMentionCollection(m_mentionsFilter, false);
+}
+
+void NativeController::loadMentionCollection(const QString &filter, bool append)
+{
+    auto &collection = mentionCollection(filter);
+    if (collection.inflight)
+        return;
+    collection.inflight = true;
+    const quint64 version = ++collection.version;
+    QUrlQuery query;
+    query.addQueryItem("mentioned", "true");
+    if (filter == QLatin1String("unread"))
+        query.addQueryItem("read", "false");
+    query.addQueryItem("sort_key", "created_at");
+    query.addQueryItem("sort_dir", "desc");
+    query.addQueryItem("page_limit", "50");
+    const auto marker = append ? collection.marker : QByteArray();
+    if (!marker.isEmpty())
+        query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    request("GET", messenger + "/messages/", {}, query,
+        [this, filter, append, version](const ApiResult &result) {
+        const auto found = m_mentionsCollections.find(filter);
+        if (found == m_mentionsCollections.end())
+            return;
+        auto &state = *found;
+        if (state.version != version)
+            return; // a newer refresh owns the state now
+        state.inflight = false;
+        if (!result.ok() || !result.data.isArray()) {
+            state.loading = false;
+            if (append)
+                state.paginationError = true;
+            else
+                state.error = true;
+            emit stateChanged();
+            return;
+        }
+        QVector<Message> page;
+        for (const auto &value : result.data.toArray()) {
+            const auto parsed = parseMessage(value.toObject(), m_session->project());
+            if (parsed)
+                page.append(*parsed);
+        }
+        if (append)
+            state.rows += page; // dedupe happens at row build
+        else
+            state.rows = page;
+        state.marker = result.nextMarker;
+        state.hasMore = !result.nextMarker.isEmpty();
+        state.loading = false;
+        state.error = false;
+        state.paginationError = false;
+        emit stateChanged();
+    });
+}
+
+void NativeController::loadMentionIndex()
+{
+    m_mentionIndexWalking = true;
+    QUrlQuery query;
+    query.addQueryItem("mentioned", "true");
+    query.addQueryItem("read", "false");
+    query.addQueryItem("sort_key", "created_at");
+    query.addQueryItem("sort_dir", "desc");
+    query.addQueryItem("page_limit", "100");
+    if (!m_mentionIndexMarker.isEmpty())
+        query.addQueryItem("page_marker", QString::fromUtf8(m_mentionIndexMarker));
+    request("GET", messenger + "/messages/", {}, query, [this](const ApiResult &result) {
+        if (!result.ok() || !result.data.isArray()) {
+            // Fallback rule (activity-page.ui.tsx:236-237, test 556): while the
+            // index is unavailable the row's own read flag decides the dot.
+            m_mentionIndexWalking = false;
+            m_mentionIndexMarker.clear();
+            emit stateChanged();
+            return;
+        }
+        for (const auto &value : result.data.toArray()) {
+            const auto parsed = parseMessage(value.toObject(), m_session->project());
+            if (parsed)
+                m_unreadMentions.insert(parsed->uuid,
+                    {parsed->stream, parsed->topic, parsed->createdMicros});
+        }
+        if (!result.nextMarker.isEmpty() && !m_mentionIndexMarkers.contains(result.nextMarker)) {
+            m_mentionIndexMarkers.insert(result.nextMarker);
+            m_mentionIndexMarker = result.nextMarker;
+            loadMentionIndex();
+            return;
+        }
+        m_mentionIndexMarker.clear();
+        m_mentionIndexWalking = false;
+        m_mentionIndexReady = true;
+        emit stateChanged();
+    });
+}
+
+bool NativeController::mentionUnread(const Message &message) const
+{
+    return m_mentionIndexReady ? m_unreadMentions.contains(message.uuid) : !message.read;
+}
+
+bool NativeController::mentionIndexRemove(const QString &uuid)
+{
+    return m_unreadMentions.remove(uuid) > 0;
+}
+
+bool NativeController::mentionIndexUpsert(const Message &message)
+{
+    const auto existing = m_unreadMentions.constFind(message.uuid);
+    if (existing != m_unreadMentions.cend() && existing->stream == message.stream
+        && existing->topic == message.topic && existing->createdMicros == message.createdMicros)
+        return false;
+    m_unreadMentions.insert(message.uuid, {message.stream, message.topic, message.createdMicros});
+    return true;
+}
+
+// A read marker consumes the boundary message plus every earlier index entry in
+// the same topic (read-boundary mutation, activity-realtime-applier.lib.ts:70-76
+// applied via activity.model.ts applyUnreadMentionMutation).
+bool NativeController::mentionIndexBoundary(const Message &message)
+{
+    bool changed = mentionIndexRemove(message.uuid);
+    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
+        if (it->stream == message.stream && it->topic == message.topic
+            && it->createdMicros <= message.createdMicros) {
+            it = m_unreadMentions.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    return changed;
+}
+
+bool NativeController::mentionIndexClearTopic(const QString &stream, const QString &topic)
+{
+    bool changed = false;
+    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
+        if (it->stream == stream && it->topic == topic) {
+            it = m_unreadMentions.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    return changed;
+}
+
+bool NativeController::mentionIndexClearStream(const QString &stream)
+{
+    bool changed = false;
+    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
+        if (it->stream == stream) {
+            it = m_unreadMentions.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    return changed;
+}
+
+void NativeController::mentionLiveUpsert(const Message &message)
+{
+    for (auto &live : m_liveMentions) {
+        if (live.uuid == message.uuid) {
+            live = message;
+            return;
+        }
+    }
+    m_liveMentions.prepend(message);
+    if (m_liveMentions.size() > 500)
+        m_liveMentions.removeLast();
+}
+
+void NativeController::mentionLiveRemove(const QString &uuid)
+{
+    m_liveMentions.erase(std::remove_if(m_liveMentions.begin(), m_liveMentions.end(),
+        [&](const Message &live) { return live.uuid == uuid; }), m_liveMentions.end());
+}
+
+QString NativeController::mentionPreview(const Message &message) const
+{
+    if (message.kind != QLatin1String("markdown"))
+        return tr("Encrypted message — key support is under development");
+    // Activity cards summarize the body on one flow: whitespace collapsed and
+    // clamped to 80 characters with a trailing ellipsis (activity-message-card
+    // .ui.tsx:13-17 ACTIVITY_MESSAGE_SUMMARY_OPTIONS maxLength 80; the full
+    // Markdown-AST summary is intentionally not duplicated here).
+    auto text = message.content;
+    text = text.simplified();
+    if (text.size() > 80)
+        text = text.left(77).trimmed() + QStringLiteral("...");
+    return text;
+}
+
+QString NativeController::mentionTime(const QDateTime &created) const
+{
+    const auto local = created.toLocalTime();
+    const auto today = QDate::currentDate();
+    if (local.date() == today)
+        return local.toString("HH:mm");
+    if (local.date() == today.addDays(-1))
+        return tr("Yesterday") + ' ' + local.toString("HH:mm");
+    return QLocale::system().toString(local.date(),
+        QLocale::system().language() == QLocale::Russian ? "d MMM" : "MMM d");
+}
+
+QVariantList NativeController::mentionRows(const QString &filter) const
+{
+    // Newest first with uuid descending tie break, deduped by uuid; a fetched
+    // row supersedes a live row of the same uuid (activity-page.ui.tsx:91-101,
+    // where the page list is inserted after live messages into the uuid map).
+    QMap<QString, Message> byUuid;
+    // Live mentions first: the uuid map is filled live-then-fetched so a
+    // fetched row supersedes a live row of the same uuid
+    // (activity-page.ui.tsx:232-247). In the Unread collection a live row is
+    // shown per the unread rule; fetched rows are already server-filtered.
+    const auto unreadFilter = filter == QLatin1String("unread");
+    for (const auto &live : m_liveMentions) {
+        if (unreadFilter && !mentionUnread(live))
+            continue;
+        byUuid.insert(live.uuid, live);
+    }
+    const auto found = m_mentionsCollections.constFind(filter);
+    if (found != m_mentionsCollections.cend())
+        for (const auto &message : found->rows)
+            byUuid.insert(message.uuid, message);
+    QVector<Message> merged;
+    merged.reserve(byUuid.size());
+    for (auto it = byUuid.cbegin(), end = byUuid.cend(); it != end; ++it)
+        merged.append(*it);
+    std::sort(merged.begin(), merged.end(), [](const Message &left, const Message &right) {
+        if (left.createdMicros != right.createdMicros)
+            return left.createdMicros > right.createdMicros;
+        return left.uuid > right.uuid;
+    });
+    QVariantList rows;
+    for (const auto &message : std::as_const(merged)) {
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &candidate) { return candidate.uuid == message.stream; });
+        QString topicName;
+        for (const auto &topic : m_topics)
+            if (topic.uuid == message.topic) topicName = topic.name;
+        const bool direct = stream != m_streams.cend() && stream->privateStream
+            && isUuid(stream->directUser);
+        const auto streamName = stream != m_streams.cend()
+            ? (sourceTrimmed(stream->name).isEmpty() ? stream->uuid : sourceTrimmed(stream->name))
+            : QString{};
+        rows.append(QVariantMap{
+            {"id", message.uuid}, {"stream", message.stream}, {"topic", message.topic},
+            {"streamName", streamName}, {"topicName", topicName}, {"direct", direct},
+            {"author", userDisplayName(message.author,
+                message.own ? tr("You") : QStringLiteral("#") + message.author.left(8))},
+            {"unread", mentionUnread(message)}, {"time", mentionTime(message.created)},
+            {"preview", mentionPreview(message)},
+        });
+    }
+    return rows;
+}
+
+QVariantMap NativeController::mentionsPage() const
+{
+    QVariantMap page{{"rows", QVariantList{}}, {"filter", m_mentionsFilter},
+        {"loading", false}, {"error", false}, {"paginationError", false},
+        {"canLoadMore", false}};
+    const auto found = m_mentionsCollections.constFind(m_mentionsFilter);
+    if (found == m_mentionsCollections.cend())
+        return page;
+    const auto &collection = *found;
+    page["rows"] = mentionRows(m_mentionsFilter);
+    page["loading"] = collection.loading;
+    page["error"] = collection.error;
+    page["paginationError"] = collection.paginationError;
+    page["canLoadMore"] = collection.hasMore && !collection.loading;
+    return page;
+}
+
+void NativeController::resetMentions()
+{
+    m_mentionsVisible = false;
+    m_mentionsFilter = QStringLiteral("all");
+    m_mentionsCollections.clear();
+    m_unreadMentions.clear();
+    m_liveMentions.clear();
+    m_mentionIndexReady = false;
+    m_mentionIndexWalking = false;
+    m_mentionIndexMarker.clear();
+    m_mentionIndexMarkers.clear();
+}
+
 void NativeController::showDrafts()
 {
     if (!authenticated() || !m_catalogVerified || !m_draftStore) return;
@@ -4932,6 +5293,7 @@ void NativeController::reset()
     clearAnchor();
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();
+    resetMentions();
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();
     if (!guard) return;
@@ -5031,6 +5393,24 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
     if (kind == "message.created" || kind == "message.updated" || kind == "message.read") {
         auto message = parseMessage(payload, m_session->project());
         if (!message) return false;
+        // Unread-mentions index maintenance (#42): classification is the
+        // server's `mentioned` tri-state on the DTO, per
+        // activity-realtime-applier.lib.ts:55-127. Epoch/owner guards were
+        // enforced by the envelope checks above.
+        bool mentionChanged = false;
+        if (kind == QLatin1String("message.read"))
+            mentionChanged = mentionIndexBoundary(*message);
+        else if (message->read)
+            mentionChanged = mentionIndexRemove(message->uuid);
+        else if (message->mentioned.value_or(false)) {
+            mentionChanged = mentionIndexUpsert(*message);
+            // Live merge feeds only created events (applier:113-124); updated
+            // events move the index but not the live card.
+            if (kind != QLatin1String("message.updated"))
+                mentionLiveUpsert(*message);
+        } else if (message->mentioned)
+            mentionChanged = mentionIndexRemove(message->uuid);
+        if (mentionChanged) emit stateChanged();
         const bool selected = inConversation(*message);
         if (kind == "message.read") {
             staleReadConversation(message->stream, message->topic);
@@ -5138,6 +5518,10 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (!isUuid(id) || !isUuid(payload.value("stream_uuid").toString())
             || !isUuid(payload.value("topic_uuid").toString()))
             return false;
+        // Deletion leaves the unread index and the live card immediately
+        // (activity-realtime-applier.lib.ts:66-71 and :118-124).
+        if (mentionIndexRemove(id)) emit stateChanged();
+        mentionLiveRemove(id);
         const auto outcome = std::find_if(m_chatOutcomeFacts.begin(), m_chatOutcomeFacts.end(),
             [&](const ChatOutcomeFact &fact) { return fact.id == id; });
         const bool knownOutcome = outcome != m_chatOutcomeFacts.end()
@@ -5190,6 +5574,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         staleCache(NativeCache::Kind::Topics);
         ++m_messageRevision;
         m_confirmedReadIds.unite(ids);
+        // Exact-uuid read events clear exactly the listed dots
+        // (activity-realtime-applier.lib.ts:60-66).
+        bool mentionsRead = false;
+        for (const auto &readId : ids)
+            mentionsRead = mentionIndexRemove(readId) || mentionsRead;
+        if (mentionsRead) emit stateChanged();
         for (auto &message : m_messages)
             if (ids.contains(message.uuid))
                 message.read = true;
@@ -5238,6 +5628,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 loseChannelCreationAccess(stream->uuid);
         }
         if (kind == "stream.read") {
+            // Reading a stream drops its mention index entries
+            // (activity-realtime-applier.lib.ts:97-103).
+            if (mentionIndexClearStream(stream->uuid)) emit stateChanged();
             staleCache(NativeCache::Kind::Streams);
             staleCache(NativeCache::Kind::Topics, stream->uuid);
             staleCache(NativeCache::Kind::History, stream->uuid);
@@ -5342,6 +5735,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             noteDirectChatEvent(streamId, id, false, matching);
         }
         if (kind == "topic.read") {
+            // Reading a topic drops its mention index entries
+            // (activity-realtime-applier.lib.ts:90-96).
+            if (mentionIndexClearTopic(streamId, topic->uuid)) emit stateChanged();
             staleCache(NativeCache::Kind::Topics, streamId);
             staleCache(NativeCache::Kind::History, streamId, topic->uuid);
         } else staleCache(NativeCache::Kind::Topics, streamId);
@@ -5398,6 +5794,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (!isUuid(id) || !isUuid(payload.value("stream_uuid").toString()))
             return false;
         const auto deletedStream = payload.value("stream_uuid").toString();
+        if (mentionIndexClearTopic(deletedStream, id)) emit stateChanged();
         if (deletedStream == m_stream && id == m_topic) {
             // Keep the explicit A/T intent, but revoke its authority and retire
             // old history/list callbacks before cancellation or any notification.
@@ -6651,6 +7048,7 @@ void NativeController::selectStream(const QString &id)
 {
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
+    closeMentions();
     activateStream(id);
 }
 
@@ -6953,6 +7351,7 @@ void NativeController::selectTopic(const QString &id)
 {
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
+    closeMentions();
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;

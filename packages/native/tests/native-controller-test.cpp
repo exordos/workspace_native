@@ -9448,6 +9448,307 @@ private slots:
         QTRY_VERIFY(fixture.controller.anchorMessageId() == target
             || fixture.controller.anchorMessageId().isEmpty()); // highlight may already have cleared
     }
+
+    // ---- Activity mentions page (issue #42, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md) ----
+
+    static QJsonObject mentionMessage(int number, bool read = false, bool own = false)
+    {
+        const auto id = QStringLiteral("77777777-7777-4777-8777-")
+            + QString("%1").arg(number, 12, 16, QLatin1Char('0'));
+        auto row = message(QStringLiteral("Mention %1").arg(number), id);
+        row.insert("read", read);
+        row.insert("is_own", own);
+        row.insert("mentioned", true);
+        row.insert("created_at", QDateTime::fromString("2026-01-02T10:00:00Z", Qt::ISODate)
+                         .addSecs(number).toString(Qt::ISODateWithMs));
+        return row;
+    }
+
+    // Serves the mentioned=true message page like the Workspace API:
+    // read=false narrows to unread rows, page_limit caps the page and the
+    // continuation cursor rides the X-Pagination-Marker header.
+    static Response mentionPageResponse(const QMap<int, QJsonObject> &rows, const Request &request)
+    {
+        const auto query = QUrlQuery(request.target);
+        const bool unreadOnly = query.queryItemValue("read") == "false";
+        const int limit = qMax(1, query.queryItemValue("page_limit").toInt());
+        const auto marker = query.queryItemValue("page_marker");
+        const int boundary = marker.isEmpty() ? std::numeric_limits<int>::max()
+                                             : marker.right(12).toInt(nullptr, 16);
+        QJsonArray items;
+        bool more = false;
+        for (auto it = rows.cend(); it != rows.cbegin();) {
+            --it;
+            if (it.key() >= boundary)
+                continue;
+            if (unreadOnly && it.value().value("read").toBool())
+                continue;
+            if (items.size() == limit) {
+                more = true;
+                break;
+            }
+            items.append(it.value());
+        }
+        Response response{items, 200, 0, {}};
+        if (more)
+            response.headers.insert("X-Pagination-Marker",
+                items.last().toObject().value("uuid").toString().toUtf8());
+        return response;
+    }
+
+    void activityMentionCollectionsIssueServerFilteredQueries()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(!fixture.controller.mentionsVisible());
+        QCOMPARE(fixture.controller.mentionsFilter(), QString("all"));
+        fixture.controller.showMentions();
+        QVERIFY(fixture.controller.mentionsVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.mentionsPage().value("loading").toBool(), 4000);
+
+        // The All collection query is mentioned-scoped without a read filter.
+        // Measured in workspace_ui activity-mentions.api.ts:70-77.
+        const auto mentionsAll = [&] {
+            for (const auto &query : *queries)
+                if (query.queryItemValue("page_limit") == "50"
+                    && query.queryItemValue("mentioned") == "true") return query;
+            return QUrlQuery{};
+        }();
+        QVERIFY(mentionsAll.hasQueryItem("page_limit"));
+        QCOMPARE(mentionsAll.queryItemValue("mentioned"), QStringLiteral("true"));
+        QVERIFY(!mentionsAll.hasQueryItem("read"));
+        QCOMPARE(mentionsAll.queryItemValue("sort_key"), QStringLiteral("created_at"));
+        QCOMPARE(mentionsAll.queryItemValue("sort_dir"), QStringLiteral("desc"));
+        // The unread-mentions index prefetch walks 100 per page (api.ts:21,110-121).
+        const bool hasIndexWalk = std::any_of(queries->cbegin(), queries->cend(),
+            [](const QUrlQuery &query) { return query.queryItemValue("page_limit") == "100"
+                && query.queryItemValue("read") == "false"; });
+        QVERIFY(hasIndexWalk);
+
+        auto page = fixture.controller.mentionsPage();
+        auto list = page.value("rows").toList();
+        QCOMPARE(list.size(), 3);
+        // Newest first (activity-page.ui.tsx:239 sortUniqueActivityMessages reverse).
+        QCOMPARE(list.first().toMap().value("id").toString(),
+            mentionMessage(3).value("uuid").toString());
+        // Index owns the dot: only the two unread rows light up (tests 590, 633).
+        QVERIFY(list.at(0).toMap().value("unread").toBool());
+        QVERIFY(list.at(1).toMap().value("unread").toBool());
+        QVERIFY(!list.at(2).toMap().value("unread").toBool());
+
+        // Unread is a separate server-filtered collection (activity-mentions.api.ts:73).
+        queries->clear();
+        fixture.controller.selectMentionsFilter("unread");
+        QCOMPARE(fixture.controller.mentionsFilter(), QString("unread"));
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.mentionsPage().value("loading").toBool(), 4000);
+        const auto mentionsUnread = [&] {
+            for (const auto &query : *queries)
+                if (query.queryItemValue("page_limit") == "50"
+                    && query.queryItemValue("mentioned") == "true") return query;
+            return QUrlQuery{};
+        }();
+        QVERIFY(mentionsUnread.hasQueryItem("page_limit"));
+        QCOMPARE(mentionsUnread.queryItemValue("mentioned"), QStringLiteral("true"));
+        QCOMPARE(mentionsUnread.queryItemValue("read"), QStringLiteral("false"));
+        list = fixture.controller.mentionsPage().value("rows").toList();
+        QCOMPARE(list.size(), 2);
+        QVERIFY(list.at(0).toMap().value("unread").toBool());
+        QVERIFY(list.at(1).toMap().value("unread").toBool());
+
+        // Every filter entry is a fresh first page: no page_marker leaks across
+        // collections (activity-page.ui.tsx:283-297 collectionKey reset).
+        fixture.controller.selectMentionsFilter("all");
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.mentionsPage().value("loading").toBool(), 4000);
+        for (const auto &query : *queries)
+            if (query.queryItemValue("page_limit") == "50" && query.queryItemValue("mentioned") == "true")
+                QVERIFY(!query.hasQueryItem("page_marker"));
+        QCOMPARE(fixture.controller.mentionsPage().value("rows").toList().size(), 3);
+    }
+
+    void activityMentionPaginationFollowsMarkerNewestFirst()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, mentionMessage(n, true)); // read=true keeps the index walk empty
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 50, 4000);
+        auto page = fixture.controller.mentionsPage();
+        QVERIFY(page.value("canLoadMore").toBool());
+
+        fixture.controller.loadMoreMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 60, 4000);
+        // The continuation rode X-Pagination-Marker into page_marker (api-client.cpp:450).
+        const bool markedRequest = std::any_of(queries->cbegin(), queries->cend(),
+            [](const QUrlQuery &query) { return query.queryItemValue("page_limit") == "50"
+                && query.hasQueryItem("page_marker"); });
+        QVERIFY(markedRequest);
+        const auto list = fixture.controller.mentionsPage().value("rows").toList();
+        QCOMPARE(list.size(), 60);
+        QSet<QString> ids;
+        for (const auto &value : list) ids.insert(value.toMap().value("id").toString());
+        QCOMPARE(ids.size(), 60); // dedupe by uuid (activity-page.ui.tsx:95-98)
+        QCOMPARE(list.first().toMap().value("id").toString(), mentionMessage(60).value("uuid").toString());
+        QCOMPARE(list.last().toMap().value("id").toString(), mentionMessage(1).value("uuid").toString());
+        QVERIFY(!fixture.controller.mentionsPage().value("canLoadMore").toBool());
+    }
+
+    void activityMentionRealtimeMergesWithoutRefetch()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1)}, {2, mentionMessage(2, false, true)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 2, 4000);
+        const auto rowWith = [&](const QString &id) {
+            for (const auto &value : fixture.controller.mentionsPage().value("rows").toList())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+        // Own messages that mention the user are listed (activity-page.test.tsx:370).
+        QVERIFY(rowWith(mentionMessage(2).value("uuid").toString()).contains("id"));
+        const int fetchCount = queries->size();
+        QVERIFY(fetchCount >= 1);
+
+        // A live mention merges into the open page without refetching the page
+        // (activity-page.test.tsx:489; classification via message.mentioned per
+        // activity-realtime-applier.lib.ts:65-75 and :113-127).
+        auto live = mentionMessage(90);
+        live["author_uuid"] = QStringLiteral("66666666-6666-4666-8666-666666666666");
+        const auto liveId = live.value("uuid").toString();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", live, 13)));
+        QTRY_VERIFY_WITH_TIMEOUT(rowWith(liveId).contains("id"), 2000);
+        QCOMPARE(queries->size(), fetchCount); // no page request was issued
+        auto list = fixture.controller.mentionsPage().value("rows").toList();
+        QCOMPARE(list.first().toMap().value("id").toString(), liveId); // newest first
+        QVERIFY(rowWith(liveId).value("unread").toBool()); // upserted into the unread index
+
+        // A read event owns only the dot; the row stays in the All collection
+        // (activity-realtime-applier.lib.ts:70-76).
+        auto readEvent = mentionMessage(90);
+        readEvent["read"] = true;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.read", readEvent, 14)));
+        QTRY_VERIFY(!rowWith(liveId).value("unread").toBool());
+        QVERIFY(rowWith(liveId).contains("id"));
+
+        // mentioned === false removes the uuid from the unread index
+        // (activity-realtime-applier.lib.ts:77-79).
+        auto notMention = mentionMessage(1);
+        notMention["mentioned"] = false;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", notMention, 15)));
+        QTRY_VERIFY(!rowWith(mentionMessage(1).value("uuid").toString()).value("unread").toBool());
+
+        // A batch read event clears exactly the listed dots
+        // (activity-realtime-applier.lib.ts:60-66).
+        const QJsonObject batch{{"kind", "messages.read"}, {"project_id", projectId},
+            {"message_uuids", QJsonArray{mentionMessage(2).value("uuid").toString()}}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("messages.read", batch, 16)));
+        QTRY_VERIFY(!rowWith(mentionMessage(2).value("uuid").toString()).value("unread").toBool());
+
+        // Deleting the message drops the live row (activity-realtime-applier.lib.ts:118-124).
+        const QJsonObject deleted{{"kind", "message.deleted"}, {"uuid", liveId},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", deleted, 17)));
+        QTRY_VERIFY(!rowWith(liveId).contains("id"));
+        QCOMPARE(fixture.controller.mentionsPage().value("rows").toList().size(), 2);
+
+        // topic.read clears the topic's mention dots (activity-realtime-applier.lib.ts:90-96).
+        const QJsonObject topicRead{{"kind", "topic.read"},
+            {"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Native topic"}, {"is_done", false}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.read", topicRead, 18)));
+        QTRY_VERIFY(!rowWith(mentionMessage(1).value("uuid").toString()).value("unread").toBool());
+        QVERIFY(!rowWith(mentionMessage(2).value("uuid").toString()).value("unread").toBool());
+    }
+
+    void activityMentionIndexFallbackUntilWalkCompletes()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto released = std::make_shared<bool>(false);
+        fixture.messages = [rows, gates, released](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (!*released && query.queryItemValue("page_limit") == "100") {
+                Response response{QJsonArray{}, 200, 0, {}}; // authoritative index: nobody is unread
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 3, 4000);
+        // Fallback rule: without the index the row's own read flag decides
+        // (activity-page.test.tsx:556) - rows 2 and 3 look unread, row 1 does not.
+        const auto rowWith = [&](const QString &id) {
+            for (const auto &value : fixture.controller.mentionsPage().value("rows").toList())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+        QVERIFY(rowWith(mentionMessage(2).value("uuid").toString()).value("unread").toBool());
+        QVERIFY(!rowWith(mentionMessage(1).value("uuid").toString()).value("unread").toBool());
+        // Once the (empty) index walk completes the index is authoritative and
+        // the fallback dot flips off (activity-page.test.tsx:590, 633).
+        for (auto &release : *gates) release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !rowWith(mentionMessage(2).value("uuid").toString()).value("unread").toBool(), 4000);
+    }
+
+    void activityMentionStaleOwnerSwitchDiscardsPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto released = std::make_shared<bool>(false);
+        fixture.messages = [rows, gates, released](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (!*released && query.hasQueryItem("mentioned")) {
+                Response response{QJsonArray{}, 200, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        fixture.controller.logout();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.authenticated(), 4000);
+        for (auto &release : *gates) release();
+        gates->clear();
+        *released = true;
+        QTest::qWait(250); // give the late responses a chance to misfire
+        QVERIFY(!fixture.controller.mentionsVisible());
+        QVERIFY(fixture.controller.mentionsPage().value("rows").toList().isEmpty());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

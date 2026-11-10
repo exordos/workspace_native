@@ -3306,9 +3306,10 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         auto *activity = view("activity-drafts"); QVERIFY(activity && activity->isEnabled());
-        for (const auto *name : {"activity-inbox", "activity-favorites", "activity-starred", "activity-mentions"}) {
+        for (const auto *name : {"activity-inbox", "activity-favorites", "activity-starred"}) {
             auto *unsupported = view(QLatin1String(name)); QVERIFY(unsupported); QVERIFY(!unsupported->isEnabled());
         }
+        QVERIFY(view("activity-mentions")->isEnabled()); // enabled by issue #42
         click(window, activity);
         QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
         QTRY_VERIFY(view("draft-card-" + returnedId) && view("draft-card-" + newerId));
@@ -3366,6 +3367,89 @@ mv -Tf "$root/.current-new" "$root/current"
         shutdownNativeStorage(drafts, storage, cache, this, [&](bool success) { okay = success; stopped = true; });
         QTRY_VERIFY_WITH_TIMEOUT(stopped, 5000); QVERIFY(okay);
         QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+    }
+
+    // Issue #42: the sidebar Mentions chip opens the page, both collections
+    // render, and card/close control the conversation view. Geometry contract:
+    // workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af activity-page.ui.tsx.
+    void mentionsPageChipFilterAndCloseFlow()
+    {
+        class WindowMentionsFixture final : public WindowChannelFixture {
+        public:
+            int mentionLists = 0;
+            QJsonArray all;
+            QJsonObject one(const QString &id, const QString &text, bool unread, int minute)
+            {
+                auto row = message(text, id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = !unread;
+                row["mentioned"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowMentionsFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("mentioned")) {
+                        ++mentionLists;
+                        if (query.queryItemValue("read") == "false") {
+                            QJsonArray unread;
+                            for (const auto &value : all)
+                                if (!value.toObject().value("read").toBool()) unread.append(value);
+                            return {unread};
+                        }
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowMentionsFixture fixture;
+        const QString readId = "77777777-7777-4777-8777-000000000001";
+        const QString unreadId = "77777777-7777-4777-8777-000000000002";
+        fixture.all = {fixture.one(readId, "Deploy finished", false, 30),
+                       fixture.one(unreadId, "Review needed", true, 40)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-mentions"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.mentionsVisible() && view("nativeMentionsPage"));
+        QTRY_VERIFY(view("mention-card-" + unreadId) && view("mention-card-" + readId));
+        auto *metaProbe = visibleItem(window->contentItem(), "mention-meta-" + unreadId);
+        QVERIFY(metaProbe);
+        QCOMPARE(metaProbe->property("text").toString(), QString("Product team · General Topic"));
+        QVERIFY(view("mention-unread-dot-" + unreadId));
+        QVERIFY(!view("mention-unread-dot-" + readId));
+        QVERIFY(hasVisibleText(window->contentItem(), "Review needed"));
+        click(window, view("mentionsFilterUnreadButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.mentionsFilter() == "unread"
+            && view("mention-card-" + unreadId) && !view("mention-card-" + readId), 5000);
+        click(window, view("mentionsCloseButton"));
+        QTRY_VERIFY(!controller.mentionsVisible());
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isVisible() && composer->isEnabled());
+        // Reopening keeps the chosen filter (page remount refetch in the reference).
+        click(window, view("activity-mentions"));
+        QTRY_VERIFY(controller.mentionsVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(view("mention-card-" + unreadId) && !view("mention-card-" + readId), 5000);
+        click(window, view("mention-card-" + unreadId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.mentionsVisible(), 5000);
+        QVERIFY(composer->isVisible() && composer->isEnabled());
+        QVERIFY(fixture.mentionLists >= 2);
     }
 
     void draftsActualMainConflictButtonsUseConditionalOwnedActions_data()

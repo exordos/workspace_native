@@ -363,6 +363,8 @@ std::optional<Message> parseMessage(const QJsonObject &json, const QString &proj
     message.own = json.value("is_own").toBool();
     message.read = json.value("read").toBool();
     message.starred = json.value("starred").toBool();
+    if (json.value("mentioned").isBool())
+        message.mentioned = json.value("mentioned").toBool();
     const auto counts = json.value("reactions"), users = json.value("reaction_users");
     if ((!counts.isUndefined() && !counts.isObject()) || (!users.isUndefined() && !users.isObject())) return {};
     message.reactionsKnown = counts.isObject() && users.isObject();

@@ -99,6 +99,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString notice READ notice NOTIFY stateChanged)
     Q_PROPERTY(bool draftsVisible READ draftsVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap draftPage READ draftPage NOTIFY stateChanged)
+    Q_PROPERTY(bool mentionsVisible READ mentionsVisible NOTIFY stateChanged)
+    Q_PROPERTY(QString mentionsFilter READ mentionsFilter NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap mentionsPage READ mentionsPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
 public:
@@ -208,6 +211,9 @@ public:
     QString notice() const;
     bool draftsVisible() const { return m_draftsVisible; }
     QVariantMap draftPage() const;
+    bool mentionsVisible() const { return m_mentionsVisible; }
+    QString mentionsFilter() const { return m_mentionsFilter; }
+    QVariantMap mentionsPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -222,6 +228,11 @@ public:
     Q_INVOKABLE void showDrafts();
     Q_INVOKABLE void closeDrafts();
     Q_INVOKABLE void refreshDrafts();
+    Q_INVOKABLE void showMentions();
+    Q_INVOKABLE void closeMentions();
+    Q_INVOKABLE void selectMentionsFilter(const QString &filter);
+    Q_INVOKABLE void loadMoreMentions();
+    Q_INVOKABLE void retryMentions();
     Q_INVOKABLE void nextDraftPage();
     Q_INVOKABLE void previousDraftPage();
     Q_INVOKABLE void openDraft(const QString &id);
@@ -783,6 +794,45 @@ private:
     QString m_draftOpenId, m_draftOpenStream, m_draftOpenTopic, m_draftOpenOwner;
     quint64 m_draftOpenGeneration = 0;
     QMetaObject::Connection m_draftChanges, m_draftStates, m_draftDestroyed, m_draftSelection;
+    // Activity mentions page (#42, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md).
+    struct MentionCollection {
+        QVector<Message> rows;
+        QByteArray marker;
+        quint64 version = 0;
+        bool inflight = false;
+        bool loading = false;
+        bool error = false;
+        bool paginationError = false;
+        bool hasMore = false;
+    };
+    MentionCollection &mentionCollection(const QString &filter);
+    void loadMentionCollection(const QString &filter, bool append);
+    void loadMentionIndex();
+    QVariantList mentionRows(const QString &filter) const;
+    bool mentionUnread(const Message &message) const;
+    QString mentionPreview(const Message &message) const;
+    QString mentionTime(const QDateTime &created) const;
+    void resetMentions();
+    // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
+    // stream/topic/created_at are needed for the read-boundary and scope clears
+    // of activity-realtime-applier.lib.ts:55-105.
+    struct MentionIndexEntry { QString stream, topic; qint64 createdMicros = 0; };
+    bool mentionIndexRemove(const QString &uuid);
+    bool mentionIndexUpsert(const Message &message);
+    bool mentionIndexBoundary(const Message &message);
+    bool mentionIndexClearTopic(const QString &stream, const QString &topic);
+    bool mentionIndexClearStream(const QString &stream);
+    void mentionLiveUpsert(const Message &message);
+    void mentionLiveRemove(const QString &uuid);
+    bool m_mentionsVisible = false;
+    QString m_mentionsFilter = QStringLiteral("all");
+    QHash<QString, MentionCollection> m_mentionsCollections;
+    QHash<QString, MentionIndexEntry> m_unreadMentions;
+    QVector<Message> m_liveMentions;
+    bool m_mentionIndexReady = false;
+    bool m_mentionIndexWalking = false;
+    QByteArray m_mentionIndexMarker;
+    QSet<QByteArray> m_mentionIndexMarkers;
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
