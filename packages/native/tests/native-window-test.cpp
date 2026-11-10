@@ -10607,6 +10607,39 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void loginCardRealmBlurStartsDiscovery()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        // Reference handleRealmBlur: leaving a valid address starts discovery
+        // without advancing the wizard.
+        click(window, item(content, "serverInput"));
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
+        QTest::keyClick(window, Qt::Key_Tab); // focus moves off the field
+        QTRY_VERIFY(item(content, "realmPreviewCard"));
+        QVERIFY(!item(content, "userInput"));
+        window->close();
+    }
+
     void loginCardDiscoveryFailureKeepsCredentialsHidden()
     {
         QTemporaryDir preferencesDirectory;

@@ -5622,9 +5622,12 @@ static QUrl organizationOriginFor(const QString &text)
     return origin;
 }
 
-// Mirrors resolveLoginIconUrl (workspace_ui login-page-icon-url.lib.ts): the
-// desktop build resolves realm-relative icons against the organization origin
-// and loads same-origin icons. Only http(s) results survive.
+// Mirrors resolveLoginIconUrl (workspace_ui login-page-icon-url.lib.ts):
+// realm-relative icons resolve against the organization origin and absolute
+// http(s) icons pass through unchanged. Cross-origin icons are accepted by the
+// reference on purpose (CDN-hosted realm icons); the desktop (Electron) build
+// never had the browser same-origin block, and the native client follows the
+// same contract (see review thread on PR #80).
 static QString resolveRealmIconUrl(const QString &origin, const QString &icon)
 {
     const auto trimmed = icon.trimmed();
@@ -5717,6 +5720,9 @@ void NativeController::discoverOrganization(const QString &text)
             settings.insert(QStringLiteral("registrationUrl"),
                 registration.startsWith(QLatin1String("https://")) ? registration : QString{});
             m_organizationSettings = settings;
+            // The reference submits `new URL(realm).origin` after a check, so
+            // downstream login sees exactly what was checked.
+            m_organizationRealm = originKey;
         } else {
             m_organizationSettings.clear();
         }

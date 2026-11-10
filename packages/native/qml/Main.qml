@@ -1111,6 +1111,13 @@ ApplicationWindow {
                             inputMethodHints: Qt.ImhUrlCharactersOnly
                             Accessible.name: qsTr("Server address")
                             onAccepted: root.controller.discoverOrganization(text.trim())
+                            onActiveFocusChanged: {
+                                // Reference handleRealmBlur: leaving a valid
+                                // address starts discovery without advancing.
+                                if (!activeFocus && text.trim().length > 0
+                                    && root.controller.isOrganizationUrlValid(text.trim()))
+                                    root.controller.discoverOrganization(text.trim())
+                            }
                         }
                         Popup {
                             id: organizationHistoryPopup
@@ -1120,7 +1127,7 @@ ApplicationWindow {
                             width: serverInput.width
                             x: 0
                             y: serverInput.height + 4
-                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                            closePolicy: Popup.CloseOnEscape
                             visible: serverInput.activeFocus && serverInput.text.length === 0
                                 && organizationForm.suggestionEntries.length > 0
                             contentItem: ColumnLayout {
@@ -1163,7 +1170,9 @@ ApplicationWindow {
                             primary: true
                             Layout.fillWidth: true
                             text: qsTr("Continue")
-                            enabled: !root.controller.busy && !root.controller.organizationLoading
+                            // Pressing Continue while a blur-triggered check is
+                            // in flight merges with it instead of waiting.
+                            enabled: !root.controller.busy
                                 && root.controller.isOrganizationUrlValid(serverInput.text.trim())
                             onClicked: root.controller.continueFromOrganization(serverInput.text.trim())
                         }
