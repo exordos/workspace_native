@@ -11473,8 +11473,11 @@ private slots:
         // visible through the detail endpoint, which the resolver must consult.
         arrival["topic_uuid"] = secondTopicId;
         QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 13)));
+        const auto catalogSize = fixture.controller.topics().size();
         QTest::qWait(2600); // beyond the grace window a misjudged candidate would have shown
         QVERIFY(sent.shows.isEmpty());
+        // The backfilled topic must never reshape the active catalog.
+        QCOMPARE(fixture.controller.topics().size(), catalogSize);
         service->setTransport(nullptr);
     }
 
@@ -11525,6 +11528,36 @@ private slots:
         }
         QVERIFY(service->pendingCount() <= 64);
         service->setTransport(nullptr);
+    }
+
+    void aggregateEvictionClosesTheEvictedBanner()
+    {
+        // The aggregate store is bounded; an evicted bucket must not leave its
+        // already-shown desktop banner open untracked forever.
+        RecordingNotifications sent;
+        NotificationService service;
+        service.setTransport(&sent);
+        for (int i = 0; i < 132; ++i) {
+            NotificationCandidate candidate;
+            candidate.owner = QStringLiteral("owner-eviction");
+            candidate.messageUuid =
+                QStringLiteral("aaaa0000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0'));
+            candidate.streamUuid = QStringLiteral("stream-evict");
+            candidate.topicUuid = QStringLiteral("topic-evict");
+            candidate.authorUuid = candidate.messageUuid;
+            candidate.content = QStringLiteral("Eviction probe %1").arg(i);
+            candidate.senderName = QStringLiteral("Author %1").arg(i);
+            candidate.topicName = QStringLiteral("Evicting");
+            candidate.streamMode = QStringLiteral("all_messages");
+            candidate.topicMode = QStringLiteral("default");
+            candidate.streamKnown = true;
+            candidate.topicKnown = true;
+            candidate.createdMicros = 480LL * 1000000 + i;
+            service.ingest(candidate);
+        }
+        QVERIFY(sent.shows.size() >= 129);
+        QVERIFY2(!sent.closed.isEmpty(),
+                 "eviction must tag-close the evicted desktop banner");
     }
 };
 

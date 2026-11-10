@@ -5262,12 +5262,17 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
             candidate.streamName = stream->name;
             candidate.streamMode = stream->notificationMode;
         }
-        const auto topic = std::find_if(m_topics.cbegin(), m_topics.cend(),
-            [&](const Topic &row) { return row.uuid == candidate.topicUuid; });
-        if (topic != m_topics.cend()) {
+        if (const auto topic = std::find_if(m_topics.cbegin(), m_topics.cend(),
+                [&](const Topic &row) { return row.uuid == candidate.topicUuid; });
+            topic != m_topics.cend()) {
             candidate.topicKnown = true;
             candidate.topicName = topic->isDefault ? QString{} : topic->name;
             candidate.topicMode = topic->notificationMode;
+        } else if (const auto backfill = m_topicNotificationBackfill.constFind(candidate.topicUuid);
+            backfill != m_topicNotificationBackfill.cend()) {
+            candidate.topicKnown = true;
+            candidate.topicName = backfill->isDefault ? QString{} : backfill->name;
+            candidate.topicMode = backfill->notificationMode;
         }
         const auto author = m_names.constFind(candidate.authorUuid);
         if (author != m_names.cend())
@@ -5931,6 +5936,8 @@ void NativeController::logout()
     // Banners must not outlive the account that produced them (the reference
     // closes every active owner notification on sign-out).
     m_notifications.onOwnerRetired(creationOwnerKey());
+    m_topicNotificationBackfill.clear();
+    m_topicMetadataInFlight.clear();
     const QPointer<NativeController> self(this);
     const QPointer<Session> session(m_session);
     bool accepted = true;
@@ -8092,6 +8099,10 @@ void NativeController::requestTopicMetadata(const QString &topicUuid)
     if (topicUuid.isEmpty() || m_topicMetadataInFlight.contains(topicUuid)
         || m_topicMetadataFailed.contains(topicUuid))
         return;
+    // Bound the backfill burst a topic flood can produce; the next grace tick
+    // retries anything that did not get a slot.
+    if (m_topicMetadataInFlight.size() >= 8)
+        return;
     m_topicMetadataInFlight.insert(topicUuid);
     const auto owner = creationOwnerKey();
     request("GET", messenger + "/stream_topics/" + topicUuid, QJsonValue{}, QUrlQuery{},
@@ -8108,11 +8119,11 @@ void NativeController::requestTopicMetadata(const QString &topicUuid)
                     m_topicMetadataFailed.insert(topicUuid);
                 return;
             }
-            for (const auto &row : m_topics)
-                if (row.uuid == topic->uuid)
-                    return;
-            m_topics.append(*topic);
-            emit stateChanged();
+            // Stored in the notification backfill, never in m_topics: a
+            // background topic must not reshape the active UI catalog.
+            if (std::none_of(m_topics.cbegin(), m_topics.cend(),
+                    [&](const Topic &row) { return row.uuid == topic->uuid; }))
+                m_topicNotificationBackfill.insert(topic->uuid, *topic);
         });
 }
 

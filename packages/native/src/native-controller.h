@@ -802,6 +802,10 @@ private:
     QHash<QString, UserPresentation> m_names;
     QSet<QString> m_topicMetadataInFlight;
     QSet<QString> m_topicMetadataFailed;
+    // Notification metadata for topics outside the active stream's catalog.
+    // Kept separate from m_topics so background backfills never reshape the
+    // conversation UI's topic list.
+    QHash<QString, Topic> m_topicNotificationBackfill;
     QString m_viewerDirectoryName, m_viewerDirectoryOwner;
     QPointer<NativePreferences> m_statusPreferences;
     QString m_conversationPreferenceOwner;
