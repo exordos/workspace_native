@@ -11559,6 +11559,67 @@ private slots:
         QVERIFY2(!sent.closed.isEmpty(),
                  "eviction must tag-close the evicted desktop banner");
     }
+
+    void signOutClosesGenericFallbackBanners()
+    {
+        // Generic fallback banners (metadata unresolved past the grace window)
+        // carry the msg: tag scheme; sign-out must close them too.
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        service->setMetadataGrace(150, 30);
+        openBackgroundConversation(fixture);
+        auto arrival = incomingDto(historyMessage(520), notificationAuthor);
+        arrival["stream_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999998");
+        arrival["topic_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999998");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 21)));
+        QTest::qWait(600); // grace (150 ms) + retry tick elapse, generic banner shows
+        QVERIFY(!sent.shows.isEmpty());
+        const auto tag = sent.lastTag();
+        fixture.controller.logout();
+        QVERIFY2(sent.closed.contains(tag),
+                 "sign-out must tag-close generic fallback banners");
+        service->setTransport(nullptr);
+    }
+
+    void aggregateRowsPerTagAreBounded()
+    {
+        // The aggregate count may grow freely, but one bucket must not retain
+        // an unbounded number of message bodies on the client.
+        RecordingNotifications sent;
+        NotificationService service;
+        service.setTransport(&sent);
+        for (int i = 0; i < 70; ++i) {
+            NotificationCandidate candidate;
+            candidate.owner = QStringLiteral("owner-rows");
+            candidate.messageUuid =
+                QStringLiteral("bbbb0000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0'));
+            candidate.streamUuid = QStringLiteral("stream-rows");
+            candidate.topicUuid = QStringLiteral("topic-rows");
+            candidate.authorUuid = QStringLiteral("cccc0000-0000-4000-8000-cccccccccccc");
+            candidate.content = QStringLiteral("Body %1").arg(i);
+            candidate.senderName = QStringLiteral("Rower");
+            candidate.topicName = QStringLiteral("Rows");
+            candidate.streamMode = QStringLiteral("all_messages");
+            candidate.topicMode = QStringLiteral("default");
+            candidate.streamKnown = true;
+            candidate.topicKnown = true;
+            candidate.createdMicros = 480LL * 1000000 + i;
+            service.ingest(candidate);
+        }
+        const auto tag = sent.lastTag();
+        QVERIFY(!tag.isEmpty());
+        QCOMPARE(service.aggregateCount(tag), 70);
+        QCOMPARE(service.aggregateRowCount(tag), 64);
+        service.setTransport(nullptr);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
