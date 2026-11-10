@@ -121,6 +121,11 @@ public:
     NotificationReadOutcome consumeRead(const QList<QString> &messageUuids, const QString &owner);
     QStringList dropOwner(const QString &owner);
     int tagCount() const { return int(m_byTag.size()); }
+    int rowCount(const QString &tag) const
+    {
+        const auto it = m_byTag.constFind(tag);
+        return it == m_byTag.cend() ? -1 : int(it->messages.size());
+    }
     // Tags dropped by the aggregate bound; the service closes their banners.
     QStringList takeEvicted()
     {
@@ -142,6 +147,7 @@ private:
             qint64 createdMicros = 0;
         };
         QHash<QString, Row> messages;
+        qint64 total = 0;
     };
     std::optional<NotificationSnapshot> snapshot(const QString &tag, const Entry &entry) const;
 
@@ -191,6 +197,7 @@ public:
 
     // Observability for tests and future diagnostics.
     int aggregateCount(const QString &tag) const { return m_registry.count(tag); }
+    int aggregateRowCount(const QString &tag) const { return m_registry.rowCount(tag); }
     int processedCount() const { return int(m_processed.size()); }
     int pendingCount() const { return int(m_pending.size()); }
     int trackedTagCount() const { return m_registry.tagCount(); }
@@ -225,6 +232,9 @@ private:
     QSet<QString> m_processed;         // owner::messageUuid decisions
     QStringList m_processedOrder;      // insertion order for eviction
     QHash<QString, QPair<QString, QString>> m_fallbackRoutes; // tag -> (stream, topic)
+    // Generic (msg: scheme) banners are outside the aggregate registry; the
+    // service tracks them per owner so retirement can close them too.
+    QHash<QString, QSet<QString>> m_liveFallbackTags;
     QHash<QString, Pending> m_pending;
     QTimer m_graceTimer;
     int m_graceMs = 30000;   // NOTIFICATION_METADATA_GRACE_MS

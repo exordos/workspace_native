@@ -28,6 +28,7 @@ constexpr qsizetype kMaxNotificationLength = 200;
 constexpr int kProcessedCap = 2048;      // owner::message decisions remembered
 constexpr int kPendingCap = 64;          // candidates waiting on metadata
 constexpr int kAggregateTagsCap = 128;   // live aggregate tags
+constexpr int kAggregateRowsPerTag = 64; // retained rows per aggregate bucket
 
 QString clip200(const QString &text)
 {
@@ -153,7 +154,19 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
     entry.messages.insert(candidate.messageUuid, Entry::Row{
         candidate.content.trimmed(), candidate.streamUuid, candidate.topicUuid, title,
         candidate.createdMicros});
+    ++entry.total;
     m_messageToTag.insert(scope, tag);
+    // A long-running aggregate must not retain every body it ever saw: keep
+    // the newest rows, drop the coldest ones along with their index entries.
+    while (entry.messages.size() > kAggregateRowsPerTag) {
+        auto oldest = entry.messages.begin();
+        for (auto it = entry.messages.begin(); it != entry.messages.end(); ++it)
+            if (it.value().createdMicros < oldest.value().createdMicros)
+                oldest = it;
+        m_messageToTag.remove(
+            candidate.owner + QStringLiteral("::message:") + oldest.key());
+        entry.messages.erase(oldest);
+    }
     if (m_byTag.size() > kAggregateTagsCap) {
         // Evict the entry whose newest row is coldest: aggregate banners are a
         // rolling window, not an archive (bounds tenant-driven client memory).
@@ -197,7 +210,7 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::snapshot(
         return {};
     NotificationSnapshot snap;
     snap.tag = tag;
-    snap.count = entry.messages.size();
+    snap.count = int(entry.total);
     snap.lastMessageUuid = latestUuid;
     snap.body = latest->body;
     snap.routeStream = latest->routeStream;
@@ -248,8 +261,8 @@ NotificationReadOutcome NotificationAggregateRegistry::consumeRead(
         }
         auto entry = m_byTag.find(it.key());
         for (const auto &messageUuid : it.value()) {
-            if (entry != m_byTag.end())
-                entry->messages.remove(messageUuid);
+            if (entry != m_byTag.end() && entry->messages.remove(messageUuid))
+                entry->total = qMax<qint64>(0, entry->total - 1);
             m_messageToTag.remove(owner + QStringLiteral("::message:") + messageUuid);
         }
         if (entry != m_byTag.end() && entry->messages.isEmpty())
@@ -276,7 +289,7 @@ QStringList NotificationAggregateRegistry::dropOwner(const QString &owner)
 int NotificationAggregateRegistry::count(const QString &tag) const
 {
     const auto entry = m_byTag.constFind(tag);
-    return entry == m_byTag.cend() ? 0 : entry->messages.size();
+    return entry == m_byTag.cend() ? 0 : int(entry->total);
 }
 
 QStringList NotificationAggregateRegistry::tags() const
@@ -424,6 +437,8 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     const auto body = m_genericBody ? m_genericBody() : QString();
     m_transport->show(tag, tr("You have a new message"), body);
     m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
+    if (m_liveFallbackTags[candidate.owner].size() < 256)
+        m_liveFallbackTags[candidate.owner].insert(tag);
     if (!m_windowFocused)
         m_transport->requestAttention();
     markProcessed(candidate.owner + QStringLiteral("::") + candidate.messageUuid);
@@ -494,6 +509,13 @@ void NotificationService::onOwnerRetired(const QString &owner)
     } else {
         m_registry.dropOwner(owner);
     }
+    // Generic fallback banners live outside the registry; close them too so
+    // no owner's content outlives the account on the desktop.
+    for (const auto &tag : m_liveFallbackTags.take(owner)) {
+        m_fallbackRoutes.remove(tag);
+        if (m_transport)
+            m_transport->closeByTag(tag);
+    }
     const auto scope = owner + QStringLiteral("::");
     for (auto it = m_pending.begin(); it != m_pending.end();) {
         if (it.key().startsWith(scope)) it = m_pending.erase(it);
@@ -522,8 +544,11 @@ void NotificationService::onMessagesClosed(const QString &owner, const QList<QSt
     const auto outcome = m_registry.consumeRead(messageUuids, owner);
     for (const auto &tag : outcome.closedTags)
         m_transport->closeByTag(tag);
-    for (const auto &messageUuid : outcome.untrackedMessageUuids)
-        m_transport->closeByTag(NotificationAggregateRegistry::fallbackTag(owner, messageUuid));
+    for (const auto &messageUuid : outcome.untrackedMessageUuids) {
+        const auto fallback = NotificationAggregateRegistry::fallbackTag(owner, messageUuid);
+        m_liveFallbackTags[owner].remove(fallback);
+        m_transport->closeByTag(fallback);
+    }
 }
 
 void NotificationService::click(const QString &tag)
