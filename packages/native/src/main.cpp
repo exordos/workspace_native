@@ -16,6 +16,7 @@
 #include "session-vault.h"
 
 #include <QApplication>
+#include <QEvent>
 #include <QIcon>
 #include <QResource>
 #include <QQmlApplicationEngine>
@@ -25,6 +26,30 @@
 #include <QWindow>
 #include <openssl/ssl.h>
 #include <limits>
+
+namespace {
+
+// Electron forwards focus/blur to the renderer as window:activity and stops
+// the taskbar flash on focus (main.ts:435-437); the native client mirrors the
+// same activation changes onto the controller for notification gating.
+class WindowFocusWatcher final : public QObject {
+public:
+    explicit WindowFocusWatcher(workspace::NativeController *target) : QObject(target), m_target(target) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        auto *window = qobject_cast<QWindow *>(watched);
+        if (window && event->type() == QEvent::ActivationChange)
+            m_target->setWindowFocused(window->isActive());
+        return false;
+    }
+
+private:
+    workspace::NativeController *m_target;
+};
+
+} // namespace
 
 int main(int argc, char **argv)
 {
@@ -94,6 +119,18 @@ int main(int argc, char **argv)
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
     workspace::NativeDesktop desktop(window);
+    // Desktop notifications over the session bus with X11 attention support.
+    auto *notifications = controller.notifications();
+    auto *desktopNotifications = new workspace::DBusNotificationTransport(
+        [window] { return window ? window->winId() : quintptr{}; }, &controller);
+    desktopNotifications->setClickCallback(
+        [notifications](const QString &tag) { notifications->click(tag); });
+    notifications->setTransport(desktopNotifications);
+    if (window) {
+        auto *focusWatcher = new WindowFocusWatcher(&controller);
+        window->installEventFilter(focusWatcher);
+        controller.setWindowFocused(window->isActive());
+    }
     QString restartExecutable;
     bool shuttingDown = false;
     const auto beginShutdown = [&cache, &chatKeys, &controller, &app, &drafts, &draftStorage,

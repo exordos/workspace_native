@@ -6,6 +6,7 @@
 #include "session.h"
 #include "native-chat-key-vault.h"
 #include "native-drafts.h"
+#include "native-notifications.h"
 
 #include <QHash>
 #include <QSet>
@@ -250,6 +251,10 @@ public:
     Q_INVOKABLE void selectStream(const QString &id);
     Q_INVOKABLE void selectTopic(const QString &id);
     Q_INVOKABLE void openTopic(const QString &id, const QString &streamHint = {});
+    // Window focus mirror for desktop notifications (Electron sends
+    // window:activity from the focus/blur handlers in main.ts).
+    Q_INVOKABLE void setWindowFocused(bool focused);
+    NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void showDrafts();
     Q_INVOKABLE void closeDrafts();
@@ -738,6 +743,7 @@ private:
     const Message *findMessage(const QString &id) const;
     bool unresolvedTopicRoute() const;
     bool inConversation(const Message &message) const;
+    void offerNotificationCandidate(const Message &message);
     QString conversationKey() const { return m_stream + "/" + m_topic; }
 
     ApiClient *m_api;
@@ -775,6 +781,8 @@ private:
     QTimer m_poll;
     QVector<Stream> m_streams;
     QVector<Topic> m_topics;
+    NotificationService m_notifications;
+    bool m_windowFocused = true;
     QVector<Message> m_messages;
     struct UserPresentation {
         QString name, avatar, presence, statusLabel;

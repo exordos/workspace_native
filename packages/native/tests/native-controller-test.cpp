@@ -803,6 +803,55 @@ static QString conversationPreferenceOwner(const QUrl &origin, const QString &us
         QCryptographicHash::Sha256).toHex());
 }
 
+// Recording fake for the desktop-notification transport (issue #3). It tracks
+// "one active notification per tag" the same way the Electron shell does: a
+// new show for an active tag replaces the previous holder.
+class RecordingNotifications final : public workspace::NotificationTransport {
+public:
+    struct Show { QString tag, title, body; };
+    QList<Show> shows;
+    QStringList closed;
+    int attentionRequests = 0;
+    int attentionClears = 0;
+
+    bool show(const QString &tag, const QString &title, const QString &body) override
+    {
+        shows.push_back({tag, title, body});
+        return true;
+    }
+    void closeByTag(const QString &tag) override { closed << tag; }
+    void requestAttention() override { ++attentionRequests; }
+    void clearAttention() override { ++attentionClears; }
+    QString lastTag() const { return shows.isEmpty() ? QString{} : shows.last().tag; }
+};
+
+static QJsonObject notificationStreamDto(const QString &mode = QStringLiteral("all_messages"))
+{
+    return {{QStringLiteral("uuid"), streamId}, {QStringLiteral("project_id"), projectId},
+            {QStringLiteral("name"), QStringLiteral("Native channel")},
+            {QStringLiteral("encryption"), false}, {QStringLiteral("notification_mode"), mode}};
+}
+
+static QJsonObject notificationTopicDto(const QString &id = topicId,
+                                        const QString &name = QStringLiteral("Native topic"),
+                                        const QString &mode = QStringLiteral("default"))
+{
+    return {{QStringLiteral("uuid"), id}, {QStringLiteral("project_id"), projectId},
+            {QStringLiteral("stream_uuid"), streamId}, {QStringLiteral("name"), name},
+            {QStringLiteral("notification_mode"), mode}};
+}
+
+// Marks a history DTO as a foreign unread arrival (notification candidate).
+static QJsonObject incomingDto(QJsonObject row, const QString &author)
+{
+    row[QStringLiteral("read")] = false;
+    row[QStringLiteral("is_own")] = false;
+    row[QStringLiteral("author_uuid")] = author;
+    return row;
+}
+
+static const QString notificationAuthor = QStringLiteral("55555555-5555-4555-8555-555555555555");
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -11007,6 +11056,334 @@ private slots:
         QCOMPARE(preferences.organizationHistory().size(), 1);
         NativePreferences reopened(storePath);
         QCOMPARE(reopened.organizationHistory(), preferences.organizationHistory());
+    }
+
+    // ---- desktop notifications (issue #3, docs/NATIVE_DESKTOP_NOTIFICATIONS.md) ----
+
+    // The fixture auto-opens its first conversation; notification candidates
+    // must therefore target a background conversation. Open the second topic
+    // so messages in topicId are off-screen candidates everywhere below.
+    // Detail endpoints must serve parse-valid DTOs for the route to resolve.
+    void openBackgroundConversation(Fixture &fixture)
+    {
+        Q_UNUSED(fixture);
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == secondTopicId, 2000);
+    }
+
+    void notificationPolicyMatrix_data()
+    {
+        QTest::addColumn<QString>("row");
+        QTest::addColumn<bool>("notify");
+        QTest::addColumn<QString>("trigger");
+        QTest::newRow("dm") << "dm" << true << QStringLiteral("dm");
+        QTest::newRow("own") << "own" << false << QString();
+        QTest::newRow("read") << "read" << false << QString();
+        QTest::newRow("mention-default-mode") << "mention-default" << true << QStringLiteral("mention");
+        QTest::newRow("mention-mentions-only") << "mention-mentions-only" << true << QStringLiteral("mention");
+        QTest::newRow("wildcard") << "wildcard" << true << QStringLiteral("wildcard_mention");
+        QTest::newRow("followed-topic") << "followed-topic" << true << QStringLiteral("followed_topic");
+        QTest::newRow("plain-stream-default-mode") << "plain-stream" << false << QStringLiteral("stream");
+        QTest::newRow("plain-stream-all-messages") << "plain-stream-all" << true << QStringLiteral("stream");
+        QTest::newRow("stream-muted") << "stream-muted" << false << QString();
+        QTest::newRow("stream-muted-mention") << "stream-muted-mention" << false << QString();
+        QTest::newRow("topic-mute-wins-over-stream-all") << "topic-mute" << false << QString();
+        QTest::newRow("follow-unmutes-muted-stream") << "follow-unmute" << true << QStringLiteral("followed_topic");
+        QTest::newRow("focused-on-screen") << "focused-on-screen" << false << QString();
+        QTest::newRow("focused-off-screen") << "focused-off-screen" << true << QStringLiteral("stream");
+    }
+    void notificationPolicyMatrix()
+    {
+        QFETCH(QString, row);
+        QFETCH(bool, notify);
+        QFETCH(QString, trigger);
+        NotificationCandidate c;
+        c.owner = QStringLiteral("owner");
+        c.messageUuid = QStringLiteral("m1");
+        c.streamUuid = streamId;
+        c.topicUuid = topicId;
+        c.authorUuid = notificationAuthor;
+        c.content = QStringLiteral("Ping");
+        c.streamMode = QStringLiteral("default");
+        c.topicMode = QStringLiteral("default");
+        if (row == "dm") c.streamPrivate = true;
+        else if (row == "own") c.isOwn = true;
+        else if (row == "read") c.read = true;
+        else if (row == "mention-default") c.mentioned = true;
+        else if (row == "mention-mentions-only") { c.mentioned = true; c.streamMode = QStringLiteral("mentions_only"); }
+        else if (row == "wildcard") c.content = QStringLiteral("standup @all tomorrow");
+        else if (row == "followed-topic") c.topicMode = QStringLiteral("follow");
+        else if (row == "plain-stream-all") c.streamMode = QStringLiteral("all_messages");
+        else if (row == "stream-muted") c.streamMode = QStringLiteral("muted");
+        else if (row == "stream-muted-mention") { c.streamMode = QStringLiteral("muted"); c.mentioned = true; }
+        else if (row == "topic-mute") { c.streamMode = QStringLiteral("all_messages"); c.topicMode = QStringLiteral("mute"); }
+        else if (row == "follow-unmute") { c.streamMode = QStringLiteral("muted"); c.topicMode = QStringLiteral("follow"); }
+        else if (row == "focused-on-screen") { c.viewport.windowFocused = true; c.viewport.conversationOnScreen = true; }
+        else if (row == "focused-off-screen") { c.streamMode = QStringLiteral("all_messages"); c.viewport.windowFocused = true; }
+        const auto decision = notification_policy::shouldNotify(c, false);
+        QCOMPARE(decision.notify, notify);
+        if (!trigger.isEmpty()) QCOMPARE(decision.trigger, trigger);
+    }
+
+    void notificationTitleFormatsFollowTheReference()
+    {
+        const QString mid = QString::fromUtf8(" \xC2\xB7 ");
+        NotificationTitleContext dm;
+        dm.direct = true;
+        dm.senderName = QStringLiteral("X");
+        dm.conversationName = QStringLiteral("Personal notes");
+        // Count wording is delegated to Qt plural catalogs (the locale guard
+        // verifies the catalog); the structural contract is count + place.
+        QCOMPARE(NotificationService::formatTitle(dm, 1), QStringLiteral("X"));
+        const QString plural = NotificationService::formatTitle(dm, 2);
+        const QString head = plural.split(mid).first().trimmed();
+        QVERIFY2(head == QStringLiteral("2 message") || head == QStringLiteral("2 messages"),
+            qPrintable(plural));
+        QVERIFY(plural.contains(mid + QStringLiteral("Personal notes")));
+        NotificationTitleContext channel;
+        channel.senderName = QStringLiteral("X");
+        channel.channelName = QStringLiteral("Native channel");
+        channel.topicName = QStringLiteral("Native topic");
+        const QString channelPlural = NotificationService::formatTitle(channel, 2);
+        QVERIFY2(channelPlural.startsWith(QStringLiteral("2 message from X"))
+                || channelPlural.startsWith(QStringLiteral("2 messages from X")),
+            qPrintable(channelPlural));
+        QVERIFY(channelPlural.contains(mid + QStringLiteral("Native channel") + mid + QStringLiteral("Native topic")));
+        channel.topicName.clear();
+        QCOMPARE(NotificationService::formatTitle(channel, 1), QStringLiteral("X") + mid + QStringLiteral("Native channel"));
+        // Electron caps notification text at 200 characters (main.ts).
+        NotificationTitleContext huge;
+        huge.channelName = QString(300, QChar('x'));
+        QVERIFY(NotificationService::formatTitle(huge, 1).size() <= 200);
+    }
+
+    void twoBackgroundMessagesFromOneAuthorShareOneTag()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.notifications()->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("user.updated",
+            QJsonObject{{"uuid", notificationAuthor}, {"project_id", projectId},
+                        {"username", "author-x"}, {"first_name", "X"},
+                        {"updated_at", "2026-01-02T10:00:00Z"}}, 12)));
+        const auto first = incomingDto(historyMessage(500), notificationAuthor);
+        const auto second = incomingDto(historyMessage(501), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 13)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", second, 14)));
+        const QString mid = QString::fromUtf8(" \xC2\xB7 ");
+        const QString place = QStringLiteral("Native channel") + mid + QStringLiteral("Native topic");
+        QCOMPARE(sent.shows.size(), 2);
+        QCOMPARE(sent.shows[0].title, QStringLiteral("X") + mid + place);
+        QCOMPARE(sent.shows[0].body, QStringLiteral("Message 500"));
+        // The aggregate line reuses the same aggregate title as the reference;
+        // plural wording itself is delegated to the Qt catalogs.
+        const QString aggregateTitle = sent.shows[1].title;
+        QVERIFY(aggregateTitle.startsWith(QStringLiteral("2 message from X"))
+                || aggregateTitle.startsWith(QStringLiteral("2 messages from X")));
+        QVERIFY(aggregateTitle.endsWith(mid + place));
+        QCOMPARE(sent.shows[1].body, QStringLiteral("Message 501"));
+        QCOMPARE(sent.shows[1].tag, sent.shows[0].tag);
+        // Re-delivering the same event changes nothing (processed marker + dedup).
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 15)));
+        QCOMPARE(sent.shows.size(), 2);
+        // Same author, a different background topic: separate bucket, separate
+        // tag. (secondTopicId is the visible conversation here, so the message
+        // must target a third topic to stay an off-screen candidate.)
+        auto otherTopic = incomingDto(historyMessage(502), notificationAuthor);
+        otherTopic["topic_uuid"] = QStringLiteral("33333333-3333-4333-8333-333333333333");
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, "Second topic"),
+                notificationTopicDto(QStringLiteral("33333333-3333-4333-8333-333333333333"),
+                    QStringLiteral("Third topic"))}};
+        };
+        fixture.controller.refresh();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.topics().size() == 3, 4000);
+        QCOMPARE(fixture.controller.selectedTopic(), secondTopicId);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", otherTopic, 16)));
+        QCOMPARE(sent.shows.size(), 3);
+        QVERIFY(sent.shows[2].tag != sent.shows[0].tag);
+        fixture.controller.notifications()->setTransport(nullptr);
+    }
+
+    void readingTheNewestNotificationMessageClosesTheTag()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        const auto first = incomingDto(historyMessage(500), notificationAuthor);
+        const auto second = incomingDto(historyMessage(501), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 13)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", second, 14)));
+        const auto tag = sent.lastTag();
+        QCOMPARE(service->aggregateCount(tag), 2);
+        // Reading the older message keeps the tag and shrinks the count.
+        auto readOlder = first;
+        readOlder["read"] = true;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.read", readOlder, 15)));
+        QVERIFY(!sent.closed.contains(tag));
+        QCOMPARE(service->aggregateCount(tag), 1);
+        // Reading the newest message closes the whole tag.
+        auto readNewest = second;
+        readNewest["read"] = true;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.read", readNewest, 16)));
+        QVERIFY(sent.closed.contains(tag));
+        QCOMPARE(service->aggregateCount(tag), 0);
+        // A read for a message nobody notified about closes its fallback tag
+        // (untracked uuids fall back to the msg: scheme in the reference).
+        auto stray = incomingDto(historyMessage(503), notificationAuthor);
+        auto strayRead = stray;
+        strayRead["read"] = true;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.read", strayRead, 17)));
+        const auto owner = tag.section(QStringLiteral("::"), 0, 0).mid(7); // strip "bucket:"
+        QVERIFY(sent.closed.contains(
+            NotificationAggregateRegistry::fallbackTag(owner, stray.value(QStringLiteral("uuid")).toString())));
+        QCOMPARE(service->aggregateCount(tag), 0);
+        service->setTransport(nullptr);
+    }
+
+    void readingBulkReadEventsClosesNotificationTags()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        const auto only = incomingDto(historyMessage(500), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", only, 13)));
+        const auto tag = sent.lastTag();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("messages.read",
+            QJsonObject{{"project_id", projectId}, {"message_uuids", QJsonArray{only.value("uuid").toString()}}}, 14)));
+        QVERIFY(sent.closed.contains(tag));
+        QCOMPARE(service->aggregateCount(tag), 0);
+        service->setTransport(nullptr);
+    }
+
+    void focusedConversationOnScreenSuppressesNotifications()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, "Second topic")}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.notifications()->setTransport(&sent);
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == secondTopicId, 2000);
+        fixture.controller.setWindowFocused(true);
+        // The open conversation never notifies, even for fresh unread arrivals.
+        auto inView = incomingDto(historyMessage(500), notificationAuthor);
+        inView["topic_uuid"] = secondTopicId;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", inView, 13)));
+        QVERIFY(sent.shows.isEmpty());
+        // A different conversation does notify while focused, without attention.
+        auto off = incomingDto(historyMessage(501), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", off, 14)));
+        QCOMPARE(sent.shows.size(), 1);
+        QCOMPARE(sent.attentionRequests, 0);
+        fixture.controller.notifications()->setTransport(nullptr);
+    }
+
+    void genericNotificationFiresAfterTheMetadataGrace()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        service->setMetadataGrace(120, 40);
+        // The candidate stream is not in the loaded catalog at all, so
+        // metadata cannot resolve and the generic fallback must fire.
+        auto stray = incomingDto(historyMessage(600), notificationAuthor);
+        stray["stream_uuid"] = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", stray, 13)));
+        QVERIFY(sent.shows.isEmpty()); // inside the grace window
+        QTRY_VERIFY_WITH_TIMEOUT(sent.shows.size() == 1, 3000);
+        QCOMPARE(sent.shows.first().title, QStringLiteral("You have a new message"));
+        QVERIFY(!sent.shows.first().body.contains(QStringLiteral("://")));
+        QCOMPARE(sent.shows.first().body, QString::fromUtf8("synthetic-user \xC2\xB7 127.0.0.1"));
+        QTRY_VERIFY(sent.shows.size() == 1);
+        service->setTransport(nullptr);
+    }
+
+    void attentionRequestFollowsWindowFocus()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        fixture.controller.setWindowFocused(false);
+        auto first = incomingDto(historyMessage(500), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 13)));
+        QCOMPARE(sent.shows.size(), 1);
+        QCOMPARE(sent.attentionRequests, 1);
+        QCOMPARE(sent.attentionClears, 0);
+        // Gaining focus clears the indication once; a focused delivery asks no more.
+        fixture.controller.setWindowFocused(true);
+        QCOMPARE(sent.attentionClears, 1);
+        auto second = incomingDto(historyMessage(501), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", second, 14)));
+        QCOMPARE(sent.shows.size(), 2);
+        QCOMPARE(sent.attentionRequests, 1);
+        service->setTransport(nullptr);
+    }
+
+    void notificationClickOpensTheConversationAndRetiresTheTag()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        auto arrival = incomingDto(historyMessage(500), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 13)));
+        QCOMPARE(sent.shows.size(), 1);
+        const auto tag = sent.lastTag();
+        service->click(tag);
+        QVERIFY(sent.closed.contains(tag));
+        QCOMPARE(service->aggregateCount(tag), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedStream() == streamId
+            && fixture.controller.selectedTopic() == topicId, 3000);
+        // Clicking a dead tag does nothing further.
+        service->click(tag);
+        QCOMPARE(sent.shows.size(), 1);
+        service->setTransport(nullptr);
     }
 };
 

@@ -5243,6 +5243,53 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    m_notifications.setParent(this);
+    // A notification click navigates to the conversation it reported, exactly
+    // like the reference click route (layout-workspace-notifications.hook.ts).
+    connect(&m_notifications, &NotificationService::routeRequested, this,
+        [this](const QString &stream, const QString &topic) {
+            if (!topic.isEmpty()) openTopic(topic, stream);
+            else if (!stream.isEmpty()) selectStream(stream);
+        });
+    // Metadata resolution mirrors resolveCurrentCandidate in the reference
+    // hook: the loaded catalogs are the native client's active store.
+    m_notifications.setMetadataResolver([this](NotificationCandidate &candidate) {
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &row) { return row.uuid == candidate.streamUuid; });
+        if (stream != m_streams.cend()) {
+            candidate.streamKnown = true;
+            candidate.streamPrivate = stream->privateStream;
+            candidate.streamName = stream->name;
+            candidate.streamMode = stream->notificationMode;
+        }
+        const auto topic = std::find_if(m_topics.cbegin(), m_topics.cend(),
+            [&](const Topic &row) { return row.uuid == candidate.topicUuid; });
+        if (topic != m_topics.cend()) {
+            candidate.topicKnown = true;
+            candidate.topicName = topic->isDefault ? QString{} : topic->name;
+            candidate.topicMode = topic->notificationMode;
+        }
+        const auto author = m_names.constFind(candidate.authorUuid);
+        if (author != m_names.cend())
+            candidate.senderName = author->name;
+        if (!candidate.streamKnown)
+            return false; // stream metadata is missing -> grace, then generic
+        if (!candidate.streamPrivate && candidate.streamMode != QLatin1String("all_messages")
+            && !candidate.topicKnown)
+            return false; // the topic may still switch this to "follow"
+        return true;
+    });
+    // resolveGenericNotificationAccountLabel: username, separator, domain -
+    // never a raw URL; an invalid or absent part is simply dropped.
+    m_notifications.setGenericBody([this] {
+        const QStringList parts{
+            m_session->publicProfile().value(QStringLiteral("username")).toString().trimmed(),
+            m_api->server().host()};
+        QStringList kept;
+        for (const auto &part : parts)
+            if (!part.isEmpty()) kept << part;
+        return kept.join(notificationSeparator());
+    });
     // The default-organization shortcut exists only when the build (or the
     // process environment, for testability) defines the origin; the reference
     // gates the same block on DEFAULT_LOGIN_ORGANIZATION_URL.
@@ -6028,10 +6075,17 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             mentionChanged = mentionIndexRemove(message->uuid);
         if (mentionChanged) emit stateChanged();
         const bool selected = inConversation(*message);
+        // Background arrivals become notification candidates exactly where
+        // the reference background projection would have recorded them.
+        if (kind == QLatin1String("message.created") && !selected
+            && !message->own && !message->read)
+            offerNotificationCandidate(*message);
         if (kind == "message.read") {
             staleReadConversation(message->stream, message->topic);
             if (message->read && m_cache)
                 m_cache->markHistoryRead(m_cacheLease, message->stream, message->topic, {message->uuid});
+            if (message->read)
+                m_notifications.onMessagesClosed(creationOwnerKey(), {message->uuid});
             // A read event owns only a monotonic flag, even if its envelope also
             // carries an older complete message DTO.
             if (selected && message->read) {
@@ -6144,6 +6198,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         mentionsChanged = mentionCollectionsPrune(id) || mentionsChanged;
         if (mentionsChanged)
             emit stateChanged();
+        // Deletion closes notifications the same way a read does in the
+        // reference closeReadMessageNotifications flow.
+        m_notifications.onMessagesClosed(creationOwnerKey(), {id});
         const auto outcome = std::find_if(m_chatOutcomeFacts.begin(), m_chatOutcomeFacts.end(),
             [&](const ChatOutcomeFact &fact) { return fact.id == id; });
         const bool knownOutcome = outcome != m_chatOutcomeFacts.end()
@@ -6192,6 +6249,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // old pagination boundary, and every retained page stays stale.
         staleCache(NativeCache::Kind::History);
         if (m_cache && !ids.isEmpty()) m_cache->markHistoryRead(m_cacheLease, {}, {}, ids);
+        m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(ids.cbegin(), ids.cend()));
         staleCache(NativeCache::Kind::Streams);
         staleCache(NativeCache::Kind::Topics);
         ++m_messageRevision;
@@ -7140,6 +7198,31 @@ bool NativeController::unresolvedTopicRoute() const
         && std::none_of(m_topics.cbegin(), m_topics.cend(), [&](const Topic &topic) {
             return topic.uuid == m_topic && topic.stream == m_stream;
         });
+}
+
+void NativeController::offerNotificationCandidate(const Message &message)
+{
+    NotificationCandidate candidate;
+    candidate.owner = creationOwnerKey();
+    candidate.messageUuid = message.uuid;
+    candidate.streamUuid = message.stream;
+    candidate.topicUuid = message.topic;
+    candidate.authorUuid = message.author;
+    candidate.content = message.content;
+    candidate.isOwn = message.own;
+    candidate.read = message.read;
+    candidate.mentioned = message.mentioned.value_or(false);
+    candidate.createdMicros = message.createdMicros;
+    // The caller only offers messages outside the on-screen conversation.
+    candidate.viewport.windowFocused = m_windowFocused;
+    candidate.viewport.conversationOnScreen = false;
+    m_notifications.ingest(candidate);
+}
+
+void NativeController::setWindowFocused(bool focused)
+{
+    m_windowFocused = focused;
+    m_notifications.setWindowFocused(focused);
 }
 
 bool NativeController::inConversation(const Message &message) const

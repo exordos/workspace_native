@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.3.16 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,7 @@ add_library(workspace-native-core STATIC
     src/native-draft-store.cpp src/native-draft-store.h
     src/native-draft-service.cpp src/native-draft-service.h
     src/native-drafts.cpp src/native-drafts.h
+    src/native-notifications.cpp src/native-notifications.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
@@ -42,6 +43,14 @@ add_library(workspace-native-core STATIC
 target_include_directories(workspace-native-core PUBLIC src)
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql)
 target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto Qt6::DBus)
+# The notification attention adapter asks the window manager for attention
+# over raw xcb on Linux; without the headers it degrades to a silent no-op.
+include(CheckIncludeFileCXX)
+check_include_file_cxx(xcb/xcb.h WORKSPACE_NATIVE_HAVE_XCB)
+if(WORKSPACE_NATIVE_HAVE_XCB AND UNIX AND NOT APPLE)
+    target_compile_definitions(workspace-native-core PRIVATE WORKSPACE_NATIVE_HAVE_XCB=1)
+    target_link_libraries(workspace-native-core PRIVATE xcb)
+endif()
 qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE resources
     FILES resources/unicode_emoji.json resources/emoji_picker.json
         resources/emoji_picker_navigation.svg resources/emoji_picker_search.svg
