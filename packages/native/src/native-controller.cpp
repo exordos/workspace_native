@@ -4440,63 +4440,127 @@ void NativeController::hydrateInboxTopics()
 {
     if (!authenticated())
         return;
-    const auto owner = creationOwnerKey();
-    const auto generation = m_api->generation();
-    const auto catalog = m_catalog;
     for (const auto &stream : m_streams) {
-        if (stream.archived || stream.activeUnread <= 0
-            || m_inboxTopics.contains(stream.uuid) || m_inboxHydrating.contains(stream.uuid))
-            continue;
-        m_inboxHydrating.insert(stream.uuid);
-        const auto streamUuid = stream.uuid;
-        QUrlQuery query;
-        query.addQueryItem("stream_uuid", streamUuid);
-        cachedCollection({NativeCache::Kind::Topics, streamUuid, {}, {}},
-            messenger + "/stream_topics/", query,
-            [this, streamUuid, owner, generation, catalog](const QJsonArray &rows, bool) {
-            // Stale-owner guard: an owner switch or catalog epoch change may
-            // not write into the new inbox (same contract as mentions).
-            if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
-                || catalog != m_catalog) {
-                m_inboxHydrating.remove(streamUuid);
-                return false;
-            }
-            QVector<Topic> topics;
-            QSet<QString> ids;
-            for (const auto &value : rows) {
-                const auto topic = parseTopic(value.toObject(), m_session->project(), streamUuid);
-                // A malformed row cannot poison the projection; the sidebar
-                // path for the same stream still reports it if selected.
-                if (!topic || ids.contains(topic->uuid)) continue;
-                ids.insert(topic->uuid);
-                topics.append(*topic);
-            }
-            m_inboxTopics.insert(streamUuid, topics);
-            m_inboxHydrating.remove(streamUuid);
-            emit stateChanged();
-            return true;
-        });
+        // Reference hydration sweeps every stream whose active counter says
+        // there is unread traffic; passive-only streams never hydrate a slot.
+        if (!stream.archived && stream.activeUnread > 0)
+            hydrateInboxStream(stream.uuid);
     }
 }
 
-bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &topic)
+void NativeController::hydrateInboxStream(const QString &streamUuid)
 {
-    const auto slot = m_inboxTopics.find(topic.stream);
-    if (slot == m_inboxTopics.end())
-        return false;
-    auto &rows = *slot;
+    if (!authenticated() || !isUuid(streamUuid))
+        return;
+    if (m_inboxTopics.contains(streamUuid) || m_inboxHydrating.contains(streamUuid))
+        return;
+    // An unknown or archived stream is not a hydratable destination; the row
+    // correctly stays out of the Inbox until the catalog knows the stream.
+    if (!std::any_of(m_streams.cbegin(), m_streams.cend(),
+            [&streamUuid](const Stream &stream) {
+                return stream.uuid == streamUuid && !stream.archived; }))
+        return;
+    const auto owner = creationOwnerKey();
+    const auto generation = m_api->generation();
+    const auto catalog = m_catalog;
+    m_inboxHydrating.insert(streamUuid);
+    QUrlQuery query;
+    query.addQueryItem("stream_uuid", streamUuid);
+    cachedCollection({NativeCache::Kind::Topics, streamUuid, {}, {}},
+        messenger + "/stream_topics/", query,
+        [this, streamUuid, owner, generation, catalog](const QJsonArray &rows, bool) {
+        // Stale-owner guard: an owner switch or catalog epoch change may
+        // not write into the new inbox (same contract as mentions).
+        if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
+            || catalog != m_catalog) {
+            m_inboxHydrating.remove(streamUuid);
+            return false;
+        }
+        QVector<Topic> topics;
+        QSet<QString> ids;
+        for (const auto &value : rows) {
+            const auto topic = parseTopic(value.toObject(), m_session->project(), streamUuid);
+            // A malformed row cannot poison the projection; the sidebar
+            // path for the same stream still reports it if selected.
+            if (!topic || ids.contains(topic->uuid)) continue;
+            ids.insert(topic->uuid);
+            topics.append(*topic);
+        }
+        m_inboxTopics.insert(streamUuid, topics);
+        m_inboxHydrating.remove(streamUuid);
+        emit stateChanged();
+        return true;
+    });
+}
+
+bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &topic, bool ownsPlacement)
+{
+    if (kind == QLatin1String("topic.deleted")) {
+        // A tombstone removes the entity from EVERY slot that still lists it:
+        // the topic is gone, so an unreconciled stale placement must not
+        // survive under a former stream (#65).
+        bool removed = false;
+        for (auto slot = m_inboxTopics.begin(); slot != m_inboxTopics.end(); ++slot) {
+            auto &rows = slot.value();
+            const auto before = rows.size();
+            rows.erase(std::remove_if(rows.begin(), rows.end(),
+                [&topic](const Topic &row) { return row.uuid == topic.uuid; }), rows.end());
+            removed |= rows.size() != before;
+        }
+        if (removed && m_inboxVisible) emit stateChanged();
+        return removed;
+    }
+    if (!ownsPlacement) {
+        // Non-authoritative events (counter updates, incomplete DTOs) only
+        // touch the slot the payload names; they never move a row (#65).
+        const auto slot = m_inboxTopics.find(topic.stream);
+        if (slot == m_inboxTopics.end())
+            return false;
+        auto &rows = *slot;
+        const auto found = std::find_if(rows.begin(), rows.end(),
+            [&topic](const Topic &item) { return item.uuid == topic.uuid; });
+        if (found != rows.end())
+            *found = topic; // The DTO owns the counters (topic.read ships zeroes).
+        else if (kind == QLatin1String("topic.created"))
+            rows.append(topic);
+        else
+            return false;
+        if (m_inboxVisible) emit stateChanged();
+        return true;
+    }
+    // A complete owned event owns the row's placement across every slot: a
+    // whole-topic move vacates the former stream so the stale card cannot
+    // survive, and openInboxRow can never hand the obsolete DTO to
+    // beginTopicOpening as verified canonical metadata (#65).
+    bool changed = false;
+    for (auto slot = m_inboxTopics.begin(); slot != m_inboxTopics.end(); ++slot) {
+        if (slot.key() == topic.stream) continue;
+        auto &rows = slot.value();
+        const auto before = rows.size();
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+            [&topic](const Topic &row) { return row.uuid == topic.uuid; }), rows.end());
+        changed |= rows.size() != before;
+    }
+    const auto dest = m_inboxTopics.find(topic.stream);
+    if (dest == m_inboxTopics.end()) {
+        // The destination slot is not hydrated: one DTO cannot stand in for
+        // the complete snapshot the slot contract promises, so refetch the
+        // destination instead of fabricating a partial one. Only the open
+        // page consumes slots, so a closed inbox just leaves the row
+        // vacated; the showInbox sweep hydrates the missing destination.
+        // A destination the catalog does not know leaves no row (invalidate).
+        if (m_inboxVisible)
+            hydrateInboxStream(topic.stream);
+        if (changed && m_inboxVisible) emit stateChanged();
+        return changed;
+    }
+    auto &rows = *dest;
     const auto found = std::find_if(rows.begin(), rows.end(),
         [&topic](const Topic &item) { return item.uuid == topic.uuid; });
-    if (kind == QLatin1String("topic.deleted")) {
-        if (found == rows.end()) return false;
-        rows.erase(found);
-    } else if (found != rows.end()) {
-        // The DTO owns the counters (topic.read ships zeroes).
+    if (found != rows.end())
         *found = topic;
-    } else {
-        if (kind != QLatin1String("topic.created")) return false;
+    else
         rows.append(topic);
-    }
     if (m_inboxVisible) emit stateChanged();
     return true;
 }
@@ -5978,8 +6042,13 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         noteTopicCreationEvent(streamId);
         // Inbox topic slots follow the same DTO-driven counter contract
-        // (docs/NATIVE_DESKTOP_INBOX.md).
-        inboxSlotTopicEvent(kind, *topic);
+        // (docs/NATIVE_DESKTOP_INBOX.md). Only a complete owned update owns
+        // the row's placement across slots, so a whole-topic move reconciles
+        // the slots (#65); counter events never move a topic.
+        const bool inboxOwnsPlacement = kind == QLatin1String("topic.created")
+            || (kind == QLatin1String("topic.updated")
+                && creationTopicDto(payload, m_session->project(), streamId, m_session->user()).has_value());
+        inboxSlotTopicEvent(kind, *topic, inboxOwnsPlacement);
         bool matchingOwn = false;
         if (const auto *intent = channelCreation(); intent && intent->uuid == streamId) {
             matchingOwn = kind == "topic.created" && topic->uuid == intent->defaultTopic && topic->isDefault

@@ -861,7 +861,8 @@ private:
     QHash<QString, QVector<Topic>> m_inboxTopics;
     QSet<QString> m_inboxHydrating;
     void hydrateInboxTopics();
-    bool inboxSlotTopicEvent(const QString &kind, const Topic &topic);
+    void hydrateInboxStream(const QString &stream);
+    bool inboxSlotTopicEvent(const QString &kind, const Topic &topic, bool ownsPlacement = false);
     bool inboxSlotStreamRead(const QString &stream);
     void resetInbox();
     bool durableDraftRoute() const;
