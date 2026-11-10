@@ -159,9 +159,11 @@ and owner switch clear the slots.
     `error = authenticated && !m_catalogVerified && !error().isEmpty()` —
     `m_catalogVerified` is the existing catalog-loaded flag (set at :2882,
     :3423, :6973) mirroring the reference `catalogLoaded`.
-  - `openInboxRow` closes the page then `openTopic(topic, stream)` for topic
-    rows or `selectStream(stream)` for the fallback row (reference row click
-    navigates, the page unmounts).
+  - `openInboxRow` closes the page then hands the inbox slot's owned DTO to
+    `beginTopicOpening` (the owned-canonical path; `openTopic(topic, stream)`
+    is the fallback when no slot row exists); the fallback row selects the
+    stream via `selectStream(stream)`. `selectTopic` also closes the inbox,
+    mirroring its `closeMentions()` call.
   - `applyRealtimeEvent`: in the `stream.*` and `topic.*` branches, emit
     `stateChanged()` while `m_inboxVisible` so the bound page recomputes with
     the replaced counters; the `m_inboxTopics` slots follow the topic/stream
