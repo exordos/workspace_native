@@ -10041,6 +10041,66 @@ private slots:
         QVERIFY(page.value("error").toBool());
         QVERIFY(!page.value("loading").toBool());
     }
+
+    // Issue #54: opening a sidebar destination closes the previously opened
+    // page, so exactly one page (and one sidebar selection) stays active and
+    // closing the active page returns directly to the conversation. Draft
+    // contents survive the transitions. The reference routes one destination
+    // at a time (workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af router:
+    // each of inbox-page.ui.tsx, activity-mentions.ui.tsx and the drafts page
+    // replaces the previous destination instead of stacking beside it).
+    void draftsMentionsInboxNavigationIsMutuallyExclusive()
+    {
+        QTemporaryDir draftDirectory; QVERIFY(draftDirectory.isValid());
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(
+            QMap<int, QJsonObject>{{1, mentionMessage(1, false)}});
+        fixture.messages = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
+        fixture.controller.useDrafts(&drafts);
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Kept across navigation");
+        QCOMPARE(fixture.controller.draft(), QStringLiteral("Kept across navigation"));
+
+        fixture.controller.showDrafts();
+        QVERIFY(fixture.controller.draftsVisible());
+        QTRY_VERIFY(!fixture.controller.draftPage().value("rows").toList().isEmpty());
+        // Drafts -> Mentions closes the drafts page.
+        fixture.controller.showMentions();
+        QVERIFY(fixture.controller.mentionsVisible());
+        QVERIFY(!fixture.controller.draftsVisible());
+        QVERIFY(!fixture.controller.inboxVisible());
+        // Mentions -> Drafts closes mentions and the draft survives the round trip.
+        fixture.controller.showDrafts();
+        QVERIFY(fixture.controller.draftsVisible());
+        QVERIFY(!fixture.controller.mentionsVisible());
+        QCOMPARE(fixture.controller.draft(), QStringLiteral("Kept across navigation"));
+        // Inbox shares the same exclusivity with both pages.
+        fixture.controller.showInbox();
+        QVERIFY(fixture.controller.inboxVisible());
+        QVERIFY(!fixture.controller.draftsVisible());
+        fixture.controller.showMentions();
+        QVERIFY(fixture.controller.mentionsVisible());
+        QVERIFY(!fixture.controller.inboxVisible());
+        fixture.controller.showInbox();
+        QVERIFY(fixture.controller.inboxVisible());
+        QVERIFY(!fixture.controller.mentionsVisible());
+        // Closing the one active page returns to the conversation: no page open.
+        fixture.controller.closeInbox();
+        QVERIFY(!fixture.controller.inboxVisible() && !fixture.controller.draftsVisible()
+            && !fixture.controller.mentionsVisible());
+        // Draft contents survived every transition.
+        QCOMPARE(fixture.controller.draft(), QStringLiteral("Kept across navigation"));
+        QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        drafts.pauseRemote(true);
+        bool stopped = false;
+        drafts.flush(this, [&stopped](bool) { stopped = true; });
+        QTRY_VERIFY(stopped);
+        draftStorage.shutdown();
+        QTRY_VERIFY(draftStorage.stopped());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

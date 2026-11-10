@@ -820,6 +820,11 @@ private:
     QString mentionPreview(const Message &message) const;
     QString mentionTime(const QDateTime &created) const;
     void resetMentions();
+    // Issue #54: the sidebar destinations are mutually exclusive. Opening one
+    // closes the others so exactly one page and one sidebar selection stay
+    // active, and closing the active page returns to the conversation.
+    enum class ContentPage { Drafts, Mentions, Inbox };
+    void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
     // stream/topic/created_at are needed for the read-boundary and scope clears
     // of activity-realtime-applier.lib.ts:55-105.
