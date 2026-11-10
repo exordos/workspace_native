@@ -4483,8 +4483,29 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             // A malformed row cannot poison the projection; the sidebar
             // path for the same stream still reports it if selected.
             if (!topic || ids.contains(topic->uuid)) continue;
+            // Reconcile the snapshot against authoritative events observed
+            // while this fetch was in flight (#65): tombstones and moves to
+            // another stream drop the row; a newer event DTO owns it.
+            if (m_inboxDeletedTopics.contains(topic->uuid)) continue;
+            const auto pending = m_inboxPlacementEvents.constFind(topic->uuid);
+            if (pending != m_inboxPlacementEvents.cend()) {
+                if (pending->stream != streamUuid) continue;
+                ids.insert(topic->uuid);
+                topics.append(topic->updatedMicros > pending->updatedMicros ? *topic : *pending);
+                continue;
+            }
             ids.insert(topic->uuid);
             topics.append(*topic);
+        }
+        // Moves INTO this stream recorded while the fetch was in flight: a
+        // pre-move snapshot cannot contain those rows (#65). Entries are kept
+        // until the session reset so a late source-side snapshot stays
+        // filtered even after the destination slot has landed.
+        for (auto it = m_inboxPlacementEvents.cbegin(); it != m_inboxPlacementEvents.cend(); ++it) {
+            if (m_inboxDeletedTopics.contains(it.key())) continue;
+            if (it.value().stream != streamUuid || ids.contains(it.key())) continue;
+            ids.insert(it.key());
+            topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
         m_inboxHydrating.remove(streamUuid);
@@ -4498,7 +4519,9 @@ bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &top
     if (kind == QLatin1String("topic.deleted")) {
         // A tombstone removes the entity from EVERY slot that still lists it:
         // the topic is gone, so an unreconciled stale placement must not
-        // survive under a former stream (#65).
+        // survive under a former stream (#65). The marker also keeps an
+        // in-flight slot snapshot from resurrecting the row when it lands.
+        m_inboxDeletedTopics.insert(topic.uuid);
         bool removed = false;
         for (auto slot = m_inboxTopics.begin(); slot != m_inboxTopics.end(); ++slot) {
             auto &rows = slot.value();
@@ -4531,7 +4554,9 @@ bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &top
     // A complete owned event owns the row's placement across every slot: a
     // whole-topic move vacates the former stream so the stale card cannot
     // survive, and openInboxRow can never hand the obsolete DTO to
-    // beginTopicOpening as verified canonical metadata (#65).
+    // beginTopicOpening as verified canonical metadata (#65). The record
+    // also reconciles slot snapshots that were fetched before this event.
+    m_inboxPlacementEvents.insert(topic.uuid, topic);
     bool changed = false;
     for (auto slot = m_inboxTopics.begin(); slot != m_inboxTopics.end(); ++slot) {
         if (slot.key() == topic.stream) continue;
@@ -4583,6 +4608,8 @@ void NativeController::resetInbox()
     m_inboxVisible = false;
     m_inboxTopics.clear();
     m_inboxHydrating.clear();
+    m_inboxPlacementEvents.clear();
+    m_inboxDeletedTopics.clear();
 }
 
 QVariantMap NativeController::inboxPage() const

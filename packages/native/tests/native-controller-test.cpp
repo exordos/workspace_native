@@ -10344,6 +10344,102 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == moved, 4000);
     }
 
+    // Reviewer follow-up on #65: a slot snapshot generated before a placement
+    // event must not resurrect the old placement when it lands after it. The
+    // first Alpha fetch is held in flight (deterministic defer gate), the move
+    // A->B is applied, then the stale snapshot is released.
+    void delayedInboxSlotCannotResurrectMovedTopic()
+    {
+        const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");
+        const auto beta = QStringLiteral("a1000000-0000-4000-8000-0000000000b2");
+        const auto moved = QStringLiteral("b1000000-0000-4000-8000-0000000000c3");
+        const auto nightly = QStringLiteral("b1000000-0000-4000-8000-0000000000d4");
+        Fixture fixture;
+        std::function<void()> releaseAlpha;
+        bool gated = false;
+        fixture.streams = [&](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 3, 3, 0),
+            inboxStream(beta, "Beta", 1, 1, 0)}}; };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == alpha) {
+                // The pre-move snapshot: still lists the topic under Alpha.
+                Response response{QJsonArray{
+                    inboxTopic(moved, alpha, "Migration", 3, 3, 0, "2026-06-22T09:00:00Z"),
+                    inboxTopic(secondTopicId, alpha, "Planning", 0, 0, 0)}};
+                if (!gated) {
+                    gated = true;
+                    response.defer = [&](std::function<void()> send) { releaseAlpha = std::move(send); };
+                }
+                return response;
+            }
+            if (stream == beta)
+                return Response{QJsonArray{inboxTopic(nightly, beta, "Nightly", 1, 1, 0)}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        // Alpha's slot response is held in flight; Beta's slot lands first.
+        QVERIFY(QTest::qWaitFor([&fixture, &gated, beta, nightly] {
+            return gated && !inboxRow(fixture.controller.inboxPage(), "channels", beta, nightly).isEmpty();
+        }, 4000));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, beta, "Migration", 3, 3, 0, "2026-06-22T11:30:00Z"), 60)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(beta, "Beta", 4, 4, 0), 61)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 62)));
+        QVERIFY(QTest::qWaitFor([&fixture, beta, moved] {
+            return inboxRow(fixture.controller.inboxPage(), "channels", beta, moved)
+                .value("badge").toString() == QStringLiteral("3");
+        }, 4000));
+        // The stale snapshot lands after the move: it must not revive Alpha.
+        releaseAlpha();
+        QTest::qWait(300);
+        const auto page = fixture.controller.inboxPage();
+        QVERIFY2(inboxCard(page, "channels", alpha).isEmpty(),
+            "An in-flight slot snapshot restored the topic to its vacated stream");
+        QCOMPARE(inboxRow(page, "channels", beta, moved).value("badge").toString(),
+            QStringLiteral("3"));
+    }
+
+    void delayedInboxSlotCannotResurrectDeletedTopic()
+    {
+        const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");
+        const auto moved = QStringLiteral("b1000000-0000-4000-8000-0000000000c3");
+        Fixture fixture;
+        std::function<void()> releaseAlpha;
+        bool gated = false;
+        fixture.streams = [&](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 3, 3, 0)}}; };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == alpha) {
+                Response response{QJsonArray{
+                    inboxTopic(moved, alpha, "Migration", 3, 3, 0),
+                    inboxTopic(secondTopicId, alpha, "Planning", 0, 0, 0)}};
+                if (!gated) {
+                    gated = true;
+                    response.defer = [&](std::function<void()> send) { releaseAlpha = std::move(send); };
+                }
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        // Alpha's slot response is held in flight.
+        QVERIFY(QTest::qWaitFor([&gated] { return gated; }, 4000));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.deleted",
+            QJsonObject{{"uuid", moved}, {"stream_uuid", alpha}}, 70)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 71)));
+        releaseAlpha();
+        QTest::qWait(300);
+        QVERIFY2(inboxCard(fixture.controller.inboxPage(), "channels", alpha).isEmpty(),
+            "An in-flight slot snapshot resurrected a deleted topic");
+    }
+
     void inboxDeeplinkOpensTheInboxPage()
     {
         Fixture fixture;
