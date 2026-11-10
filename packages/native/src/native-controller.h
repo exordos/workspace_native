@@ -9,6 +9,7 @@
 
 #include <QHash>
 #include <QSet>
+#include <QStringList>
 #include <QQueue>
 #include <QTimer>
 #include <QVariantList>
@@ -835,12 +836,18 @@ private:
     bool mentionIndexClearTopic(const QString &stream, const QString &topic);
     bool mentionIndexClearStream(const QString &stream);
     void mentionLiveUpsert(const Message &message);
-    void mentionLiveRemove(const QString &uuid);
+    bool mentionLiveRemove(const QString &uuid);
+    // Issue #56: a confirmed message.deleted is final, not a read event. The
+    // uuid gets tombstoned (bounded FIFO) so no later or in-flight collection
+    // page can reinsert it, and every fetched collection is pruned in place.
+    bool mentionCollectionsPrune(const QString &uuid);
     bool m_mentionsVisible = false;
     QString m_mentionsFilter = QStringLiteral("all");
     QHash<QString, MentionCollection> m_mentionsCollections;
     QHash<QString, MentionIndexEntry> m_unreadMentions;
     QVector<Message> m_liveMentions;
+    QSet<QString> m_deletedMentionIds;
+    QStringList m_deletedMentionOrder;
     bool m_mentionIndexReady = false;
     bool m_mentionIndexWalking = false;
     QByteArray m_mentionIndexMarker;

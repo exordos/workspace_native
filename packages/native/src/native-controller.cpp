@@ -4098,7 +4098,9 @@ void NativeController::loadMentionCollection(const QString &filter, bool append)
         QVector<Message> page;
         for (const auto &value : result.data.toArray()) {
             const auto parsed = parseMessage(value.toObject(), m_session->project());
-            if (parsed)
+            // A page generated before a confirmed deletion must not reinsert
+            // the deleted card (issue #56).
+            if (parsed && !m_deletedMentionIds.contains(parsed->uuid))
                 page.append(*parsed);
         }
         if (append)
@@ -4232,10 +4234,37 @@ void NativeController::mentionLiveUpsert(const Message &message)
         m_liveMentions.removeLast();
 }
 
-void NativeController::mentionLiveRemove(const QString &uuid)
+bool NativeController::mentionLiveRemove(const QString &uuid)
 {
+    const auto before = m_liveMentions.size();
     m_liveMentions.erase(std::remove_if(m_liveMentions.begin(), m_liveMentions.end(),
         [&](const Message &live) { return live.uuid == uuid; }), m_liveMentions.end());
+    return m_liveMentions.size() != before;
+}
+
+// Issue #56: a confirmed deletion is final - it must not behave like a read.
+// The uuid is tombstoned so an outstanding (or later) collection page cannot
+// reinsert the card, and every already-fetched collection row is dropped in
+// place so All and Unread shrink without waiting for a refetch. The tombstone
+// set is bounded FIFO; message uuids are never reused, so dropping the oldest
+// tombstone can only revive a row the server no longer serves anyway.
+bool NativeController::mentionCollectionsPrune(const QString &uuid)
+{
+    static constexpr int kTombstoneCap = 4096;
+    if (!m_deletedMentionIds.contains(uuid)) {
+        m_deletedMentionIds.insert(uuid);
+        m_deletedMentionOrder.append(uuid);
+        while (m_deletedMentionOrder.size() > kTombstoneCap)
+            m_deletedMentionIds.remove(m_deletedMentionOrder.takeFirst());
+    }
+    bool changed = false;
+    for (auto &collection : m_mentionsCollections) {
+        const auto before = collection.rows.size();
+        collection.rows.erase(std::remove_if(collection.rows.begin(), collection.rows.end(),
+            [&](const Message &row) { return row.uuid == uuid; }), collection.rows.end());
+        changed = changed || collection.rows.size() != before;
+    }
+    return changed;
 }
 
 QString NativeController::mentionPreview(const Message &message) const
@@ -4342,6 +4371,8 @@ void NativeController::resetMentions()
     m_mentionsCollections.clear();
     m_unreadMentions.clear();
     m_liveMentions.clear();
+    m_deletedMentionIds.clear();
+    m_deletedMentionOrder.clear();
     m_mentionIndexReady = false;
     m_mentionIndexWalking = false;
     m_mentionIndexMarker.clear();
@@ -5747,10 +5778,16 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (!isUuid(id) || !isUuid(payload.value("stream_uuid").toString())
             || !isUuid(payload.value("topic_uuid").toString()))
             return false;
-        // Deletion leaves the unread index and the live card immediately
-        // (activity-realtime-applier.lib.ts:66-71 and :118-124).
-        if (mentionIndexRemove(id)) emit stateChanged();
-        mentionLiveRemove(id);
+        // A confirmed deletion is final, not a read event (issue #56): the
+        // uuid leaves the unread index, the live card and every fetched
+        // collection in place (activity-realtime-applier.lib.ts:66-71 and
+        // :118-124), and the tombstone keeps outstanding pages from putting
+        // it back. QML is notified once, after all stores are updated.
+        bool mentionsChanged = mentionIndexRemove(id);
+        mentionsChanged = mentionLiveRemove(id) || mentionsChanged;
+        mentionsChanged = mentionCollectionsPrune(id) || mentionsChanged;
+        if (mentionsChanged)
+            emit stateChanged();
         const auto outcome = std::find_if(m_chatOutcomeFacts.begin(), m_chatOutcomeFacts.end(),
             [&](const ChatOutcomeFact &fact) { return fact.id == id; });
         const bool knownOutcome = outcome != m_chatOutcomeFacts.end()
