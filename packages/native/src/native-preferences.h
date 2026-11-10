@@ -31,6 +31,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(qint64 cacheUsageBytes READ cacheUsageBytes NOTIFY cacheStatusChanged)
     Q_PROPERTY(QVariantList suggestedReactions READ suggestedReactions NOTIFY reactionHistoryChanged)
     Q_PROPERTY(QVariantMap quickReactionUsage READ quickReactionUsage NOTIFY reactionHistoryChanged)
+    Q_PROPERTY(QStringList organizationHistory READ organizationHistory NOTIFY organizationHistoryChanged)
 public:
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
@@ -55,6 +56,10 @@ public:
     void recordOwnStatusAway(const QString &owner, bool away);
     QStringList loadLastConversation(const QString &owner);
     void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
+    QStringList organizationHistory() const { return m_organizationHistory; }
+    // Origins of successfully logged-in organizations (deduped, newest first),
+    // mirroring workspace-organization-history.lib.ts.
+    Q_INVOKABLE void recordOrganizationOrigin(const QString &origin);
     void setPaletteId(const QString &palette);
     void setMode(const QString &mode);
     void setLocale(const QString &locale);
@@ -71,6 +76,7 @@ public:
 
 signals:
     void paletteIdChanged();
+    void organizationHistoryChanged();
     void modeChanged();
     void localeChanged();
     void darkChanged();
@@ -113,6 +119,7 @@ private:
     QTimer m_conversationSaveTimer;
     QString m_pendingConversationOwner;
     QStringList m_pendingConversation;
+    QStringList m_organizationHistory;
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
 };

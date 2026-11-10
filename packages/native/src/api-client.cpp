@@ -141,14 +141,19 @@ ApiClient::~ApiClient()
     }
 }
 
-bool ApiClient::setServer(const QUrl &origin, QString *error)
+bool ApiClient::originAllowed(const QUrl &origin) const
 {
     const bool schemeAllowed = origin.scheme() == QStringLiteral("https")
         || (m_allowLoopbackHttpForTests && origin.scheme() == QStringLiteral("http")
             && isLoopback(origin.host()));
-    if (!origin.isValid() || origin.isRelative() || origin.host().isEmpty() || !schemeAllowed
-        || origin.authority().contains('@') || origin.hasQuery() || origin.hasFragment()
-        || (!origin.path().isEmpty() && origin.path() != QStringLiteral("/"))) {
+    return origin.isValid() && !origin.isRelative() && !origin.host().isEmpty() && schemeAllowed
+        && !origin.authority().contains('@') && !origin.hasQuery() && !origin.hasFragment()
+        && (origin.path().isEmpty() || origin.path() == QStringLiteral("/"));
+}
+
+bool ApiClient::setServer(const QUrl &origin, QString *error)
+{
+    if (!originAllowed(origin)) {
         if (error)
             *error = ApiClient::tr("Enter an HTTPS server origin without a path, credentials, query, or fragment.");
         return false;

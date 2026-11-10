@@ -510,6 +510,31 @@ private slots:
         QTRY_COMPARE(window.visibility(), QWindow::Maximized);
         window.close();
     }
+    void organizationHistoryRoundTrip()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto store = directory.filePath("prefs.ini");
+        {
+            NativePreferences preferences(store);
+            QVERIFY(preferences.organizationHistory().isEmpty());
+            preferences.recordOrganizationOrigin("https://acme.example/some/path");
+            preferences.recordOrganizationOrigin("http://127.0.0.1:8080/");
+            preferences.recordOrganizationOrigin("not a url");
+            preferences.recordOrganizationOrigin("ftp://nope.example");
+            // Most-recent-first: suggestions lead with the latest origin.
+            QCOMPARE(preferences.organizationHistory(),
+                     (QStringList{"http://127.0.0.1:8080", "https://acme.example"}));
+            // Re-recording an origin moves it to the front without duplication.
+            preferences.recordOrganizationOrigin("https://acme.example");
+            QCOMPARE(preferences.organizationHistory(),
+                     (QStringList{"https://acme.example", "http://127.0.0.1:8080"}));
+        }
+        NativePreferences reopened(store);
+        QCOMPARE(reopened.organizationHistory(),
+                 (QStringList{"https://acme.example", "http://127.0.0.1:8080"}));
+    }
+
 };
 
 QTEST_MAIN(NativePreferencesTest)

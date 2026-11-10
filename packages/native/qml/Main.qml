@@ -924,10 +924,8 @@ ApplicationWindow {
                 attachmentSaveDialog.close();
                 root.downloadId = "";
             }
-            if (root.controller.authenticated || root.controller.projects.length > 0) {
-                passwordInput.text = "";
-                otpInput.text = "";
-            }
+            // Credential fields live in the credentials wizard step and are
+            // destroyed (not just cleared) once a session or projects appear.
             messageList.updateServiceContext();
             messageList.scheduleVisibleRead();
         }
@@ -988,7 +986,8 @@ ApplicationWindow {
                 width: loginCard.width - 48
                 spacing: 14
                 Text {
-                    text: qsTr("Workspace")
+                    objectName: "loginTitle"
+                    text: root.controller.projects.length > 0 ? qsTr("Workspace") : qsTr("Connect to server")
                     textFormat: Text.PlainText
                     color: root.colors["text-primary"]
                     font.pixelSize: 28
@@ -996,10 +995,15 @@ ApplicationWindow {
                     Layout.fillWidth: true
                 }
                 Text {
-                    text: root.controller.projects.length > 0 ? qsTr("Choose a project") : qsTr("Sign in to your organization")
+                    objectName: "loginDescription"
+                    text: root.controller.projects.length > 0 ? qsTr("Choose a project")
+                        : root.controller.loginStep === "organization"
+                            ? qsTr("Enter your organization address first.")
+                            : qsTr("Choose a sign-in method or enter your email/login and password.")
                     textFormat: Text.PlainText
                     color: root.colors["text-secondary"]
                     font.pixelSize: 14
+                    wrapMode: Text.Wrap
                     Layout.fillWidth: true
                 }
                 ColumnLayout {
@@ -1068,11 +1072,7 @@ ApplicationWindow {
                                         text: qsTr("Continue")
                                         enabled: !root.controller.busy
                                         Accessible.name: qsTr("Continue as %1 in %2").arg(savedCard.modelData.login || savedCard.modelData.user).arg(savedCard.modelData.projectName || savedCard.modelData.project)
-                                        onClicked: {
-                                            passwordInput.text = "";
-                                            otpInput.text = "";
-                                            root.controller.resumeSavedAccount(savedCard.modelData.id);
-                                        }
+                                        onClicked: root.controller.resumeSavedAccount(savedCard.modelData.id)
                                     }
                                     NativeButton {
                                         objectName: "forget-" + savedCard.modelData.id
@@ -1089,64 +1089,203 @@ ApplicationWindow {
                         }
                     }
                 }
-                ColumnLayout {
-                    visible: root.controller.projects.length === 0
+                Loader {
+                    objectName: "organizationFormLoader"
+                    visible: active
+                    active: root.controller.projects.length === 0
+                        && root.controller.loginStep === "organization"
                     Layout.fillWidth: true
-                    spacing: 12
-                    NativeField {
-                        id: serverInput
-                        objectName: "serverInput"
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        enabled: !root.controller.busy
-                        placeholderText: qsTr("Organization URL")
-                        inputMethodHints: Qt.ImhUrlCharactersOnly
-                        Accessible.name: qsTr("Organization URL")
+                    sourceComponent: ColumnLayout {
+                        id: organizationForm
+                        spacing: 12
+                        readonly property var suggestionEntries: root.controller.organizationHistory()
+                        NativeField {
+                            id: serverInput
+                            objectName: "serverInput"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            enabled: !root.controller.busy && !root.controller.organizationLoading
+                            text: root.controller.organizationRealm
+                            onTextChanged: root.controller.organizationInputChanged(text)
+                            placeholderText: qsTr("Server address")
+                            inputMethodHints: Qt.ImhUrlCharactersOnly
+                            Accessible.name: qsTr("Server address")
+                            onAccepted: root.controller.discoverOrganization(text.trim())
+                        }
+                        Popup {
+                            id: organizationHistoryPopup
+                            objectName: "organizationHistoryPopup"
+                            parent: serverInput
+                            padding: 4
+                            width: serverInput.width
+                            x: 0
+                            y: serverInput.height + 4
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                            visible: serverInput.activeFocus && serverInput.text.length === 0
+                                && organizationForm.suggestionEntries.length > 0
+                            contentItem: ColumnLayout {
+                                spacing: 2
+                                Repeater {
+                                    model: organizationForm.suggestionEntries
+                                    delegate: ItemDelegate {
+                                        required property var modelData
+                                        required property int index
+                                        objectName: "organizationHistoryOption-" + index
+                                        Layout.fillWidth: true
+                                        text: modelData
+                                        onClicked: {
+                                            serverInput.text = modelData
+                                            organizationHistoryPopup.close()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Loader {
+                            objectName: "defaultOrganizationLoader"
+                            visible: active
+                            active: root.controller.defaultOrganizationUrl.length > 0
+                                && root.controller.organizationRealm.trim().length === 0
+                            Layout.fillWidth: true
+                            sourceComponent: NativeButton {
+                                objectName: "defaultOrganizationBlock"
+                                colors: root.colors
+                                Layout.fillWidth: true
+                                text: root.controller.defaultOrganizationName
+                                enabled: !root.controller.busy
+                                Accessible.name: qsTr("Add server")
+                                onClicked: root.controller.selectDefaultOrganization()
+                            }
+                        }
+                        NativeButton {
+                            objectName: "organizationNextButton"
+                            colors: root.colors
+                            primary: true
+                            Layout.fillWidth: true
+                            text: qsTr("Continue")
+                            enabled: !root.controller.busy && !root.controller.organizationLoading
+                                && root.controller.isOrganizationUrlValid(serverInput.text.trim())
+                            onClicked: root.controller.continueFromOrganization(serverInput.text.trim())
+                        }
                     }
-                    NativeField {
-                        id: userInput
-                        objectName: "userInput"
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        enabled: !root.controller.busy
-                        placeholderText: qsTr("Username or email")
-                        Accessible.name: qsTr("Username or email")
+                }
+                Loader {
+                    objectName: "realmPreviewLoader"
+                    visible: active
+                    active: root.controller.projects.length === 0
+                        && Object.keys(root.controller.organizationSettings).length > 0
+                    Layout.fillWidth: true
+                    sourceComponent: Rectangle {
+                        objectName: "realmPreviewCard"
+                        radius: 8
+                        color: root.colors["bg-elevated"]
+                        border.color: root.colors["border-subtle"]
+                        implicitHeight: realmPreviewContent.implicitHeight + 24
+                        ColumnLayout {
+                            id: realmPreviewContent
+                            x: 16
+                            y: 12
+                            width: parent.width - 32
+                            spacing: 8
+                            Item {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.topMargin: 4
+                                Layout.bottomMargin: 4
+                                width: 48
+                                height: 48
+                                Image {
+                                    objectName: "realmPreviewIcon"
+                                    anchors.fill: parent
+                                    fillMode: Image.PreserveAspectFit
+                                    readonly property string fallbackSource: "qrc:/workspace/brand/organization-fallback.svg"
+                                    readonly property string baseSource: root.controller.organizationSettings.realmIconUrl || fallbackSource
+                                    source: baseSource
+                                    onBaseSourceChanged: source = baseSource
+                                    onStatusChanged: if (status === Image.Error && source !== fallbackSource)
+                                        source = fallbackSource
+                                    Accessible.ignored: true
+                                }
+                            }
+                            Text {
+                                objectName: "realmPreviewName"
+                                Layout.alignment: Qt.AlignHCenter
+                                text: root.controller.organizationSettings.realmName
+                                    || root.controller.organizationSettings.organizationOrigin
+                                    || ""
+                                textFormat: Text.PlainText
+                                color: root.colors["text-primary"]
+                                font.pixelSize: 16
+                                font.weight: Font.Medium
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                Layout.fillWidth: true
+                            }
+                        }
                     }
-                    NativeField {
-                        id: passwordInput
-                        objectName: "passwordInput"
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        enabled: !root.controller.busy
-                        placeholderText: qsTr("Password")
-                        echoMode: TextInput.Password
-                        inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                        Accessible.name: qsTr("Password")
-                    }
-                    NativeField {
-                        id: otpInput
-                        objectName: "otpInput"
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        enabled: !root.controller.busy
-                        placeholderText: qsTr("One-time code, if required")
-                        inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                        Accessible.name: qsTr("One-time code")
-                        onAccepted: signInButton.clicked()
-                    }
-                    NativeButton {
-                        id: signInButton
-                        objectName: "signInButton"
-                        colors: root.colors
-                        primary: true
-                        Layout.fillWidth: true
-                        text: root.controller.busy ? qsTr("Signing in…") : qsTr("Sign in")
-                        enabled: !root.controller.busy && serverInput.text.trim().length > 0 && userInput.text.trim().length > 0 && passwordInput.text.length > 0
-                        onClicked: {
-                            if (enabled) {
-                                root.controller.login(serverInput.text.trim(), userInput.text.trim(), passwordInput.text, otpInput.text.trim());
-                                passwordInput.text = "";
-                                otpInput.text = "";
+                }
+                Loader {
+                    objectName: "credentialsFormLoader"
+                    visible: active
+                    active: root.controller.projects.length === 0
+                        && root.controller.loginStep === "credentials"
+                    Layout.fillWidth: true
+                    sourceComponent: ColumnLayout {
+                        spacing: 12
+                        NativeButton {
+                            objectName: "loginBackButton"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            text: qsTr("Back")
+                            enabled: !root.controller.busy
+                            onClicked: root.controller.backToOrganization()
+                        }
+                        NativeField {
+                            id: userInput
+                            objectName: "userInput"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            enabled: !root.controller.busy
+                            placeholderText: qsTr("Username or email")
+                            Accessible.name: qsTr("Username or email")
+                        }
+                        NativeField {
+                            id: passwordInput
+                            objectName: "passwordInput"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            enabled: !root.controller.busy
+                            placeholderText: qsTr("Password")
+                            echoMode: TextInput.Password
+                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                            Accessible.name: qsTr("Password")
+                        }
+                        NativeField {
+                            id: otpInput
+                            objectName: "otpInput"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            enabled: !root.controller.busy
+                            placeholderText: qsTr("One-time code, if required")
+                            inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                            Accessible.name: qsTr("One-time code")
+                            onAccepted: signInButton.clicked()
+                        }
+                        NativeButton {
+                            id: signInButton
+                            objectName: "signInButton"
+                            colors: root.colors
+                            primary: true
+                            Layout.fillWidth: true
+                            text: root.controller.busy ? qsTr("Signing in…") : qsTr("Sign in")
+                            enabled: !root.controller.busy && root.controller.organizationRealm.trim().length > 0
+                                && userInput.text.trim().length > 0 && passwordInput.text.length > 0
+                            onClicked: {
+                                if (enabled) {
+                                    root.controller.login(root.controller.organizationRealm,
+                                        userInput.text.trim(), passwordInput.text, otpInput.text.trim());
+                                    passwordInput.text = "";
+                                    otpInput.text = "";
+                                }
                             }
                         }
                     }
@@ -1172,7 +1311,18 @@ ApplicationWindow {
                     onClicked: root.controller.logout()
                 }
                 Text {
-                    visible: root.controller.error.length > 0
+                    objectName: "organizationErrorBanner"
+                    visible: root.controller.error.length > 0 && root.controller.loginStep === "organization"
+                    text: root.controller.error
+                    textFormat: Text.PlainText
+                    color: root.colors.danger
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 13
+                    Layout.fillWidth: true
+                    Accessible.role: Accessible.AlertMessage
+                }
+                Text {
+                    visible: root.controller.error.length > 0 && root.controller.loginStep !== "organization"
                     text: root.controller.error
                     textFormat: Text.PlainText
                     color: root.colors.danger

@@ -2,7 +2,74 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="ru_RU">
     <context>
+        <name>NativeController</name>
+        <message>
+            <source>Server address must be a valid HTTPS URL</source>
+            <translation>Адрес сервера должен быть корректным HTTPS URL</translation>
+        </message>
+        <message>
+            <source>Add server</source>
+            <translation>Добавить сервер</translation>
+        </message>
+        <message>
+            <source>Could not load organization settings. Check the server address and try again.</source>
+            <translation>Не удалось загрузить данные организации. Проверьте адрес сервера и повторите попытку.</translation>
+        </message>
+        <message>
+            <source>Enter your organization address first.</source>
+            <translation>Сначала введите адрес вашей организации.</translation>
+        </message>
+        <message>
+            <source>Choose a sign-in method or enter your email/login and password.</source>
+            <translation>Выберите способ входа или введите email/логин и пароль.</translation>
+        </message>
+    </context>
+    <context>
         <name>Main</name>
+        <message>
+            <source>Add server</source>
+            <translation>Добавить сервер</translation>
+        </message>
+        <message>
+            <source>Back</source>
+            <translation>Назад</translation>
+        </message>
+        <message>
+            <source>Could not load organization settings. Check the server address and try again.</source>
+            <translation>Не удалось загрузить данные организации. Проверьте адрес сервера и повторите попытку.</translation>
+        </message>
+        <message>
+            <source>Connect to server</source>
+            <translation>Подключение к серверу</translation>
+        </message>
+        <message>
+            <source>Enter your organization address first.</source>
+            <translation>Сначала укажите адрес вашей организации.</translation>
+        </message>
+        <message>
+            <source>Choose a sign-in method or enter your email/login and password.</source>
+            <translation>Выберите способ входа или введите email/логин и пароль.</translation>
+        </message>
+        <message>
+            <source>Server address</source>
+            <translation>Адрес сервера</translation>
+        </message>
+        <message>
+            <source>https://chat.example.com</source>
+            <translation>https://chat.example.com</translation>
+        </message>
+        <message>
+            <source>Or connect to our public service.</source>
+            <translation>Или можете подключиться к нашему публичному сервису.</translation>
+        </message>
+        <message>
+            <source>Loading organization settings…</source>
+            <translation>Загружаем настройки организации…</translation>
+        </message>
+        <message>
+            <source>Next</source>
+            <translation>Далее</translation>
+        </message>
         <message>
             <source>online</source>
             <translation>В сети</translation>
@@ -1215,6 +1282,18 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Server address must be a valid HTTPS URL</source>
+            <translation>Адрес сервера должен быть валидным HTTPS URL</translation>
+        </message>
+        <message>
+            <source>Could not load organization settings. Check the server address and try again.</source>
+            <translation>Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Exordos Core Public</source>
+            <translation>Exordos Core Public</translation>
+        </message>
+        <message>
             <source>All messages</source>
             <translation>Все сообщения</translation>
         </message>
@@ -1833,6 +1912,10 @@
     </context>
     <context>
         <name>workspace::Session</name>
+        <message>
+            <source>Could not load organization settings. Check the server address and try again.</source>
+            <translation>Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.</translation>
+        </message>
         <message>
             <source>Your session has expired. Sign in again.</source>
             <translation>Срок действия сеанса истёк. Войдите снова.</translation>
