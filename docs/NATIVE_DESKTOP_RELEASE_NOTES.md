@@ -1,3 +1,21 @@
+# Workspace Native 0.3.11 - Linux development preview
+
+Sidebar destinations are now mutually exclusive. Opening Drafts, Mentions or
+Inbox closes whichever destination was open before, so exactly one page and
+one sidebar entry stay selected instead of two pages splitting the content
+area, and closing the active page returns directly to the conversation. Draft
+contents survive every transition, and both the drafts page keep-alive
+lifecycle and the page remount refetches behave exactly as before
+(issue #54).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.10...0.3.11](https://github.com/exordos/workspace_native/compare/0.3.10...0.3.11)
+
+---
+
 # Workspace Native 0.3.10 - Linux development preview
 
 The sidebar Inbox chip now opens the inbox page. Unread traffic is grouped into
