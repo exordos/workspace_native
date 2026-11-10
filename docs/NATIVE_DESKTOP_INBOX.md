@@ -133,9 +133,29 @@ whose slot is empty triggers the SAME cached collection the sidebar uses
 pending, the stream renders the reference fallback row (stream title +
 stream-level badge); when the response lands the rows refine to the reference
 topic rows — a transient difference, identical to React re-rendering after
-store hydration. Realtime `topic.created/updated/read/deleted` events update a
-filled slot for that stream; `stream.read` zeroes the slot's counters; logout
-and owner switch clear the slots.
+store hydration. Realtime `topic.created/updated/read/deleted` events update
+the slots per the move-reconciliation contract below; `stream.read` zeroes the
+slot's counters; logout and owner switch clear the slots.
+
+Move reconciliation (#65). A complete owned `topic.updated` payload
+(validated through `creationTopicDto`, the same gate the sidebar placement
+uses) owns the topic's placement across ALL slots: the UUID is removed from
+every slot whose stream differs from the payload's `stream_uuid`, then
+upserted into the destination slot. This deletes the vacated card (and stops
+`openInboxRow` from ever handing the obsolete source DTO to
+`beginTopicOpening` as verified canonical metadata). If the destination slot
+is not hydrated, the event's single DTO cannot stand in for the complete
+snapshot the slot contract promises, so the destination is refetched via
+`hydrateInboxStream()`; a destination the catalog does not know leaves no row
+(invalidate).
+Non-authoritative events (`topic.read`, `topic.updated` with an incomplete
+DTO) keep the pre-#65 contract: they only replace/append within the slot the
+payload names and never move a row. `topic.deleted` removes the UUID from
+every slot (the tombstone ends the entity globally). The per-stream fetch
+sweep of `hydrateInboxTopics()` and the event-triggered destination refetch
+share `hydrateInboxStream()` (guards: authenticated, known non-archived
+stream, slot absent, not already hydrating, stale-owner/generation/catalog
+guard on the response).
 
 - `src/native-controller.h/.cpp`
   - `Q_PROPERTY(bool inboxVisible ...)`, `Q_PROPERTY(QVariantMap inboxPage ...)`
@@ -207,6 +227,17 @@ and owner switch clear the slots.
    matching org/project; a foreign project route leaves the page closed.
 7. `inboxEmptyAndErrorStates` — fresh catalog with no unread → no groups;
    `/streams/` failing keeps the catalog unverified and flips `error` on.
+10. `inboxTopicMoveAcrossStreamsReconcilesSlots` (#65) — a complete owned
+    `topic.updated` moves the unread topic A→B: exactly one row survives
+    under B (moved badge), A leaves the inbox once its counters and topics
+    are clear; the row opens the topic at its current home; a rename updates
+    the destination row in place; a move back revives A and vacates B; later
+    `topic.read`/`topic.deleted` affect the surviving destination row.
+11. `inboxTopicMoveToUnhydratedStreamRefetchesDestination` (#65) — the
+    destination had no slot at open time; the move vacates the source and
+    refetches the destination, so the row carries the FETCHED counters (the
+    fixture returns counters distinct from the event DTO to distinguish the
+    two), and navigation opens the topic at the destination.
 
 `native-native-window` (tests/native-window-test.cpp):
 
