@@ -1,3 +1,24 @@
+# Workspace Native 0.3.9 - Linux development preview
+
+The Activity surface gained its Mentions page. The sidebar Mentions chip opens a
+list with All and Unread filters, each fetched from the server independently
+(`mentioned=true`, newest-first, 50-row pages behind `page_marker` cursors)
+with bottom-edge pagination at the reference 64/96 px thresholds. Realtime
+events update an open page without refetching: new mentions merge on top, read
+events clear only the unread dot, deletions drop the row, and unread counts
+come from a dedicated unread-mentions index that falls back to each row's own
+read flag while its prefetch walk is still in flight. Unread rows carry the
+accent dot and emphasis with channel and topic labels
+(`docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md`, issue #42).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.8...0.3.9](https://github.com/exordos/workspace_native/compare/0.3.8...0.3.9)
+
+---
+
 # Workspace Native 0.3.8 - Linux development preview
 
 Navigation request contracts are now enforced per release instead of
