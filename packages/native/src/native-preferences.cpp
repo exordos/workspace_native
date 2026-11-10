@@ -5,6 +5,7 @@
 #include <QLocale>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QStyleHints>
 #include <QScreen>
 #include <QWindow>
@@ -50,6 +51,22 @@ bool validCount(const QJsonValue &value)
     return value.isDouble() && std::isfinite(count) && count > 0
         && count <= MaxReactionCount && count == std::floor(count);
 }
+
+QString normalizeOrganizationOrigin(const QString &value)
+{
+    const QUrl url(value.trimmed());
+    if (!url.isValid() || url.host().isEmpty())
+        return {};
+    const auto scheme = url.scheme();
+    if (scheme != QLatin1String("https") && scheme != QLatin1String("http"))
+        return {};
+    QUrl origin;
+    origin.setScheme(scheme);
+    origin.setHost(url.host());
+    if (url.port() != -1)
+        origin.setPort(url.port());
+    return origin.toString();
+}
 } // namespace
 
 NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std::function<QDate()> utcToday)
@@ -58,6 +75,18 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
 {
     if (!m_utcToday) m_utcToday = [] { return QDateTime::currentDateTimeUtc().date(); };
     m_settings.setFallbacksEnabled(false);
+    {
+        // Persisted organization suggestions (login wizard). Entries that no
+        // longer normalize to an origin are dropped instead of offered.
+        const auto stored = m_settings.value("login/organizationHistory").toStringList();
+        QStringList loaded;
+        for (const auto &entry : stored) {
+            const auto origin = normalizeOrganizationOrigin(entry);
+            if (!origin.isEmpty() && !loaded.contains(origin))
+                loaded.append(origin);
+        }
+        m_organizationHistory = loaded;
+    }
     m_windowSaveTimer.setSingleShot(true);
     m_windowSaveTimer.setInterval(350);
     connect(&m_windowSaveTimer, &QTimer::timeout, this, &NativePreferences::saveWindow);
@@ -116,6 +145,23 @@ void NativePreferences::recordLastConversation(const QString &owner, const QStri
     m_pendingConversationOwner = owner;
     m_pendingConversation = route;
     m_conversationSaveTimer.start();
+}
+
+void NativePreferences::recordOrganizationOrigin(const QString &origin)
+{
+    const auto normalized = normalizeOrganizationOrigin(origin);
+    if (normalized.isEmpty())
+        return;
+    QStringList history{normalized};
+    for (const auto &previous : m_organizationHistory)
+        if (previous != normalized && !history.contains(previous))
+            history.append(previous);
+    if (history == m_organizationHistory)
+        return;
+    m_organizationHistory = history;
+    m_settings.setValue("login/organizationHistory", history);
+    m_settings.sync();
+    emit organizationHistoryChanged();
 }
 
 void NativePreferences::saveLastConversation()

@@ -2017,7 +2017,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto pending=fixture.pending(api);QVERIFY(pending&&!pending->isFinished());
         controller.logout(); // Real public ownership/lifecycle action, not a QML/private readiness setter.
         QTRY_VERIFY(pending.isNull()||pending->isFinished());QTRY_VERIFY(!visibleItem("ownStatusText"));
-        QVERIFY(controller.ownStatus().isEmpty());QTRY_VERIFY(visibleItem("userInput"));
+        QVERIFY(controller.ownStatus().isEmpty());QTRY_VERIFY(visibleItem("serverInput"));
         auto send=std::move(fixture.release);fixture.release={};send();
         QVERIFY(!visibleItem("ownStatusText"));QVERIFY(!visibleItem("ownStatusErrorText"));QCOMPARE(fixture.posts,1);
         const bool closed=closeIncubatedTestWindow(engine,window);if(closed)close.dismiss();QVERIFY(closed);
@@ -4280,7 +4280,7 @@ mv -Tf "$root/.current-new" "$root/current"
             });
             QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
             QSignalSpy frame(window,&QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!frame.isEmpty());
-            auto *field=item(window->contentItem(),"userInput"); QVERIFY(field && field->isVisible());
+            auto *field=item(window->contentItem(),"serverInput"); QVERIFY(field && field->isVisible());
             QTest::mouseClick(window,Qt::LeftButton,{},field->mapToScene(QPointF(field->width()/2,field->height()/2)).toPoint());
             QTRY_VERIFY(field->hasActiveFocus()); QCOMPARE(QGuiApplication::focusWindow(),window);
             QVERIFY(window->activeFocusItem());
@@ -4312,7 +4312,7 @@ mv -Tf "$root/.current-new" "$root/current"
             });
             QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
             QSignalSpy frame(window,&QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!frame.isEmpty());
-            auto *field=item(window->contentItem(),"userInput"); QVERIFY(field && field->isVisible());
+            auto *field=item(window->contentItem(),"serverInput"); QVERIFY(field && field->isVisible());
             QTest::mouseClick(window,Qt::LeftButton,{},field->mapToScene(QPointF(field->width()/2,field->height()/2)).toPoint());
             QTRY_VERIFY(field->hasActiveFocus()); QCOMPARE(QGuiApplication::focusWindow(),window);
             QVERIFY(window->activeFocusItem());
@@ -7514,6 +7514,9 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             if (path.endsWith("/messages/99999999-9999-4999-8999-999999999999"))
                 return Response{saved};
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
             auto response = sessionResponse(request);
             if (path.endsWith("/introspect"))
                 response.data = QJsonObject{{"project_id", projectId}, {"user_info", verifiedProfile}};
@@ -7522,6 +7525,7 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         QVERIFY(!engine.rootObjects().isEmpty());
@@ -7532,6 +7536,13 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *serverInput = item(content, "serverInput");
         QVERIFY(serverInput);
         serverInput->setProperty("text", server.origin().toString());
+        // The organization step gates the credential fields behind discovery (issue #58).
+        QVERIFY(!item(content, "userInput"));
+        QVERIFY(!item(content, "passwordInput"));
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "realmPreviewCard"));
+        QCOMPARE(item(content, "realmPreviewName")->property("text").toString(), QString("Acme Realm"));
+        QTRY_VERIFY(item(content, "userInput"));
         item(content, "userInput")->setProperty("text", "synthetic-user");
         item(content, "passwordInput")->setProperty("text", "synthetic-password");
         click(window, item(content, "signInButton"));
@@ -7540,6 +7551,8 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "project-" + projectId));
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "profileDisplayName"), 1000);
+        // A committed sign-in persists the organization origin for future suggestions.
+        QCOMPARE(preferences.organizationHistory(), QStringList{server.origin().toString()});
         QCOMPARE(item(content, "profileDisplayName")->property("text").toString(), QString("Cassi"));
         QCOMPARE(item(content, "profileEmail")->property("text").toString(), QString("cassi@example.invalid"));
         QCOMPARE(item(content, "profileInitial")->property("text").toString(), QString("C"));
@@ -9391,7 +9404,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.busy());
         QVERIFY(!item(content, "resume-" + saved.id)->isEnabled());
         QVERIFY(!item(content, "forget-" + saved.id)->isEnabled());
-        QVERIFY(!item(content, "passwordInput")->isEnabled());
+        QVERIFY(!item(content, "serverInput")->isEnabled());
         backend.finishRead();
         QTRY_VERIFY(!controller.error().isEmpty());
         QVERIFY(!controller.authenticated());
@@ -9406,7 +9419,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(requests, 2);
         QTRY_COMPARE(backend.values.value(saved.id), QByteArray("synthetic-rotated-private"));
         QTRY_COMPARE(vault.currentAccountId(), saved.id);
-        QVERIFY(item(content, "passwordInput")->property("text").toString().isEmpty());
+        QVERIFY(!item(content, "passwordInput")); // credentials are unmounted before the wizard advances
         QVERIFY(!item(content, "messageComposer")->isEnabled());
         click(window, item(content, "accountMenuButton"));
         QTRY_VERIFY(item(content, "signOutButton")->isVisible());
@@ -10538,6 +10551,130 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!name.contains("synthetic-envelope"));
         QVERIFY(!name.contains("urn:secret:"));
         QVERIFY(name.contains("Encrypted fragment"));
+        window->close();
+    }
+
+    void loginCardMountsOrganizationStepOnly()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        QCOMPARE(item(content, "loginTitle")->property("text").toString(), QString("Connect to server"));
+        QCOMPARE(item(content, "loginDescription")->property("text").toString(),
+                 QString("Enter your organization address first."));
+        // Reference test 154: only the organization field mounts on the first step.
+        QVERIFY(item(content, "serverInput"));
+        QVERIFY(!item(content, "userInput"));
+        QVERIFY(!item(content, "passwordInput"));
+        QVERIFY(!item(content, "signInButton"));
+        QVERIFY(!item(content, "realmPreviewCard"));
+        QVERIFY(!item(content, "defaultOrganizationBlock"));
+        QVERIFY(!item(content, "organizationNextButton")->isEnabled());
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        QVERIFY(item(content, "realmPreviewCard"));
+        QCOMPARE(item(content, "realmPreviewName")->property("text").toString(), QString("Acme Realm"));
+        // Without a realm icon in the payload the card keeps the built-in glyph.
+        QCOMPARE(item(content, "realmPreviewIcon")->property("source").toString(),
+                 QString("qrc:/workspace/brand/organization-fallback.svg"));
+        QVERIFY(!item(content, "organizationNextButton"));
+        QCOMPARE(item(content, "loginDescription")->property("text").toString(),
+                 QString("Choose a sign-in method or enter your email/login and password."));
+        // The back affordance returns to the organization step with the field text kept.
+        click(window, item(content, "loginBackButton"));
+        QTRY_VERIFY(item(content, "organizationNextButton"));
+        QVERIFY(!item(content, "userInput"));
+        QCOMPARE(item(content, "serverInput")->property("text").toString(), server.origin().toString());
+        window->close();
+    }
+
+    void loginCardDiscoveryFailureKeepsCredentialsHidden()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{}, 503};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(!controller.error().isEmpty());
+        QVERIFY(visibleItem("organizationErrorBanner"));
+        // Reference test 470: discovery failure keeps the credentials hidden.
+        QVERIFY(!item(content, "userInput"));
+        QCOMPARE(controller.error(),
+                 QString("Could not load organization settings. Check the server address and try again."));
+        click(window, item(content, "organizationNextButton"));
+        QVERIFY(!item(content, "userInput")); // no discovery success means no reveal
+        window->close();
+    }
+
+    void loginCardOffersPersistedOrganizationHistory()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
+            return sessionResponse(request);
+        };
+        preferences.recordOrganizationOrigin(server.origin().toString());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        // Reference tests 162 and 180: persisted origins are suggested after a
+        // remount and choosing one fills the field without submitting the form.
+        click(window, item(content, "serverInput"));
+        QTRY_VERIFY(item(content, "organizationHistoryOption-0"));
+        click(window, item(content, "organizationHistoryOption-0"));
+        QCOMPARE(item(content, "serverInput")->property("text").toString(), server.origin().toString());
+        QVERIFY(!item(content, "userInput")); // choosing an entry never submits the form
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
         window->close();
     }
 };

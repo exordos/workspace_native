@@ -5211,6 +5211,25 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    // The default-organization shortcut exists only when the build (or the
+    // process environment, for testability) defines the origin; the reference
+    // gates the same block on DEFAULT_LOGIN_ORGANIZATION_URL.
+    m_defaultOrganizationUrl = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL",
+#ifdef WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL
+        QStringLiteral(WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL)
+#else
+        QString()
+#endif
+        ).trimmed();
+    m_defaultOrganizationName = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME",
+#ifdef WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME
+        QStringLiteral(WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME)
+#else
+        tr("Exordos Core Public")
+#endif
+        ).trimmed();
+    if (m_defaultOrganizationName.isEmpty())
+        m_defaultOrganizationName = tr("Exordos Core Public");
     connect(this, &NativeController::stateChanged, this, &NativeController::scheduleChatPreparation);
     connect(this, &NativeController::messagesChanged, this, &NativeController::scheduleChatPreparation);
     connect(this, &NativeController::stateChanged, this, &NativeController::scheduleChatControls);
@@ -5234,6 +5253,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit stateChanged();
     });
     connect(session, &Session::savedAccountsChanged, this, &NativeController::savedAccountsChanged);
+    connect(session, &Session::authenticated, this, [this] {
+        // The reference records the organization into history only after a
+        // login committed its session (workspace-organization-history.lib.ts).
+        if (m_preferences)
+            m_preferences->recordOrganizationOrigin(m_api->server().toString());
+    });
     connect(session, &Session::busyChanged, this, [this](bool busy) {
         const QPointer<NativeController> guard(this);
         if (!authenticated()) {
@@ -5571,6 +5596,198 @@ void NativeController::login(const QString &server, const QString &user,
     m_session->login(QUrl::fromUserInput(server), user, password, otp);
 }
 
+// Mirrors reference isValidRealmUrl (workspace_ui shared/lib/validation.ts):
+// absolute URL with a safe scheme, hostname without spaces, non-empty dot
+// labels. The transport origin rules (no path/query/fragment/userinfo) apply
+// through ApiClient::canSetServer on the resolved origin.
+static QUrl organizationOriginFor(const QString &text)
+{
+    const auto trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QUrl url(trimmed);
+    if (!url.isValid() || url.isRelative() || url.host().isEmpty())
+        return {};
+    const auto host = url.host();
+    if (host.contains(QLatin1Char(' ')) || host.startsWith(QLatin1Char('.'))
+        || host.endsWith(QLatin1Char('.')) || host.contains(QLatin1String("..")))
+        return {};
+    // Mirror `new URL(input).origin`: credentials in the URL are stripped by
+    // origin normalization, not rejected (workspace_ui validation.ts).
+    QUrl origin;
+    origin.setScheme(url.scheme());
+    origin.setHost(host);
+    if (url.port() != -1)
+        origin.setPort(url.port());
+    return origin;
+}
+
+// Mirrors resolveLoginIconUrl (workspace_ui login-page-icon-url.lib.ts): the
+// desktop build resolves realm-relative icons against the organization origin
+// and loads same-origin icons. Only http(s) results survive.
+static QString resolveRealmIconUrl(const QString &origin, const QString &icon)
+{
+    const auto trimmed = icon.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QUrl base(origin);
+    if (!base.isValid() || base.host().isEmpty())
+        return {};
+    const auto resolved = base.resolved(QUrl(trimmed));
+    if (!resolved.isValid() || resolved.host().isEmpty()
+        || (resolved.scheme() != QLatin1String("https") && resolved.scheme() != QLatin1String("http")))
+        return {};
+    return resolved.toString();
+}
+
+void NativeController::setPreferences(NativePreferences *preferences)
+{
+    m_preferences = preferences;
+}
+
+QStringList NativeController::organizationHistory() const
+{
+    return m_preferences ? m_preferences->organizationHistory() : QStringList{};
+}
+
+bool NativeController::isOrganizationUrlValid(const QString &text) const
+{
+    const auto origin = organizationOriginFor(text);
+    return !origin.isEmpty() && m_api->canSetServer(origin);
+}
+
+void NativeController::organizationInputChanged(const QString &text)
+{
+    if (authenticated())
+        return;
+    m_organizationRealm = text;
+    // Reference handleRealmChange: any text whose origin is not the checked
+    // one invalidates the check, the pending advance and the error slot.
+    const auto origin = organizationOriginFor(text);
+    const auto originKey = origin.isEmpty() ? QString{} : origin.toString();
+    if (originKey == m_checkedOrganizationOrigin)
+        return;
+    ++m_organizationAttempt;
+    m_organizationLoading = false;
+    m_organizationSettings.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_pendingOrganizationOrigin.clear();
+    m_error.clear();
+    if (m_loginStep != QLatin1String("organization"))
+        m_loginStep = QStringLiteral("organization");
+    emit stateChanged();
+}
+
+void NativeController::discoverOrganization(const QString &text)
+{
+    if (authenticated())
+        return;
+    m_organizationRealm = text;
+    const auto origin = organizationOriginFor(text);
+    if (origin.isEmpty() || !m_api->canSetServer(origin)) {
+        // Reference fetchSettings returns false for an invalid realm after
+        // clearing settings and the checked marker.
+        if (!m_organizationSettings.isEmpty() || !m_checkedOrganizationOrigin.isEmpty()) {
+            ++m_organizationAttempt;
+            m_organizationLoading = false;
+            m_organizationSettings.clear();
+            m_checkedOrganizationOrigin.clear();
+            emit stateChanged();
+        }
+        return;
+    }
+    const auto originKey = origin.toString();
+    const auto attempt = ++m_organizationAttempt;
+    m_organizationLoading = true;
+    emit stateChanged();
+    QPointer<NativeController> guard(this);
+    m_session->fetchOrganizationSettings(origin, [guard, attempt, originKey, this](
+            bool ok, QVariantMap raw, QString error) {
+        if (!guard || attempt != m_organizationAttempt)
+            return;
+        m_organizationLoading = false;
+        if (ok) {
+            QVariantMap settings;
+            settings.insert(QStringLiteral("organizationOrigin"), originKey);
+            settings.insert(QStringLiteral("realmName"), raw.value(QLatin1String("realm_name")).toString());
+            settings.insert(QStringLiteral("realmIconUrl"),
+                resolveRealmIconUrl(originKey, raw.value(QLatin1String("realm_icon")).toString()));
+            // Reference normalizeLoginRegistrationUrl: https-only.
+            const auto registration = raw.value(QLatin1String("registration_url")).toString().trimmed();
+            settings.insert(QStringLiteral("registrationUrl"),
+                registration.startsWith(QLatin1String("https://")) ? registration : QString{});
+            m_organizationSettings = settings;
+        } else {
+            m_organizationSettings.clear();
+        }
+        m_checkedOrganizationOrigin = originKey;
+        if (!m_pendingOrganizationOrigin.isEmpty() && m_pendingOrganizationOrigin == originKey) {
+            m_pendingOrganizationOrigin.clear();
+            if (ok)
+                m_loginStep = QStringLiteral("credentials");
+            else
+                m_error = error;
+        }
+        emit stateChanged();
+    });
+}
+
+void NativeController::continueFromOrganization(const QString &text)
+{
+    if (authenticated())
+        return;
+    m_organizationRealm = text;
+    m_error.clear();
+    const auto origin = organizationOriginFor(text);
+    if (origin.isEmpty() || !m_api->canSetServer(origin)) {
+        m_error = tr("Server address must be a valid HTTPS URL");
+        emit stateChanged();
+        return;
+    }
+    const auto originKey = origin.toString();
+    if (originKey == m_checkedOrganizationOrigin) {
+        // Reference: a completed check either reveals credentials or repeats
+        // the load error; it never refetches behind the button.
+        m_pendingOrganizationOrigin.clear();
+        if (!m_organizationSettings.isEmpty())
+            m_loginStep = QStringLiteral("credentials");
+        else
+            m_error = tr("Could not load organization settings. Check the server address and try again.");
+        emit stateChanged();
+        return;
+    }
+    m_pendingOrganizationOrigin = originKey;
+    if (!m_organizationLoading)
+        discoverOrganization(text);
+    else
+        emit stateChanged();
+}
+
+void NativeController::backToOrganization()
+{
+    if (authenticated())
+        return;
+    m_pendingOrganizationOrigin.clear();
+    m_error.clear();
+    m_loginStep = QStringLiteral("organization");
+    emit stateChanged();
+}
+
+void NativeController::selectDefaultOrganization()
+{
+    if (authenticated() || m_defaultOrganizationUrl.isEmpty())
+        return;
+    ++m_organizationAttempt;
+    m_organizationLoading = false;
+    m_organizationRealm = m_defaultOrganizationUrl;
+    m_error.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_organizationSettings.clear();
+    m_pendingOrganizationOrigin.clear();
+    m_loginStep = QStringLiteral("organization");
+    emit stateChanged();
+}
+
 void NativeController::openProject(const QString &id)
 {
     if (id != m_session->project())
@@ -5643,6 +5860,13 @@ void NativeController::reset()
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
+    ++m_organizationAttempt;
+    m_loginStep = QStringLiteral("organization");
+    m_organizationRealm.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_pendingOrganizationOrigin.clear();
+    m_organizationLoading = false;
+    m_organizationSettings.clear();
     clearAnchor();
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();

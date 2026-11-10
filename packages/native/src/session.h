@@ -24,6 +24,10 @@ public:
     void forgetSavedAccount(const QString &id);
     void login(const QUrl &server, const QString &login, const QString &password,
                const QString &otp = {});
+    // Public organization discovery for the login wizard (no bearer auth). The
+    // callback receives the parsed realm fields or a user-facing failure note.
+    void fetchOrganizationSettings(const QUrl &origin,
+        std::function<void(bool ok, QVariantMap settings, QString error)> done);
     void selectProject(const QString &uuid);
     void requestRefresh();
     void logout();

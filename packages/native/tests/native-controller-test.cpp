@@ -175,6 +175,16 @@ public:
     QUrl origin() const { return QUrl(QString("http://127.0.0.1:%1").arg(serverPort())); }
 };
 
+// Login wizard organization discovery payload (issue #58), shaped after the
+// public messenger server_settings contract realm fields.
+static QJsonObject organizationSettingsDto(const QString &realmName = QStringLiteral("Acme Realm"),
+                                           const QString &icon = QStringLiteral("/avatars/realm.png"))
+{
+    return {{QStringLiteral("result"), QStringLiteral("success")}, {QStringLiteral("msg"), QString{}},
+            {QStringLiteral("realm_name"), realmName}, {QStringLiteral("realm_icon"), icon},
+            {QStringLiteral("registration_url"), QStringLiteral("https://reg.example/signup")}};
+}
+
 class Fixture {
 public:
     MockServer server;
@@ -191,6 +201,7 @@ public:
     std::function<Response(const Request &)> counters;
     std::function<Response(const Request &)> streams;
     std::function<Response(const Request &)> reactions;
+    std::function<Response(const Request &)> serverSettings;
     bool extraTopic = false;
     bool encrypted = false;
     bool aggregateMessages = false;
@@ -245,6 +256,8 @@ public:
             }
             if (realtime && (path.endsWith("/epoch/") || path.endsWith("/events/")))
                 return realtime(request);
+            if (path.endsWith("/server_settings"))
+                return serverSettings ? serverSettings(request) : Response{organizationSettingsDto()};
             return authentication ? authentication(request) : sessionResponse(request);
         };
     }
@@ -10596,6 +10609,228 @@ private slots:
         QTRY_VERIFY(stopped);
         draftStorage.shutdown();
         QTRY_VERIFY(draftStorage.stopped());
+    }
+
+    void loginWizardStartsOnOrganizationStep()
+    {
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QVERIFY(controller.organizationSettings().isEmpty());
+        QVERIFY(!controller.organizationLoading());
+        QVERIFY(controller.defaultOrganizationUrl().isEmpty());
+        QVERIFY(!controller.isOrganizationUrlValid(QStringLiteral("not a url")));
+        QVERIFY(!controller.isOrganizationUrlValid(QStringLiteral("https://bad..host")));
+        // Reference new URL(...).origin semantics: userinfo and query are
+        // stripped by origin normalization, so the address stays valid.
+        QVERIFY(controller.isOrganizationUrlValid(QStringLiteral("https://user@acme.example")));
+        QVERIFY(controller.isOrganizationUrlValid(QStringLiteral("https://acme.example/with?query")));
+        QVERIFY(controller.isOrganizationUrlValid(QStringLiteral("https://acme.example")));
+        QVERIFY(controller.isOrganizationUrlValid(fixture.server.origin().toString()));
+        controller.continueFromOrganization(QStringLiteral("not a url"));
+        QCOMPARE(controller.error(), QStringLiteral("Server address must be a valid HTTPS URL"));
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QVERIFY(fixture.server.requests.isEmpty());
+        QVERIFY(!controller.organizationLoading());
+    }
+
+    void loginWizardDiscoveryGatesCredentials()
+    {
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.discoverOrganization(origin);
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.organizationSettings().value("realmName").toString(), QStringLiteral("Acme Realm"));
+        QCOMPARE(controller.organizationSettings().value("realmIconUrl").toString(), origin + "/avatars/realm.png");
+        QCOMPARE(controller.organizationSettings().value("registrationUrl").toString(),
+                 QStringLiteral("https://reg.example/signup"));
+        QCOMPARE(controller.organizationSettings().value("organizationOrigin").toString(), origin);
+        // Blur discovery never advances the wizard by itself.
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        controller.continueFromOrganization(origin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("credentials"));
+        QVERIFY(controller.error().isEmpty());
+        // The checked origin advances without a second discovery request.
+        const auto discoveryCount = std::count_if(fixture.server.requests.cbegin(),
+            fixture.server.requests.cend(), [](const Request &request) {
+                return request.target.path().endsWith("/server_settings");
+            });
+        QCOMPARE(discoveryCount, 1);
+    }
+
+    void loginWizardPendingAdvanceCompletesWithResponse()
+    {
+        Fixture fixture;
+        std::function<void()> release;
+        fixture.serverSettings = [&release](const Request &) {
+            Response response{organizationSettingsDto()};
+            response.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.continueFromOrganization(origin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QVERIFY(controller.organizationLoading());
+        QTRY_VERIFY(static_cast<bool>(release)); // the discovery request must reach the mock first
+        QTRY_VERIFY(static_cast<bool>(release));
+        release();
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.loginStep(), QStringLiteral("credentials"));
+        QVERIFY(controller.error().isEmpty());
+    }
+
+    void loginWizardFailureKeepsCredentialsHidden()
+    {
+        Fixture fixture;
+        std::function<void()> release;
+        fixture.serverSettings = [&release](const Request &) {
+            Response response{QJsonObject{}, 503};
+            response.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.continueFromOrganization(origin);
+        QTRY_VERIFY(static_cast<bool>(release));
+        release();
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QVERIFY(controller.organizationSettings().isEmpty());
+        QCOMPARE(controller.error(),
+                 QStringLiteral("Could not load organization settings. Check the server address and try again."));
+        const auto discoveryCount = std::count_if(fixture.server.requests.cbegin(),
+            fixture.server.requests.cend(), [](const Request &request) {
+                return request.target.path().endsWith("/server_settings");
+            });
+        // A checked failed origin repeats the copy instead of refetching.
+        controller.continueFromOrganization(origin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QCOMPARE(controller.error(),
+                 QStringLiteral("Could not load organization settings. Check the server address and try again."));
+        const auto repeatedCount = std::count_if(fixture.server.requests.cbegin(),
+            fixture.server.requests.cend(), [](const Request &request) {
+                return request.target.path().endsWith("/server_settings");
+            });
+        QCOMPARE(repeatedCount, discoveryCount);
+    }
+
+    void loginWizardStaleDiscoveryIsIgnored()
+    {
+        Fixture fixture;
+        std::vector<std::function<void()>> releases;
+        int call = 0;
+        fixture.serverSettings = [&releases, &call](const Request &) {
+            Response response{organizationSettingsDto(call == 0
+                ? QStringLiteral("First Realm") : QStringLiteral("Second Realm"))};
+            response.defer = [&releases, &call](std::function<void()> send) {
+                releases.push_back(std::move(send));
+                ++call;
+            };
+            return response;
+        };
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.discoverOrganization(origin);
+        // A newer check supersedes the in-flight one (reference fetchIdRef guard).
+        controller.organizationInputChanged(QStringLiteral("https://other.example"));
+        controller.discoverOrganization(origin);
+        QTRY_VERIFY(call == 2);
+        releases[1]();
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.organizationSettings().value("realmName").toString(), QStringLiteral("Second Realm"));
+        releases[0]();
+        QTest::qWait(50);
+        QCOMPARE(controller.organizationSettings().value("realmName").toString(), QStringLiteral("Second Realm"));
+        QVERIFY(!controller.organizationLoading());
+    }
+
+    void loginWizardRealmEditInvalidatesCheck()
+    {
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.discoverOrganization(origin);
+        QTRY_VERIFY(!controller.organizationLoading());
+        controller.continueFromOrganization(origin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("credentials"));
+        // Editing the address to a different origin returns to the
+        // organization step and discards the completed check.
+        MockServer second;
+        second.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{organizationSettingsDto()};
+            return sessionResponse(request);
+        };
+        const auto otherOrigin = second.origin().toString();
+        controller.organizationInputChanged(otherOrigin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        QVERIFY(controller.organizationSettings().isEmpty());
+        controller.discoverOrganization(otherOrigin);
+        QTRY_VERIFY(!controller.organizationLoading());
+        QCOMPARE(controller.organizationSettings().value("organizationOrigin").toString(), otherOrigin);
+        QCOMPARE(controller.organizationSettings().value("realmIconUrl").toString(),
+                 otherOrigin + "/avatars/realm.png");
+    }
+
+    void defaultOrganizationShortcutFillsRealmAndClearsState()
+    {
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", "https://public.example");
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME", "Public Test Org");
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        QCOMPARE(controller.defaultOrganizationUrl(), QStringLiteral("https://public.example"));
+        QCOMPARE(controller.defaultOrganizationName(), QStringLiteral("Public Test Org"));
+        const auto origin = fixture.server.origin().toString();
+        controller.organizationInputChanged(origin);
+        controller.discoverOrganization(origin);
+        QTRY_VERIFY(!controller.organizationLoading());
+        controller.continueFromOrganization(origin);
+        QCOMPARE(controller.loginStep(), QStringLiteral("credentials"));
+        controller.selectDefaultOrganization();
+        QCOMPARE(controller.organizationRealm(), QStringLiteral("https://public.example"));
+        QVERIFY(controller.organizationSettings().isEmpty());
+        QVERIFY(controller.error().isEmpty());
+        QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
+        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME");
+    }
+
+    void defaultOrganizationNameFallsBackToTranslatedCopy()
+    {
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", "https://public.example");
+        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME");
+        Fixture fixture;
+        QCOMPARE(fixture.controller.defaultOrganizationName(), QStringLiteral("Exordos Core Public"));
+        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+    }
+
+    void loginRecordsOrganizationHistory()
+    {
+        QTemporaryDir historyDirectory;
+        QVERIFY(historyDirectory.isValid());
+        const auto storePath = historyDirectory.filePath("history.ini");
+        NativePreferences preferences(storePath);
+        Fixture fixture;
+        auto &controller = fixture.controller;
+        controller.setPreferences(&preferences);
+        const auto origin = fixture.server.origin().toString();
+        controller.login(origin, QStringLiteral("synthetic-user"), QStringLiteral("synthetic-password"), QString{});
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(preferences.organizationHistory().size(), 1);
+        QCOMPARE(preferences.organizationHistory().first(), QUrl(origin).toString());
+        // Path fragments normalize to the origin and dedupe to the freshest slot.
+        preferences.recordOrganizationOrigin(QUrl(origin).toString() + "/some/path");
+        QCOMPARE(preferences.organizationHistory().size(), 1);
+        NativePreferences reopened(storePath);
+        QCOMPARE(reopened.organizationHistory(), preferences.organizationHistory());
     }
 };
 

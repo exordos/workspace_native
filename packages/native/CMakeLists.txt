@@ -102,6 +102,19 @@ qt_add_resources(workspace-native-ui native_app_icon PREFIX /workspace/brand
 
 qt_add_executable(workspace-native WIN32 MACOSX_BUNDLE src/main.cpp)
 target_compile_definitions(workspace-native PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
+# Optional compiled-in default-organization shortcut for the login wizard
+# (docs/NATIVE_DESKTOP_LOGIN.md). Empty keeps the block hidden, matching the
+# reference gate on DEFAULT_LOGIN_ORGANIZATION_URL.
+set(WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL "" CACHE STRING
+    "Default login organization origin compiled into the binary")
+set(WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME "" CACHE STRING
+    "Display name for the default login organization shortcut")
+foreach(default_login_org IN ITEMS URL NAME)
+    if(NOT WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org} STREQUAL "")
+        target_compile_definitions(workspace-native-ui PRIVATE
+            WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org}="${WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org}}")
+    endif()
+endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
 qt_add_qml_module(workspace-native
     URI Exordos.Workspace.Native

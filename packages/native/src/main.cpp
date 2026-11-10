@@ -72,6 +72,8 @@ int main(int argc, char **argv)
     workspace::NativeDrafts drafts(&draftStorage);
     workspace::bindNativeCachePreferences(cache, preferences);
     workspace::NativeController controller(&api, &session);
+    // The login wizard persists committed organization origins (issue #58).
+    controller.setPreferences(&preferences);
 #if defined(Q_OS_MACOS)
     const auto deviceName = QStringLiteral("Mac — Desktop");
 #elif defined(Q_OS_WIN)

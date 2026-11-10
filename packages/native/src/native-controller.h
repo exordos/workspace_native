@@ -27,6 +27,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
+    Q_PROPERTY(QString loginStep READ loginStep NOTIFY stateChanged)
+    Q_PROPERTY(QString organizationRealm READ organizationRealm NOTIFY stateChanged)
+    Q_PROPERTY(bool organizationLoading READ organizationLoading NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap organizationSettings READ organizationSettings NOTIFY stateChanged)
+    Q_PROPERTY(QString defaultOrganizationUrl READ defaultOrganizationUrl CONSTANT)
+    Q_PROPERTY(QString defaultOrganizationName READ defaultOrganizationName CONSTANT)
     Q_PROPERTY(QVariantList projects READ projects NOTIFY stateChanged)
     Q_PROPERTY(QVariantList savedAccounts READ savedAccounts NOTIFY savedAccountsChanged)
     Q_PROPERTY(QVariantMap account READ account NOTIFY stateChanged)
@@ -222,6 +228,21 @@ public:
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
+    // Login wizard organization step (docs/NATIVE_DESKTOP_LOGIN.md).
+    QString loginStep() const { return m_loginStep; }
+    QString organizationRealm() const { return m_organizationRealm; }
+    bool organizationLoading() const { return m_organizationLoading; }
+    QVariantMap organizationSettings() const { return m_organizationSettings; }
+    QString defaultOrganizationUrl() const { return m_defaultOrganizationUrl; }
+    QString defaultOrganizationName() const { return m_defaultOrganizationName; }
+    void setPreferences(NativePreferences *preferences);
+    Q_INVOKABLE QStringList organizationHistory() const;
+    Q_INVOKABLE bool isOrganizationUrlValid(const QString &text) const;
+    Q_INVOKABLE void organizationInputChanged(const QString &text);
+    Q_INVOKABLE void discoverOrganization(const QString &text);
+    Q_INVOKABLE void continueFromOrganization(const QString &text);
+    Q_INVOKABLE void backToOrganization();
+    Q_INVOKABLE void selectDefaultOrganization();
     Q_INVOKABLE void openProject(const QString &id);
     Q_INVOKABLE void resumeSavedAccount(const QString &id);
     Q_INVOKABLE void forgetSavedAccount(const QString &id);
@@ -888,6 +909,16 @@ private:
     int m_anchorBudget = 0;
     QTimer m_anchorHighlight;
     QString m_error;
+    QString m_loginStep = QStringLiteral("organization");
+    QString m_organizationRealm;
+    QString m_checkedOrganizationOrigin;
+    QString m_pendingOrganizationOrigin;
+    QString m_defaultOrganizationUrl;
+    QString m_defaultOrganizationName;
+    QVariantMap m_organizationSettings;
+    QPointer<NativePreferences> m_preferences;
+    bool m_organizationLoading = false;
+    quint64 m_organizationAttempt = 0;
     QString m_syncState;
     QString m_notice;
     int m_uploads = 0;

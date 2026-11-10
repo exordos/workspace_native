@@ -54,6 +54,7 @@ public:
     ~ApiClient() override;
 
     bool setServer(const QUrl &origin, QString *error = nullptr);
+    bool canSetServer(const QUrl &origin) const { return originAllowed(origin); }
     QUrl server() const { return m_server; }
     void setAccessToken(const QByteArray &token);
     void clearSession();
@@ -76,6 +77,7 @@ signals:
 
 private:
     struct Pending;
+    bool originAllowed(const QUrl &origin) const;
     void invalidateRequests();
     void finish(QNetworkReply *reply);
     void reject(Callback callback, const QString &message);

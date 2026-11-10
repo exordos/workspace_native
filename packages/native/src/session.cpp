@@ -249,6 +249,33 @@ void Session::login(const QUrl &server, const QString &login, const QString &pas
     }, true, headers);
 }
 
+void Session::fetchOrganizationSettings(const QUrl &origin,
+    std::function<void(bool ok, QVariantMap settings, QString error)> done)
+{
+    QString serverError;
+    if (!m_api->setServer(origin, &serverError)) {
+        done(false, {}, serverError);
+        return;
+    }
+    request("GET", QStringLiteral("/api/workspace/v1/messenger/server_settings"), {}, {},
+        [done = std::move(done)](const ApiResult &result) {
+        // The native login surface renders realm name, icon and registration
+        // entry only, so a 2xx JSON object with any subset of these strings is
+        // an acceptable discovery result (docs/NATIVE_DESKTOP_LOGIN.md).
+        if (!result.ok() || !result.data.isObject()) {
+            done(false, {}, tr("Could not load organization settings. Check the server address and try again."));
+            return;
+        }
+        const auto json = result.data.toObject();
+        QVariantMap settings;
+        for (auto it = json.begin(); it != json.end(); ++it)
+            if (it.key() == QLatin1String("realm_name") || it.key() == QLatin1String("realm_icon")
+                || it.key() == QLatin1String("registration_url"))
+                settings.insert(it.key(), it.value().isString() ? it.value().toString() : QString{});
+        done(true, settings, QString{});
+    }, true);
+}
+
 bool Session::acceptToken(const ApiResult &result, qint64 requestStarted)
 {
     const auto json = result.data.toObject();

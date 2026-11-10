@@ -765,6 +765,72 @@ private slots:
         QCOMPARE(api.generation(), generation);
         QCOMPARE(refreshRequests, 2);
     }
+
+    void organizationSettingsRequestIsPublic()
+    {
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"realm_icon", "/avatars/realm.png"},
+                    {"registration_url", "https://reg.example/signup"}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        bool called = false;
+        bool ok = false;
+        QVariantMap settings;
+        session.fetchOrganizationSettings(server.origin(), [&](bool result, QVariantMap values, QString) {
+            called = true;
+            ok = result;
+            settings = values;
+        });
+        QTRY_VERIFY(called);
+        QVERIFY(ok);
+        QCOMPARE(server.requests.size(), 1);
+        const auto &request = server.requests.first();
+        QCOMPARE(request.method, QByteArray("GET"));
+        QCOMPARE(request.target.path(),
+                 QString("/api/workspace/v1/messenger/server_settings"));
+        // Public discovery must never carry bearer credentials (issue #58).
+        QVERIFY(!request.headers.contains("authorization"));
+        QCOMPARE(settings.value("realm_name").toString(), QString("Acme Realm"));
+        QCOMPARE(settings.value("realm_icon").toString(), QString("/avatars/realm.png"));
+        QCOMPARE(settings.value("registration_url").toString(), QString("https://reg.example/signup"));
+        QVERIFY(!session.ready());
+    }
+
+    void organizationSettingsRejectsInvalidResponses()
+    {
+        MockServer server;
+        server.handler = [](const Request &request) { return sessionResponse(request); };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        bool called = false;
+        bool ok = true;
+        QString error;
+        session.fetchOrganizationSettings(server.origin(), [&](bool result, QVariantMap, QString message) {
+            called = true;
+            ok = result;
+            error = message;
+        });
+        QTRY_VERIFY(called);
+        QVERIFY(!ok);
+        QVERIFY(!error.isEmpty());
+        // A non-object success body is also a failure for the wizard contract.
+        server.handler = [](const Request &) { return Response{QJsonArray{}}; };
+        called = false;
+        ok = true;
+        session.fetchOrganizationSettings(server.origin(), [&](bool result, QVariantMap, QString) {
+            called = true;
+            ok = result;
+        });
+        QTRY_VERIFY(called);
+        QVERIFY(!ok);
+        QVERIFY(!session.ready());
+        QVERIFY(session.projects().isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(SessionTest)
