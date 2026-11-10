@@ -10551,6 +10551,164 @@ private slots:
         QVERIFY(!page.value("loading").toBool());
     }
 
+    // Issue #64: a failed first topic-list request must not pin the stream in
+    // the hydration set. Closing and reopening Inbox must retry the request and
+    // refine the fallback card into topic rows (docs/NATIVE_DESKTOP_INBOX.md
+    // failure-recovery section; acceptance criteria in the issue).
+    void inboxFailedTopicHydrationRetriesOnReopen()
+    {
+        Fixture fixture;
+        const auto stream = QStringLiteral("a1000000-0000-4000-8000-000000000064");
+        fixture.streams = [stream](const Request &) { return Response{QJsonArray{
+            inboxStream(stream, "Product team", 4, 4, 0)}}; };
+        auto topicGets = std::make_shared<int>(0);
+        fixture.topics = [stream, topicGets](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") != stream)
+                return Response{QJsonArray{}};
+            if (++*topicGets == 1)
+                return Response{QJsonArray{}, 500}; // transient server error
+            return Response{QJsonArray{inboxTopic(topicId, stream, "General Topic", 3, 3, 0)}};
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *topicGets >= 1; }, 4000));
+        QTest::qWait(250); // let the failure settle before inspecting the page
+        // The failed stream keeps only the stream-level fallback row.
+        const auto failedRows = inboxCard(fixture.controller.inboxPage(), "channels", stream)
+            .value("rows").toList();
+        QCOMPARE(failedRows.size(), 1);
+        QVERIFY(failedRows.at(0).toMap().value("topic").toString().isEmpty());
+        // Close + reopen must re-dispatch the hydration request (#64).
+        fixture.controller.closeInbox();
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *topicGets >= 2; }, 4000));
+        QVERIFY(QTest::qWaitFor([&] {
+            return inboxRow(fixture.controller.inboxPage(), "channels", stream, topicId)
+                .value("badge").toString() == QStringLiteral("3");
+        }, 4000));
+    }
+
+    // Issue #64 acceptance: an unsuccessful later pagination page releases the
+    // hydration marker just like a first-page failure.
+    void inboxFailedTopicPaginationReleasesHydration()
+    {
+        Fixture fixture;
+        const auto stream = QStringLiteral("a1000000-0000-4000-8000-000000000064");
+        const auto lateTopic = QStringLiteral("b1000000-0000-4000-8000-000000000064");
+        fixture.streams = [stream](const Request &) { return Response{QJsonArray{
+            inboxStream(stream, "Product team", 5, 5, 0)}}; };
+        auto cycles = std::make_shared<int>(0);
+        auto failedOnce = std::make_shared<bool>(false);
+        fixture.topics = [stream, lateTopic, cycles, failedOnce](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("stream_uuid") != stream)
+                return Response{QJsonArray{}};
+            const auto marker = query.queryItemValue("page_marker");
+            if (marker.isEmpty()) ++*cycles;
+            if (*cycles == 1 && !marker.isEmpty()) {
+                *failedOnce = true;
+                return Response{QJsonArray{}, 500}; // second page fails
+            }
+            if (marker.isEmpty())
+                return Response{QJsonArray{inboxTopic(topicId, stream, "General Topic", 3, 3, 0)},
+                    200, 0, {{"X-Pagination-Marker", "p2"}}};
+            return Response{QJsonArray{inboxTopic(lateTopic, stream, "Release notes", 2, 2, 0,
+                "2026-06-22T11:00:00Z")}};
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *failedOnce; }, 4000));
+        QTest::qWait(250);
+        // A mid-pagination failure leaves the slot unhydrated: fallback row only.
+        const auto failedRows = inboxCard(fixture.controller.inboxPage(), "channels", stream)
+            .value("rows").toList();
+        QCOMPARE(failedRows.size(), 1);
+        QVERIFY(failedRows.at(0).toMap().value("topic").toString().isEmpty());
+        // Reopen retries from page one and lands both pages.
+        fixture.controller.closeInbox();
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] {
+            const auto page = fixture.controller.inboxPage();
+            return inboxRow(page, "channels", stream, topicId).contains("badge")
+                && inboxRow(page, "channels", stream, lateTopic).contains("badge");
+        }, 4000));
+    }
+
+    // Issue #64 acceptance: a successful hydration that is still in flight stays
+    // deduplicated across a close/reopen cycle (no duplicate collection).
+    void inboxInFlightHydrationStaysDeduplicatedOnReopen()
+    {
+        Fixture fixture;
+        const auto stream = QStringLiteral("a1000000-0000-4000-8000-000000000064");
+        fixture.streams = [stream](const Request &) { return Response{QJsonArray{
+            inboxStream(stream, "Product team", 4, 4, 0)}}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto topicGets = std::make_shared<int>(0);
+        fixture.topics = [stream, gates, topicGets](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") != stream)
+                return Response{QJsonArray{}};
+            ++*topicGets;
+            Response response{QJsonArray{inboxTopic(topicId, stream, "General Topic", 3, 3, 0)}};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *topicGets == 1 && gates->size() == 1; }, 4000));
+        fixture.controller.closeInbox();
+        fixture.controller.showInbox();
+        QTest::qWait(250);
+        QCOMPARE(*topicGets, 1); // the in-flight hydration was not re-dispatched
+        (*gates)[0]();
+        QVERIFY(QTest::qWaitFor([&] {
+            return inboxRow(fixture.controller.inboxPage(), "channels", stream, topicId)
+                .value("badge").toString() == QStringLiteral("3");
+        }, 4000));
+    }
+
+    // Issue #64 acceptance: a stale session's late failure must not release the
+    // NEW session's in-flight marker, so the new hydration stays deduplicated.
+    void inboxStaleHydrationFailureCannotPoisonNewSession()
+    {
+        Fixture fixture;
+        const auto stream = QStringLiteral("a1000000-0000-4000-8000-000000000064");
+        fixture.streams = [stream](const Request &) { return Response{QJsonArray{
+            inboxStream(stream, "Product team", 4, 4, 0)}}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto topicGets = std::make_shared<int>(0);
+        fixture.topics = [stream, gates, topicGets](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") != stream)
+                return Response{QJsonArray{}};
+            ++*topicGets;
+            Response response{*topicGets == 1 ? QJsonArray{}
+                : QJsonArray{inboxTopic(topicId, stream, "General Topic", 3, 3, 0)},
+                *topicGets == 1 ? 500 : 200};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *topicGets == 1 && gates->size() == 1; }, 4000));
+        fixture.controller.logout();
+        QVERIFY(QTest::qWaitFor([&fixture] { return !fixture.controller.authenticated(); }, 4000));
+        loginInbox(fixture, 1);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&] { return *topicGets == 2 && gates->size() == 2; }, 4000));
+        // The old session's GET fails now, after the new session started its own.
+        (*gates)[0]();
+        gates->erase(gates->begin());
+        QTest::qWait(250);
+        fixture.controller.closeInbox();
+        fixture.controller.showInbox();
+        QTest::qWait(250);
+        QCOMPARE(*topicGets, 2); // the stale failure must not free the new marker
+        (*gates)[0]();
+        QVERIFY(QTest::qWaitFor([&] {
+            return inboxRow(fixture.controller.inboxPage(), "channels", stream, topicId)
+                .value("badge").toString() == QStringLiteral("3");
+        }, 4000));
+    }
+
     // Issue #54: opening a sidebar destination closes the previously opened
     // page, so exactly one page (and one sidebar selection) stays active and
     // closing the active page returns directly to the conversation. Draft

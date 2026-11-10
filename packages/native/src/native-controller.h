@@ -666,7 +666,8 @@ private:
     void finishMessageIntent(const QString &id);
     void staleReadConversation(const QString &stream, const QString &topic);
     void cachedCollection(const NativeCache::Key &key, const QString &path, const QUrlQuery &query,
-                          std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork = false);
+                          std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork = false,
+                          std::function<void()> failed = {});
     struct UploadTask {
         quint64 intent = 0;
         QString path;
@@ -720,7 +721,8 @@ private:
                  const QUrlQuery &query, ApiClient::Callback callback);
     void collection(const QString &path, QUrlQuery query,
                     std::function<void(const QJsonArray &)> done,
-                    QJsonArray accumulated = {}, QSet<QByteArray> markers = {});
+                    QJsonArray accumulated = {}, QSet<QByteArray> markers = {},
+                    std::function<void()> failed = {});
     void loadTopics();
     void loadMessages(bool older = false);
     void historyPage(bool older, quint64 selection, quint64 revision,
@@ -880,7 +882,8 @@ private:
     // topic lists the sidebar has not hydrated (design doc hydration note).
     bool m_inboxVisible = false;
     QHash<QString, QVector<Topic>> m_inboxTopics;
-    QSet<QString> m_inboxHydrating;
+    QHash<QString, quint64> m_inboxHydrating; // stream -> hydration token (#64)
+    quint64 m_inboxHydrationToken = 0;
     void hydrateInboxTopics();
     void hydrateInboxStream(const QString &stream);
     bool inboxSlotTopicEvent(const QString &kind, const Topic &topic, bool ownsPlacement = false);
