@@ -3452,6 +3452,119 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(fixture.mentionLists >= 2);
     }
 
+    // Issue #44: the sidebar Inbox chip opens the page, stream cards render
+    // with badges, a topic row selects its conversation and unmounts the
+    // page, and closing restores the conversation column. Geometry contract:
+    // workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af inbox-page.ui.tsx.
+    void inboxPageChipRowsAndCloseFlow()
+    {
+        class WindowInboxFixture final : public WindowChannelFixture {
+        public:
+            WindowInboxFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const auto path = request.target.path();
+                    if (path.endsWith("/streams/") && request.method == "GET") {
+                        auto dm = windowChannel(dmStreamId, "Alice");
+                        dm["private"] = true;
+                        dm["direct_user_uuid"] = channelPeer;
+                        dm["unread_count"] = 5;
+                        dm["active_unread_count"] = 5;
+                        auto team = windowChannel(streamId, "Product team");
+                        team["default_topic_uuid"] = topicId;
+                        team["unread_count"] = 3;
+                        team["active_unread_count"] = 3;
+                        return {QJsonArray{team, dm}};
+                    }
+                    if (path.endsWith("/stream_topics/")) {
+                        const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                        if (stream == streamId) {
+                            // Same scene as the base fixture, but Releases
+                            // carries active unreads so it surfaces in the inbox.
+                            auto releases = windowChannelTopic(
+                                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", streamId, "Releases");
+                            releases["is_default"] = false;
+                            releases["is_done"] = true;
+                            releases["unread_count"] = 3;
+                            releases["active_unread_count"] = 3;
+                            auto planning = windowChannelTopic(secondTopicId, streamId, "Planning");
+                            planning["is_default"] = false;
+                            return {QJsonArray{
+                                windowChannelTopic(topicId, streamId, "General Topic"),
+                                planning, releases}};
+                        }
+                        if (stream == dmStreamId) {
+                            auto dmTopic = windowChannelTopic(dmTopicId, dmStreamId, "");
+                            dmTopic["is_default"] = false;
+                            dmTopic["unread_count"] = 5;
+                            dmTopic["active_unread_count"] = 5;
+                            return {QJsonArray{dmTopic}};
+                        }
+                    }
+                    return fallback(request);
+                };
+            }
+            QString dmStreamId = "a2000000-0000-4000-8000-000000000002";
+            QString dmTopicId = "b2000000-0000-4000-8000-000000000002";
+        };
+        WindowInboxFixture fixture;
+        // The source scene's unread topic: Releases carries active_unread 3.
+        const QString releasesId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-inbox"); QVERIFY(chip && chip->isEnabled());
+        QVERIFY(view("messageComposer"));
+        click(window, chip);
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        QVERIFY(!view("messageComposer")); // conversation column hidden
+        QTRY_VERIFY_WITH_TIMEOUT(view("inbox-card-" + streamId)
+            && view("inbox-card-" + fixture.dmStreamId), 5000);
+        // Ordering: direct-private cards lead the direct section (ui.tsx:36).
+        auto *dmCard = view("inbox-card-" + fixture.dmStreamId);
+        auto *channelCard = view("inbox-card-" + streamId);
+        QVERIFY(dmCard && channelCard);
+        QVERIFY(dmCard->mapToItem(window->contentItem(), QPointF{}).y()
+            < channelCard->mapToItem(window->contentItem(), QPointF{}).y());
+        auto *channelBadge = view("inbox-card-badge-" + streamId); QVERIFY(channelBadge);
+        QCOMPARE(channelBadge->property("text").toString(), QString("3"));
+        auto *dmBadge = view("inbox-card-badge-" + fixture.dmStreamId); QVERIFY(dmBadge);
+        QCOMPARE(dmBadge->property("text").toString(), QString("5"));
+        // Topic rows refine once per-stream catalogs land (only the
+        // active-unread topics surface; General/Planning stay out).
+        QTRY_VERIFY_WITH_TIMEOUT(view("inbox-row-" + releasesId)
+            && view("inbox-row-" + fixture.dmTopicId), 5000);
+        QVERIFY(!view("inbox-row-" + topicId));
+        // Empty-topic DM row: "peer · All messages" per topicRow's
+        // `${streamTitle} · ${topicTitle}` with the allMessages fallback (ui.tsx:59-71).
+        auto *dmTitle = view("inbox-row-title-" + fixture.dmTopicId); QVERIFY(dmTitle);
+        QCOMPARE(dmTitle->property("text").toString(), QString("Alice · All messages"));
+        // Clicking a DM topic row opens the conversation and closes the page.
+        // (The Releases row would select a resolved topic, whose composer the
+        // reference hides — that is existing native behaviour, not inbox.)
+        click(window, view("inbox-row-" + fixture.dmTopicId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.inboxVisible()
+            && controller.selectedStream() == fixture.dmStreamId
+            && controller.selectedTopic() == fixture.dmTopicId, 5000);
+        QVERIFY(view("messageComposer"));
+        // The close control returns to the conversation without navigation.
+        click(window, chip);
+        QTRY_VERIFY(controller.inboxVisible());
+        click(window, view("inboxCloseButton"));
+        QVERIFY(!controller.inboxVisible());
+        QVERIFY(view("messageComposer"));
+    }
+
     void draftsActualMainConflictButtonsUseConditionalOwnedActions_data()
     {
         QTest::addColumn<QString>("action");

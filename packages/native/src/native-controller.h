@@ -102,6 +102,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool mentionsVisible READ mentionsVisible NOTIFY stateChanged)
     Q_PROPERTY(QString mentionsFilter READ mentionsFilter NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap mentionsPage READ mentionsPage NOTIFY stateChanged)
+    Q_PROPERTY(bool inboxVisible READ inboxVisible NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
 public:
@@ -214,6 +216,8 @@ public:
     bool mentionsVisible() const { return m_mentionsVisible; }
     QString mentionsFilter() const { return m_mentionsFilter; }
     QVariantMap mentionsPage() const;
+    bool inboxVisible() const { return m_inboxVisible; }
+    QVariantMap inboxPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -233,6 +237,9 @@ public:
     Q_INVOKABLE void selectMentionsFilter(const QString &filter);
     Q_INVOKABLE void loadMoreMentions();
     Q_INVOKABLE void retryMentions();
+    Q_INVOKABLE void showInbox();
+    Q_INVOKABLE void closeInbox();
+    Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void nextDraftPage();
     Q_INVOKABLE void previousDraftPage();
     Q_INVOKABLE void openDraft(const QString &id);
@@ -833,6 +840,17 @@ private:
     bool m_mentionIndexWalking = false;
     QByteArray m_mentionIndexMarker;
     QSet<QByteArray> m_mentionIndexMarkers;
+    // Inbox page (#44, docs/NATIVE_DESKTOP_INBOX.md): the catalog already
+    // carries the active/passive counters; the inbox keeps its own per-stream
+    // topic snapshots so the reference topic rows exist for streams whose
+    // topic lists the sidebar has not hydrated (design doc hydration note).
+    bool m_inboxVisible = false;
+    QHash<QString, QVector<Topic>> m_inboxTopics;
+    QSet<QString> m_inboxHydrating;
+    void hydrateInboxTopics();
+    bool inboxSlotTopicEvent(const QString &kind, const Topic &topic);
+    bool inboxSlotStreamRead(const QString &stream);
+    void resetInbox();
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;

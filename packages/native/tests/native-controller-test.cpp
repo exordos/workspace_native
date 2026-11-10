@@ -9749,6 +9749,298 @@ private slots:
         QVERIFY(!fixture.controller.mentionsVisible());
         QVERIFY(fixture.controller.mentionsPage().value("rows").toList().isEmpty());
     }
+
+    // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
+
+    // Stream/topic fixtures measured against workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af inbox-page.ui.tsx: DM + channel
+    // streams mixing active/passive counters, a passive-only stream that must
+    // stay out of the inbox, and a stream whose only unread lives at stream
+    // level (reference fallback-row rule).
+    static QJsonObject inboxStream(const QString &id, const QString &name,
+        qint64 unread, qint64 active, qint64 passive, bool isPrivate = false,
+        const QString &directUser = QString(),
+        const QString &updatedAt = QStringLiteral("2026-06-22T10:10:00Z"))
+    {
+        return {{"uuid", id}, {"project_id", projectId}, {"user_uuid", userId}, {"owner", userId},
+            {"name", name}, {"description", ""}, {"role", "owner"}, {"notification_mode", "all_messages"},
+            {"source_name", "native"}, {"provider_uuid", QJsonValue::Null}, {"provider_identity", QJsonValue::Null},
+            {"invite_only", false}, {"announce", false}, {"private", isPrivate}, {"is_archived", false},
+            {"encryption", false}, {"current_encryption_key_uuid", QJsonValue::Null},
+            {"direct_user_uuid", directUser.isEmpty() ? QJsonValue::Null : QJsonValue(directUser)},
+            {"default_topic_uuid", QJsonValue::Null}, {"unread_count", unread},
+            {"active_unread_count", active}, {"passive_unread_count", passive},
+            {"last_message_uuid", QJsonValue::Null}, {"updated_at", updatedAt}};
+    }
+
+    static QJsonObject inboxTopic(const QString &id, const QString &stream, const QString &name,
+        qint64 unread, qint64 active, qint64 passive,
+        const QString &updatedAt = QStringLiteral("2026-06-22T10:10:00Z"))
+    {
+        return {{"uuid", id}, {"project_id", projectId}, {"user_uuid", userId}, {"stream_uuid", stream},
+            {"name", name}, {"is_done", false}, {"is_default", false}, {"notification_mode", "default"},
+            {"unread_count", unread}, {"active_unread_count", active}, {"passive_unread_count", passive},
+            {"last_message_uuid", QJsonValue::Null}, {"created_at", "2026-06-22T10:00:00Z"},
+            {"updated_at", updatedAt}};
+    }
+
+    void loginInbox(Fixture &fixture, int streamCount)
+    {
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QVERIFY(QTest::qWaitFor([&fixture] { return fixture.controller.projects().size() == 1; }, 2000));
+        fixture.controller.openProject(projectId);
+        QVERIFY(QTest::qWaitFor([&fixture, streamCount] {
+            return fixture.controller.streams().size() == streamCount; }, 3000));
+        QVERIFY(QTest::qWaitFor([&fixture] { return !fixture.controller.busy(); }, 3000));
+    }
+
+    static QVariantMap inboxCard(const QVariantMap &page, const QString &section, const QString &stream)
+    {
+        for (const auto &value : page.value(section).toList())
+            if (value.toMap().value("id").toString() == stream) return value.toMap();
+        return {};
+    }
+
+    void inboxGroupsDirectAndChannelsExcludingPassiveTraffic()
+    {
+        Fixture fixture;
+        fixture.users = [](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")},
+                {"username", "alice"}, {"first_name", "Alice"}, {"email", "alice@example.invalid"}}}}; };
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000001"), "alice", 2, 2, 0,
+                true, QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")),
+            inboxStream(streamId, "Product team", 4, 4, 0),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000002"), "Quiet", 5, 0, 5),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000003"), "Notice", 2, 2, 0)}}; };
+        fixture.topics = [](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == QStringLiteral("a1000000-0000-4000-8000-000000000001"))
+                // A blank topic title renders inbox.allMessages (inbox-page.ui.tsx:64-73).
+                return Response{QJsonArray{inboxTopic(
+                    QStringLiteral("b1000000-0000-4000-8000-000000000001"),
+                    QStringLiteral("a1000000-0000-4000-8000-000000000001"), "  ", 2, 2, 0)}};
+            if (stream == streamId)
+                return Response{QJsonArray{
+                    inboxTopic(topicId, streamId, "General Topic", 3, 3, 0, "2026-06-22T10:10:00Z"),
+                    inboxTopic(secondTopicId, streamId, "Planning", 0, 0, 0),
+                    inboxTopic(QStringLiteral("b1000000-0000-4000-8000-000000000002"), streamId,
+                        "Releases", 1, 1, 0, "2026-06-22T15:00:00Z")}};
+            if (stream == QStringLiteral("a1000000-0000-4000-8000-000000000002"))
+                return Response{QJsonArray{inboxTopic(
+                    QStringLiteral("b1000000-0000-4000-8000-000000000003"),
+                    QStringLiteral("a1000000-0000-4000-8000-000000000002"), "Lurk", 5, 0, 5)}};
+            if (stream == QStringLiteral("a1000000-0000-4000-8000-000000000003"))
+                return Response{QJsonArray{inboxTopic(
+                    QStringLiteral("b1000000-0000-4000-8000-000000000004"),
+                    QStringLiteral("a1000000-0000-4000-8000-000000000003"), "Bulletin", 0, 0, 0)}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 4);
+        const auto before = fixture.controller.inboxPage();
+        QVERIFY(!before.value("loading").toBool());
+        QVERIFY(!before.value("error").toBool());
+        QVERIFY(!fixture.controller.inboxVisible());
+        fixture.controller.showInbox();
+        QVERIFY(fixture.controller.inboxVisible());
+        // Topic rows refine once the per-stream catalogs land (lazy native
+        // hydration documented in the design doc).
+        QVERIFY(QTest::qWaitFor([&fixture] {
+            const auto page = fixture.controller.inboxPage();
+            const auto dm = inboxCard(page, "direct",
+                QStringLiteral("a1000000-0000-4000-8000-000000000001"));
+            const auto dmRows = dm.value("rows").toList();
+            const auto productRows = inboxCard(page, "channels", streamId).value("rows").toList();
+            return dmRows.size() == 1 && dmRows.at(0).toMap().value("topic").toString()
+                       == QStringLiteral("b1000000-0000-4000-8000-000000000001")
+                && productRows.size() == 2;
+        }, 4000));
+        const auto page = fixture.controller.inboxPage();
+
+        const auto direct = page.value("direct").toList();
+        QCOMPARE(direct.size(), 1);
+        const auto dmCard = direct.first().toMap();
+        QCOMPARE(dmCard.value("id").toString(),
+            QStringLiteral("a1000000-0000-4000-8000-000000000001"));
+        QCOMPARE(dmCard.value("title").toString(), QStringLiteral("Alice")); // peer display name
+        QVERIFY(dmCard.value("direct").toBool());
+        // Card badge = stream active unread (inbox-page.ui.tsx:158).
+        QCOMPARE(dmCard.value("badge").toString(), QStringLiteral("2"));
+        const auto dmRows = dmCard.value("rows").toList();
+        QCOMPARE(dmRows.size(), 1);
+        const auto dmRow = dmRows.first().toMap();
+        QCOMPARE(dmRow.value("title").toString(), QStringLiteral("Alice · All messages"));
+        QCOMPARE(dmRow.value("topic").toString(),
+            QStringLiteral("b1000000-0000-4000-8000-000000000001"));
+        QCOMPARE(dmRow.value("badge").toString(), QStringLiteral("2"));
+        QVERIFY(!dmRow.value("time").toString().isEmpty());
+
+        // The passive-only stream stays out of the inbox entirely
+        // (hasUnread, inbox-page.ui.tsx:54-61; resolveWorkspaceActiveUnreadCount
+        // messenger-notification-mode.lib.ts:37-41).
+        const auto channels = page.value("channels").toList();
+        QCOMPARE(channels.size(), 2);
+        const auto product = channels.at(0).toMap();
+        QCOMPARE(product.value("id").toString(), streamId);
+        QCOMPARE(product.value("badge").toString(), QStringLiteral("4"));
+        const auto productRows = product.value("rows").toList();
+        QCOMPARE(productRows.size(), 2); // unread topics only (inbox-page.ui.tsx:86-90)
+        // Recency order: Releases (15:00Z) before General Topic (10:10Z).
+        QCOMPARE(productRows.at(0).toMap().value("title").toString(),
+            QStringLiteral("Product team · Releases"));
+        QCOMPARE(productRows.at(1).toMap().value("title").toString(),
+            QStringLiteral("Product team · General Topic"));
+        const auto notice = channels.at(1).toMap();
+        QCOMPARE(notice.value("id").toString(),
+            QStringLiteral("a1000000-0000-4000-8000-000000000003"));
+        // Stream-level unread with all topics read renders ONE fallback row
+        // (buildInboxStreamGroup, inbox-page.ui.tsx:86-95).
+        const auto noticeRows = notice.value("rows").toList();
+        QCOMPARE(noticeRows.size(), 1);
+        QCOMPARE(noticeRows.first().toMap().value("title").toString(), QStringLiteral("Notice"));
+        QVERIFY(noticeRows.first().toMap().value("topic").toString().isEmpty());
+        QCOMPARE(noticeRows.first().toMap().value("badge").toString(), QStringLiteral("2"));
+
+        fixture.controller.closeInbox();
+        QVERIFY(!fixture.controller.inboxVisible());
+    }
+
+    void inboxRowOpensTargetAndClosesPage()
+    {
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Product team", 3, 3, 0),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000003"), "Notice", 2, 2, 0)}}; };
+        fixture.topics = [](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == streamId)
+                return Response{QJsonArray{inboxTopic(topicId, streamId, "General Topic", 3, 3, 0)}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        // Wait for the refined topic row (the slot owns the canonical DTO
+        // that openInboxRow hands to the topic-opening machinery).
+        QVERIFY(QTest::qWaitFor([&fixture] {
+            const auto rows = inboxCard(fixture.controller.inboxPage(), "channels", streamId)
+                .value("rows").toList();
+            return rows.size() == 1 && rows.at(0).toMap().value("topic").toString() == topicId;
+        }, 4000));
+        // A topic row opens the topic and the page unmounts (reference row click
+        // navigates, inbox-page.ui.tsx:108-110).
+        fixture.controller.openInboxRow(streamId, topicId);
+        QVERIFY(!fixture.controller.inboxVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == topicId, 4000);
+
+        fixture.controller.showInbox();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxVisible(), 2000);
+        fixture.controller.closeInbox();
+        // The fallback row has no topic target and selects the stream.
+        fixture.controller.openInboxRow(QStringLiteral("a1000000-0000-4000-8000-000000000003"), QString());
+        QVERIFY(!fixture.controller.inboxVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedStream()
+            == QStringLiteral("a1000000-0000-4000-8000-000000000003"), 4000);
+    }
+
+    void inboxBadgeFormattingMatchesReferenceLimit()
+    {
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000005"), "Thousand", 1000, 1000, 0),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000006"), "Over", 1001, 1001, 0)}}; };
+        fixture.topics = [](const Request &) { return Response{QJsonArray{}}; };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        // UNREAD_COUNT_DISPLAY_LIMIT = 1000 with floor(count/1000)+"k+" only
+        // above it (count-format.lib.ts): 1000 -> "1000", 1001 -> "1k+".
+        const auto thousand = inboxCard(fixture.controller.inboxPage(), "channels",
+            QStringLiteral("a1000000-0000-4000-8000-000000000005"));
+        const auto over = inboxCard(fixture.controller.inboxPage(), "channels",
+            QStringLiteral("a1000000-0000-4000-8000-000000000006"));
+        QCOMPARE(thousand.value("badge").toString(), QStringLiteral("1000"));
+        QCOMPARE(over.value("badge").toString(), QStringLiteral("1k+"));
+        QCOMPARE(thousand.value("rows").toList().at(0).toMap().value("badge").toString(),
+            QStringLiteral("1000"));
+        QCOMPARE(over.value("rows").toList().at(0).toMap().value("badge").toString(),
+            QStringLiteral("1k+"));
+    }
+
+    void inboxRealtimeCounterUpdateRecomputesPage()
+    {
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Product team", 3, 3, 0),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000002"), "Quiet", 0, 0, 0),
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000003"), "Notice", 2, 2, 0)}}; };
+        fixture.topics = [](const Request &) { return Response{QJsonArray{}}; };
+        loginInbox(fixture, 3);
+        fixture.controller.showInbox();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxPage().value("channels").toList().size() == 2, 4000);
+
+        // stream.updated raises the muted stream's active counters -> it joins
+        // the inbox (reference store applies the replaced counters live).
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000002"), "Quiet", 7, 7, 0), 20)));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxPage().value("channels").toList().size() == 3, 4000);
+        QVERIFY(!inboxCard(fixture.controller.inboxPage(), "channels",
+            QStringLiteral("a1000000-0000-4000-8000-000000000002")).isEmpty());
+
+        // stream.read zeroes the counters -> the stream leaves the inbox.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.read",
+            inboxStream(QStringLiteral("a1000000-0000-4000-8000-000000000003"), "Notice", 0, 0, 0), 21)));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxPage().value("channels").toList().size() == 2, 4000);
+        QVERIFY(inboxCard(fixture.controller.inboxPage(), "channels",
+            QStringLiteral("a1000000-0000-4000-8000-000000000003")).isEmpty());
+    }
+
+    void inboxDeeplinkOpensTheInboxPage()
+    {
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Product team", 1, 1, 0)}}; };
+        loginInbox(fixture, 1);
+        const auto origin = fixture.server.origin();
+        // /inbox is allowlisted (native-deeplink.cpp:39); the reference
+        // navigates the inbox page for it.
+        fixture.controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
+            + QString::number(origin.port()) + "/project/" + projectId + "/inbox");
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxVisible(), 4000);
+        fixture.controller.closeInbox();
+        // A foreign project route keeps the safe no-navigation behaviour.
+        fixture.controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
+            + QString::number(origin.port())
+            + "/project/99999999-9999-4999-8999-999999999999/inbox");
+        QTest::qWait(250);
+        QVERIFY(!fixture.controller.inboxVisible());
+    }
+
+    void inboxEmptyAndErrorStates()
+    {
+        Fixture ok;
+        ok.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Product team", 0, 0, 0)}}; };
+        loginInbox(ok, 1);
+        ok.controller.showInbox();
+        const auto clean = ok.controller.inboxPage();
+        QVERIFY(!clean.value("loading").toBool());
+        QVERIFY(!clean.value("error").toBool());
+        QVERIFY(clean.value("direct").toList().isEmpty() && clean.value("channels").toList().isEmpty());
+
+        // A failed catalog keeps m_catalogVerified false: loading resolves to
+        // the error card (inbox-page.ui.tsx:196-207 state derivation).
+        Fixture failing;
+        failing.streams = [](const Request &) { return Response{QJsonArray{}, 500}; };
+        failing.controller.login(failing.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QVERIFY(QTest::qWaitFor([&failing] { return failing.controller.projects().size() == 1; }, 2000));
+        failing.controller.openProject(projectId);
+        QVERIFY(QTest::qWaitFor([&failing] {
+            return failing.controller.streams().isEmpty() && failing.controller.authenticated()
+                && !failing.controller.error().isEmpty(); }, 3000));
+        failing.controller.showInbox();
+        const auto page = failing.controller.inboxPage();
+        QVERIFY(page.value("error").toBool());
+        QVERIFY(!page.value("loading").toBool());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

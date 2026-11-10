@@ -4337,6 +4337,221 @@ void NativeController::resetMentions()
     m_mentionIndexMarkers.clear();
 }
 
+// ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
+
+// Mirrors formatCount(count, UNREAD_COUNT_DISPLAY_LIMIT) in
+// workspace_ui shared/lib/count-format.lib.ts: only counts ABOVE 1000
+// compact into floor(count/1000) + "k+" (1000 -> "1000", 1001 -> "1k+").
+static QString inboxCountText(qint64 count)
+{
+    return count > 1000 ? QString::number(count / 1000) + QStringLiteral("k+")
+                        : QString::number(count);
+}
+
+static QDateTime inboxUpdated(qint64 microsEpoch)
+{
+    return QDateTime::fromMSecsSinceEpoch(microsEpoch / 1000, Qt::UTC);
+}
+
+void NativeController::showInbox()
+{
+    if (!authenticated())
+        return;
+    m_inboxVisible = true;
+    emit stateChanged();
+    hydrateInboxTopics();
+}
+
+void NativeController::closeInbox()
+{
+    if (!m_inboxVisible)
+        return;
+    m_inboxVisible = false;
+    emit stateChanged();
+}
+
+void NativeController::openInboxRow(const QString &stream, const QString &topic)
+{
+    // The reference row click navigates and the page unmounts
+    // (inbox-page.ui.tsx:108-110). The fallback row carries no topic target
+    // and routes to the stream instead.
+    closeInbox();
+    if (!topic.isEmpty() && isUuid(topic)) {
+        // The inbox slot row is the verified owned DTO: hand it to the
+        // topic-opening machinery directly (the owned-canonical path of
+        // beginTopicOpening) instead of re-fetching topic metadata.
+        const auto slot = m_inboxTopics.constFind(stream);
+        if (slot != m_inboxTopics.cend())
+            for (const auto &row : *slot)
+                if (row.uuid == topic && row.stream == stream) {
+                    beginTopicOpening(topic.toLower(), row);
+                    return;
+                }
+        openTopic(topic, stream);
+    } else {
+        selectStream(stream);
+    }
+}
+
+void NativeController::hydrateInboxTopics()
+{
+    if (!authenticated())
+        return;
+    const auto owner = creationOwnerKey();
+    const auto generation = m_api->generation();
+    const auto catalog = m_catalog;
+    for (const auto &stream : m_streams) {
+        if (stream.archived || stream.activeUnread <= 0
+            || m_inboxTopics.contains(stream.uuid) || m_inboxHydrating.contains(stream.uuid))
+            continue;
+        m_inboxHydrating.insert(stream.uuid);
+        const auto streamUuid = stream.uuid;
+        QUrlQuery query;
+        query.addQueryItem("stream_uuid", streamUuid);
+        cachedCollection({NativeCache::Kind::Topics, streamUuid, {}, {}},
+            messenger + "/stream_topics/", query,
+            [this, streamUuid, owner, generation, catalog](const QJsonArray &rows, bool) {
+            // Stale-owner guard: an owner switch or catalog epoch change may
+            // not write into the new inbox (same contract as mentions).
+            if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
+                || catalog != m_catalog) {
+                m_inboxHydrating.remove(streamUuid);
+                return false;
+            }
+            QVector<Topic> topics;
+            QSet<QString> ids;
+            for (const auto &value : rows) {
+                const auto topic = parseTopic(value.toObject(), m_session->project(), streamUuid);
+                // A malformed row cannot poison the projection; the sidebar
+                // path for the same stream still reports it if selected.
+                if (!topic || ids.contains(topic->uuid)) continue;
+                ids.insert(topic->uuid);
+                topics.append(*topic);
+            }
+            m_inboxTopics.insert(streamUuid, topics);
+            m_inboxHydrating.remove(streamUuid);
+            emit stateChanged();
+            return true;
+        });
+    }
+}
+
+bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &topic)
+{
+    const auto slot = m_inboxTopics.find(topic.stream);
+    if (slot == m_inboxTopics.end())
+        return false;
+    auto &rows = *slot;
+    const auto found = std::find_if(rows.begin(), rows.end(),
+        [&topic](const Topic &item) { return item.uuid == topic.uuid; });
+    if (kind == QLatin1String("topic.deleted")) {
+        if (found == rows.end()) return false;
+        rows.erase(found);
+    } else if (found != rows.end()) {
+        // The DTO owns the counters (topic.read ships zeroes).
+        *found = topic;
+    } else {
+        if (kind != QLatin1String("topic.created")) return false;
+        rows.append(topic);
+    }
+    if (m_inboxVisible) emit stateChanged();
+    return true;
+}
+
+bool NativeController::inboxSlotStreamRead(const QString &stream)
+{
+    const auto slot = m_inboxTopics.find(stream);
+    if (slot == m_inboxTopics.end())
+        return false;
+    for (auto &topic : *slot) {
+        topic.unread = topic.activeUnread = topic.passiveUnread = 0;
+        topic.lastMessage.clear();
+    }
+    if (m_inboxVisible) emit stateChanged();
+    return true;
+}
+
+void NativeController::resetInbox()
+{
+    m_inboxVisible = false;
+    m_inboxTopics.clear();
+    m_inboxHydrating.clear();
+}
+
+QVariantMap NativeController::inboxPage() const
+{
+    QVariantList direct, channels;
+    if (authenticated()) {
+        const auto user = m_session->user();
+        for (const auto &stream : m_streams) {
+            if (stream.archived) continue;
+            // resolveWorkspaceActiveUnreadCount (notification-mode lib:37-41)
+            // resolves active ?? unread; the native parser already normalizes
+            // a missing active counter to 0 (design doc resolver note).
+            const auto streamActive = stream.activeUnread;
+            QVector<const Topic *> unreadTopics;
+            const auto slot = m_inboxTopics.constFind(stream.uuid);
+            if (slot != m_inboxTopics.cend()) {
+                for (const auto &topic : *slot)
+                    if (topic.activeUnread > 0) unreadTopics.append(&topic);
+            } else if (stream.uuid == m_stream) {
+                for (const auto &topic : m_topics)
+                    if (topic.activeUnread > 0) unreadTopics.append(&topic);
+            }
+            // hasUnread = stream active OR any topic active
+            // (inbox-page.ui.tsx:54-61); passive traffic never qualifies.
+            if (streamActive <= 0 && unreadTopics.isEmpty()) continue;
+            const bool directStream = stream.privateStream && isUuid(stream.directUser)
+                && stream.directUser != user;
+            // Same display-title rule as mentionRows(): peer name for DMs,
+            // trimmed name with uuid fallback for channels.
+            const auto streamTitle = directStream ? peerDisplayName(stream.directUser)
+                : (sourceTrimmed(stream.name).isEmpty() ? stream.uuid : sourceTrimmed(stream.name));
+            // Unread topics newest-first (uuid desc tie break), matching the
+            // recency-based sidebar order the reference rows inherit.
+            std::stable_sort(unreadTopics.begin(), unreadTopics.end(),
+                [](const Topic *left, const Topic *right) {
+                    if (left->updatedMicros != right->updatedMicros)
+                        return left->updatedMicros > right->updatedMicros;
+                    return left->uuid > right->uuid;
+                });
+            QVariantList rows;
+            for (const auto *topic : unreadTopics) {
+                // An empty topic title renders inbox.allMessages
+                // (inbox-page.ui.tsx:64-73).
+                const auto topicTitle = sourceTrimmed(topic->name).isEmpty()
+                    ? tr("All messages") : sourceTrimmed(topic->name);
+                rows.append(QVariantMap{
+                    {"id", topic->uuid}, {"stream", stream.uuid}, {"topic", topic->uuid},
+                    {"title", streamTitle + QStringLiteral(" · ") + topicTitle},
+                    {"badge", inboxCountText(topic->activeUnread)},
+                    {"time", topic->updatedMicros > 0
+                        ? mentionTime(inboxUpdated(topic->updatedMicros)) : QString{}},
+                    {"direct", directStream}});
+            }
+            if (rows.isEmpty() && streamActive > 0)
+                // Stream-level unread with no unread topics renders ONE
+                // fallback row without a topic target (inbox-page.ui.tsx:86-95).
+                rows.append(QVariantMap{
+                    {"id", stream.uuid}, {"stream", stream.uuid}, {"topic", QString{}},
+                    {"title", streamTitle}, {"badge", inboxCountText(streamActive)},
+                    {"time", stream.updatedMicros > 0
+                        ? mentionTime(inboxUpdated(stream.updatedMicros)) : QString{}},
+                    {"direct", directStream}});
+            QVariantMap card{{"id", stream.uuid}, {"title", streamTitle},
+                {"direct", directStream}, {"badge", inboxCountText(streamActive)}, {"rows", rows}};
+            (directStream ? direct : channels).append(card);
+        }
+    }
+    // Reference state derivation (inbox-page.ui.tsx:196-207): loading while
+    // the catalog has not loaded and nothing errored; the error card once the
+    // catalog request failed. m_catalogVerified is the native catalogLoaded.
+    const bool catalogPending = authenticated() && !m_catalogVerified;
+    return QVariantMap{{"direct", direct}, {"channels", channels},
+        {"loading", catalogPending && m_error.isEmpty()},
+        {"error", catalogPending && !m_error.isEmpty()}};
+}
+
 void NativeController::showDrafts()
 {
     if (!authenticated() || !m_catalogVerified || !m_draftStore) return;
@@ -5294,6 +5509,7 @@ void NativeController::reset()
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();
     resetMentions();
+    resetInbox();
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();
     if (!guard) return;
@@ -5606,6 +5822,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             op->pending = false;
         }
         noteTopicCreationEvent(stream->uuid);
+        if (kind == QLatin1String("stream.read")) inboxSlotStreamRead(stream->uuid);
         bool matchingOwn = false;
         if (const auto *intent = channelCreation(); intent && intent->uuid == stream->uuid) {
             matchingOwn = kind == "stream.created" && creationStreamDto(payload, m_session->project(), m_session->user(), true)
@@ -5661,6 +5878,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         persistStreams();
         if (!guard) return true;
         emit streamsChanged();
+        // The open inbox projects the same counters live (design doc #44).
+        if (m_inboxVisible) emit stateChanged();
     } else if (kind == "stream.deleted") {
         ++m_streamRevision;
         if (!isUuid(id))
@@ -5687,9 +5906,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         invalidateCache(NativeCache::Kind::History, id);
         m_streams.erase(std::remove_if(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; }), m_streams.end());
+        m_inboxTopics.remove(id);
         if (m_stream == id)
             selectStream({});
         emit streamsChanged();
+        if (m_inboxVisible) emit stateChanged();
     } else if (kind == "topic.created" || kind == "topic.updated" || kind == "topic.read") {
         const auto streamId = payload.value("stream_uuid").toString();
         const auto topic = parseTopic(payload, m_session->project(), streamId);
@@ -5706,6 +5927,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             if (!openingGuard) return true;
         }
         noteTopicCreationEvent(streamId);
+        // Inbox topic slots follow the same DTO-driven counter contract
+        // (docs/NATIVE_DESKTOP_INBOX.md).
+        inboxSlotTopicEvent(kind, *topic);
         bool matchingOwn = false;
         if (const auto *intent = channelCreation(); intent && intent->uuid == streamId) {
             matchingOwn = kind == "topic.created" && topic->uuid == intent->defaultTopic && topic->isDefault
@@ -5795,6 +6019,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             return false;
         const auto deletedStream = payload.value("stream_uuid").toString();
         if (mentionIndexClearTopic(deletedStream, id)) emit stateChanged();
+        {
+            Topic tombstone;
+            tombstone.uuid = id;
+            tombstone.stream = deletedStream;
+            inboxSlotTopicEvent("topic.deleted", tombstone);
+        }
         if (deletedStream == m_stream && id == m_topic) {
             // Keep the explicit A/T intent, but revoke its authority and retire
             // old history/list callbacks before cancellation or any notification.
@@ -7352,6 +7582,7 @@ void NativeController::selectTopic(const QString &id)
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
+    closeInbox();
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;
@@ -7718,6 +7949,17 @@ void NativeController::applyDeepLink(const QString &url)
 {
     const auto route = workspace::parseExternalDeepLink(url);
     if (!route.has_value()) return;
+    // The reference navigates its inbox page for /inbox (inbox-page.ui.tsx
+    // route, docs/NATIVE_DESKTOP_INBOX.md); the org/project guard matches
+    // the one applyMessageRoute applies to message anchors.
+    static const QRegularExpression inboxRoutePattern(
+        "^/org/([^/]+)/project/([^/]+)/inbox/?$");
+    if (const auto match = inboxRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
+            && match.captured(2).compare(m_session->project(), Qt::CaseInsensitive) == 0)
+            showInbox();
+        return;
+    }
     const auto message = workspace::parseMessageRoute(*route);
     if (!message.has_value()) return; // Other whitelisted routes only activate the window.
     applyMessageRoute(message->org, message->project, message->message);
