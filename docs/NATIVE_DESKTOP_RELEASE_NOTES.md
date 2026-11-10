@@ -1,3 +1,23 @@
+# Workspace Native 0.6.0 - Linux development preview
+
+The desktop app now raises native desktop notifications. While the window is
+in the background, direct messages, @mentions, followed topics and enabled
+channel streams raise the operating system's own notification banners, exactly
+like the desktop web client: one banner per conversation and author keeps
+updating while messages arrive, opening the conversation - or marking the
+messages read - dismisses the banner, and a banner click jumps straight to the
+conversation. When the window itself is unfocused, the taskbar entry also
+asks for attention until you return. Muted conversations and conversations
+that are already on screen never notify (issue #3).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.16...0.6.0](https://github.com/exordos/workspace_native/compare/0.3.16...0.6.0)
+
+---
+
 # Workspace Native 0.3.16 - Linux development preview
 
 Inbox now recovers from a failed topic-list request. Previously, if a stream's

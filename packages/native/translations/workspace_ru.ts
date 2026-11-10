@@ -2417,4 +2417,47 @@
             <translation>Загрузка…</translation>
         </message>
     </context>
+    <context>
+        <name>workspace::NotificationService</name>
+        <message>
+            <source>New message</source>
+            <translation>Новое сообщение</translation>
+        </message>
+        <message>
+            <source>You have a new message</source>
+            <translation>У вас новое сообщение</translation>
+        </message>
+        <message numerus="yes">
+            <source>%n message</source>
+            <translation>
+                <numerusform>%n сообщение</numerusform>
+                <numerusform>%n сообщения</numerusform>
+                <numerusform>%n сообщений</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n messages</source>
+            <translation>
+                <numerusform>%n сообщение</numerusform>
+                <numerusform>%n сообщения</numerusform>
+                <numerusform>%n сообщений</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n message from %1</source>
+            <translation>
+                <numerusform>%n сообщение от %1</numerusform>
+                <numerusform>%n сообщения от %1</numerusform>
+                <numerusform>%n сообщений от %1</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n messages from %1</source>
+            <translation>
+                <numerusform>%n сообщение от %1</numerusform>
+                <numerusform>%n сообщения от %1</numerusform>
+                <numerusform>%n сообщений от %1</numerusform>
+            </translation>
+        </message>
+    </context>
 </TS>
