@@ -4463,17 +4463,27 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
     const auto owner = creationOwnerKey();
     const auto generation = m_api->generation();
     const auto catalog = m_catalog;
-    m_inboxHydrating.insert(streamUuid);
+    // #64: every terminal outcome (delivery, stale drop, request failure)
+    // releases only its OWN registration, identified by a per-attempt token.
+    // A late completion from a previous attempt can never clear a newer
+    // attempt's marker, so reopen can retry a failed hydration while an
+    // in-flight successful one stays deduplicated.
+    const auto token = ++m_inboxHydrationToken;
+    m_inboxHydrating.insert(streamUuid, token);
+    const auto settle = [this, streamUuid, token] {
+        if (m_inboxHydrating.value(streamUuid) == token)
+            m_inboxHydrating.remove(streamUuid);
+    };
     QUrlQuery query;
     query.addQueryItem("stream_uuid", streamUuid);
     cachedCollection({NativeCache::Kind::Topics, streamUuid, {}, {}},
         messenger + "/stream_topics/", query,
-        [this, streamUuid, owner, generation, catalog](const QJsonArray &rows, bool) {
+        [this, streamUuid, owner, generation, catalog, settle](const QJsonArray &rows, bool) {
         // Stale-owner guard: an owner switch or catalog epoch change may
         // not write into the new inbox (same contract as mentions).
         if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
             || catalog != m_catalog) {
-            m_inboxHydrating.remove(streamUuid);
+            settle();
             return false;
         }
         QVector<Topic> topics;
@@ -4511,10 +4521,10 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
-        m_inboxHydrating.remove(streamUuid);
+        settle();
         emit stateChanged();
         return true;
-    });
+    }, false, settle);
 }
 
 bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &topic, bool ownsPlacement)
@@ -4898,7 +4908,8 @@ void NativeController::useCache(NativeCacheService *cache)
 }
 
 void NativeController::cachedCollection(const NativeCache::Key &key, const QString &path,
-    const QUrlQuery &query, std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork)
+    const QUrlQuery &query, std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork,
+    std::function<void()> failed)
 {
     const auto revision = m_cacheRevision;
     const auto generation = m_api->generation();
@@ -4913,10 +4924,16 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
         return guard && cache && guard->m_cache == cache && guard->m_cacheRevision == revision
             && guard->m_cacheLease.owner == lease.owner && guard->m_cacheLease.generation == lease.generation;
     };
-    const auto network = [this, guard, cache, lease, key, revision, path, query, done,
+    const auto network = [this, guard, cache, lease, key, revision, path, query, done, failed,
                           networkStarted, authoritativeDelivered, generation, catalog, selection] {
-        if (!guard || *networkStarted || generation != m_api->generation() || catalog != m_catalog
-            || (key.kind == NativeCache::Kind::Topics && selection != m_selection)) return;
+        if (!guard || *networkStarted) return;
+        if (generation != m_api->generation() || catalog != m_catalog
+            || (key.kind == NativeCache::Kind::Topics && selection != m_selection)) {
+            // The captured epoch is gone and nothing will ever be dispatched:
+            // deliver the terminal failure instead of dropping the request (#64).
+            if (failed) failed();
+            return;
+        }
         *networkStarted = true;
         collection(path, query, [this, guard, cache, lease, key, revision, done, authoritativeDelivered](const QJsonArray &rows) {
             if (!guard) return;
@@ -4925,16 +4942,28 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
             if (cache && m_cache == cache && m_cacheRevision == revision
                 && m_cacheLease.owner == lease.owner && m_cacheLease.generation == lease.generation)
                 cache->put(lease, key, rows);
+        }, {}, {}, [guard, failed, authoritativeDelivered] {
+            // A stale cache snapshot already settled the caller's contract:
+            // do not double-report a failure after rows were delivered (#64).
+            if (!guard || *authoritativeDelivered) return;
+            if (failed) failed();
         });
     };
-    const auto fetchCache = [this, guard, cache, lease, key, done, forceNetwork,
+    const auto fetchCache = [this, guard, cache, lease, key, done, failed, forceNetwork,
                              authoritativeDelivered, current, network](bool savedOnly) {
-        if (!current() || *authoritativeDelivered) return;
-        cache->get(lease, key, this, [this, guard, done, forceNetwork, savedOnly,
+        if (*authoritativeDelivered) return;
+        if (!current()) {
+            // Deferred hydration for a dead epoch can never deliver rows:
+            // a savedOnly pass owes its caller the failure terminal (#64).
+            if (savedOnly && failed) failed();
+            return;
+        }
+        cache->get(lease, key, this, [this, guard, done, failed, forceNetwork, savedOnly,
                     authoritativeDelivered, current, network](std::optional<NativeCache::Entry> entry) {
             if (!guard || *authoritativeDelivered) return;
             if (!current()) {
                 if (!savedOnly) network();
+                else if (failed) failed();
                 return;
             }
             if (entry) {
@@ -4945,6 +4974,9 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
                 if (fresh) return;
             }
             if (!savedOnly) network();
+            // A savedOnly deferred pass with no entry has no rows to deliver:
+            // close the caller's contract with the failure terminal (#64).
+            else if (failed) failed();
         });
     };
     if (!cache || !cache->available()) {
@@ -7494,17 +7526,25 @@ void NativeController::setDraft(const QString &text)
 
 void NativeController::collection(const QString &path, QUrlQuery query,
                                  std::function<void(const QJsonArray &)> done,
-                                 QJsonArray accumulated, QSet<QByteArray> markers)
+                                 QJsonArray accumulated, QSet<QByteArray> markers,
+                                 std::function<void()> failed)
 {
     const auto catalog = m_catalog;
     query.removeAllQueryItems("page_limit");
     query.addQueryItem("page_limit", "200");
     request("GET", path, {}, query,
-        [this, path, query, done, accumulated, markers, catalog](const ApiResult &result) mutable {
-        if (catalog != m_catalog)
+        [this, path, query, done, accumulated, markers, catalog, failed](const ApiResult &result) mutable {
+        // Exactly one terminal outcome runs per collection walk (#64): the
+        // rows delivery or, when a page fails or the epoch is gone, the
+        // failure callback. Callers release their in-flight bookkeeping on
+        // either terminal, never from a dropped reply.
+        if (catalog != m_catalog) {
+            if (failed) failed();
             return;
+        }
         if (!result.ok() || !result.data.isArray()) {
             report(tr("Could not load the catalog. %1").arg(result.error));
+            if (failed) failed();
             return;
         }
         for (const auto &value : result.data.toArray())
@@ -7512,12 +7552,13 @@ void NativeController::collection(const QString &path, QUrlQuery query,
         if (!result.nextMarker.isEmpty()) {
             if (markers.contains(result.nextMarker) || accumulated.size() > 100000) {
                 report(tr("The server returned an invalid pagination cursor."));
+                if (failed) failed();
                 return;
             }
             markers.insert(result.nextMarker);
             query.removeAllQueryItems("page_marker");
             query.addQueryItem("page_marker", QString::fromUtf8(result.nextMarker));
-            collection(path, query, done, accumulated, markers);
+            collection(path, query, done, accumulated, markers, failed);
         } else {
             done(accumulated);
         }

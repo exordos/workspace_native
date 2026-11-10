@@ -172,6 +172,22 @@ though the pre-move snapshot cannot contain it. Records are kept until
 a late source-side snapshot stays filtered even after the destination slot
 has landed.
 
+Hydration failure recovery (#64). A hydration attempt registers a per-attempt
+token in `m_inboxHydrating` and releases it on exactly one terminal outcome of
+its collection walk: rows delivery, stale-owner drop, or failure. `collection()`
+guarantees that contract — a failed page (HTTP error, malformed payload,
+invalid pagination cursor) or a dropped epoch invokes the failure terminal
+instead of silently returning; `cachedCollection()` also fails the terminal
+when the captured generation/catalog/selection makes dispatch impossible or a
+savedOnly deferred cache pass can deliver nothing. Releasing the marker is
+token-guarded (`settle`): a late completion from a previous attempt never
+clears a newer attempt's marker, so a stale session's failure cannot poison the
+new session's in-flight dedup. Observable contract: an unread stream whose
+topic-list request failed keeps only the fallback row while the page is open,
+and closing and reopening Inbox (any later `hydrateInboxTopics()` sweep)
+re-dispatches the request and refines the card into topic rows. A successful
+hydration still in flight stays deduplicated across reopen cycles.
+
 - `src/native-controller.h/.cpp`
   - `Q_PROPERTY(bool inboxVisible ...)`, `Q_PROPERTY(QVariantMap inboxPage ...)`
     (both `NOTIFY stateChanged`); invokables `showInbox()`, `closeInbox()`,
