@@ -1,3 +1,22 @@
+# Workspace Native 0.3.16 - Linux development preview
+
+Inbox now recovers from a failed topic-list request. Previously, if a stream's
+unread topic list failed to load (a transient server or network error), the
+stream stayed stuck on its summary row for the rest of the session: reopening
+Inbox never retried, so the unread topics remained invisible until sign-out.
+A failed request is now released immediately: closing and reopening Inbox
+retries it and the card refines into the per-topic rows. Topic lists that are
+still loading stay deduplicated across reopen cycles, and a late failure from
+a previous sign-in session can no longer affect the current one (issue #64).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.3.15...0.3.16](https://github.com/exordos/workspace_native/compare/0.3.15...0.3.16)
+
+---
+
 # Workspace Native 0.3.15 - Linux development preview
 
 The login card now opens with organization discovery, mirroring the desktop
