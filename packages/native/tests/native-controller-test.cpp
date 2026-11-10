@@ -9683,6 +9683,134 @@ private slots:
         QVERIFY(!rowWith(mentionMessage(2).value("uuid").toString()).value("unread").toBool());
     }
 
+    // Deletion is reconciled across every mention store (issue #56): the
+    // fetched collection rows, the live rows and the unread index all drop
+    // the uuid immediately, without a refetch, and no later page response
+    // can resurrect the deleted card.
+    void activityMentionDeletionPrunesFetchedAllRowsWithoutRefetch()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 3, 4000);
+        const auto rowWith = [&](const QString &id) {
+            for (const auto &value : fixture.controller.mentionsPage().value("rows").toList())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+
+        // Row 2 now lives in both sources: the fetched collection and the
+        // live map (message.created re-upserts the same uuid).
+        QVERIFY(fixture.controller.applyRealtimeEvent(
+            controllerEvent("message.created", mentionMessage(2), 13)));
+        const auto id2 = mentionMessage(2).value("uuid").toString();
+        const int fetchCount = queries->size();
+
+        // A confirmed deletion drops the fetched row (which is also a live
+        // row) from the open All collection without issuing a refetch.
+        const QJsonObject deleted{{"kind", "message.deleted"}, {"uuid", id2},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", deleted, 14)));
+        QTRY_VERIFY(!rowWith(id2).contains("id"));
+        QCOMPARE(queries->size(), fetchCount); // pruned in place, no refetch
+        QVERIFY(rowWith(mentionMessage(1).value("uuid").toString()).contains("id"));
+        QVERIFY(rowWith(mentionMessage(3).value("uuid").toString()).contains("id"));
+
+        // Reading a non-deleted message still preserves its All card; the
+        // read only clears the dot (activity-realtime-applier.lib.ts:70-76).
+        auto readEvent = mentionMessage(1);
+        readEvent["read"] = true;
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.read", readEvent, 15)));
+        QTRY_VERIFY(!rowWith(mentionMessage(1).value("uuid").toString()).value("unread").toBool());
+        QVERIFY(rowWith(mentionMessage(1).value("uuid").toString()).contains("id"));
+
+        // The deleted uuid stays tombstoned: the next real refresh (Unread
+        // filter) keeps it gone even though the fixture's server still serves it.
+        fixture.controller.selectMentionsFilter("unread");
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.mentionsPage().value("loading").toBool(), 4000);
+        QVERIFY(!rowWith(id2).contains("id"));
+    }
+
+    void activityMentionDeletionPrunesUnreadCollectionInPlace()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 3, 4000);
+        fixture.controller.selectMentionsFilter("unread");
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 2, 4000);
+        const int fetchCount = queries->size();
+
+        // The deletion drops the fetched row from the open Unread collection
+        // too, without a refetch of that collection.
+        const auto id1 = mentionMessage(1).value("uuid").toString();
+        const QJsonObject deleted{{"kind", "message.deleted"}, {"uuid", id1},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", deleted, 13)));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.mentionsPage().value("rows").toList().size() == 1, 4000);
+        QCOMPARE(queries->size(), fetchCount);
+    }
+
+    void activityMentionDeletedDuringOutstandingPageCannotBeResurrected()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, mentionMessage(1)}, {2, mentionMessage(2, true)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto released = std::make_shared<bool>(false);
+        fixture.messages = [rows, gates, released](const Request &request) {
+            const QUrlQuery query(request.target);
+            // Hold the first All collection page in flight, frozen at the
+            // pre-deletion snapshot that includes row 2.
+            if (!*released && query.queryItemValue("mentioned") == "true"
+                && query.queryItemValue("page_limit") == "50") {
+                Response response{QJsonArray{rows->value(1), rows->value(2)}, 200, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return mentionPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+
+        // The deletion of row 2 arrives while that page response is still
+        // outstanding.
+        const auto id2 = mentionMessage(2).value("uuid").toString();
+        const QJsonObject deleted{{"kind", "message.deleted"}, {"uuid", id2},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}};
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", deleted, 13)));
+        *released = true;
+        for (auto &release : *gates) release();
+        gates->clear();
+
+        // The late page may not resurrect the deleted row: only row 1 lands.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.mentionsPage().value("rows").toList().size() == 1, 4000);
+        const auto list = fixture.controller.mentionsPage().value("rows").toList();
+        for (const auto &value : list)
+            QVERIFY(value.toMap().value("id").toString() != id2);
+        QVERIFY(list.first().toMap().value("id").toString()
+            == mentionMessage(1).value("uuid").toString());
+    }
+
     void activityMentionIndexFallbackUntilWalkCompletes()
     {
         Fixture fixture;

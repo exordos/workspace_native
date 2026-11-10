@@ -47,9 +47,15 @@ boolean. The client never parses mention entities.
   upsert into the unread index and into a live-mention message map. Live rows
   merge into the open page without any new page request (test line 489).
 - `message.read`, `message` with `read: true`, `message` with
-  `mentioned === false`, `message.deleted`, and batch `messages.read`
-  (exact uuid list) → remove uuids from the unread index (dots off, the
-  message stays visible in the All collection).
+  `mentioned === false`, and batch `messages.read` (exact uuid list) →
+  remove uuids from the unread index (dots off, the message stays visible
+  in the All collection).
+- `message.deleted` → final removal, NOT a read marker (issue #56): the
+  uuid leaves the unread index, the live-mention map and every fetched
+  collection (All and Unread) in place, without waiting for a refetch. The
+  uuid is tombstoned (bounded FIFO, cleared on session reset) so an
+  outstanding page response generated before the deletion cannot reinsert
+  the card. QML is notified once, after all stores are updated.
 - `topic.read` / `topic.deleted` → drop index entries for that stream+topic;
   `stream.read` / `stream.deleted` → drop index entries for that stream.
 - Mutations are owner-scoped and epoch-guarded (`epoch_version` monotonic per
@@ -196,6 +202,21 @@ flag → sibling page that hides the conversation column → controller-enriched
    rendered iff unread; click Unread pill → unread rows only.
 7. `activityMentionsEmptyAndRetryStates` — per-filter empty strings for
    `en` + `ru` data rows; error box + retry reissues the request; Escape closes.
+
+`native-native-controller` additions for issue #56 (a confirmed deletion is
+final, not a read):
+
+8. `activityMentionDeletionPrunesFetchedAllRowsWithoutRefetch` — a
+   `message.deleted` for a uuid held in both the fetched All collection and
+   the live map drops the card in place (request counter frozen), other
+   cards stay; reading a non-deleted message keeps its All card; a later
+   real refresh keeps the tombstoned uuid out even when the server page
+   still carries it.
+9. `activityMentionDeletionPrunesUnreadCollectionInPlace` — with the Unread
+   filter open, the deletion shrinks that collection without a refetch.
+10. `activityMentionDeletedDuringOutstandingPageCannotBeResurrected` — the
+    deletion arrives while the first collection page response is held in
+    flight; the late page must not reinsert the deleted row.
 
 Fixture: extend the controller test `Fixture` via its overridable
 `messages` route handler (mock-server.h `X-Pagination-Marker` pattern);
