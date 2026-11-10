@@ -88,6 +88,9 @@ def load_manifest(path):
             if not (isinstance(reason, str) and reason.strip()):
                 raise ManifestError(
                     f'screen {screen_id} band needs a tolerance_reason naming the fluctuating pixel source')
+        cap = entry.get('max_changed_pixels')
+        if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
+            raise ManifestError(f'screen {screen_id} max_changed_pixels must be a positive integer')
         reference = entry.get('reference')
         if reference is not None:
             if not isinstance(reference, str) or not reference:
@@ -137,14 +140,18 @@ def compare_pair(source, native, source_rect=None, native_rect=None):
         difference = ImageChops.difference(*images)
         result['meanAbsoluteChannelDifference'] = list(ImageStat.Stat(difference).mean)
         result['identicalPixels'] = difference.getbbox() is None
+        red, green, blue = difference.split()
+        max_channel = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+        result['changedPixels'] = sum(max_channel.histogram()[1:])
     else:
         result['meanAbsoluteChannelDifference'] = None
         result['identicalPixels'] = None
+        result['changedPixels'] = None
         result['comparisonNote'] = 'Different dimensions retained; no forced alignment or resize'
     return result
 
 
-def _role_verdict(comparison, requires_identical, band):
+def _role_verdict(comparison, requires_identical, band, changed_cap=None):
     if not comparison['sameDimensions']:
         return 'FAIL', 'dimensions differ'
     mean = comparison['meanAbsoluteChannelDifference']
@@ -153,9 +160,12 @@ def _role_verdict(comparison, requires_identical, band):
         if identical:
             return 'PASS', None
         return 'FAIL', f"pixels differ (max channel mean difference {max(mean):.4f})"
-    if max(mean) <= band:
-        return 'PASS', None
-    return 'FAIL', f'max channel mean difference {max(mean):.4f} exceeds band {band}'
+    if max(mean) > band:
+        return 'FAIL', f'max channel mean difference {max(mean):.4f} exceeds band {band}'
+    if changed_cap is not None and comparison['changedPixels'] > changed_cap:
+        return 'FAIL', (f"{comparison['changedPixels']} changed pixels exceed "
+            f"cap {changed_cap} (mean {max(mean):.4f} stayed within band {band})")
+    return 'PASS', None
 
 
 def check_screen(entry, capture_dir, baseline_dir, reference_dir):
@@ -175,10 +185,11 @@ def check_screen(entry, capture_dir, baseline_dir, reference_dir):
     if baseline_path.is_file():
         comparison = compare_pair(baseline_path, capture_path)
         verdict, reason = _role_verdict(comparison,
-            entry.get('requires_identical_pixels', False), entry.get('max_mean_abs_channel_difference'))
+            entry.get('requires_identical_pixels', False), entry.get('max_mean_abs_channel_difference'),
+            entry.get('max_changed_pixels'))
         result['baseline'] = {'verdict': verdict, 'reason': reason,
             'meanAbsoluteChannelDifference': comparison['meanAbsoluteChannelDifference'],
-            'identicalPixels': comparison['identicalPixels'],
+            'identicalPixels': comparison['identicalPixels'], 'changedPixels': comparison['changedPixels'],
             'baselineSha256': comparison['images'][0]['originalSha256'],
             'captureSha256': comparison['images'][1]['originalSha256'],
             'size': comparison['images'][1]['size']}

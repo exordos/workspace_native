@@ -84,6 +84,40 @@ class HarnessTest(unittest.TestCase):
             self.assertFalse(result['identicalPixels'])
             self.assertAlmostEqual(result['meanAbsoluteChannelDifference'][0], 20.0)
             self.assertAlmostEqual(result['meanAbsoluteChannelDifference'][1], 0.0)
+            self.assertEqual(result['changedPixels'], 48)
+
+    def test_changed_pixel_count_ignores_identical_pixels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            left = Image.new('RGB', (10, 10), (10, 20, 30))
+            right = Image.new('RGB', (10, 10), (10, 20, 30))
+            right.putpixel((0, 0), (10, 20, 31))
+            right.putpixel((9, 9), (11, 20, 30))
+            right_path = Path(directory) / 'b.png'
+            right.save(right_path)
+            left_path = Path(directory) / 'a.png'
+            left.save(left_path)
+            result = self.harness.compare_pair(left_path, right_path)
+            self.assertEqual(result['changedPixels'], 2)
+
+    def test_changed_pixel_cap_fails_localized_regressions_below_the_mean_band(self):
+        with tempfile.TemporaryDirectory() as directory:
+            approved = Image.new('RGB', (1000, 1000), (10, 20, 30))
+            drifted = Image.new('RGB', (1000, 1000), (10, 20, 30))
+            for x in range(1000):  # one full row: mean shift ~0.02* but 1000 pixels changed
+                drifted.putpixel((x, 500), (10, 60, 30))
+            approved_path = Path(directory) / 'a.png'
+            drifted_path = Path(directory) / 'b.png'
+            approved.save(approved_path)
+            drifted.save(drifted_path)
+            comparison = self.harness.compare_pair(approved_path, drifted_path)
+            self.assertLess(max(comparison['meanAbsoluteChannelDifference']), 0.1)
+            self.assertEqual(comparison['changedPixels'], 1000)
+            entry = screen('banded', requires_identical_pixels=False,
+                max_mean_abs_channel_difference=0.1, tolerance_reason='documented host band',
+                max_changed_pixels=500)
+            result = self.screen_result(directory, entry, approved_path, drifted_path)
+            self.assertEqual(result['baseline']['verdict'], 'FAIL')
+            self.assertIn('changed pixels', result['baseline']['reason'])
 
     def test_dimension_mismatch_is_retained_and_never_rescaled(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -196,6 +230,14 @@ class HarnessTest(unittest.TestCase):
             broken = screen('broken', capture={'file': 'x.png'})
             with self.assertRaises(self.harness.ManifestError):
                 self.harness.load_manifest(self.write_manifest(directory, broken))
+
+    def test_changed_pixel_cap_must_be_positive_when_present(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entry = screen('capped', requires_identical_pixels=False,
+                max_mean_abs_channel_difference=1.0, tolerance_reason='documented band',
+                max_changed_pixels=0)
+            with self.assertRaises(self.harness.ManifestError):
+                self.harness.load_manifest(self.write_manifest(directory, entry))
 
     def test_shipped_manifest_validates_and_screens_are_registered(self):
         screens = self.harness.load_manifest(MANIFEST)

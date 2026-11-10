@@ -1,0 +1,180 @@
+{
+  "generatedUtc": "2026-11-10T00:13:21Z",
+  "repositoryRevision": "7684302404c749a293e2ca4d135604e0733e47e8",
+  "screens": {
+    "aggregate-en-dark": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-en-dark.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-en-dark.png",
+      "sha256": "bc5a709abee2e14dfe38fdb5f9b903e0755a8c1c265dfe90744a5a39bcdc5f1c",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "aggregate-en-light": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-en-light.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-en-light.png",
+      "sha256": "034816269e33962ece716392887e98eccb7bc32935951db9eeee8a49b901ff31",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "aggregate-identity-day": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-identity-day.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-identity-day.png",
+      "sha256": "710d96b44e7a85f6d18fcb80458d5d8d2483905e24f4613577e701f57c2a55a2",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "aggregate-ru-dark": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-ru-dark.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-ru-dark.png",
+      "sha256": "b6505355868ea615be386e6eb7b3e254b1e3ebec709e13c3777be42cf3f87499",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "aggregate-ru-light": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-ru-light.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-ru-light.png",
+      "sha256": "75d31278aca83cc9638fa89930b9db640c1a8c055e5860502102e07d874ebeb4",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "aggregate-visible-reads": {
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-visible-reads.png"
+      },
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "file": "aggregate-visible-reads.png",
+      "sha256": "eb73c3d7352f4220668a9a04c6f67f74b5e7575e957d9ec79504ad2e79356d39",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "cache-update-failed": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_CACHE_OFFLINE_SCREENSHOT"
+      },
+      "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
+      "file": "cache-update-failed.png",
+      "sha256": "6c20a4df5522773af8975a4bd0f63e03d0a396970ac5781f94be6bad0cfa5777",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "cache-updating": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_CACHE_SCREENSHOT"
+      },
+      "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
+      "file": "cache-updating.png",
+      "sha256": "0723a33a06b53fc6dae9b8820ff94484ba7342047783c1fd85942f0a3d17ddcb",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "chat-dark": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_DARK_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "chat-dark.png",
+      "sha256": "2ce7140e9a1a0d49e6354558ab14446f0e16504eda35fbf8f1658cec43b27a8b",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "chat-light": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "chat-light.png",
+      "sha256": "cc1b41c2d2126d873d2f98f8e3f115030dc6fda9abdd67a83c8dfe4f0d9291d0",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "message-menu-dark": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_MENU_DARK_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "message-menu-dark.png",
+      "sha256": "94f07053000b35c975704129b1419667ab5f95552afad1ed714dcfb614681a3b",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "message-menu-light": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_MENU_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "message-menu-light.png",
+      "sha256": "70664adf28accd925c2144d22c3e260c86c74c56d9cdd0b7d490054dd904620d",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "reaction-picker-dark": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_REACTION_DARK_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "reaction-picker-dark.png",
+      "sha256": "56b2ec3ce4748a93e8ed0e165a43cb43466c98fb0af5a40946d4fec4eecb0ad6",
+      "size": [
+        1440,
+        900
+      ]
+    },
+    "reaction-picker-light": {
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_REACTION_SCREENSHOT"
+      },
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "file": "reaction-picker-light.png",
+      "sha256": "e87d1ba41b58fb078f05a02cb0e087166631e365d60f812dfe5f4b51c31f4b70",
+      "size": [
+        1440,
+        900
+      ]
+    }
+  }
+}

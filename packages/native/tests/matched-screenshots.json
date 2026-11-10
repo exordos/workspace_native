@@ -2,75 +2,207 @@
   "version": 1,
   "comment": "Registry of per-screen matched-screenshot acceptance. See docs/NATIVE_DESKTOP_SCREENSHOT_ACCEPTANCE.md for the rules: every screen names its capture seam, an explicit tolerance (identical pixels or a documented band with a named fluctuating source), and an optional approved source reference. New capture seams register here.",
   "screens": [
-    {"id": "chat-light", "title": "Conversation scene after sign-in, navigation and send, light palette",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "chat-dark", "title": "Same conversation scene switched to dark through the visible account menu",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_DARK_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "message-menu-light", "title": "Message context menu over the synthetic bubble, light palette",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_MENU_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "message-menu-dark", "title": "Message context menu over the synthetic bubble, dark palette",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_MENU_DARK_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "reaction-picker-light", "title": "Full 320x360 reaction picker open, light palette",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_REACTION_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "reaction-picker-dark", "title": "Full 320x360 reaction picker open, dark palette",
-      "binary": "native-window-test", "case": "realQuickWindowSignsInNavigatesAndSends",
-      "capture": {"env": "CASSI_NATIVE_TEST_REACTION_DARK_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "cache-updating", "title": "Saved history restored with revalidation in flight (Updating status, actions disabled)",
-      "binary": "native-window-test", "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
-      "capture": {"env": "CASSI_NATIVE_TEST_CACHE_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "cache-update-failed", "title": "Saved history with failed revalidation (Update failed status, retry visible)",
-      "binary": "native-window-test", "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
-      "capture": {"env": "CASSI_NATIVE_TEST_CACHE_OFFLINE_SCREENSHOT"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-en-light", "title": "Aggregate channel view, English, light palette",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-en-light.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-en-dark", "title": "Aggregate channel view, English, dark palette",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-en-dark.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-ru-light", "title": "Aggregate channel view, Russian, light palette",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-ru-light.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-ru-dark", "title": "Aggregate channel view, Russian, dark palette",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-ru-dark.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-identity-day", "title": "Aggregate view with identity and day-divider fixtures, light palette",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-identity-day.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null},
-    {"id": "aggregate-visible-reads", "title": "Aggregate view with visible read markers",
-      "binary": "native-window-test", "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
-      "capture": {"dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR", "file": "native-aggregate-v15-visible-reads.png"},
-      "requires_identical_pixels": true, "max_mean_abs_channel_difference": null, "tolerance_reason": null,
-      "reference": null}
+    {
+      "id": "chat-light",
+      "title": "Conversation scene after sign-in, navigation and send, light palette",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "chat-dark",
+      "title": "Same conversation scene switched to dark through the visible account menu",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_DARK_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "message-menu-light",
+      "title": "Message context menu over the synthetic bubble, light palette",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_MENU_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "message-menu-dark",
+      "title": "Message context menu over the synthetic bubble, dark palette",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_MENU_DARK_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "reaction-picker-light",
+      "title": "Full 320x360 reaction picker open, light palette",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_REACTION_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "reaction-picker-dark",
+      "title": "Full 320x360 reaction picker open, dark palette",
+      "binary": "native-window-test",
+      "case": "realQuickWindowSignsInNavigatesAndSends",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_REACTION_DARK_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "cache-updating",
+      "title": "Saved history restored with revalidation in flight (Updating status, actions disabled)",
+      "binary": "native-window-test",
+      "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_CACHE_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "cache-update-failed",
+      "title": "Saved history with failed revalidation (Update failed status, retry visible)",
+      "binary": "native-window-test",
+      "case": "savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions",
+      "capture": {
+        "env": "CASSI_NATIVE_TEST_CACHE_OFFLINE_SCREENSHOT"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-en-light",
+      "title": "Aggregate channel view, English, light palette",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-en-light.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-en-dark",
+      "title": "Aggregate channel view, English, dark palette",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-en-dark.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-ru-light",
+      "title": "Aggregate channel view, Russian, light palette",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-ru-light.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-ru-dark",
+      "title": "Aggregate channel view, Russian, dark palette",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-ru-dark.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-identity-day",
+      "title": "Aggregate view with identity and day-divider fixtures, light palette",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-identity-day.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "independent capture runs on the reference stand differ by 60-200 of 1,296,000 pixels (sub-pixel text antialiasing flicker in QML repaints under llvmpipe, measured 2026-11-10); band set 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 2000
+    },
+    {
+      "id": "aggregate-visible-reads",
+      "title": "Aggregate view with visible read markers",
+      "binary": "native-window-test",
+      "case": "aggregateStreamUsesSourceGroupsAndTopicChoices",
+      "capture": {
+        "dir_env": "CASSI_NATIVE_TEST_AGGREGATE_CAPTURE_DIR",
+        "file": "native-aggregate-v15-visible-reads.png"
+      },
+      "requires_identical_pixels": false,
+      "max_mean_abs_channel_difference": 0.01,
+      "tolerance_reason": "visible-reads frames differ by about 1000 of 1,296,000 pixels (text antialiasing flicker after positionViewAtEnd repaint under llvmpipe, measured 2026-11-10); band 20x above the observed max channel mean 0.0005/255",
+      "reference": null,
+      "max_changed_pixels": 4000
+    }
   ]
 }
