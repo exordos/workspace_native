@@ -7,24 +7,48 @@ Workspace in a WebView. The current scope and remaining acceptance work are in
 
 ## Versioning and releases
 
-Use numeric `MAJOR.MINOR.PATCH` versions and tags without a `v` prefix, including
-while the application is a development preview:
+Use numeric `X.Y.Z` (`MAJOR.MINOR.PATCH`) versions and tags without a `v` prefix,
+including while the application is a development preview:
 
-- Increase MAJOR for an incompatible public-interface change or a very large
-  architectural rework; reset MINOR and PATCH to zero.
-- Increase MINOR when a release adds a new feature; reset PATCH to zero.
-- Increase PATCH for bug fixes and corrections to existing functionality.
-- A release containing a new feature and fixes uses a MINOR increase. Internal
+- Increase X (MAJOR) for a change incompatible with the previous version or a
+  major architectural rework; reset Y and Z to zero.
+- Increase Y (MINOR) when a release adds new functionality while preserving
+  compatibility; reset Z to zero.
+- Increase Z (PATCH) for bug fixes and small corrections to existing functionality
+  that preserve compatibility and do not add a new feature.
+- Apply the highest applicable level once for the complete release: incompatible
+  changes or a major architectural rework take precedence over new features;
+  new features take precedence over fixes. Several compatible new features in
+  one release require one MINOR increase, not one increase per feature. Internal
   refactoring alone does not require a MAJOR increase unless it is the substantial
   architectural rework described above.
 
-For example, adding a feature after 0.1.6 produces 0.2.0. Corrections to that
-release use 0.2.1, 0.2.2 and so on; another new feature produces 0.3.0. Published
-tags and immutable package contents keep their original versions. Update the
-CMake project version with the implemented release scope before building and
-tagging it; a documentation-only change does not itself publish a product release.
-The [next ten releases](CURRENT_DEVELOPMENT.md#next-ten-linux-releases) use this
-policy. Bug-fix releases may be delivered between the listed feature releases.
+### Selecting the next version
+
+Start from the latest published release and classify the complete set of changes
+that will actually ship since that release. Increase the applicable component by
+one and reset the lower components as described above. For example, from `0.3.16`:
+
+| Release scope | Next version |
+| --- | --- |
+| Bug fixes or small corrections to existing behavior | `0.3.17` |
+| New compatible functionality, with or without fixes | `0.4.0` |
+| Loss of compatibility or a major architectural rework | `1.0.0` |
+
+Issue titles, milestones and the
+[roadmap](CURRENT_DEVELOPMENT.md#next-ten-linux-releases) contain provisional
+planning versions, not instructions to copy a number into CMake. Do not skip
+MINOR versions merely to match one of those labels. If a feature planned as
+`0.6.0` ships directly after `0.3.16`, its next compatible feature version is
+`0.4.0`. Recalculate planning versions when delivery order or release scope
+changes; a fix to an already shipped feature normally needs only a PATCH increase.
+
+A PR that changes the product version must state its base release, the chosen
+bump level and the change that justifies it. Recheck that choice if another
+release is published before merging or tagging. Keep the CMake project version,
+release tag, package version, release-note heading and comparison link consistent.
+Published tags and immutable package contents keep their original versions.
+A documentation-only change does not itself publish a product release.
 
 The updater compares all three numeric components and selects the exact matching
 archive name. Its transport tests cover patch, minor, two-digit and major

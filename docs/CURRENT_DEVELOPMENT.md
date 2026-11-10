@@ -1014,6 +1014,11 @@ after the 0.3.0 draft feature. Development is paused after that feature. New fea
 increase PATCH, following the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases).
 Bug-fix releases can appear between these ten feature releases. Each row is
 planned work, not a claim of implementation or acceptance.
+The version estimates assume exactly this delivery order and one compatible
+feature release per row. They do not reserve version numbers. If a row ships
+earlier, is combined with another row, or changes scope, recalculate its version
+from the latest published release using the policy above. Copying the issue or
+milestone number into CMake is not a valid reason for a version bump.
 Release results will include the next ten priorities and their planned versions.
 Daily use and delivery through the existing updater come first. Each release
 keeps the configurable 10 GB disk-cache default and verifies affected API/cache
@@ -1021,7 +1026,7 @@ costs, regression coverage and the installed update. Matched raw Source/Native
 screenshots accompany visual changes. These ten releases do not complete the
 full parity matrix or resume other platforms.
 
-| Priority | Planned version | Main capability and acceptance target |
+| Priority | Provisional version (original order) | Main capability and acceptance target |
 | --- | --- | --- |
 | 1 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
 | 2 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |

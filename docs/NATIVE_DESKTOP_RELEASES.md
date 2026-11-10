@@ -47,6 +47,14 @@ remain unknown. Portal/AT-SPI diagnostics remain. Live-account, credential
 preservation and full application/Linux parity stay outside this acceptance.
 See [published 0.1.4 update checks](provenance/linux-published-0.1.4-upgrade-checks.json).
 
+## Selecting the release version
+
+Follow the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases)
+before preparing a release. Choose X, Y or Z from the latest published version
+and the complete implemented release scope; record the base release and the
+reason for that bump in the PR. Numbers in issue titles, milestones and roadmap
+rows are provisional and must be recalculated when delivery order changes.
+
 ## Build pipeline
 
 `.github/workflows/linux-release.yml` builds on master pushes, plain `X.Y.Z` tags
