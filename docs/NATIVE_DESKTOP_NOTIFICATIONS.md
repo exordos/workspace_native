@@ -188,3 +188,24 @@ New acceptance cases: 12. eviction tag-closes the evicted aggregate's banner
 (132 distinct-author buckets past the bound against the recording transport);
 13. a backfilled background topic never reshapes the active catalog's topic
 list (the pollution repro reverted to the old append fails this guard).
+
+## Reviewer round 3 hardening
+
+- An aggregate bucket retains at most 64 message rows; the coldest rows are
+  dropped together with their message index entries when a long conversation
+  exceeds the window. The displayed count keeps growing (and decrements when
+  reads remove rows), so the banner wording stays honest while client memory
+  stays bounded per bucket.
+- Generic fallback banners (the msg: tag scheme shown when metadata never
+  resolved) are tracked per owner outside the aggregate registry, closed on
+  owner retirement together with their click routes, and pruned from tracking
+  when a read closes them. Sign-out can no longer leave an untracked generic
+  banner on the desktop.
+- Account transitions: the controller session is constructor-injected and
+  never reassigned, so logout is the only owner transition and the retirement
+  sweep covers aggregates, pending candidates, decided entries, fallback
+  banners and the notification topic backfill.
+
+New acceptance cases: 14. per-bucket row bound with an honest display count;
+15. sign-out closes generic fallback banners (RED observed: the generic banner
+survived logout before the fix).
