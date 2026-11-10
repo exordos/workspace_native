@@ -91,6 +91,10 @@ struct Message {
     bool own = false;
     bool read = false;
     bool starred = false;
+    // The server flags a mention of the current user on the message DTO itself;
+    // the client never inspects mention entities (workspace_ui
+    // activity-realtime-applier.lib.ts:113-127). Absent means unknown.
+    std::optional<bool> mentioned;
     QMap<QString, qint64> reactions;
     QMap<QString, QStringList> reactionUsers;
     bool reactionsKnown = false;

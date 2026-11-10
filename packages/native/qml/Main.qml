@@ -2312,13 +2312,16 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         Layout.preferredHeight: 32
-                        enabled: modelData.id === "drafts"
+                        enabled: modelData.id === "drafts" || modelData.id === "mentions"
                         selected: modelData.id === "drafts" && root.controller.draftsVisible
+                            || modelData.id === "mentions" && root.controller.mentionsVisible
                         asset: modelData.asset
                         glyphSize: modelData.size
-                        help: modelData.id === "drafts" ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
+                        help: modelData.id === "drafts" || modelData.id === "mentions"
+                            ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
                         onClicked: {
                             if (modelData.id === "drafts") root.controller.showDrafts();
+                            else if (modelData.id === "mentions") root.controller.showMentions();
                         }
                         background: Rectangle {
                             radius: 6
@@ -2558,7 +2561,7 @@ ApplicationWindow {
 
         ColumnLayout {
             id: conversation
-            visible: !root.controller.draftsVisible
+            visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
@@ -5080,6 +5083,14 @@ ApplicationWindow {
             controller: root.controller
             colors: root.colors
             visible: root.controller.draftsVisible
+            loadActive: root.visible && root.controller.authenticated
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
+        NativeMentionsPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.mentionsVisible
             loadActive: root.visible && root.controller.authenticated
             Layout.fillWidth: true
             Layout.fillHeight: true

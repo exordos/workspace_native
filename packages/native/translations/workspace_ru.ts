@@ -2240,4 +2240,63 @@
             <translation>Далее</translation>
         </message>
     </context>
+    <context>
+        <name>NativeMentionsPage</name>
+        <message>
+            <source>Mentions</source>
+            <translation>Упоминания</translation>
+        </message>
+        <message>
+            <source>Close mentions</source>
+            <translation>Закрыть упоминания</translation>
+        </message>
+        <message>
+            <source>Filter mentions</source>
+            <translation>Фильтр упоминаний</translation>
+        </message>
+        <message>
+            <source>All</source>
+            <translation>Все</translation>
+        </message>
+        <message>
+            <source>Unread</source>
+            <translation>Непрочитанные</translation>
+        </message>
+        <message>
+            <source>Unread mention</source>
+            <translation>Непрочитанное упоминание</translation>
+        </message>
+        <message>
+            <source>No mentions yet</source>
+            <translation>Упоминаний пока нет</translation>
+        </message>
+        <message>
+            <source>No unread mentions</source>
+            <translation>Непрочитанных упоминаний нет</translation>
+        </message>
+        <message>
+            <source>Could not load activity messages.</source>
+            <translation>Не удалось загрузить сообщения активности.</translation>
+        </message>
+        <message>
+            <source>Could not refresh activity messages.</source>
+            <translation>Не удалось обновить сообщения активности.</translation>
+        </message>
+        <message>
+            <source>Could not load older messages.</source>
+            <translation>Не удалось загрузить более ранние сообщения.</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>Private</source>
+            <translation>Личное</translation>
+        </message>
+    </context>
 </TS>
