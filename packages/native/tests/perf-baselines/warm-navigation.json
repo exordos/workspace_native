@@ -1,0 +1,53 @@
+{
+  "cacheHits": 4,
+  "case": "warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests",
+  "phases": [
+    {
+      "ms": 51,
+      "name": "sign-in"
+    },
+    {
+      "ms": 154,
+      "name": "project-open"
+    },
+    {
+      "ms": 104,
+      "name": "stream-open-1-cold"
+    },
+    {
+      "ms": 108,
+      "name": "topic-select-1-cold"
+    },
+    {
+      "ms": 106,
+      "name": "topic-select-2-cold"
+    },
+    {
+      "ms": 106,
+      "name": "topic-select-3-warm"
+    },
+    {
+      "ms": 109,
+      "name": "stream-open-2-warm"
+    },
+    {
+      "ms": 108,
+      "name": "topic-select-4-warm"
+    }
+  ],
+  "requests": {
+    "aggregate-history": 1,
+    "topic-history": 2,
+    "topic-list": 1
+  },
+  "synthetic": true,
+  "totalMs": 846,
+  "version": 1,
+  "process": {
+    "peakRssKiB": 277144,
+    "maxVmRssSampleKiB": 277144
+  },
+  "caseWallSeconds": 1.231,
+  "generatedUtc": "2026-11-10T01:46:13Z",
+  "repositoryRevision": "6374aee45bda49b35008e23609cb8554e50d12ca"
+}

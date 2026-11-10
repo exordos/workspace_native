@@ -54,6 +54,7 @@ jobs:
           python3 packages/native/tests/linux-package-test.py -v
           python3 packages/native/tests/release-notes-test.py -v
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v
+          python3 packages/native/tests/warm-navigation-benchmark-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash

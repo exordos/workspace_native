@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "comment": "Registry of per-release navigation performance baselines. See docs/NATIVE_DESKTOP_PERF_BASELINES.md for the rules: request counters are exact gates against the local mock server, timing and RSS gates are documented bands derived from measured runs on the reference stand (Xvnc :30 1440x900 + openbox, llvmpipe) per the issue #16 rule - never one host's hard number without a named fluctuation source. Band source measurement: two independent capture runs on 2026-11-10, per-phase spread at most 2 ms, total 845-846 ms, peak RSS 277,068-277,144 KiB, cache hits 4. New scenarios register here; the harness and tooling test are deliberately outside CTest.",
+  "scenarios": [
+    {
+      "id": "warm-navigation",
+      "title": "Mock-server sign-in, stream open and four topic selections through the verified cache",
+      "binary": "native-window-test",
+      "case": "warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests",
+      "metrics_env": "CASSI_NATIVE_TEST_PERF_METRICS",
+      "requests": {
+        "topic-history": 2,
+        "aggregate-history": 1,
+        "topic-list": 1
+      },
+      "min_cache_hits": 4,
+      "phases": [
+        {"name": "sign-in", "max_ms": 600, "tolerance_reason": "measured 51 ms and 51 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "project-open", "max_ms": 1600, "tolerance_reason": "measured 154 ms and 155 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "stream-open-1-cold", "max_ms": 1100, "tolerance_reason": "measured 104 ms and 105 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "topic-select-1-cold", "max_ms": 1100, "tolerance_reason": "measured 108 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "topic-select-2-cold", "max_ms": 1100, "tolerance_reason": "measured 106 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "topic-select-3-warm", "max_ms": 1100, "tolerance_reason": "measured 106 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "stream-open-2-warm", "max_ms": 1100, "tolerance_reason": "measured 108 ms and 109 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"},
+        {"name": "topic-select-4-warm", "max_ms": 1100, "tolerance_reason": "measured 106 ms and 108 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs llvmpipe/scheduler noise per issue #16"}
+      ],
+      "max_total_ms": 9000,
+      "total_tolerance_reason": "measured 845 ms and 846 ms across two reference-stand runs on 2026-11-10; ~10x band absorbs shared-host noise per issue #16",
+      "max_peak_rss_kib": 560000,
+      "rss_tolerance_reason": "peak RSS sampled from /proc was 277,068 KiB and 277,144 KiB across two reference-stand runs on 2026-11-10 (Qt Quick runtime and test heap); 2x band absorbs allocator and library growth between releases per issue #16",
+      "max_case_wall_s": 30
+    }
+  ]
+}
