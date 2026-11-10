@@ -11620,6 +11620,38 @@ private slots:
         QCOMPARE(service.aggregateRowCount(tag), 64);
         service.setTransport(nullptr);
     }
+
+    void genericFallbackOverflowClosesOldestBanners()
+    {
+        // Beyond the tracking bound the oldest generic banner is closed to
+        // free a slot; no shown banner may end up untracked after sign-out.
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        service->setMetadataGrace(40, 10);
+        openBackgroundConversation(fixture);
+        for (int i = 0; i < 300; ++i) {
+            auto dto = incomingDto(historyMessage(4000 + i), notificationAuthor);
+            dto["stream_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999997");
+            dto["topic_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999997");
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", dto, 9000 + i)));
+            if (i % 40 == 39) QTest::qWait(300);
+        }
+        QVERIFY(sent.shows.size() > 256);
+        fixture.controller.logout();
+        const QSet<QString> closedSet(sent.closed.begin(), sent.closed.end());
+        for (const auto &show : sent.shows)
+            QVERIFY2(closedSet.contains(show.tag),
+                     qPrintable(QStringLiteral("banner %1 was never closed").arg(show.tag)));
+        service->setTransport(nullptr);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

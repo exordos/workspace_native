@@ -235,6 +235,7 @@ private:
     // Generic (msg: scheme) banners are outside the aggregate registry; the
     // service tracks them per owner so retirement can close them too.
     QHash<QString, QSet<QString>> m_liveFallbackTags;
+    QList<QPair<QString, QString>> m_fallbackOrder; // (owner, tag), oldest first
     QHash<QString, Pending> m_pending;
     QTimer m_graceTimer;
     int m_graceMs = 30000;   // NOTIFICATION_METADATA_GRACE_MS
