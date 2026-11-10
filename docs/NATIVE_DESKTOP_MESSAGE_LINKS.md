@@ -132,7 +132,13 @@ follow-up work). A message route applies as follows:
   it was asked to leave alone (steps 1 to 3).
 - The anchor is cleared by any user-initiated navigation (stream/topic
   selection, drafts page, project switch or sign-out), by logout, and by the
-  highlight timer after a successful scroll.
+  highlight timer after a successful scroll. Cancellation applies only to
+  navigation that moves away from the anchor destination. When the deep link
+  itself starts resolving an uncatalogued target topic through
+  `beginTopicOpening()`, that in-flight transition is owned by the anchor:
+  its intermediate pre-commit state changes do not cancel the pending anchor.
+  Only a different navigation, a superseded link or a failed topic
+  resolution ends the search (issue #55).
 
 ## Locales
 
@@ -148,11 +154,13 @@ the locale gate (lupdate completeness) must stay green.
   encoding.
 - `native-native-controller` (synthetic server): link copy for a loaded
   message; deep-link open resolves via the lookup endpoint and opens the
-  right stream/topic with `anchorMessageId` set; foreign organization,
-  unknown project, empty lookup and failing lookup all keep the selection and
-  set the notice; pending-route-before-login flush; `NativeInstance` socket
-  grammar (`activate`, valid `open`, invalid `open` as plain activation,
-  oversized payload abort).
+  right stream/topic with `anchorMessageId` set, including a target whose
+  topic and channel are absent from the loaded catalogs and are resolved
+  through their detail GETs while the link resolves (issue #55); foreign
+  organization, unknown project, empty lookup and failing lookup all keep
+  the selection and set the notice; pending-route-before-login flush;
+  `NativeInstance` socket grammar (`activate`, valid `open`, invalid `open`
+  as plain activation, oversized payload abort).
 - `native-native-window`: the **Copy link** menu item is visible and enabled
   for a readable message and puts the canonical URL on the clipboard; the
   anchor path scrolls and highlights a resolved message row.

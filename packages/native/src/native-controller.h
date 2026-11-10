@@ -301,6 +301,7 @@ private:
     void applyMessageRoute(const QString &org, const QString &project, const QString &message);
     void setAnchorMessage(const QString &id);
     void clearAnchor(const QString &notice = {});
+    bool topicOpeningOwnsPendingAnchor() const;
     void reanchorFromWindow();
     static QString deepLinkUnavailableNotice();
     struct ProjectionContext;
