@@ -9989,6 +9989,14 @@ private slots:
         return {};
     }
 
+    static QVariantMap inboxRow(const QVariantMap &page, const QString &section,
+        const QString &stream, const QString &topic)
+    {
+        for (const auto &value : inboxCard(page, section, stream).value("rows").toList())
+            if (value.toMap().value("topic").toString() == topic) return value.toMap();
+        return {};
+    }
+
     void inboxGroupsDirectAndChannelsExcludingPassiveTraffic()
     {
         Fixture fixture;
@@ -10179,6 +10187,161 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxPage().value("channels").toList().size() == 2, 4000);
         QVERIFY(inboxCard(fixture.controller.inboxPage(), "channels",
             QStringLiteral("a1000000-0000-4000-8000-000000000003")).isEmpty());
+    }
+
+    // Issue #65: a whole-topic move (a complete owned topic.updated whose
+    // stream_uuid differs from the slot that holds the topic) must reconcile
+    // every Inbox slot: the vacated card goes away, exactly one row survives
+    // at the destination, and navigation receives the current placement,
+    // never the stale source DTO (openInboxRow hands the slot DTO to
+    // beginTopicOpening as verified canonical metadata).
+    void inboxTopicMoveAcrossStreamsReconcilesSlots()
+    {
+        const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");
+        const auto beta = QStringLiteral("a1000000-0000-4000-8000-0000000000b2");
+        const auto moved = QStringLiteral("b1000000-0000-4000-8000-0000000000c3");
+        const auto nightly = QStringLiteral("b1000000-0000-4000-8000-0000000000d4");
+        Fixture fixture;
+        fixture.streams = [=](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 3, 3, 0),
+            inboxStream(beta, "Beta", 1, 1, 0)}}; };
+        fixture.topics = [=](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == alpha)
+                return Response{QJsonArray{
+                    inboxTopic(moved, alpha, "Migration", 3, 3, 0, "2026-06-22T09:00:00Z"),
+                    inboxTopic(secondTopicId, alpha, "Planning", 0, 0, 0)}};
+            if (stream == beta)
+                return Response{QJsonArray{
+                    inboxTopic(nightly, beta, "Nightly", 1, 1, 0)}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, moved] {
+            return !inboxRow(fixture.controller.inboxPage(), "channels", alpha, moved).isEmpty();
+        }, 4000));
+
+        // The complete owned move of the still-unread topic to Beta, followed
+        // by the stream counter updates the server pairs the move with.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, beta, "Migration", 3, 3, 0, "2026-06-22T11:30:00Z"), 40)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(beta, "Beta", 4, 4, 0), 41)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 42)));
+        // Exactly one row survives, under Beta with the moved badge; Alpha
+        // leaves the inbox once no unread topics or stream messages remain.
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, beta, moved] {
+            const auto page = fixture.controller.inboxPage();
+            return inboxCard(page, "channels", alpha).isEmpty()
+                && inboxRow(page, "channels", beta, moved).value("badge").toString()
+                    == QStringLiteral("3");
+        }, 4000));
+        QCOMPARE(inboxCard(fixture.controller.inboxPage(), "channels", beta)
+            .value("rows").toList().size(), 2); // Nightly + the moved topic
+
+        // Clicking the surviving row opens the topic at its current home.
+        fixture.controller.openInboxRow(beta, moved);
+        QVERIFY(!fixture.controller.inboxVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == moved, 4000);
+        fixture.controller.showInbox();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.inboxVisible(), 2000);
+
+        // A rename at the destination updates the single row in place.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, beta, "Migration v2", 3, 3, 0, "2026-06-22T12:00:00Z"), 43)));
+        QVERIFY(QTest::qWaitFor([&fixture, beta, moved] {
+            const auto rows = inboxCard(fixture.controller.inboxPage(), "channels", beta)
+                .value("rows").toList();
+            return rows.size() == 2 && rows.at(0).toMap().value("title").toString()
+                == QStringLiteral("Beta · Migration v2");
+        }, 4000));
+
+        // Moving the topic back revives Alpha and vacates Beta.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, alpha, "Migration v2", 3, 3, 0, "2026-06-22T13:00:00Z"), 44)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 3, 3, 0), 45)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(beta, "Beta", 1, 1, 0), 46)));
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, beta, moved] {
+            const auto page = fixture.controller.inboxPage();
+            const auto alphaRows = inboxCard(page, "channels", alpha).value("rows").toList();
+            const auto betaRows = inboxCard(page, "channels", beta).value("rows").toList();
+            return alphaRows.size() == 1
+                && alphaRows.at(0).toMap().value("topic").toString() == moved
+                && betaRows.size() == 1;
+        }, 4000));
+
+        // Later read and delete events affect the surviving destination row.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.read",
+            inboxTopic(moved, alpha, "Migration v2", 0, 0, 0, "2026-06-22T13:30:00Z"), 47)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.read",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 48)));
+        QVERIFY(QTest::qWaitFor([&fixture, alpha] {
+            return inboxCard(fixture.controller.inboxPage(), "channels", alpha).isEmpty();
+        }, 4000));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.deleted",
+            QJsonObject{{"uuid", moved}, {"stream_uuid", alpha}}, 49)));
+        // The tombstone leaves no row anywhere and does not disturb Beta.
+        QTest::qWait(250);
+        const auto page = fixture.controller.inboxPage();
+        QVERIFY(inboxCard(page, "channels", alpha).isEmpty());
+        QCOMPARE(inboxCard(page, "channels", beta).value("rows").toList().size(), 1);
+    }
+
+    // Issue #65: the destination slot may not be hydrated yet (the stream had
+    // no unread when the Inbox opened). The move must invalidate toward the
+    // destination and refetch its complete slot instead of fabricating a
+    // partial one; the fetched snapshot, not the event DTO, owns the row.
+    void inboxTopicMoveToUnhydratedStreamRefetchesDestination()
+    {
+        const auto alpha = QStringLiteral("a1000000-0000-4000-8000-0000000000a1");
+        const auto beta = QStringLiteral("a1000000-0000-4000-8000-0000000000b2");
+        const auto moved = QStringLiteral("b1000000-0000-4000-8000-0000000000c3");
+        Fixture fixture;
+        fixture.streams = [=](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 3, 3, 0),
+            inboxStream(beta, "Beta", 0, 0, 0)}}; };
+        fixture.topics = [=](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == alpha)
+                return Response{QJsonArray{
+                    inboxTopic(moved, alpha, "Migration", 3, 3, 0)}};
+            if (stream == beta)
+                // Server-side truth after the move. The counters deliberately
+                // differ from the event DTO so a refetch cannot be confused
+                // with a direct upsert of the event payload.
+                return Response{QJsonArray{
+                    inboxTopic(moved, beta, "Migration", 4, 4, 0, "2026-06-22T11:45:00Z")}};
+            return Response{QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.showInbox();
+        // Beta carries no unread at open time, so only Alpha hydrates a slot.
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, moved] {
+            return !inboxRow(fixture.controller.inboxPage(), "channels", alpha, moved).isEmpty();
+        }, 4000));
+        QVERIFY(inboxCard(fixture.controller.inboxPage(), "channels", beta).isEmpty());
+
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated",
+            inboxTopic(moved, beta, "Migration", 3, 3, 0, "2026-06-22T11:30:00Z"), 50)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(beta, "Beta", 3, 3, 0), 51)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            inboxStream(alpha, "Alpha", 0, 0, 0), 52)));
+        // Alpha's stale row disappears and the refetched Beta slot owns the
+        // complete destination state (the fetched badge 4, not the event's 3).
+        QVERIFY(QTest::qWaitFor([&fixture, alpha, beta, moved] {
+            const auto page = fixture.controller.inboxPage();
+            return inboxCard(page, "channels", alpha).isEmpty()
+                && inboxRow(page, "channels", beta, moved).value("badge").toString()
+                    == QStringLiteral("4");
+        }, 4000));
+        fixture.controller.openInboxRow(beta, moved);
+        QVERIFY(!fixture.controller.inboxVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedTopic() == moved, 4000);
     }
 
     void inboxDeeplinkOpensTheInboxPage()
