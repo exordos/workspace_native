@@ -1,3 +1,21 @@
+# Workspace Native 0.13.1 - Linux development preview
+
+Two fixes for existing behavior:
+
+- Sidebar conversation previews now follow message edits. Editing the last
+  message of a channel no longer leaves the stale old text in the sidebar once
+  you navigate away, and a deleted last message no longer keeps rendering.
+- Long code and exception-trace lines now wrap inside message bubbles instead
+  of spilling past the bubble edge.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.13.0...0.13.1](https://github.com/exordos/workspace_native/compare/0.13.0...0.13.1)
+
+---
+
 # Workspace Native 0.13.0 - Linux development preview
 
 The app now tells you how the connection is doing. A banner at the top of the
