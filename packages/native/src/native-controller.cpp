@@ -7730,6 +7730,7 @@ void NativeController::setDraft(const QString &text)
     if (!m_editingMessage.isEmpty()) {
         if (m_editBuffer == text) return;
         m_editBuffer = text;
+        ++m_editRevision;   // a save may not close past this revision (issue #115)
         emit draftChanged();
         emit stateChanged();
         return;
@@ -9463,6 +9464,10 @@ bool NativeController::beginEditMessage(const QString &id)
     m_editingMessage = id;
     m_editBuffer = message->content;
     m_editRoute = conversationKey();
+    // Each open session gets a fresh identity and buffer revision (issue #115), so an
+    // in-flight save from a previous session can never match the reopened one.
+    ++m_editSession;
+    ++m_editRevision;
     emit editSessionChanged();
     emit draftChanged();
     emit stateChanged();
@@ -9480,8 +9485,14 @@ void NativeController::submitEditMessage()
     if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
     const auto id = m_editingMessage;
     const auto text = m_editBuffer;
-    submitMessageEdit(id, text, [this, id](bool confirmed) {
-        if (confirmed && m_editingMessage == id) closeEditSession();
+    // Issue #115: the completion may only close the exact session and buffer revision it
+    // submitted. Text typed after Save, or a session reopened for the same UUID, gets a
+    // newer identity and survives this completion; B stays savable.
+    const auto session = m_editSession, revision = m_editRevision;
+    submitMessageEdit(id, text, [this, id, session, revision](bool confirmed) {
+        if (confirmed && m_editingMessage == id
+            && session == m_editSession && revision == m_editRevision)
+            closeEditSession();
     });
 }
 
@@ -9506,6 +9517,9 @@ bool NativeController::canSaveEdit() const
 {
     if (m_editingMessage.isEmpty() || !authoritativeRoute()) return false;
     if (conversationKey() != m_editRoute) return false;
+    // While a save for this message is in flight a second save would race the first PUT
+    // (issue #115); the save control waits for the pending completion.
+    if (m_editSaveInFlight.contains(m_editingMessage)) return false;
     const auto *stream = currentStream();
     if (!stream || stream->encrypted) return false;
     return !m_editBuffer.trimmed().isEmpty() && m_editBuffer.size() <= 40000;
@@ -9556,20 +9570,29 @@ void NativeController::submitMessageEdit(const QString &id, const QString &text,
         if (settled) settled(false);
         return;
     }
+    // Issue #115: only one edit save per message may be in flight; a second submit is
+    // refused instead of racing the pending PUT. The flag clears on every completion
+    // path before the caller's callback runs, so a later save is never locked out.
+    if (m_editSaveInFlight.contains(id)) { if (settled) settled(false); return; }
+    m_editSaveInFlight.insert(id);
+    const auto done = [this, id, settled](bool confirmed) {
+        m_editSaveInFlight.remove(id);
+        if (settled) settled(confirmed);
+    };
     ++m_messageFields[id].pending;
     const auto selection = m_selection;
     const auto streamId = message->stream, topic = message->topic;
     staleConversation(streamId, topic);
     request("PUT", messenger + "/messages/" + id,
         QJsonObject{{"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}}, {},
-        [this, id, selection, streamId, topic, settled](const ApiResult &result) {
+        [this, id, selection, streamId, topic, done](const ApiResult &result) {
         staleConversation(streamId, topic);
-        if (selection != m_selection) { finishMessageIntent(id); if (settled) settled(false); return; }
+        if (selection != m_selection) { finishMessageIntent(id); done(false); return; }
         if (!result.ok()) {
             finishMessageIntent(id);
-            if (settled) settled(false);
+            done(false);
             report(tr("Could not edit the message. %1").arg(result.error));
-        } else verifyMutation(id, selection, NativeCache::Projection::Payload, settled);
+        } else verifyMutation(id, selection, NativeCache::Projection::Payload, done);
     });
 }
 
