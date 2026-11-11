@@ -4,6 +4,7 @@
 #include <QTest>
 #include <QTextBlock>
 #include <QTextDocument>
+#include <QTextOption>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -94,11 +95,54 @@ private slots:
         QCOMPARE(checked.blockFormat().marker(), QTextBlockFormat::MarkerType::Checked);
         QCOMPARE(unchecked.blockFormat().marker(), QTextBlockFormat::MarkerType::Unchecked);
         const auto code = unchecked.next();
-        QVERIFY(code.blockFormat().nonBreakableLines());
+        // #131: exported code lines must stay breakable inside the bubble;
+        // each source line remains its own wrappable block.
+        QVERIFY(!code.blockFormat().nonBreakableLines());
         QCOMPARE(code.text(), QString("int x=1;"));
         QCOMPARE(code.next().text(), QString("return x;"));
         QCOMPARE(code.next().next().text(), QString("Final\u2028paragraph"));
         QCOMPARE(rendered.value("plain").toString(), QString("done\ntodo\nint x=1;\nreturn x;\nFinal\nparagraph"));
+    }
+
+    void longCodeLinesAndUnbrokenTokensStayInsideTheBubbleWidth()
+    {
+        // #131 regression: a long monospace exception trace painted past the
+        // bubble's right edge. Qt rich text never breaks a non-breakable line
+        // (Text.Wrap already maps to the word-boundary-or-anywhere mode), so
+        // every rendered block must be breakable and must lay out inside the
+        // width the message view provides.
+        NativeMarkdown renderer;
+        const QString trace = QStringLiteral(
+            "Unknown storage exception: LockNotAvailable('canceling statement due to lock timeout') "
+            "CONTEXT: process_00_lockwait AAAAAAAAAAAAAAAAA______________________________________LONGTOKEN______________________________________END");
+        struct Case { const char *name; QString markdown; };
+        const QList<Case> cases{
+            {"fenced-trace", QStringLiteral("```text\n") + trace + QStringLiteral("\nCONTEXT: retry deadline exceeded\n```")},
+            {"indented-trace", QStringLiteral("    ") + trace},
+            {"paragraph-token", QStringLiteral("See ") + trace + QStringLiteral(" above.")},
+            {"mixed-prose", QStringLiteral("Startup failed:\n\n```text\n") + trace
+                + QStringLiteral("\n```\n\nPlease retry.")}
+        };
+        const qreal bubbleTextWidth = 320;
+        for (const auto &entry : cases) {
+            const auto rendered = renderer.render(entry.markdown);
+            QVERIFY2(rendered.value("plain").toString().contains("LockNotAvailable"), entry.name);
+            QTextDocument document;
+            document.setDocumentMargin(0);
+            document.setHtml(rendered.value("html").toString());
+            for (auto block = document.begin(); block.isValid(); block = block.next())
+                QVERIFY2(!block.blockFormat().nonBreakableLines(),
+                    QStringLiteral("%1: exported line must stay breakable: %2")
+                        .arg(entry.name, block.text()).toUtf8().constData());
+            QTextOption option;
+            option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+            document.setDefaultTextOption(option);
+            document.setTextWidth(bubbleTextWidth);
+            QVERIFY2(document.size().width() <= bubbleTextWidth + 2.0,
+                QStringLiteral("%1: wrapped layout width %2 exceeds %3: %4")
+                    .arg(entry.name).arg(document.size().width()).arg(bubbleTextWidth)
+                    .arg(rendered.value("html").toString()).toUtf8().constData());
+        }
     }
 
     void secretReferenceLabelsAndEnvelopesNeverEnterRenderedOutput_data()
@@ -142,7 +186,11 @@ private slots:
         QVERIFY2(html.contains("font-style:italic"), qPrintable(html));
         QVERIFY(html.contains("line-through"));
         QVERIFY(html.contains("<ul"));
-        QVERIFY(html.contains("<pre"));
+        // #131: code blocks are exported as wrappable divs carrying the
+        // monospace face, never as non-breakable <pre> blocks.
+        QVERIFY(!html.contains("<pre"));
+        QVERIFY(html.contains("<div"));
+        QVERIFY(html.contains("font-family:'monospace'"));
         QVERIFY(html.contains("<table"));
         QVERIFY(result.value("plain").toString().contains("int x = 1;"));
     }

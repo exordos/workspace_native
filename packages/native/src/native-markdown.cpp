@@ -30,12 +30,28 @@ QString resourceTarget(const QTextCharFormat &format)
 // Private document metadata never becomes HTML or a resource request.
 constexpr int InlineImageReference = QTextFormat::UserProperty + 101;
 
+// Qt rich text marks every <pre> block non-breakable, so one long code or
+// exception-trace line paints past the bubble's right edge (issue #131).
+// Qt's own exporter writes each exported code line as a <pre> block whose
+// style carries the block margins and whose text span carries the monospace
+// face, so re-tagging that exported block as a <div> keeps the presentation
+// while letting the message view wrap the line. Only Qt-generated markup is
+// rewritten: user text is escaped in the export and cannot contain a tag.
+QString containedCodeBlocks(const QString &exportedBody)
+{
+    QString body = exportedBody;
+    body.replace(QLatin1String("<pre "), QLatin1String("<div "));
+    body.replace(QLatin1String("<pre>"), QLatin1String("<div>"));
+    body.replace(QLatin1String("</pre>"), QLatin1String("</div>"));
+    return body;
+}
+
 QString htmlBody(const QString &html)
 {
     const auto body = html.indexOf("<body");
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
-    return start >= 0 && end > start ? html.mid(start + 1, end - start - 1) : QString{};
+    return start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : QString{};
 }
 
 QVariantMap textPart(MessageDocument &document, int first, int last)
@@ -228,7 +244,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
     const auto body = html.indexOf("<body");
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
-    html = start >= 0 && end > start ? html.mid(start + 1, end - start - 1) : markdown.toHtmlEscaped();
+    html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
                              {"parts", orderedImageParts(document)}};
     while (m_order.size() >= 128)

@@ -51,6 +51,8 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextDocument>
+#include <QTextOption>
 #include <QUrlQuery>
 #include <QWheelEvent>
 #include <QtTest/qtestwheel.h>
@@ -8544,6 +8546,119 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!reserved.toString().contains("<img"));
         QVERIFY(reserved.toString().contains("&amp;"));
         window->close();
+    }
+
+    void longCodeTraceAndUnbrokenTokenStayInsideTheBubble()
+    {
+        // #131 regression: a long monospace exception trace and a long
+        // unbroken token painted past the bubble's right edge. In the real
+        // window each message body must lay out every line within its own
+        // width, keep the bubble inside the chat area, and stay correct after
+        // resizing the window and reopening the conversation.
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const QString trace = QStringLiteral(
+            "Unknown storage exception: LockNotAvailable('canceling statement due to lock timeout') "
+            "CONTEXT: process_00_lockwait AAAAAAAAAAAAAAAAA______________________________________LONGTOKEN______________________________________END");
+        auto peerRow = message(QStringLiteral("```text\n") + trace + QStringLiteral("\nCONTEXT: retry deadline exceeded\n```"));
+        peerRow["user_uuid"] = channelPeer; peerRow["author_uuid"] = channelPeer; peerRow["is_own"] = false;
+        peerRow["pinned"] = false; peerRow["reactions"] = QJsonObject{};
+        peerRow["reaction_users"] = QJsonObject{}; peerRow["updated_at"] = peerRow.value("created_at");
+        auto ownRow = message(QStringLiteral("Startup failed: LockNotAvailable_") + trace + QStringLiteral("_see_above"), returnedId);
+        ownRow["user_uuid"] = userId; ownRow["updated_at"] = ownRow.value("created_at");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                ++fixture.historyGets;
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                return {topic.isEmpty() || topic == topicId ? QJsonArray{peerRow, ownRow} : QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Bubble overflow window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 3);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(controller.hasConversation());
+        QTRY_VERIFY(!controller.busy());
+        const auto waitBody = [&](const QString &id) {
+            QTRY_VERIFY2_WITH_TIMEOUT(visibleItem(window->contentItem(), "message-content-" + id) != nullptr,
+                QStringLiteral("id=%1 messages=%2 error=%3 historyGets=%4")
+                    .arg(id).arg(controller.messages().size()).arg(controller.error())
+                    .arg(fixture.historyGets).toUtf8().constData(), 6000);
+        };
+        waitBody(messageId);
+        waitBody(returnedId);
+        // The same layout contract the production view implements: the actual
+        // item text laid out with the actual item font, wrap mode and width.
+        const auto textStaysInside = [&](const QString &id) {
+            auto *body = visibleItem(window->contentItem(), "message-content-" + id); QVERIFY(body);
+            auto *bubble = visibleItem(window->contentItem(), "message-" + id); QVERIFY(bubble);
+            QTextDocument document;
+            document.setDocumentMargin(0);
+            document.setDefaultFont(body->property("font").value<QFont>());
+            document.setHtml(body->property("text").toString());
+            QTextOption option;
+            // QQuickText::WrapMode aliases the QTextOption::WrapMode values:
+            // NoWrap 0, WordWrap 1, WrapAnywhere 3, and Text.Wrap equals
+            // WrapAtWordBoundaryOrAnywhere 4 (Qt 6 compatibility mapping).
+            switch (body->property("wrapMode").toInt()) {
+            case 0: option.setWrapMode(QTextOption::NoWrap); break;
+            case 1: option.setWrapMode(QTextOption::WordWrap); break;
+            case 3: option.setWrapMode(QTextOption::WrapAnywhere); break;
+            default: option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); break;
+            }
+            document.setDefaultTextOption(option);
+            document.setTextWidth(body->width());
+            const auto message = QStringLiteral("%1 phase %2: layout %3 over item %4, html %5")
+                .arg(id).arg(window->width()).arg(document.size().width()).arg(body->width())
+                .arg(body->property("text").toString().left(300));
+            QVERIFY2(body->width() > 0 && document.size().width() <= body->width() + 2.0,
+                message.toUtf8().constData());
+            const QRectF bubbleRect(bubble->mapToScene(QPointF{}), bubble->size());
+            const QRectF bodyRect(body->mapToScene(QPointF{}), body->size());
+            QVERIFY2(bubbleRect.contains(bodyRect.adjusted(-1, -1, 1, 1)), message.toUtf8().constData());
+            QVERIFY2(bubbleRect.right() <= window->width() + 1.0, message.toUtf8().constData());
+        };
+        textStaysInside(messageId);
+        textStaysInside(returnedId);
+        // The trace must genuinely wrap to multiple lines, not overflow on one.
+        QVERIFY(visibleItem(window->contentItem(), "message-content-" + messageId)
+            ->property("contentHeight").toReal() > 40);
+        window->resize(900, 700); QTRY_COMPARE(window->width(), 900);
+        QTest::qWait(250);
+        textStaysInside(messageId);
+        textStaysInside(returnedId);
+        window->resize(1440, 900); QTRY_COMPARE(window->width(), 1440);
+        QTest::qWait(250);
+        textStaysInside(messageId);
+        textStaysInside(returnedId);
+        // Reopen the same conversation: leave it for another topic and return.
+        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        QTRY_VERIFY(controller.selectedTopic() == secondTopicId);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(controller.hasConversation());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "message-content-" + messageId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "message-content-" + returnedId));
+        textStaysInside(messageId);
+        textStaysInside(returnedId);
+        window->close();
+        closeBeforeEngine.dismiss();
     }
 
     void sourcePickerGeometryAndHoverMatchPinnedComponent_data()
