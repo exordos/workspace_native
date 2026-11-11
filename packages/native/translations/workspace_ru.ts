@@ -367,6 +367,10 @@
             <translation>Загрузить более ранние сообщения</translation>
         </message>
         <message>
+            <source>Load newer messages</source>
+            <translation>Загрузить более новые сообщения</translation>
+        </message>
+        <message>
             <source>Loading…</source>
             <translation>Загрузка…</translation>
         </message>

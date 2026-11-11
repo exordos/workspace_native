@@ -1,3 +1,22 @@
+# Workspace Native 0.11.0 - Linux development preview
+
+Deep links now land where you meant to go. Opening a link to a message buried in
+history no longer has to crawl back page by page from the newest message: the
+conversation opens centred on the linked message, with the messages that came
+after it shown below it and the older ones above. When the loaded window stops
+short of the newest message, a **Load newer messages** button appears below the
+message list - the mirror of **Load older messages** above it - and paging with
+it keeps the highlighted message highlighted until the highlight fades
+(issue #71).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.10.0...0.11.0](https://github.com/exordos/workspace_native/compare/0.10.0...0.11.0)
+
+---
+
 # Workspace Native 0.10.0 - Linux development preview
 
 The media viewer arrived in the native client. Clicking a picture in a conversation

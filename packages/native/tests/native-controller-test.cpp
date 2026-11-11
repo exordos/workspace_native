@@ -10403,6 +10403,142 @@ private slots:
             || fixture.controller.anchorMessageId().isEmpty()); // highlight may already have cleared
     }
 
+    // ---- Anchor boundary paging (issue #71, docs/NATIVE_DESKTOP_ANCHOR_PAGING.md) ----
+
+    static QJsonObject anchoredHistoryRow(int number)
+    {
+        const auto id = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-")
+            + QString("%1").arg(number, 12, 16, QLatin1Char('0'));
+        auto row = message(QStringLiteral("Anchor history %1").arg(number), id);
+        row.insert("created_at", QDateTime::fromString("2026-01-02T10:00:00Z", Qt::ISODate)
+                         .addSecs(number).toString(Qt::ISODateWithMs));
+        return row;
+    }
+
+    // A deep-link anchor below the bounded older walk's reach opens the reference's
+    // around-anchor window (desc + asc pages at page_marker=<anchor>, see
+    // workspace_ui 61dacef7 messenger-messages.api.test.ts:169-246): the anchor sits
+    // mid-window with newer rows below it, and the newer boundary pages outward.
+    void anchorMidHistoryOpensWindowWithNewerRows()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString anchor = anchoredHistoryRow(50).value("uuid").toString();
+        int olderWalks = 0;
+        int ascAnchorPages = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid"))
+                return Response{QJsonArray{anchoredHistoryRow(50)}};
+            const auto dir = query.queryItemValue("sort_dir");
+            const auto marker = query.queryItemValue("page_marker");
+            if (marker.isEmpty()) {
+                QJsonArray tail;
+                for (int number = 500; number >= 451; --number) tail.append(anchoredHistoryRow(number));
+                Response response{tail, 200, 0, {}};
+                response.headers.insert("X-Pagination-Marker",
+                    anchoredHistoryRow(451).value("uuid").toString().toUtf8());
+                return response;
+            }
+            if (dir == "asc" && marker == anchor) {
+                ++ascAnchorPages;
+                QJsonArray page;
+                for (int number = 51; number <= 100; ++number) page.append(anchoredHistoryRow(number));
+                Response response{page, 200, 0, {}};
+                response.headers.insert("X-Pagination-Marker", "newer-2");
+                return response;
+            }
+            if (dir == "desc" && marker == anchor) {
+                QJsonArray page;
+                for (int number = 49; number >= 1; --number) page.append(anchoredHistoryRow(number));
+                return Response{page}; // the older end is reached: no marker
+            }
+            if (dir == "asc" && marker == "newer-2") {
+                QJsonArray page;
+                for (int number = 101; number <= 120; ++number) page.append(anchoredHistoryRow(number));
+                return Response{page}; // the newer end is reached: no marker
+            }
+            ++olderWalks; // the bounded walk must not run when the around window succeeds
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + anchor);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), anchor);
+        QVERIFY(ascAnchorPages >= 1); // the around-anchor newer page was requested
+        QCOMPARE(olderWalks, 0);
+        QVERIFY(!modelMessage(fixture.controller, anchoredHistoryRow(55).value("uuid").toString()).isEmpty());
+        QVERIFY(!modelMessage(fixture.controller, anchoredHistoryRow(45).value("uuid").toString()).isEmpty());
+        QVERIFY(modelMessage(fixture.controller, anchoredHistoryRow(500).value("uuid").toString()).isEmpty());
+        QVERIFY(fixture.controller.canLoadNewer());
+        QVERIFY(!fixture.controller.canLoadOlder()); // the older page carried no marker
+        fixture.controller.loadNewer();
+        QTRY_VERIFY(!modelMessage(fixture.controller, anchoredHistoryRow(120).value("uuid").toString()).isEmpty());
+        QCOMPARE(fixture.controller.anchorMessageId(), anchor); // highlight survives newer paging
+        QVERIFY(!fixture.controller.canLoadNewer()); // the newer page carried no marker
+    }
+
+    void tailWindowHasNoNewerBoundary()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        int ascPages = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("sort_dir") == "asc") {
+                ++ascPages;
+                return Response{QJsonArray{}};
+            }
+            return Response{QJsonArray{message("Current body")}};
+        };
+        QVERIFY(fixture.start());
+        QTest::qWait(200);
+        QVERIFY(!fixture.controller.canLoadNewer()); // a tail window has no newer side
+        fixture.controller.loadNewer();
+        QTest::qWait(200);
+        QCOMPARE(ascPages, 0); // loadNewer stays inert without a newer boundary
+    }
+
+    void newerPageFailureKeepsWindowAndAnchor()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString anchor = anchoredHistoryRow(50).value("uuid").toString();
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid"))
+                return Response{QJsonArray{anchoredHistoryRow(50)}};
+            const auto dir = query.queryItemValue("sort_dir");
+            const auto marker = query.queryItemValue("page_marker");
+            if (marker.isEmpty()) {
+                QJsonArray tail;
+                for (int number = 500; number >= 451; --number) tail.append(anchoredHistoryRow(number));
+                return Response{tail};
+            }
+            if (dir == "asc" && marker == anchor) {
+                QJsonArray page;
+                for (int number = 51; number <= 100; ++number) page.append(anchoredHistoryRow(number));
+                Response response{page, 200, 0, {}};
+                response.headers.insert("X-Pagination-Marker", "newer-2");
+                return response;
+            }
+            if (dir == "desc" && marker == anchor)
+                return Response{QJsonArray{anchoredHistoryRow(49)}};
+            if (dir == "asc" && marker == "newer-2")
+                return Response{QJsonObject{{"error", "boom"}}, 500, 0, {}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + anchor);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), anchor);
+        QTRY_VERIFY(fixture.controller.canLoadNewer());
+        fixture.controller.loadNewer();
+        QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(!fixture.controller.error().isEmpty());
+        QCOMPARE(fixture.controller.anchorMessageId(), anchor);
+        QVERIFY(fixture.controller.canLoadNewer()); // the marker is kept for a retry
+        QVERIFY(modelMessage(fixture.controller, anchoredHistoryRow(101).value("uuid").toString()).isEmpty());
+    }
+
     // ---- Activity mentions page (issue #42, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md) ----
 
     static QJsonObject mentionMessage(int number, bool read = false, bool own = false)

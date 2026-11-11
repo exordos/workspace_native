@@ -106,6 +106,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool canCompose READ canCompose NOTIFY stateChanged)
     Q_PROPERTY(bool canSend READ canSend NOTIFY stateChanged)
     Q_PROPERTY(bool canLoadOlder READ canLoadOlder NOTIFY stateChanged)
+    Q_PROPERTY(bool canLoadNewer READ canLoadNewer NOTIFY stateChanged)
     Q_PROPERTY(QString title READ title NOTIFY stateChanged)
     Q_PROPERTY(QString syncState READ syncState NOTIFY stateChanged)
     Q_PROPERTY(QString ownerKey READ ownerKey NOTIFY stateChanged)
@@ -225,6 +226,8 @@ public:
     bool canSend() const;
     bool canLoadOlder() const { return !m_before.isEmpty() && !m_loading && !m_snapshotActive
         && (!m_cacheProtection || m_historyVerified); }
+    bool canLoadNewer() const { return !m_after.isEmpty() && !m_loading && !m_snapshotActive
+        && (!m_cacheProtection || m_historyVerified); }
     QString title() const;
     QString syncState() const { return m_syncState; }
     QString ownerKey() const { return authenticated()
@@ -289,6 +292,7 @@ public:
     Q_INVOKABLE void deleteDraft(const QString &id);
     Q_INVOKABLE void resolveDraft(const QString &id, const QString &action);
     Q_INVOKABLE void loadOlder();
+    Q_INVOKABLE void loadNewer();
     Q_INVOKABLE void reopenTopic();
     Q_INVOKABLE bool canStartDirectChatWith(const QString &peer) const;
     Q_INVOKABLE void startDirectChat(const QString &peer);
@@ -765,6 +769,8 @@ private:
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);
     void loadMessages(bool older = false);
+    void loadAroundAnchor();
+    void loadNewerPage(const QByteArray &marker);
     void historyPage(bool older, quint64 selection, quint64 revision,
                      std::optional<Message> boundary, QByteArray marker,
                      QVector<Message> accumulated, QSet<QByteArray> seen, int pages = 0, qint64 bytes = 0);
@@ -1013,9 +1019,11 @@ private:
     QString m_pendingDeepLink;
     bool m_deepLinkFlushScheduled = false;
     QString m_pendingAnchorMessage;
+    std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;
     int m_anchorBudget = 0;
+    bool m_anchorAroundTried = false;
     QTimer m_anchorHighlight;
     QString m_error;
     QString m_loginStep = QStringLiteral("organization");
@@ -1033,6 +1041,7 @@ private:
     int m_uploads = 0;
     int m_downloads = 0;
     QByteArray m_before;
+    QByteArray m_after;
     quint64 m_selection = 0;
     quint64 m_catalog = 0;
     quint64 m_topicRequest = 0;

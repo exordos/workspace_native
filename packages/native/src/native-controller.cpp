@@ -6042,6 +6042,7 @@ void NativeController::reset()
     m_stream.clear();
     m_topic.clear();
     m_before.clear();
+    m_after.clear();
     m_error.clear();
     m_loading = m_sending = m_busy = false;
     m_topicChanging = false;
@@ -7974,6 +7975,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     m_messages.clear();
     pruneMessageFields();
     m_before.clear();
+    m_after.clear();
     m_loading = false;
     m_recoveringMarker = m_resumeOlder = false;
     const auto selection = m_selection;
@@ -8297,6 +8299,7 @@ void NativeController::selectTopic(const QString &id)
     m_messages.clear();
     pruneMessageFields();
     m_before.clear();
+    m_after.clear();
     m_loading = false;
     m_recoveringMarker = m_resumeOlder = false;
     const auto selection = m_selection;
@@ -8366,6 +8369,7 @@ void NativeController::loadMessages(bool older)
                     m_messages = mergeMessages(older ? m_messages : QVector<Message>{}, rows);
                     pruneMessageFields();
                     m_before = entry->nextMarker;
+                    if (!older) m_after.clear();
                     m_historyVerified = true;
                     m_loading = false;
                     ++m_historyCommitRevision;
@@ -8382,6 +8386,7 @@ void NativeController::loadMessages(bool older)
                     m_messages = mergeMessages({}, rows);
                     pruneMessageFields();
                     m_before.clear();
+                    m_after.clear();
                     ++m_historyCommitRevision;
                     emit messagesChanged();
                     if (!guard) return;
@@ -8491,6 +8496,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         }
         pruneMessageFields();
         m_before = result.nextMarker;
+        if (!older) m_after.clear();
         m_loading = false;
         m_historyVerified = true;
         const bool resumeOlder = m_resumeOlder && !m_before.isEmpty();
@@ -8711,6 +8717,7 @@ void NativeController::applyMessageRoute(const QString &org, const QString &proj
     m_pendingAnchorStream = m_stream;
     m_pendingAnchorTopic = m_topic;
     m_anchorBudget = 8;
+    m_anchorAroundTried = false;
     if (findMessage(target)) {
         reanchorFromWindow();
         return;
@@ -8726,6 +8733,7 @@ void NativeController::applyMessageRoute(const QString &org, const QString &proj
             return;
         }
         if (m_pendingAnchorMessage != target) return;
+        m_pendingAnchorParsed = parsed;
         m_pendingAnchorStream = parsed->stream;
         m_pendingAnchorTopic = parsed->topic;
         if (parsed->topic.isEmpty()) {
@@ -8751,6 +8759,7 @@ void NativeController::clearAnchor(const QString &notice)
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
     m_pendingAnchorTopic.clear();
+    m_pendingAnchorParsed.reset();
     m_anchorBudget = 0;
     m_anchorHighlight.stop();
     const bool hadAnchor = !m_anchorMessage.isEmpty();
@@ -8791,11 +8800,21 @@ void NativeController::reanchorFromWindow()
         m_pendingAnchorStream.clear();
         m_pendingAnchorTopic.clear();
         m_anchorBudget = 0;
+        m_pendingAnchorParsed.reset();
         setAnchorMessage(target);
         m_anchorHighlight.start(2500);
         return;
     }
     if (busy()) return; // A live page owns the next reanchor pass.
+    // Reference parity (issue #71): a resolved anchor outside the loaded window opens
+    // the around-anchor pages (workspace_ui 61dacef7 resolveOpeningMessageWindow in
+    // entities/messenger/messenger-messages-loader.lib.ts) before the native bounded
+    // walk, which stays the fallback when either around page fails.
+    if (!m_anchorAroundTried && m_historyVerified && !m_loading && !m_snapshotActive) {
+        m_anchorAroundTried = true;
+        loadAroundAnchor();
+        return;
+    }
     if (m_anchorBudget > 0) {
         --m_anchorBudget;
         if (canLoadOlder()) {
@@ -8810,7 +8829,175 @@ void NativeController::reanchorFromWindow()
     clearAnchor(deepLinkUnavailableNotice());
 }
 
+
+void NativeController::loadAroundAnchor()
+{
+    // Reference contract: getMessagePagesAroundResolvedMessage (workspace_ui 61dacef7
+    // shared/api/messenger-messages.api.ts, contract test :169-246) - two parallel
+    // pages at page_marker=<anchor uuid>, sort_dir=desc for the older side and
+    // sort_dir=asc for the newer side, page_limit 50 (DEFAULT_MESSAGES_PAGE_LIMIT).
+    const QString target = m_pendingAnchorMessage;
+    if (target.isEmpty() || m_loading) return;
+    struct AroundPages {
+        int done = 0;
+        bool failed = false;
+        QJsonArray before;
+        QJsonArray after;
+        QByteArray beforeMarker;
+        QByteArray afterMarker;
+    };
+    const auto state = std::make_shared<AroundPages>();
+    const auto selection = m_selection;
+    const auto generation = m_api->generation();
+    const auto revision = m_messageRevision;
+    const QPointer<NativeController> guard(this);
+    m_loading = true;
+    emit stateChanged();
+    if (!guard) return;
+    const auto settle = [this, guard, state, selection, generation, revision, target] {
+        if (!guard) return;
+        if (selection != m_selection || generation != m_api->generation()
+            || revision != m_messageRevision || m_pendingAnchorMessage != target) {
+            m_loading = false;
+            emit stateChanged();
+            return;
+        }
+        if (state->failed) { // the bounded older walk remains the fallback (#55)
+            m_loading = false;
+            emit stateChanged();
+            reanchorFromWindow();
+            return;
+        }
+        QVector<Message> rows;
+        bool invalid = false;
+        const auto absorb = [this, &rows, &invalid, &target](const QJsonArray &page) {
+            for (const auto &value : page) {
+                const auto parsed = parseMessage(value.toObject(), m_session->project());
+                if (!parsed || parsed->uuid == target) continue;
+                if (!inConversation(*parsed)) { invalid = true; return; }
+                rows.append(*parsed);
+                if (findMessage(parsed->uuid) || m_messageFields.contains(parsed->uuid))
+                    observeMessage(value.toObject());
+            }
+        };
+        absorb(state->before);
+        if (!invalid) absorb(state->after);
+        if (!invalid && m_pendingAnchorParsed && m_pendingAnchorParsed->uuid == target
+            && inConversation(*m_pendingAnchorParsed))
+            rows.append(*m_pendingAnchorParsed);
+        if (invalid) {
+            m_loading = false;
+            report(tr("The server returned an invalid conversation history."));
+            reanchorFromWindow();
+            return;
+        }
+        m_messages = mergeMessages({}, rows);
+        pruneMessageFields();
+        m_before = state->beforeMarker;
+        m_after = state->afterMarker;
+        m_loading = false;
+        m_historyVerified = true;
+        ++m_historyCommitRevision;
+        emit messagesChanged();
+        if (!guard) return;
+        emit topicsChanged();
+        if (!guard) return;
+        announceStreamRowPreviews(rows);
+        if (!guard) return;
+        emit stateChanged();
+        if (!guard) return;
+        reanchorFromWindow();
+    };
+    const auto page = [this, guard, state, settle, selection, generation](const char *dir) {
+        if (!guard || selection != m_selection || generation != m_api->generation()) return;
+        const bool newer = dir[0] == 'a';
+        QUrlQuery query;
+        query.addQueryItem("stream_uuid", m_stream);
+        if (!m_topic.isEmpty()) query.addQueryItem("topic_uuid", m_topic);
+        query.addQueryItem("sort_key", "created_at");
+        query.addQueryItem("sort_dir", dir);
+        query.addQueryItem("page_limit", "50");
+        query.addQueryItem("page_marker", m_pendingAnchorMessage);
+        request("GET", messenger + "/messages/", {}, query,
+            [this, guard, state, settle, selection, generation, newer](const ApiResult &result) {
+            if (!guard || selection != m_selection || generation != m_api->generation()) return;
+            if (!result.ok() || !result.data.isArray()) state->failed = true;
+            else if (newer) { state->after = result.data.toArray(); state->afterMarker = result.nextMarker; }
+            else { state->before = result.data.toArray(); state->beforeMarker = result.nextMarker; }
+            if (++state->done == 2) settle();
+        });
+    };
+    page("desc");
+    page("asc");
+}
+
+void NativeController::loadNewer()
+{
+    if (m_loading || m_after.isEmpty() || (m_cacheProtection && !m_historyVerified))
+        return;
+    loadNewerPage(m_after);
+}
+
+void NativeController::loadNewerPage(const QByteArray &marker)
+{
+    if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
+        || m_loading || marker.isEmpty()) return;
+    const auto selection = m_selection;
+    const auto generation = m_api->generation();
+    const auto revision = m_messageRevision;
+    const QPointer<NativeController> guard(this);
+    m_loading = true;
+    emit stateChanged();
+    if (!guard) return;
+    QUrlQuery query;
+    query.addQueryItem("stream_uuid", m_stream);
+    if (!m_topic.isEmpty()) query.addQueryItem("topic_uuid", m_topic);
+    query.addQueryItem("sort_key", "created_at");
+    query.addQueryItem("sort_dir", "asc");
+    query.addQueryItem("page_limit", "50");
+    query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    request("GET", messenger + "/messages/", {}, query,
+        [this, guard, selection, generation, revision](const ApiResult &result) {
+        if (!guard || selection != m_selection || generation != m_api->generation()) return;
+        if (revision != m_messageRevision) {
+            m_loading = false;
+            loadMessages();
+            return;
+        }
+        if (!result.ok() || !result.data.isArray()) {
+            m_loading = false;
+            report(tr("Could not load messages. %1").arg(result.error));
+            return;
+        }
+        QVector<Message> rows;
+        for (const auto &value : result.data.toArray()) {
+            const auto parsed = parseMessage(value.toObject(), m_session->project());
+            if (!parsed || !inConversation(*parsed)) {
+                m_loading = false;
+                report(tr("The server returned an invalid conversation history."));
+                return;
+            }
+            rows.append(*parsed);
+            if (findMessage(parsed->uuid) || m_messageFields.contains(parsed->uuid))
+                observeMessage(value.toObject());
+        }
+        m_messages = mergeMessages(m_messages, rows);
+        pruneMessageFields();
+        m_after = result.nextMarker;
+        m_loading = false;
+        ++m_historyCommitRevision;
+        emit messagesChanged();
+        if (!guard) return;
+        emit topicsChanged();
+        if (!guard) return;
+        announceStreamRowPreviews(rows);
+        if (!guard) return;
+        emit stateChanged();
+    });
+}
+
 QString NativeController::deepLinkUnavailableNotice()
+
 {
     return tr("The requested message is unavailable.");
 }

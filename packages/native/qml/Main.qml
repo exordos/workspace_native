@@ -4905,6 +4905,14 @@ ApplicationWindow {
                     }
                 }
             }
+            NativeButton {
+                colors: root.colors
+                visible: root.controller.canLoadNewer
+                Layout.alignment: Qt.AlignHCenter
+                text: qsTr("Load newer messages")
+                enabled: !root.controller.busy
+                onClicked: root.controller.loadNewer()
+            }
             Rectangle {
                 id: encryptionStatus
                 objectName: "encryptedReadStatus"
