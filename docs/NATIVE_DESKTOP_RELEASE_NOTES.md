@@ -1,3 +1,21 @@
+# Workspace Native 0.10.0 - Linux development preview
+
+The media viewer arrived in the native client. Clicking a picture in a conversation
+now grows it to full size across the window instead of stopping at the inline
+thumbnail: on-screen arrows, the keyboard arrow keys or the thumbnail strip at the
+bottom move you through a multi-image conversation, a counter shows which picture you
+are viewing, a save action writes the full-size file to disk, and Escape or a click on
+the dimmed backdrop closes the view. A lone picture opens without the strip or arrows,
+and navigation stops at the first and last picture instead of wrapping around (issue #8).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.9.1...0.10.0](https://github.com/exordos/workspace_native/compare/0.9.1...0.10.0)
+
+---
+
 # Workspace Native 0.9.1 - Linux development preview
 
 Editing no longer loses your typing. If you keep typing after pressing Save - or cancel and
