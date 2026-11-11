@@ -43,8 +43,10 @@ restyle. Reference: workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af,
      because its Linux backend is not guaranteed on the supported targets.
   2. `rate_limited` - a JSON request answered HTTP 429; `Retry-After` seconds
      (default 30 when absent) start a wall-clock deadline. The countdown expires
-     by itself (a fresh 429 extends it), like the reference retryAfterMs timer;
-     unrelated successful responses do not clear it early.
+     by itself (a fresh 429 extends it - keeping the later of the existing and
+     the new deadline, never the earlier one - so a racing response with a
+     shorter `Retry-After` cannot clear the banner early), like the reference
+     retryAfterMs timer; unrelated successful responses do not clear it early.
   3. `reconnecting` - `syncState` in `connecting`/`catching_up`/`retrying`/
      `waiting_for_session` (websocket drop with reconnect pending).
   4. `degraded` - `syncState` in `invalid_data`/`snapshot_required`.
@@ -86,7 +88,8 @@ Russian catalog together with every new user-visible string.
   - realtime websocket drop flips the phase to `reconnecting` and auto-reconnect
     clears it (existing `RealtimeGateway` harness);
   - a 429 with `Retry-After` shows `rate_limited` with a positive countdown that
-    clears when the countdown expires;
+    clears when the countdown expires, and a later 429 with a shorter
+    `Retry-After` never shortens the announced countdown;
   - a malformed bootstrap catalog sets `bootstrapError`; `retryBootstrap()`
     against a healthy server clears the error and the flag.
 - `native-native-window`: the overlay renders above the split view below the
