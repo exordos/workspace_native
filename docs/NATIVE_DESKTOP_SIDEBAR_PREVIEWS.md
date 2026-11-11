@@ -192,6 +192,10 @@ The en/ru pair matches the reference keys `common.you`, `chat.yesterday` and
 ## Deviations and follow-ups
 
 - No pin ordering (no native pin DTO), as above.
+- The reference timestamp carries the `tabular-nums` font feature
+  (`sidebar-chat-row-meta.ui.tsx`). QML exposes no font-feature API on the `Text.font`
+  group, so the native row uses the default figure substitution; row times are static per
+  bind, so no width jitter is observable. Recorded here rather than hacked around.
 - The reference *stream order hold* while topics are being resolved during a visit
   (`useSidebarStreamOrder`) is not ported in this release: the native comparator reads the
   same resolved-topic state, so a resolved topic can move a stream down immediately. The
