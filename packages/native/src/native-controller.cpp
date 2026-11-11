@@ -5676,7 +5676,13 @@ void NativeController::useRealtime(RealtimeClient *client)
     connect(client, &RealtimeClient::connectionChanged, this, [this](const QString &state) {
         const bool previous = m_syncBlocked;
         m_syncState = state;
-        if (state == "live") m_syncBlocked = false;
+        if (state == "live") {
+            m_syncBlocked = false;
+            // A healthy realtime link proves reachability on its own: a
+            // stale transport-offline flag must not outlive the realtime
+            // recovery and mask live sync state with the offline banner.
+            m_transportOffline = false;
+        }
         else if (state != "catching_up" && state != "connecting") m_syncBlocked = true;
         if (!previous && m_syncBlocked) {
             interruptChannelCreations();
