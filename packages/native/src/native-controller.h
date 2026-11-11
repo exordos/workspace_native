@@ -901,6 +901,13 @@ private:
     // Inline edit session (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the buffer stands in for
     // the composer draft; m_editRoute is the conversationKey() the session belongs to.
     QString m_editingMessage, m_editBuffer, m_editRoute;
+    // Save-race guards (issue #115): m_editSession names the open session (bumped on every
+    // begin), m_editRevision tracks the edit buffer (bumped whenever the buffer is replaced).
+    // A save completion may only close the exact (session, revision) it submitted.
+    // m_editSaveInFlight lists messages whose edit PUT is still in flight, so a second
+    // save for the same message is refused instead of racing the first.
+    quint64 m_editSession = 0, m_editRevision = 0;
+    QSet<QString> m_editSaveInFlight;
     // Reply session (docs/NATIVE_DESKTOP_REPLIES.md): quoted message uuid plus
     // the conversationKey() that owns it; m_quotes caches resolved references.
     QString m_replyMessage, m_replyRoute;
