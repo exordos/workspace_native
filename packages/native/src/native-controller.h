@@ -1,5 +1,7 @@
 #pragma once
 
+#include "media-viewer.h"
+
 #include "api-client.h"
 #include "domain.h"
 #include "native-cache-service.h"
@@ -18,6 +20,7 @@
 
 namespace workspace {
 
+class MediaViewerModel;
 class NativePreferences;
 class RealtimeClient;
 class FileClient;
@@ -107,6 +110,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString syncState READ syncState NOTIFY stateChanged)
     Q_PROPERTY(QString ownerKey READ ownerKey NOTIFY stateChanged)
     Q_PROPERTY(bool canAttach READ canAttach NOTIFY stateChanged)
+    Q_PROPERTY(MediaViewerModel *mediaViewer READ mediaViewer CONSTANT)
     Q_PROPERTY(bool topicClosed READ topicClosed NOTIFY stateChanged)
     Q_PROPERTY(bool canReopenTopic READ canReopenTopic NOTIFY stateChanged)
     Q_PROPERTY(bool fileBusy READ fileBusy NOTIFY stateChanged)
@@ -226,6 +230,7 @@ public:
     QString ownerKey() const { return authenticated()
         ? SessionVault::accountId(m_api->server(), m_session->project(), m_session->user()) : QString{}; }
     bool canAttach() const;
+    MediaViewerModel *mediaViewer() const { return m_mediaViewer; }
     bool topicClosed() const;
     bool canReopenTopic() const;
     bool fileBusy() const { return m_uploads > 0 || m_downloads > 0; }
@@ -810,6 +815,7 @@ private:
     quint64 m_historyCommitRevision = 0;
     bool m_syncBlocked = false;
     QPointer<FileClient> m_files;
+    MediaViewerModel *m_mediaViewer = nullptr;
     QMetaObject::Connection m_filesDestroyed;
     QQueue<UploadTask> m_uploadQueue;
     QHash<quint64, FileOperation> m_fileOperations;

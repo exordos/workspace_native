@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "media-viewer.h"
 #include "native-deeplink.h"
 #include "workspace-reference.h"
 #include "native-preferences.h"
@@ -5254,6 +5255,7 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    m_mediaViewer = new MediaViewerModel(this, this);
     m_notifications.setParent(this);
     // A notification click navigates to the conversation it reported, exactly
     // like the reference click route (layout-workspace-notifications.hook.ts).
@@ -5471,12 +5473,16 @@ void NativeController::useFiles(FileClient *client)
     ++m_fileServiceSerial;
     cancelFileTransfers(tr("Attachment service changed. Choose the file again."));
     m_files = client;
+    if (m_mediaViewer)
+        m_mediaViewer->setFileClient(client);
     if (client) {
         const auto serial = m_fileServiceSerial;
         m_filesDestroyed = connect(client, &QObject::destroyed, this, [this, serial] {
             if (serial != m_fileServiceSerial)
                 return;
             m_files.clear();
+            if (m_mediaViewer)
+                m_mediaViewer->setFileClient(nullptr);
             cancelFileTransfers(tr("Attachment service is unavailable. Choose the file again."));
             emit stateChanged();
         });

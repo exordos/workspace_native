@@ -2,6 +2,8 @@
 #include "native-preferences.h"
 #include <QNetworkRequest>
 #include "file-client.h"
+#include "media-viewer.h"
+#include <QUrl>
 #include "native-markdown.h"
 #include "realtime-client.h"
 #include "mock-server.h"
@@ -663,6 +665,19 @@ public:
         return {};
     }
 };
+
+// Media viewer file slots used by the gallery tests (issue #8).
+static const QString mvFileA{"aaaaaaaa-0000-4000-8000-00000000aa01"};
+static const QString mvFileB{"bbbbbbbb-0000-4000-8000-00000000bb02"};
+static const QString mvFileC{"cccccccc-0000-4000-8000-00000000cc03"};
+
+static QVariantMap mediaViewerRow(const QString &id, const QString &fileUuid,
+    const QString &kind = QStringLiteral("markdown"))
+{
+    const auto body = QStringLiteral("Head\n\n![%1.png](urn:image:%2?name=%1.png&content_type=image%2Fpng&size=3)\n\nTail")
+        .arg(id, fileUuid);
+    return QVariantMap{{"id", id}, {"kind", kind}, {"content", body}, {"displayContent", body}};
+}
 
 // Private additive test fixture only. Actual existing Users HTTP collection and
 // canonical existing-direct GET flow; no controller/QML directory injection.
@@ -12705,6 +12720,169 @@ private slots:
                 QCOMPARE(row.value("rowTime").toString(), QString());
             }
         }
+    }
+
+    // --- media viewer (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md) ---
+
+    void mediaViewerGalleryCollectsImageSlotsAndRejectsUnknownFile()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVERIFY(viewer);
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA)
+             << mediaViewerRow("m2", mvFileB)
+             << mediaViewerRow("m3", mvFileC, QStringLiteral("e2ee"))
+             << mediaViewerRow("m4", mvFileA)
+             << QVariantMap{{"id", "m5"}, {"kind", "markdown"}, {"content", "No media here"}, {"displayContent", "No media here"}};
+        QVERIFY(!viewer->openFromMessages(rows, QStringLiteral("dddddddd-0000-4000-8000-00000000dd04")));
+        QVERIFY(!viewer->open());
+        QVERIFY(!viewer->openFromMessages(QVariantList{}, mvFileA));
+        QVERIFY(viewer->openFromMessages(rows, mvFileB));
+        QVERIFY(viewer->open());
+        QCOMPARE(viewer->count(), 2);
+        QCOMPARE(viewer->index(), 1);
+        const auto items = viewer->items();
+        QCOMPARE(items.size(), 2);
+        QCOMPARE(items.at(0).toMap().value("uuid").toString(), mvFileA);
+        QCOMPARE(items.at(1).toMap().value("uuid").toString(), mvFileB);
+        // Reopening replaces the session and re-anchors the start index.
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QVERIFY(viewer->open());
+        QCOMPARE(viewer->count(), 2);
+        QCOMPARE(viewer->index(), 0);
+        viewer->close();
+        QVERIFY(!viewer->open());
+        QCOMPARE(viewer->count(), 0);
+    }
+
+    void mediaViewerNavigationClampsAtBothEndsWithoutWrapAround()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA) << mediaViewerRow("m2", mvFileB) << mediaViewerRow("m3", mvFileC);
+        QVERIFY(viewer->openFromMessages(rows, mvFileB));
+        QCOMPARE(viewer->index(), 1);
+        QVERIFY(viewer->canPrev());
+        QVERIFY(viewer->canNext());
+        viewer->prev();
+        QCOMPARE(viewer->index(), 0);
+        QVERIFY(!viewer->canPrev());
+        viewer->prev();
+        QCOMPARE(viewer->index(), 0);
+        viewer->goTo(9);
+        QCOMPARE(viewer->index(), 2);
+        QVERIFY(!viewer->canNext());
+        viewer->next();
+        QCOMPARE(viewer->index(), 2);
+        viewer->goTo(-4);
+        QCOMPARE(viewer->index(), 0);
+    }
+
+    void mediaViewerSlotsStageBytesAndMarkFailures()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes("PNG");
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.contains(mvFileB))
+                return Response{QJsonObject{}, 500};
+            if (path.endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA) << mediaViewerRow("m2", mvFileB);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("loading"));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("error"), 4000);
+        const auto ready = viewer->items().at(0).toMap();
+        const QUrl url(ready.value("url").toString());
+        QVERIFY(url.isLocalFile());
+        QFile staged(url.toLocalFile());
+        QVERIFY(staged.open(QIODevice::ReadOnly));
+        QCOMPARE(staged.readAll(), bytes);
+        QCOMPARE(ready.value("name").toString(), QStringLiteral("m1.png"));
+        QCOMPARE(viewer->items().at(1).toMap().value("url").toString(), QString());
+    }
+
+    void mediaViewerRetiredSessionIgnoresLateSlotCompletions()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes("PNG");
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        QList<std::function<void()>> releasedA, releasedB;
+        fixture.files = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            const auto isB = path.contains(mvFileB);
+            Response result{QJsonObject{{"uuid", isB ? mvFileB : mvFileA}, {"stream_uuid", streamId},
+                {"name", isB ? QStringLiteral("b.png") : QStringLiteral("a.png")},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+            auto &sink = isB ? releasedB : releasedA;
+            result.defer = [&sink](std::function<void()> send) { sink.append(std::move(send)); };
+            return result;
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList firstRows;
+        firstRows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(firstRows, mvFileA));
+        QTRY_VERIFY_WITH_TIMEOUT(!releasedA.isEmpty(), 2000);
+        // Retire the session while its metadata response is still held...
+        viewer->close();
+        QVERIFY(!viewer->open());
+        // ...and open a new session on another file before releasing it.
+        QVariantList secondRows;
+        secondRows << mediaViewerRow("m2", mvFileB);
+        QVERIFY(viewer->openFromMessages(secondRows, mvFileB));
+        QCOMPARE(viewer->count(), 1);
+        while (!releasedA.isEmpty())
+            releasedA.takeFirst()();
+        QTest::qWait(250);
+        // A completion from the retired session must not touch the new slots.
+        QCOMPARE(viewer->count(), 1);
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("loading"));
+        QTRY_VERIFY_WITH_TIMEOUT(!releasedB.isEmpty(), 2000);
+        while (!releasedB.isEmpty())
+            releasedB.takeFirst()();
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        QCOMPARE(viewer->items().at(0).toMap().value("name").toString(), QStringLiteral("b.png"));
+    }
+
+    void mediaViewerClosesWhenSessionOrConversationEnds()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QVERIFY(viewer->open());
+        fixture.controller.logout();
+        QTRY_VERIFY_WITH_TIMEOUT(!viewer->open(), 2000);
     }
 };
 

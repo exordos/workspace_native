@@ -879,7 +879,7 @@ ApplicationWindow {
         messageMenu.popup();
     }
 
-    function openReference(link) {
+    function openReference(link, imageFailed) {
         const reference = root.markdown.reference(link);
         if (reference.kind === "external") {
             root.markdown.openExternal(link);
@@ -890,6 +890,14 @@ ApplicationWindow {
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
         } else if (["file", "image", "video"].indexOf(reference.kind) >= 0 && root.controller.authenticated) {
+            // Inline images open the full-size viewer whenever the clicked file
+            // belongs to the conversation gallery (docs/NATIVE_DESKTOP_MEDIA_VIEWER.md);
+            // every other file kind keeps the established save-dialog route. A
+            // preview whose load failed keeps its Save fallback instead (the
+            // viewer cannot show bytes the client never received).
+            if (reference.kind === "image" && !imageFailed
+                && root.controller.mediaViewer.openFromMessages(root.controller.messages, reference.id))
+                return;
             root.downloadOwner = root.controller.ownerKey;
             root.downloadId = reference.id;
             attachmentSaveDialog.open();
@@ -4663,6 +4671,7 @@ ApplicationWindow {
                                         }
                                         NativeMessageImage {
                                             id: picture
+                                            objectName: "inline-image-" + messageRow.modelData.id
                                             visible: imageRun.part.kind === "image"
                                             colors: root.colors
                                             images: root.messageImages
@@ -4677,7 +4686,7 @@ ApplicationWindow {
                                             width: Math.min(Math.max(0, parent.width - 2), implicitWidth)
                                             bodyActive: mediaMessageBody.visible && !messageList.positioning
                                                 && messageList.displayedRoute === messageList.serviceScope()
-                                            onOpened: root.openReference(reference)
+                                            onOpened: root.openReference(reference, picture.failed)
                                         }
                                     }
                                 }
@@ -7453,6 +7462,16 @@ ApplicationWindow {
         onAccepted: {
             if (root.messageMutationAllowed)
                 root.controller.deleteMessage(root.menuMessageId);
+        }
+    }
+    NativeMediaViewer {
+        anchors.fill: parent
+        viewer: root.controller.mediaViewer
+        colors: root.colors
+        onRequestDownload: (uuid) => {
+            root.downloadOwner = root.controller.ownerKey;
+            root.downloadId = uuid;
+            attachmentSaveDialog.open();
         }
     }
 }
