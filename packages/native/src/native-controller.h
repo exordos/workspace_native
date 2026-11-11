@@ -97,6 +97,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
+    Q_PROPERTY(QString replyMessageId READ replyMessageId NOTIFY replySessionChanged)
+    Q_PROPERTY(QString replyAuthor READ replyAuthor NOTIFY replySessionChanged)
+    Q_PROPERTY(QString replyExcerpt READ replyExcerpt NOTIFY replySessionChanged)
     Q_PROPERTY(bool canCompose READ canCompose NOTIFY stateChanged)
     Q_PROPERTY(bool canSend READ canSend NOTIFY stateChanged)
     Q_PROPERTY(bool canLoadOlder READ canLoadOlder NOTIFY stateChanged)
@@ -309,7 +312,14 @@ public:
     Q_INVOKABLE void editLastMessage();
     QString editingMessageId() const { return m_editingMessage; }
     bool canSaveEdit() const;
-    Q_INVOKABLE void quoteMessage(const QString &id);
+    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md): a single quote slot; the
+    // composer draft stays the answer and send() composes the urn:quote line.
+    Q_INVOKABLE bool beginReply(const QString &id);
+    Q_INVOKABLE void cancelReply();
+    Q_INVOKABLE void openMessageInChat(const QString &id);
+    QString replyMessageId() const { return m_replyMessage; }
+    QString replyAuthor() const;
+    QString replyExcerpt() const;
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);
     Q_INVOKABLE void toggleReaction(const QString &id, const QString &emoji);
@@ -324,6 +334,7 @@ signals:
     void savedAccountsChanged();
     void draftChanged();
     void editSessionChanged();
+    void replySessionChanged();
     void streamsChanged();
     void topicsChanged();
     void messagesChanged();
@@ -710,6 +721,7 @@ private:
     void refreshReadStreamCounter(const Message &boundary);
     struct SendIntent {
         QString uuid, text; // Existing ordinary-send representation remains first.
+        QString wire; // Wire markdown: the draft, or the urn:quote line plus the answer.
         bool encrypted = false, busy = false, dispatched = false, materialLost = false, statusOnly = false;
         QString owner, user, project, stream, topic, routeTopic, key, currentKey, publicId, phase, error;
         QJsonObject payload;
@@ -759,6 +771,8 @@ private:
                            const std::function<void(bool)> &settled);
     void closeEditSession();
     void settleEditRouteChange();
+    void closeReplySession();
+    void scheduleQuoteFetch(const QString &id) const;
     const Message *editableMessage(const QString &id) const;
     void reset();
     void report(const QString &message);
@@ -887,6 +901,12 @@ private:
     // Inline edit session (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the buffer stands in for
     // the composer draft; m_editRoute is the conversationKey() the session belongs to.
     QString m_editingMessage, m_editBuffer, m_editRoute;
+    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md): quoted message uuid plus
+    // the conversationKey() that owns it; m_quotes caches resolved references.
+    QString m_replyMessage, m_replyRoute;
+    struct QuoteRecord { QString authorId, content; bool missing = false; };
+    mutable QHash<QString, QuoteRecord> m_quotes;
+    mutable QSet<QString> m_quoteInFlight;
     QPointer<NativeDrafts> m_draftStore;
     QString m_draftOwner;
     QString m_draftFallbackOwner, m_draftFallbackRoute, m_draftFallback;

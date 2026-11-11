@@ -1,5 +1,6 @@
 #include "native-controller.h"
 #include "native-deeplink.h"
+#include "workspace-reference.h"
 #include "native-preferences.h"
 #include "native-markdown.h"
 #include "native-chat-key-vault.h"
@@ -5967,6 +5968,9 @@ void NativeController::logout()
 void NativeController::reset()
 {
     closeEditSession();
+    closeReplySession();
+    m_quotes.clear();
+    m_quoteInFlight.clear();
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
@@ -7064,6 +7068,46 @@ QVariantList NativeController::topics() const
     return result;
 }
 
+namespace {
+struct ParsedLeadingQuote { QString id, label, text, rest; };
+
+QString unescapeQuoteLabel(const QString &value)
+{
+    // Undo workspace::escapeWorkspaceMarkdownInline label escaping.
+    static const QString special = QStringLiteral("\\`*_{()[]#+.!|>~-");
+    QString out;
+    out.reserve(value.size());
+    for (qsizetype i = 0; i < value.size(); ++i) {
+        if (value[i] == QChar('\\') && i + 1 < value.size() && special.contains(value[i + 1])) {
+            out += value[++i];
+            continue;
+        }
+        out += value[i];
+    }
+    return out;
+}
+
+// Source serializes a reply as "[Name](urn:quote:uuid[?text=...])" + blank line +
+// answer (workspace_ui 61dacef workspace-reply.lib.ts:190-212). This display parse
+// accepts only a standalone leading reference as the quote frame; references deeper
+// in the body keep rendering as inline links.
+std::optional<ParsedLeadingQuote> leadingQuoteReference(const QString &content)
+{
+    static const QRegularExpression pattern(
+        "^\\s*\\[((?:\\\\.|[^\\\\\\]\\n])*)\\]\\((urn:[^)]+)\\)[ \\t]*(?:\\r?\\n+([\\s\\S]*))?$");
+    const auto match = pattern.match(content);
+    if (!match.hasMatch()) return std::nullopt;
+    const auto reference = workspace::parseWorkspaceReference(match.captured(2));
+    if (!reference || reference->kind != workspace::WorkspaceReferenceKind::Quote) return std::nullopt;
+    ParsedLeadingQuote parsed;
+    parsed.id = reference->id;
+    parsed.label = unescapeQuoteLabel(match.captured(1)).trimmed();
+    if (reference->text) parsed.text = *reference->text;
+    parsed.rest = match.captured(3).trimmed();
+    return parsed;
+}
+} // namespace
+
 QVariantList NativeController::messages() const
 {
     const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
@@ -7180,6 +7224,35 @@ QVariantList NativeController::messages() const
         const auto content = decrypted ? prepared->content : message.kind == "markdown" ? message.content
             : message.kind == "e2ee" ? tr("Encrypted message — key support is under development")
                                     : tr("System message (%1)").arg(message.kind);
+        // Quote frame fields (docs/NATIVE_DESKTOP_REPLIES.md): a leading quote
+        // reference resolves from the loaded window, else from the resolved-quote
+        // store fed by GET /messages/?uuid=, mirroring messenger-quote-resolver
+        // .hook.ts:17-58 (store hit -> ready, fetch -> loading, miss -> unavailable).
+        QString quoteId, quoteLabel, quoteSelection, quoteStatus, quoteAuthorName, quoteContent;
+        auto displayContent = content;
+        if (const auto quote = leadingQuoteReference(content)) {
+            quoteId = quote->id;
+            quoteLabel = quote->label;
+            quoteSelection = quote->text;
+            displayContent = quote->rest;
+            const auto fallback = quoteLabel.isEmpty() ? tr("Quote") : quoteLabel;
+            if (const auto *origin = findMessage(quoteId); origin && origin->kind == "markdown") {
+                quoteStatus = QStringLiteral("ready");
+                quoteAuthorName = userDisplayName(origin->author, fallback);
+                quoteContent = origin->content;
+            } else if (const auto record = m_quotes.constFind(quoteId); record != m_quotes.cend()) {
+                if (record->missing) {
+                    quoteStatus = QStringLiteral("unavailable");
+                } else {
+                    quoteStatus = QStringLiteral("ready");
+                    quoteAuthorName = userDisplayName(record->authorId, fallback);
+                    quoteContent = record->content;
+                }
+            } else {
+                quoteStatus = QStringLiteral("loading");
+                scheduleQuoteFetch(quoteId);
+            }
+        }
         QVariantList reactions;
         auto names = message.reactions.keys();
         auto intent = m_reactionIntents.constFind(message.uuid);
@@ -7210,7 +7283,10 @@ QVariantList NativeController::messages() const
             {"author", userDisplayName(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
             {"authorAvatar", avatarsOwned ? m_names.value(message.author).avatar : QString{}},
             {"authorPresence", avatarsOwned ? m_names.value(message.author).presence : QString{}},
-            {"content", content}, {"time", message.created.toLocalTime().toString("HH:mm")},
+            {"content", content}, {"displayContent", displayContent},
+            {"quoteId", quoteId}, {"quoteLabel", quoteLabel}, {"quoteText", quoteSelection},
+            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent},
+            {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
             {"encryptionKeyUuid", message.kind == "e2ee" && message.crypto ? message.crypto->keyUuid : QString{}},
@@ -8438,11 +8514,24 @@ void NativeController::send()
     if (!canSend())
         return;
     const auto text = draft();
+    // Reply composition contract (workspace_ui 61dacef workspace-reply.lib.ts:190-212):
+    // "[Name](urn:quote:uuid)" + blank line + answer, trailing whitespace trimmed.
+    const auto replyId = m_replyMessage;
+    auto wire = text;
+    if (!replyId.isEmpty()) {
+        const auto quoteLine = workspace::buildWorkspaceQuoteReference(replyAuthor(), replyId);
+        if (quoteLine.isEmpty()) {
+            report(tr("This message can no longer be replied to."));
+            return;
+        }
+        wire = (quoteLine + QStringLiteral("\n\n") + text).trimmed();
+    }
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
-    if (intent.uuid.isEmpty() || intent.text != text) {
+    if (intent.uuid.isEmpty() || intent.text != text || intent.wire != wire) {
         intent = SendIntent{};
         intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces); intent.text = text;
+        intent.wire = wire;
         intent.draftRevision = m_draftRevisions.value(conversation);
         if (durableDraftRoute()) {
             intent.draftCaptured = true;
@@ -8458,13 +8547,13 @@ void NativeController::send()
     m_sending = true;
     emit stateChanged();
     const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", stream}, {"topic_uuid", topic},
-        {"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}};
+        {"payload", QJsonObject{{"kind", "markdown"}, {"content", intent.wire}}}};
     request("POST", messenger + "/messages/", body, {},
-        [this, stream, topic, text, conversation, intent, context](const ApiResult &result) {
+        [this, stream, topic, text, conversation, intent, context, replyId](const ApiResult &result) {
         staleConversation(stream, topic);
         const auto sent = parseMessage(result.data.toObject(), m_session->project());
         if (!result.ok() || !sent || sent->stream != stream || sent->topic != topic
-            || sent->kind != "markdown" || sent->content != text) {
+            || sent->kind != "markdown" || sent->content != intent.wire) {
             finishMessageIntent(intent.uuid);
             m_sending = false;
             report(tr("Sending was not confirmed. Your text is preserved. %1").arg(result.error));
@@ -8476,13 +8565,13 @@ void NativeController::send()
             finishMessageIntent(intent.uuid);
         }
         request("GET", messenger + "/messages/" + canonicalId, {}, {},
-            [this, stream, topic, text, conversation, intent, context, canonicalId](const ApiResult &confirmation) {
+            [this, stream, topic, text, conversation, intent, context, canonicalId, replyId](const ApiResult &confirmation) {
             staleConversation(stream, topic);
             m_sending = false;
             const bool deleted = m_messageFields.value(canonicalId).deleted;
             const auto saved = parseMessage(confirmation.data.toObject(), m_session->project());
             if (!confirmation.ok() || !saved || saved->uuid != canonicalId || saved->stream != stream || saved->topic != topic
-                || saved->kind != "markdown" || saved->content != text || !saved->own) {
+                || saved->kind != "markdown" || saved->content != intent.wire || !saved->own) {
                 finishMessageIntent(canonicalId);
                 report(tr("Message verification failed. Your text is preserved."));
                 return;
@@ -8507,6 +8596,7 @@ void NativeController::send()
             }
             finishMessageIntent(canonicalId);
             m_error.clear();
+            if (!replyId.isEmpty() && m_replyMessage == replyId) closeReplySession();
             const QPointer<NativeController> guard(this);
             emit draftChanged();
             if (!guard) return;
@@ -8914,15 +9004,96 @@ void NativeController::pumpRowPreviewHydration()
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
-void NativeController::quoteMessage(const QString &id)
+bool NativeController::beginReply(const QString &id)
 {
-    const auto *message = findMessage(id);
     const auto *stream = currentStream();
-    if (!message || message->kind != "markdown" || !stream || stream->encrypted)
-        return;
-    auto quote = message->content;
-    quote.replace("\n", "\n> ");
-    setDraft(draft() + "> " + quote + "\n\n");
+    const auto *message = findMessage(id);
+    // Same conversation guard as editableMessage (docs/NATIVE_DESKTOP_REPLIES.md);
+    // encrypted streams keep replies out of reach, as the shipped e2ee gate does.
+    if (!authoritativeRoute() || !stream || stream->encrypted || !message
+        || message->kind != "markdown"
+        || message->stream != m_stream || message->topic != m_topic) {
+        report(tr("This message can no longer be replied to."));
+        return false;
+    }
+    if (!m_editingMessage.isEmpty()) closeEditSession();
+    if (m_replyMessage != id) {
+        m_replyMessage = id;
+        m_replyRoute = conversationKey();
+        emit replySessionChanged();
+    }
+    return true;
+}
+
+void NativeController::cancelReply()
+{
+    closeReplySession();
+}
+
+void NativeController::closeReplySession()
+{
+    if (m_replyMessage.isEmpty()) return;
+    m_replyMessage.clear();
+    m_replyRoute.clear();
+    emit replySessionChanged();
+}
+
+QString NativeController::replyAuthor() const
+{
+    const auto *message = m_replyMessage.isEmpty() ? nullptr : findMessage(m_replyMessage);
+    if (!message) return {};
+    const bool own = message->own || message->author == m_session->user();
+    return userDisplayName(message->author, own ? tr("You") : QStringLiteral("#") + message->author.left(8));
+}
+
+QString NativeController::replyExcerpt() const
+{
+    const auto *message = m_replyMessage.isEmpty() ? nullptr : findMessage(m_replyMessage);
+    if (!message) return {};
+    // QUOTE_PREVIEW_MAX = 80 (workspace_ui 61dacef message-composer-constants.lib.ts:3):
+    // whitespace-collapsed summary truncated with the ASCII "..." marker.
+    static constexpr int maximumCharacters = 80;
+    static constexpr int markerLength = 3;
+    static NativeMarkdown previewCache;
+    const auto text = previewCache.render(message->content).value("plain").toString().simplified();
+    if (text.size() <= maximumCharacters) return text;
+    return text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
+}
+
+void NativeController::openMessageInChat(const QString &id)
+{
+    // Quote frames and urn:quote/urn:message anchors jump through the shipped
+    // message-link machinery: resolve GET, open the destination topic, bounded
+    // older-page walk, highlight flash (docs/NATIVE_DESKTOP_MESSAGE_LINKS.md).
+    if (!authenticated() || id.isEmpty()) return;
+    if (id == m_anchorMessage) { m_anchorHighlight.start(2500); return; }
+    applyMessageRoute(workspace::orgRouteIdFromOrigin(m_api->server()), m_session->project(), id);
+}
+
+void NativeController::scheduleQuoteFetch(const QString &id) const
+{
+    if (m_quotes.contains(id) || m_quoteInFlight.contains(id)) return;
+    m_quoteInFlight.insert(id);
+    auto *self = const_cast<NativeController *>(this);
+    QMetaObject::invokeMethod(self, [self, id] {
+        const auto project = self->m_session->project();
+        self->request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", id}},
+            [self, id](const ApiResult &result) {
+            self->m_quoteInFlight.remove(id);
+            QuoteRecord record;
+            const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
+            const auto parsed = rows.isEmpty() ? std::optional<Message>{}
+                : parseMessage(rows.first().toObject(), self->m_session->project());
+            if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
+                record.authorId = parsed->author;
+                record.content = parsed->content;
+            } else {
+                record.missing = true;
+            }
+            self->m_quotes.insert(id, record);
+            emit self->messagesChanged();
+        });
+    }, Qt::QueuedConnection);
 }
 
 void NativeController::resetReadState()
@@ -9268,6 +9439,8 @@ bool NativeController::beginEditMessage(const QString &id)
         report(tr("This message can no longer be edited"));
         return false;
     }
+    // Reply and edit sessions are mutually exclusive (one composer, one mode).
+    closeReplySession();
     m_editingMessage = id;
     m_editBuffer = message->content;
     m_editRoute = conversationKey();
@@ -9334,6 +9507,10 @@ void NativeController::settleEditRouteChange()
 {
     if (!m_editingMessage.isEmpty() && conversationKey() != m_editRoute)
         closeEditSession();
+    // The reply slot belongs to the conversation that started it
+    // (docs/NATIVE_DESKTOP_REPLIES.md); leaving the conversation ends the session.
+    if (!m_replyMessage.isEmpty() && conversationKey() != m_replyRoute)
+        closeReplySession();
 }
 
 const Message *NativeController::editableMessage(const QString &id) const
