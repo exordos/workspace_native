@@ -13065,6 +13065,39 @@ private slots:
         fixture.controller.logout();
         QTRY_VERIFY_WITH_TIMEOUT(!viewer->open(), 2000);
     }
+
+    // The controller-side half of docs/NATIVE_DESKTOP_AUTO_PAGING.md: a fetched
+    // page whose every row is an account-irrelevant service entry must still
+    // commit and move the older marker. The view-side zero-visible auto-advance
+    // walks through exactly such pages, so marker traversal has to survive them.
+    void allFilteredServicePageStillAdvancesMarkers()
+    {
+        Fixture fixture;
+        const auto announcedRow = [&](int number) {
+            auto entry = message(QString("Announced %1").arg(number),
+                QString("88000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0')));
+            entry["payload"] = QJsonObject{{"kind", "key_announced"},
+                {"key_uuid", QString("77000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'))}};
+            return entry;
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto marker = QUrlQuery(request.target).queryItemValue("page_marker");
+            if (marker.isEmpty()) {
+                Response response{QJsonArray{announcedRow(12), announcedRow(11)}};
+                response.headers.insert("X-Pagination-Marker", "svc-2");
+                return response;
+            }
+            if (marker == "svc-2")
+                return Response{QJsonArray{announcedRow(10), announcedRow(9)}};
+            return Response{QJsonObject{}, 404};
+        };
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.canLoadOlder()); // a fully filtered page keeps the traversal alive
+        fixture.controller.loadOlder();
+        QTRY_COMPARE(fixture.controller.messages().size(), 4);
+        QVERIFY(!fixture.controller.canLoadOlder()); // the final page carried no marker
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

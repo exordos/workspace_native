@@ -3122,6 +3122,17 @@ ApplicationWindow {
                 // Keep delegates stable when a verified QVariantList snapshot
                 // changes, then restore the visible UUID after layout.
                 model: renderedMessages
+                // Scroll-triggered older paging (docs/NATIVE_DESKTOP_AUTO_PAGING.md):
+                // reference workspace-message-list-scroll.hook.ts LOAD_MORE_THRESHOLD
+                // = 100 px (:22) with handleScroll marking trusted user scrolls
+                // (:1145-1149) and the re-arm (:1172-1174) and trigger (:1185-1197)
+                // sequence at 61dacef78dab2f5d0be76f283bebf49fe29b84af.
+                // distanceFromTop is the DOM scrollTop analogue for these margins;
+                // the reference programmaticScrollRef maps to `positioning`.
+                readonly property real loadMoreThreshold: 100
+                property bool topPaginationArmed: true
+                property bool userScrollSeen: false
+                readonly property real distanceFromTop: contentY - originY + topMargin
                 section.property: "dayKey"
                 section.criteria: ViewSection.FullString
                 section.labelPositioning: ViewSection.InlineLabels | ViewSection.CurrentLabelAtStart
@@ -3448,6 +3459,35 @@ ApplicationWindow {
                 function routeKey() {
                     return serviceScope();
                 }
+                // The reference zero-visible-window effect (workspace-message-list
+                // .ui.tsx:998-1022 at 61dacef78dab2f5d0be76f283bebf49fe29b84af):
+                // "an invisible page has no scroll surface from which to request
+                // the next one" - when every loaded row is filtered out by account
+                // relevance the list advances automatically, newer direction first,
+                // deduplicated per (scope, direction, window boundary) exactly like
+                // the reference hiddenPageLoadRef key.
+                property string hiddenAdvanceKey: ""
+                function maybeAdvanceHiddenWindow() {
+                    if (renderedMessages.count > 0) {
+                        hiddenAdvanceKey = ""
+                        return
+                    }
+                    if (positioning || messageSnapshot.length === 0 || !root.controller.messageHistoryReady)
+                        return
+                    const direction = root.controller.canLoadNewer ? "newer"
+                        : root.controller.canLoadOlder ? "older" : ""
+                    if (!direction.length)
+                        return
+                    const key = [routeKey(), direction, String(messageSnapshot[0].id),
+                        String(messageSnapshot[messageSnapshot.length - 1].id)].join(":")
+                    if (hiddenAdvanceKey === key)
+                        return
+                    hiddenAdvanceKey = key
+                    if (direction === "newer")
+                        root.controller.loadNewer()
+                    else
+                        root.controller.loadOlder()
+                }
                 function captureViewport() {
                     forceLayout();
                     const snapshot = {
@@ -3587,6 +3627,7 @@ ApplicationWindow {
                     positioning = false;
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
+                    maybeAdvanceHiddenWindow();
                 }
                 function anchorToMessage(id) {
                     if (!id)
@@ -3668,7 +3709,18 @@ ApplicationWindow {
                     return { shown: true, y: top - row.mapToItem(messageList, 0, 0).y };
                 }
                 onReadActiveChanged: scheduleVisibleRead()
-                onContentYChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
+                onContentYChanged: {
+                    scheduleVisibleRead(); scheduleServiceInspection();
+                    if (!positioning)
+                        userScrollSeen = true
+                    if (distanceFromTop >= loadMoreThreshold)
+                        topPaginationArmed = true
+                    if (topPaginationArmed && userScrollSeen && !positioning
+                        && distanceFromTop <= loadMoreThreshold && root.controller.canLoadOlder) {
+                        topPaginationArmed = false
+                        root.controller.loadOlder()
+                    }
+                }
                 onWidthChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
                 onHeightChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
                 onMovementEnded: { scheduleVisibleRead(); scheduleServiceInspection(); }
