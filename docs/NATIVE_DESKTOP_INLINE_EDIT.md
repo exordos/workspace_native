@@ -195,6 +195,38 @@ and the palette hex of `text-primary`/`text-muted` in `blue-cold`.
   cancel restores the stored draft, a confirmed save closes the session and keeps the stored
   draft, a failed save keeps the session and the typed text, a route change clears the
   session, `editLastMessage` picks the newest own markdown message and reports when none.
+- `native-native-controller` (#115 save races): text typed after Save survives the deferred
+  completion of the earlier save and stays savable; cancel-plus-reopen of the same UUID while
+  a save is in flight leaves the reopened session untouched; a second save submitted while
+  the first PUT is pending is refused without issuing a second PUT. All three use the mock
+  server's `defer` gate, never sleeps.
 - `native-native-window`: menu Edit opens the notice (33 px), prefills the composer, the
   save control replaces send and is disabled on a blank buffer, Escape restores the previous
   draft, ArrowUp on a blank composer edits the last own message, Enter submits the edit.
+
+## Save race contract (issue #115, patch 0.9.1)
+
+Reported defect: at 0.8.0/0.9.0 a confirmed save closed "the edit session for message M"
+by UUID alone, so text entered after the Save press - or typed in a session reopened for
+the same M while the earlier PUT was still in flight - was silently discarded when the
+earlier completion arrived.
+
+Contract (this release):
+
+1. **Session identity.** Every `beginEditMessage` assigns a fresh `m_editSession` id, and
+   every buffer replacement (session open or `setDraft` inside the session) bumps
+   `m_editRevision`.
+2. **A completion closes only what it saved.** `submitEditMessage` captures
+   `(m_editingMessage, m_editSession, m_editRevision)` at submit time; the confirmation
+   closes the session only when all three still match. A newer buffer revision or a newer
+   session - including a cancel-plus-reopen of the same UUID - makes the completion inert
+   for the session, while the verified server body still updates the message row
+   (`verifyMutation` is unchanged in that respect).
+3. **Concurrent saves are prevented, not ordered.** While an edit PUT for message M is in
+   flight (`m_editSaveInFlight`), `canSaveEdit()` is false and `submitMessageEdit()` refuses
+   a second PUT for M. The composer stays editable throughout, so typing continues; the save
+   control re-enables when the pending save completes (confirmed, failed or unverified),
+   after which the newer text can be saved. This keeps at most one PUT per message
+   in flight, so two saves of one message can never land at the server out of order.
+4. **The ordinary draft stays untouched.** None of the race paths write the conversation
+   draft store; the buffer change is session-local, as in the original contract.
