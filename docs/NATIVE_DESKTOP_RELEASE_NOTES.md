@@ -1,3 +1,24 @@
+# Workspace Native 0.12.0 - Linux development preview
+
+Long conversations now keep loading upward on their own. Scrolling toward the
+top of the loaded messages fetches the next older page of history as soon as
+you approach the edge - no need to hunt for the button and page through old
+messages one click at a time - and paging stops cleanly at the very beginning
+of the history. A page whose messages all belong to another linked account
+also self-heals: instead of an empty gap, the view steps past such pages to
+the first messages you can actually read (issue #106).
+
+The **Load older messages** and **Load newer messages** buttons stay where
+they are and keep working for paging without scrolling.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.11.0...0.12.0](https://github.com/exordos/workspace_native/compare/0.11.0...0.12.0)
+
+---
+
 # Workspace Native 0.11.0 - Linux development preview
 
 Deep links now land where you meant to go. Opening a link to a message buried in
