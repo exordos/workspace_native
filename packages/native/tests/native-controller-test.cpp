@@ -10478,6 +10478,51 @@ private slots:
         QVERIFY(!fixture.controller.canLoadNewer()); // the newer page carried no marker
     }
 
+    // exo-review (#140): a malformed row on an around-anchor page must reject that
+    // page (markers are only valid if its rows were accepted) and fall back to the
+    // bounded older walk instead of committing a window with a silent gap.
+    void malformedAroundPageFallsBackToOlderWalk()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString anchor = anchoredHistoryRow(50).value("uuid").toString();
+        int aroundCommits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid"))
+                return Response{QJsonArray{anchoredHistoryRow(50)}};
+            const auto dir = query.queryItemValue("sort_dir");
+            const auto marker = query.queryItemValue("page_marker");
+            if (marker.isEmpty()) {
+                QJsonArray tail;
+                for (int number = 500; number >= 451; --number) tail.append(anchoredHistoryRow(number));
+                Response response{tail, 200, 0, {}};
+                response.headers.insert("X-Pagination-Marker", "tail-1");
+                return response;
+            }
+            if (dir == "asc" && marker == anchor)
+                return Response{QJsonArray{anchoredHistoryRow(51)}, 200, 0, {{"X-Pagination-Marker", "newer-2"}}};
+            if (dir == "desc" && marker == anchor) {
+                ++aroundCommits;
+                QJsonArray page;
+                page.append(QJsonObject{{"uuid", "not-a-uuid"}, {"project_id", projectId}});
+                return Response{page};
+            }
+            if (dir == "asc" && marker == "newer-2")
+                return Response{QJsonArray{}};
+            // bounded older walk path: the target sits on the first older page
+            return Response{QJsonArray{anchoredHistoryRow(50), anchoredHistoryRow(49)}};
+        };
+        QVERIFY(fixture.start());
+        const auto origin = fixture.server.origin();
+        fixture.controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/message/" + anchor);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), anchor); // reached via the walk
+        QCOMPARE(aroundCommits, 1); // the around page was requested once and rejected
+        // The tail window survived: the malformed around page did not replace it.
+        QVERIFY(!modelMessage(fixture.controller, anchoredHistoryRow(500).value("uuid").toString()).isEmpty());
+        QVERIFY(!fixture.controller.canLoadNewer()); // no newer boundary from a rejected window
+    }
+
     void tailWindowHasNoNewerBoundary()
     {
         Fixture fixture; fixture.aggregateMessages = true;

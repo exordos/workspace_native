@@ -8873,8 +8873,10 @@ void NativeController::loadAroundAnchor()
         const auto absorb = [this, &rows, &invalid, &target](const QJsonArray &page) {
             for (const auto &value : page) {
                 const auto parsed = parseMessage(value.toObject(), m_session->project());
-                if (!parsed || parsed->uuid == target) continue;
-                if (!inConversation(*parsed)) { invalid = true; return; }
+                // A page marker is only valid when every row on its page was accepted,
+                // so a malformed row rejects the page (the older walk is the fallback).
+                if (parsed && parsed->uuid == target) continue;
+                if (!parsed || !inConversation(*parsed)) { invalid = true; return; }
                 rows.append(*parsed);
                 if (findMessage(parsed->uuid) || m_messageFields.contains(parsed->uuid))
                     observeMessage(value.toObject());
