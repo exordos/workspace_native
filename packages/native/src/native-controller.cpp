@@ -9085,7 +9085,10 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
                 // A transport failure is not an authoritative miss: keep the lookup
                 // retriable with a short backoff (messenger-quote-loader.lib.ts keeps
                 // "stale" distinct from "unavailable"), matching the design doc.
+                // The timer re-issues the lookup on its own so the preview recovers
+                // even when no projection happens after the connection returns.
                 self->m_quoteRetryAfter.insert(id, QDateTime::currentMSecsSinceEpoch() + 3000);
+                QTimer::singleShot(3200, self, [self, id] { self->scheduleQuoteFetch(id); });
                 emit self->messagesChanged();
                 return;
             }

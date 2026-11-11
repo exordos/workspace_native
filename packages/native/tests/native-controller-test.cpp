@@ -8682,6 +8682,39 @@ private slots:
             return row.value("quoteContent").toString() == QLatin1String("edited origin"); })(), 5000);
     }
 
+    // After a transport failure the retry is self-driving: the lookup re-issues
+    // even though the test performs no further projections (review #119, round 2).
+    void failedQuoteLookupRetriesWithoutFurtherProjections()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(farId), returnedId);
+        const auto far = message("far origin", farId);
+        int lookups = 0; bool recover = false;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method != "GET") return {QJsonArray{reply}};
+            if (QUrlQuery(request.target).hasQueryItem("uuid")) {
+                ++lookups;
+                if (!recover) return {QJsonObject{}, 500};
+                return {QJsonArray{far}};
+            }
+            return {QJsonArray{reply}};
+        };
+        QVERIFY(fixture.start());
+        QVariantMap row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return lookups >= 1 && !row.isEmpty(); })(), 5000);
+        // No further projection happens here; only a self-scheduled timer can make
+        // the lookup count grow.
+        recover = true;
+        const int baseline = lookups;
+        QTest::qWait(6000);
+        QVERIFY2(lookups > baseline, "the failed lookup never retried by itself");
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteStatus").toString() == QLatin1String("ready"); })(), 9000);
+    }
+
     // A confirmed deletion of the origin drops the cached preview; the frame then
     // re-resolves against the server and lands on unavailable (review #119).
     void quotePreviewBecomesUnavailableAfterTheOriginIsDeleted()
