@@ -11690,6 +11690,181 @@ private slots:
                      qPrintable(QStringLiteral("banner %1 was never closed").arg(show.tag)));
         service->setTransport(nullptr);
     }
+
+    // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md (issue #2): the reference preview line is
+    // whitespace-normalised and clamped to 120 characters with an ASCII "..." marker
+    // (workspace_ui 61dacef entities/messenger/messenger-topic-list.lib.ts:61-92 with
+    // DEFAULT_WORKSPACE_MESSAGE_SUMMARY_OPTIONS maxLength 120).
+    void sidebarPreviewSummaryCollapsesAndClamps()
+    {
+        QCOMPARE(NativeController::summarizeRowPreview(QString()), QString());
+        QCOMPARE(NativeController::summarizeRowPreview(QStringLiteral("  a\n\n  b  ")),
+            QStringLiteral("a b"));
+        const QString exact(120, QLatin1Char('y'));
+        QCOMPARE(NativeController::summarizeRowPreview(exact), exact);
+        const auto clamped = NativeController::summarizeRowPreview(QString(140, QLatin1Char('x')));
+        QCOMPARE(clamped.size(), 120);
+        QVERIFY2(clamped.endsWith(QStringLiteral("...")), qPrintable(clamped));
+        QCOMPARE(clamped.left(117), QString(117, QLatin1Char('x')));
+    }
+
+    // workspace_ui 61dacef shared/lib/datetime.lib.ts:65-82 formatMessageTimeRelative:
+    // same local day -> HH:mm, previous local day -> the yesterday label alone (no clock),
+    // anything older -> the compact day + short month with no year.
+    void sidebarRowTimeFollowsReferenceFormatter()
+    {
+        const QLocale english(QLocale::English);
+        const QDate today(2026, 11, 11);
+        const QString yesterday = QStringLiteral("Yesterday");
+        QCOMPARE(NativeController::formatRowTime(
+            QDateTime(QDate(2026, 11, 11), QTime(9, 5)), english, today, yesterday),
+            QStringLiteral("09:05"));
+        QCOMPARE(NativeController::formatRowTime(
+            QDateTime(QDate(2026, 11, 11), QTime(23, 59)), english, today, yesterday),
+            QStringLiteral("23:59"));
+        QCOMPARE(NativeController::formatRowTime(
+            QDateTime(QDate(2026, 11, 10), QTime(23, 59)), english, today, yesterday),
+            yesterday);
+        QCOMPARE(NativeController::formatRowTime(
+            QDateTime(QDate(2026, 11, 5), QTime(0, 0)), english, today, yesterday),
+            QStringLiteral("Nov 5"));
+        // The compact style carries no year, so a date one year back keeps the same shape.
+        QCOMPARE(NativeController::formatRowTime(
+            QDateTime(QDate(2025, 11, 5), QTime(0, 0)), english, today, yesterday),
+            QStringLiteral("Nov 5"));
+    }
+
+    // workspace_ui 61dacef entities/messenger/messenger-sidebar.lib.ts:236-290: the default
+    // sort mode is last_message and the comparator is group rank then activity descending,
+    // with unknown activity last. Native has no stream pin DTO yet (issue #98).
+    void sidebarStreamsSortByActivityDescending()
+    {
+        Fixture test;
+        const auto second = QStringLiteral("33333333-3333-4333-8333-444444444444");
+        const auto third = QStringLiteral("33333333-3333-4333-8333-555555555555");
+        const auto streamRow = [](const QString &uuid, const QString &name, const QString &updatedAt) {
+            QJsonObject row{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", QJsonValue::Null}};
+            if (!updatedAt.isEmpty()) row["updated_at"] = updatedAt;
+            return row;
+        };
+        test.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                streamRow(streamId, "Oldest", QStringLiteral("2026-01-01T10:00:00Z")),
+                streamRow(second, "Newest", QStringLiteral("2026-01-03T10:00:00Z")),
+                streamRow(third, "Undated", QString())}};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return test.controller.projects().size() == 1; }, 2000)) { QFAIL("project list"); return; }
+        test.controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return test.controller.streams().size() == 3; }, 2000)) { QFAIL("stream list"); return; }
+        QStringList order;
+        for (const auto &row : test.controller.streams())
+            order.append(row.toMap().value("name").toString());
+        const QStringList expected{"Newest", "Oldest", "Undated"};
+        QCOMPARE(order, expected);
+    }
+
+    // A hydrated last message gives the row its sender, the summary and the row time; the
+    // own-message sender is common.you (workspace_ui messenger-topic-list.lib.ts:169-172).
+    void sidebarRowsExposePreviewAndRowTime()
+    {
+        Fixture test;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000abc");
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", last}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", last}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [&](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        test.messages = [&](const Request &) {
+            auto row = message("Alpha   line\n\nsecond line", last);
+            row["created_at"] = "2026-01-02T10:00:05.000Z";
+            return Response{QJsonArray{row}};
+        };
+        QVERIFY(test.start());
+        const auto topicRow = test.controller.topics().first().toMap();
+        QCOMPARE(topicRow.value("previewSender").toString(), QStringLiteral("You"));
+        QCOMPARE(topicRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QVERIFY(!topicRow.value("previewLocked").toBool());
+        // The row time is the last-message instant under the same formatter the contract
+        // case pins; asserting against the current date keeps this case locale-correct.
+        QCOMPARE(topicRow.value("rowTime").toString(), NativeController::formatRowTime(
+            QDateTime(QDate(2026, 1, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
+            QDate::currentDate(), QStringLiteral("Yesterday")));
+        const auto streamRow = test.controller.streams().first().toMap();
+        QCOMPARE(streamRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QCOMPARE(streamRow.value("rowTime").toString(), topicRow.value("rowTime").toString());
+    }
+
+    // A row whose last message is an E2EE payload the client cannot present previews as the
+    // locked label branch (workspace_ui sidebar-workspace-message-preview.ui.tsx), so the
+    // projection must not leak cipher text and must flag the row.
+    void sidebarRowsMarkUnreadableEncryptedPreview()
+    {
+        Fixture test;
+        test.encrypted = true;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000abd");
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", true}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", last}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", true}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", last}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.messages = [&](const Request &) {
+            auto row = message(QStringLiteral("AQIDZmFrZWxvY2tlZHBheWxvYWQ="), last);
+            row["created_at"] = "2026-01-02T10:00:05.000Z";
+            row["payload"] = QJsonObject{{"kind", "e2ee"},
+                {"key_uuid", QStringLiteral("66666666-6666-4666-8666-666666666666")},
+                {"content", "AQIDZmFrZWxvY2tlZHBheWxvYWQ="}};
+            return Response{QJsonArray{row}};
+        };
+        // Both topic DTOs must carry the same last message or the row loses its pointer
+        // before the projection runs.
+        test.topics = [&](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        test.counters = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/" + streamId))
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", true}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", last}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+            return Response{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        QVERIFY(test.start());
+        const auto row = test.controller.topics().first().toMap();
+        QVERIFY2(row.value("previewLocked").toBool(), qPrintable(row.value("previewText").toString()));
+        QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
+            qPrintable(row.value("previewText").toString()));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

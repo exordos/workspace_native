@@ -6982,10 +6982,25 @@ void NativeController::persistStreams()
 QVariantList NativeController::streams() const
 {
     const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
+    QVector<const Stream *> ordered;
+    for (const auto &stream : m_streams)
+        if (!stream.archived) ordered.append(&stream);
+    // workspace_ui 61dacef entities/messenger/messenger-sidebar.lib.ts:236-290: the default
+    // sort mode is last_message, so the order is group rank first and then last-message
+    // activity descending with unknown activity last. Ties keep the server order because the
+    // native stream DTO carries neither orderIndex nor a pin flag (pin is issue #98).
+    QHash<QString, qint64> activity;
+    for (const auto *stream : ordered)
+        activity.insert(stream->uuid, rowActivityMicros(stream->lastMessage, stream->updatedMicros));
+    std::stable_sort(ordered.begin(), ordered.end(), [&](const Stream *a, const Stream *b) {
+        const int rankA = streamGroupRank(*a), rankB = streamGroupRank(*b);
+        if (rankA != rankB) return rankA < rankB;
+        return activity.value(a->uuid) > activity.value(b->uuid);
+    });
     QVariantList result;
-    for (const auto &stream : m_streams) {
-        if (stream.archived) continue;
-        result.append(QVariantMap{{"id", stream.uuid}, {"name", stream.name},
+    for (const auto *entry : ordered) {
+        const auto &stream = *entry;
+        auto row = QVariantMap{{"id", stream.uuid}, {"name", stream.name},
             {"description", stream.description}, {"unread", stream.unread}, {"activeUnread", stream.activeUnread},
             {"passiveUnread", stream.passiveUnread}, {"lastMessage", stream.lastMessage}, {"encrypted", stream.encrypted},
             {"isDirect", stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()},
@@ -6996,7 +7011,10 @@ QVariantList NativeController::streams() const
                 ? m_names.value(stream.directUser).avatar : QString{}},
             {"presence", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
                 ? m_names.value(stream.directUser).presence : QString{}},
-            {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}});
+            {"activityMicros", activity.value(stream.uuid)},
+            {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
+        row.insert(rowPreviewFields(stream.lastMessage));
+        result.append(row);
     }
     return result;
 }
@@ -7018,10 +7036,14 @@ QVariantList NativeController::topics() const
         return timestamps.value(a->lastMessage, a->updatedMicros) > timestamps.value(b->lastMessage, b->updatedMicros);
     });
     QVariantList result;
-    for (const auto *topic : sorted)
-        result.append(QVariantMap{{"id", topic->uuid}, {"name", topic->name.trimmed()},
+    for (const auto *topic : sorted) {
+        auto row = QVariantMap{{"id", topic->uuid}, {"name", topic->name.trimmed()},
             {"unread", topic->unread}, {"activeUnread", topic->activeUnread}, {"passiveUnread", topic->passiveUnread},
-            {"lastMessage", topic->lastMessage}, {"done", topic->done}});
+            {"lastMessage", topic->lastMessage}, {"done", topic->done},
+            {"activityMicros", timestamps.value(topic->lastMessage, topic->updatedMicros)}};
+        row.insert(rowPreviewFields(topic->lastMessage));
+        result.append(row);
+    }
     return result;
 }
 
@@ -8659,6 +8681,106 @@ void NativeController::reanchorFromWindow()
 QString NativeController::deepLinkUnavailableNotice()
 {
     return tr("The requested message is unavailable.");
+}
+
+QString NativeController::summarizeRowPreview(const QString &plainText)
+{
+    // workspace_ui 61dacef entities/messenger/messenger-topic-list.lib.ts:61-92 with
+    // DEFAULT_WORKSPACE_MESSAGE_SUMMARY_OPTIONS: normalizePreviewText collapses every
+    // whitespace run into one space and trims; truncatePreview keeps maxLength (120)
+    // characters, trimming the tail, and appends the ASCII "..." marker.
+    static constexpr int maximumCharacters = 120;
+    static constexpr int markerLength = 3;
+    const auto text = plainText.simplified();
+    if (text.size() <= maximumCharacters) return text;
+    return text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
+}
+
+QString NativeController::formatRowTime(const QDateTime &created, const QLocale &locale,
+    const QDate &today, const QString &yesterdayLabel)
+{
+    // workspace_ui 61dacef shared/lib/datetime.lib.ts:65-82 formatMessageTimeRelative:
+    // the same local calendar day is a manual 24 h HH:mm (never Intl), the previous local
+    // day is the chat.yesterday label with no clock time, anything older is the compact
+    // day + short month style, which carries no year at all.
+    if (!created.isValid()) return {};
+    const auto local = created.toLocalTime();
+    if (local.date() == today) return local.toString(QStringLiteral("HH:mm"));
+    if (local.date() == today.addDays(-1)) return yesterdayLabel;
+    return locale.toString(local.date(), locale.language() == QLocale::Russian
+        ? QStringLiteral("d MMM") : QStringLiteral("MMM d"));
+}
+
+std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message) const
+{
+    // workspace_ui 61dacef messenger-topic-list.lib.ts:156-188 and
+    // sidebar-workspace-message-preview.ui.tsx: the sender is common.you for own messages
+    // and the resolved display name otherwise, omitted entirely for an unknown author.
+    RowPreview preview;
+    preview.created = message.created;
+    preview.sender = message.own ? tr("You") : userDisplayName(message.author);
+    QString body;
+    if (message.kind == QLatin1String("markdown")) {
+        body = message.content;
+    } else {
+        // A non-markdown payload previews as the decrypted body only when this very payload
+        // has a key; otherwise the reference renders e2ee.lockedTitle and nothing else.
+        const auto prepared = m_chatPrepared.constFind(message.uuid);
+        if (prepared == m_chatPrepared.constEnd() || prepared->state != ChatKeyAvailability::Present
+            || prepared->hash != chatPayloadHash(message)) {
+            preview.locked = true;
+            return preview;
+        }
+        body = prepared->content;
+    }
+    NativeMarkdown renderer;
+    preview.text = summarizeRowPreview(renderer.render(body).value("plain").toString());
+    return preview;
+}
+
+std::optional<NativeController::RowPreview> NativeController::rowPreview(const QString &uuid) const
+{
+    // Previews are best effort: a row whose last message the client does not hold keeps the
+    // empty preview line, exactly like the reference for a message it has not hydrated.
+    if (uuid.isEmpty()) return std::nullopt;
+    for (const auto &message : m_messages)
+        if (message.uuid == uuid) return rowPreviewOf(message);
+    return std::nullopt;
+}
+
+qint64 NativeController::rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const
+{
+    if (!lastMessage.isEmpty())
+        for (const auto &message : m_messages)
+            if (message.uuid == lastMessage) return message.createdMicros;
+    return updatedMicros;
+}
+
+int NativeController::streamGroupRank(const Stream &stream) const
+{
+    // workspace_ui 61dacef messenger-sidebar.lib.ts:291-299 with messenger-notification-mode
+    // .lib.ts:22-29: archived is the last group and a stream is fully muted only when the
+    // stream itself is muted and no topic explicitly un-muted it. Archived rows are already
+    // filtered out of streams(), so only the muted rank is left to express here.
+    if (stream.notificationMode != QLatin1String("muted")) return 0;
+    for (const auto &topic : m_topics) {
+        if (topic.stream != stream.uuid) continue;
+        if (topic.notificationMode == QLatin1String("unmute")
+            || topic.notificationMode == QLatin1String("follow")) return 0;
+    }
+    return 1;
+}
+
+QVariantMap NativeController::rowPreviewFields(const QString &lastMessage) const
+{
+    const auto preview = rowPreview(lastMessage);
+    if (!preview)
+        return QVariantMap{{"previewSender", QString{}}, {"previewText", QString{}},
+            {"previewLocked", false}, {"rowTime", QString{}}};
+    return QVariantMap{{"previewSender", preview->sender}, {"previewText", preview->text},
+        {"previewLocked", preview->locked},
+        {"rowTime", formatRowTime(preview->created, QLocale::system(), QDate::currentDate(),
+            tr("Yesterday"))}};
 }
 
 void NativeController::quoteMessage(const QString &id)
