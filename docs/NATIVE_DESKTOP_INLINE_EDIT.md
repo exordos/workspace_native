@@ -198,7 +198,8 @@ and the palette hex of `text-primary`/`text-muted` in `blue-cold`.
 - `native-native-controller` (#115 save races): text typed after Save survives the deferred
   completion of the earlier save and stays savable; cancel-plus-reopen of the same UUID while
   a save is in flight leaves the reopened session untouched; a second save submitted while
-  the first PUT is pending is refused without issuing a second PUT. All three use the mock
+  the first PUT is pending is refused without issuing a second PUT; both transitions of the
+  in-flight guard emit `editSessionChanged`. All four use the mock
   server's `defer` gate, never sleeps.
 - `native-native-window`: menu Edit opens the notice (33 px), prefills the composer, the
   save control replaces send and is disabled on a blank buffer, Escape restores the previous
@@ -224,7 +225,9 @@ Contract (this release):
    (`verifyMutation` is unchanged in that respect).
 3. **Concurrent saves are prevented, not ordered.** While an edit PUT for message M is in
    flight (`m_editSaveInFlight`), `canSaveEdit()` is false and `submitMessageEdit()` refuses
-   a second PUT for M. The composer stays editable throughout, so typing continues; the save
+   a second PUT for M. Both transitions of the guard emit `editSessionChanged` (the NOTIFY
+   signal of `canSaveEdit`) so bound save controls re-evaluate immediately. The composer
+   stays editable throughout, so typing continues; the save
    control re-enables when the pending save completes (confirmed, failed or unverified),
    after which the newer text can be saved. This keeps at most one PUT per message
    in flight, so two saves of one message can never land at the server out of order.

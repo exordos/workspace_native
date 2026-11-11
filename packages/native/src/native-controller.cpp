@@ -9573,10 +9573,14 @@ void NativeController::submitMessageEdit(const QString &id, const QString &text,
     // Issue #115: only one edit save per message may be in flight; a second submit is
     // refused instead of racing the pending PUT. The flag clears on every completion
     // path before the caller's callback runs, so a later save is never locked out.
+    // canSaveEdit reads the guard, so both transitions notify editSessionChanged
+    // (its NOTIFY signal) or QML save controls keep a stale enabled state (review #130).
     if (m_editSaveInFlight.contains(id)) { if (settled) settled(false); return; }
     m_editSaveInFlight.insert(id);
+    emit editSessionChanged();
     const auto done = [this, id, settled](bool confirmed) {
         m_editSaveInFlight.remove(id);
+        emit editSessionChanged();
         if (settled) settled(confirmed);
     };
     ++m_messageFields[id].pending;
