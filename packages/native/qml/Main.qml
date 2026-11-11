@@ -3893,7 +3893,10 @@ ApplicationWindow {
                     readonly property bool hasDivider: root.aggregateConversation && topicRunStart && !keyControl
                     readonly property real bubbleOffset: hasDivider ? topicDivider.height + 8 : 0
                     readonly property var avatar: messageList.avatarPlacement(messageRow, index)
-                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel : String(modelData.displayContent || modelData.content))
+                    // displayContent === "" is a valid empty answer (quote-only message);
+                    // only a missing key falls back to the raw content (review #119).
+                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel
+                        : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content))
                     readonly property var imageParts: rendered.parts || []
                     readonly property bool hasInlineImages: !!root.messageImages && !encryptedLocked && !keyControl
                         && incomingKeyRequest === null && !keyResponse && modelData.kind !== "key_announced"

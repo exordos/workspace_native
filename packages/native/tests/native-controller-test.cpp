@@ -8596,6 +8596,110 @@ private slots:
         QTRY_COMPARE(fixture.controller.anchorMessageId(), messageId);
     }
 
+    // A transport failure while resolving a quote must not freeze the preview:
+    // the reference loader keeps retriable failures out of the resolved store
+    // (messenger-quote-loader.lib.ts distinguishes stale from unavailable).
+    void transientQuoteLookupFailureRecoversAfterTheNetworkReturns()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true; // route every history GET to this handler (quote lookups included)
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(farId), returnedId);
+        const auto far = message("far origin", farId);
+        int lookups = 0; bool recover = false;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method != "GET") return {QJsonArray{reply}};
+            if (QUrlQuery(request.target).hasQueryItem("uuid")) {
+                ++lookups;
+                if (!recover) return {QJsonObject{}, 500};
+                return {QJsonArray{far}};
+            }
+            return {QJsonArray{reply}};
+        };
+        QVERIFY(fixture.start());
+        QVariantMap row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            row = modelMessage(fixture.controller, returnedId);
+            return lookups >= 1 && !row.isEmpty();
+        })(), 5000);
+        QTest::qWait(300);
+        row = modelMessage(fixture.controller, returnedId);
+        QVERIFY2(row.value("quoteStatus").toString() != QLatin1String("unavailable"),
+                 qPrintable(row.value("quoteStatus").toString()));
+        recover = true;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteStatus").toString() == QLatin1String("ready");
+        })(), 9000);
+        QCOMPARE(row.value("quoteContent").toString(), QString("far origin"));
+    }
+
+    // A confirmed edit of the origin must flow into every quote preview that
+    // references it, even when the origin lives in another conversation
+    // (reference keeps quote content inside the shared message store).
+    void quotePreviewFollowsAConfirmedEditOfTheOrigin()
+    {
+        Fixture fixture;
+        fixture.extraTopic = true;
+        fixture.aggregateMessages = true; // route quote/verification GETs to this handler
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(farId), returnedId);
+        QString originContent = "far origin"; int puts = 0;
+        const auto fresh = [&] { auto m = message(originContent, farId, secondTopicId); return m; };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "PUT") {
+                ++puts; originContent = request.body.value("payload").toObject().value("content").toString();
+                return {QJsonObject{}, 200};
+            }
+            if (path.endsWith("/" + farId)) return {fresh()};
+            if (query.hasQueryItem("uuid")) return {QJsonArray{fresh()}};
+            if (query.queryItemValue("topic_uuid") == secondTopicId) return {QJsonArray{fresh()}};
+            return {QJsonArray{reply}};
+        };
+        QVERIFY(fixture.start());
+        QVariantMap row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteStatus").toString() == QLatin1String("ready"); })(), 5000);
+        QCOMPARE(row.value("quoteContent").toString(), QString("far origin"));
+
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!modelMessage(fixture.controller, farId).isEmpty());
+        QVERIFY(fixture.controller.beginEditMessage(farId));
+        fixture.controller.setDraft("edited origin");
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(puts, 1);
+        // The session closes only after the server confirms the mutation; wait for
+        // that before leaving the conversation so the verification is not cancelled.
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteContent").toString() == QLatin1String("edited origin"); })(), 5000);
+    }
+
+    // A message consisting of only a quote anchor keeps an empty answer body;
+    // the frame replaces the anchor instead of the body duplicating it.
+    void quoteOnlyMessageKeepsAnEmptyAnswerBody()
+    {
+        Fixture fixture;
+        auto quoteOnly = message(QStringLiteral("[Aela](urn:quote:%1)").arg(messageId), returnedId);
+        quoteOnly["is_own"] = false;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method != "GET") return {QJsonArray{}};
+            return {QJsonArray{message("Peer note", messageId), quoteOnly}};
+        };
+        QVERIFY(fixture.start());
+        const auto row = modelMessage(fixture.controller, returnedId);
+        QCOMPARE(row.value("quoteId").toString(), messageId);
+        QVERIFY(row.contains("displayContent"));
+        QCOMPARE(row.value("displayContent").toString(), QString());
+    }
+
     void replyCancelFailureAndRouteChangePreserveTheAnswer()
     {
         Fixture fixture; fixture.extraTopic = true;
