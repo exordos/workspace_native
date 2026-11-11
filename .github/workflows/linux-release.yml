@@ -27,6 +27,10 @@ jobs:
     steps:
       # The runner network cannot reach archive.ubuntu.com / security.ubuntu.com,
       # so point APT at the Yandex mirror first, same as workspace_ui's CI.
+      # The egress path performs TLS interception whose CA is installed on the
+      # runner host but not in the plain ubuntu:26.04 container, so the mirror
+      # is reached over plain HTTP: APT still verifies InRelease signatures
+      # against the keyring, so repository integrity does not depend on TLS.
       # Runs as root inside the container, hence no sudo.
       - name: Use Yandex Ubuntu mirror
         shell: bash
@@ -43,7 +47,7 @@ jobs:
           for source in "${apt_sources[@]}"; do
             if grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "${source}"; then
               printf '%s\tpriority:1\n' \
-                'https://mirror.yandex.ru/ubuntu/' \
+                'http://mirror.yandex.ru/ubuntu/' \
                 | tee /etc/apt/apt-mirrors.txt
               configured=1
             fi
@@ -52,8 +56,8 @@ jobs:
               'https?://([[:alnum:].-]+\.)?archive\.ubuntu\.com/ubuntu/?|https?://security\.ubuntu\.com/ubuntu/?' \
               "${source}"; then
               sed -i -E \
-                -e 's#https?://([[:alnum:].-]+\.)?archive\.ubuntu\.com/ubuntu/?#https://mirror.yandex.ru/ubuntu#g' \
-                -e 's#https?://security\.ubuntu\.com/ubuntu/?#https://mirror.yandex.ru/ubuntu#g' \
+                -e 's#https?://([[:alnum:].-]+\.)?archive\.ubuntu\.com/ubuntu/?#http://mirror.yandex.ru/ubuntu#g' \
+                -e 's#https?://security\.ubuntu\.com/ubuntu/?#http://mirror.yandex.ru/ubuntu#g' \
                 "${source}"
               configured=1
             fi
@@ -61,9 +65,9 @@ jobs:
 
           ((configured == 1))
           grep -H --fixed-strings \
-            'https://mirror.yandex.ru/ubuntu' "${apt_sources[@]}" \
+            'http://mirror.yandex.ru/ubuntu' "${apt_sources[@]}" \
             || grep -H --fixed-strings \
-              'https://mirror.yandex.ru/ubuntu' /etc/apt/apt-mirrors.txt
+              'http://mirror.yandex.ru/ubuntu' /etc/apt/apt-mirrors.txt
 
       - name: Install documented build and runtime dependencies
         shell: bash
