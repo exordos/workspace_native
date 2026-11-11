@@ -13098,6 +13098,108 @@ private slots:
         QTRY_COMPARE(fixture.controller.messages().size(), 4);
         QVERIFY(!fixture.controller.canLoadOlder()); // the final page carried no marker
     }
+
+    void overlayBannerTransportDropFlipsPhaseOfflineThenRecovers()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        QCOMPARE(fixture.controller.connectionSeverity(), QString("warning"));
+        QVERIFY(!fixture.controller.bootstrapError());
+        const auto base = fixture.server.handler;
+        // The outage window drops every request the snapshot issues, so an
+        // unrelated in-flight success cannot clear the offline phase early.
+        fixture.server.handler = [base](const Request &request) {
+            const auto path = request.target.path();
+            if (request.method == "GET"
+                && (path.endsWith("/streams/") || path.endsWith("/users/"))) {
+                Response dropped; dropped.abortConnection = true; return dropped;
+            }
+            return base(request);
+        };
+        fixture.controller.refresh();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("offline"));
+        QCOMPARE(fixture.controller.connectionSeverity(), QString("critical"));
+        // Restoring the server and letting a response land clears the banner.
+        fixture.server.handler = base;
+        fixture.controller.refresh();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("online"));
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+    }
+
+    void overlayBannerRateLimitShowsCountdownUntilItExpires()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        const auto base = fixture.server.handler;
+        auto limitedFor = [base](const QString &seconds) {
+            return [base, seconds](const Request &request) {
+                if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                    Response limited{QJsonArray{}, 429};
+                    limited.headers.insert("Retry-After", seconds.toLatin1());
+                    return limited;
+                }
+                return base(request);
+            };
+        };
+        fixture.server.handler = limitedFor("1");
+        fixture.controller.refresh();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("rate_limited"));
+        QCOMPARE(fixture.controller.connectionSeverity(), QString("warning"));
+        QVERIFY(fixture.controller.connectionRetryInSeconds() >= 1);
+        // The countdown runs out even while the server answers again.
+        fixture.server.handler = base;
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 5000);
+        // A generous Retry-After stays announced with its remaining seconds.
+        fixture.server.handler = limitedFor("42");
+        fixture.controller.refresh();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("rate_limited"));
+        const auto remaining = fixture.controller.connectionRetryInSeconds();
+        QVERIFY2(remaining > 30 && remaining <= 42, qPrintable(QString::number(remaining)));
+    }
+
+    void overlayBannerBootstrapFailureClearsAfterRetrySucceeds()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QVERIFY(!fixture.controller.bootstrapError());
+        const auto base = fixture.server.handler;
+        // A malformed catalog row is a bootstrap failure: the snapshot is
+        // cancelled and reported (report -> cancelSnapshot -> snapshotFailed).
+        fixture.server.handler = [base](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", QStringLiteral("not-a-uuid")}}}};
+            return base(request);
+        };
+        fixture.controller.refresh();
+        QTRY_VERIFY(fixture.controller.bootstrapError());
+        QVERIFY(!fixture.controller.error().isEmpty());
+        fixture.server.handler = base;
+        fixture.controller.retryBootstrap();
+        QTRY_VERIFY(!fixture.controller.bootstrapError());
+        QVERIFY(fixture.controller.error().isEmpty());
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+    }
+
+    void overlayBannerRealtimeDropShowsReconnectingAndReconnectClears()
+    {
+        Fixture fixture; RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QString("live"));
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        gateway.sockets.first()->close();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("reconnecting"));
+        // The gateway accepts the reconnect again and the banner clears itself.
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 15000);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
