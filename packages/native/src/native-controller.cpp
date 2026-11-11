@@ -3804,10 +3804,13 @@ void NativeController::openCache()
     const QPointer<NativeController> guard(this);
     const QPointer<NativeCacheService> cache = m_cache;
     if (cache && authenticated() && cache->open(m_api->server(), m_session->project(), m_session->user())
-        && guard && cache && m_cache == cache)
+        && guard && cache && m_cache == cache) {
         m_cacheLease = cache->lease();
-    // Rows projected before the cache attached already registered their preview misses.
-    scheduleRowPreviewHydration();
+        // Rows projected before the cache attached already registered their preview misses;
+        // a status observer may destroy the controller inside open(), so this stays inside
+        // the guard chain that `cache->open` is evaluated under.
+        scheduleRowPreviewHydration();
+    }
 }
 
 void NativeController::markCacheStale()
