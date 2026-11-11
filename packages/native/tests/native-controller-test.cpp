@@ -8672,6 +8672,57 @@ private slots:
         QCOMPARE(edits, 1);
     }
 
+    // The in-flight guard feeds the canSaveEdit property, so every transition of the guard
+    // must notify editSessionChanged (the property's NOTIFY signal), otherwise a QML save
+    // control bound to canSaveEdit keeps a stale enabled state after the save settles.
+    void inlineEditSaveInFlightTransitionsNotifyTheSaveControl()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        std::function<void()> releaseSave;
+        bool holdFirstPut = true;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") {
+                newer["payload"] = request.body.value("payload");
+                Response response{newer};
+                if (holdFirstPut) {
+                    holdFirstPut = false;
+                    response.defer = [&](std::function<void()> send) { releaseSave = std::move(send); };
+                }
+                return response;
+            }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, saved A");
+        QSignalSpy notified(&fixture.controller, &NativeController::editSessionChanged);
+        QVERIFY(notified.isValid());
+
+        // Taking the save in flight flips canSaveEdit to false, so it must notify.
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(static_cast<bool>(releaseSave));
+        QVERIFY(!fixture.controller.canSaveEdit());
+        QVERIFY2(notified.count() >= 1, "in-flight insertion must emit editSessionChanged");
+
+        // Type after Save so the completion lands on a newer revision and the session
+        // stays open; clearing the guard flips canSaveEdit back and must notify again.
+        fixture.controller.setDraft("Second message, typed B");
+        notified.clear();
+        releaseSave(); releaseSave = {};
+        QTRY_VERIFY(fixture.controller.canSaveEdit());
+        QVERIFY2(notified.count() >= 1, "in-flight completion must emit editSessionChanged");
+    }
+
     // Reference contract (workspace_ui 61dacef): features/workspace-reply
     // serializes a reply as "[Name](urn:quote:<uuid>)" + blank line + answer
     // (workspace-reply.lib.ts:190-212); the composer preview header is
