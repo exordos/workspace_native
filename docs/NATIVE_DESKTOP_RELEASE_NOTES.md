@@ -1,3 +1,23 @@
+# Workspace Native 0.7.0 - Linux development preview
+
+The sidebar now previews conversations. Every stream and topic row shows the last
+message on one line under its title - the sender's name followed by a short
+plain-text summary, with encrypted messages the client cannot open labelled
+"Key required". A right-hand column places the unread badge above the last
+message's time in the desktop client's relative format: `HH:mm` for today,
+"Yesterday", or a compact date such as `Nov 5`. Rows are ordered by their last
+message's activity - active conversations first, fully muted streams below -
+and rows whose message text is not in memory yet fill themselves in from the
+local message cache, updating the row when the text arrives (issue #2).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.6.0...0.7.0](https://github.com/exordos/workspace_native/compare/0.6.0...0.7.0)
+
+---
+
 # Workspace Native 0.6.0 - Linux development preview
 
 The desktop app now raises native desktop notifications. While the window is
