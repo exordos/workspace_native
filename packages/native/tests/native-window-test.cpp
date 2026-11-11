@@ -8909,7 +8909,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 .addSecs(number).toString(Qt::ISODateWithMs);
             return entry;
         };
-        for (int i = 0; i < 80; ++i) history.insert(i, row(i));
+        for (int i = 0; i < 130; ++i) history.insert(i, row(i));
         QStringList readAnchors;
         QJsonObject sent;
         const auto unread = [&] {
@@ -8953,10 +8953,10 @@ mv -Tf "$root/.current-new" "$root/current"
                 return response;
             }
             if (path.endsWith("/messages/") && request.method == "POST") {
-                sent = row(81, true);
+                sent = row(131, true);
                 sent["read"] = false;
                 sent["payload"] = request.body.value("payload");
-                history.insert(81, sent);
+                history.insert(131, sent);
                 return Response{sent};
             }
             if (path.endsWith("/actions/read_up_to/invoke")) {
@@ -9055,6 +9055,10 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(distanceFromBottom() >= 500);
             if (prepend) {
                 QTRY_VERIFY(list->property("atYBeginning").toBool());
+                // The climb crossed the 100 px auto-page zone
+                // (docs/NATIVE_DESKTOP_AUTO_PAGING.md): the older page arrives
+                // on its own, without the button click.
+                QTRY_COMPARE(controller.messages().size(), 100);
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }
@@ -9083,9 +9087,9 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto oldY = list->property("contentY").toReal();
         const auto oldOriginY = list->property("originY").toReal();
         if (prepend) {
-            QVERIFY(controller.canLoadOlder());
+            QVERIFY(controller.canLoadOlder()); // a page still remains after the auto page
             click(window, dialogButton(window->contentItem(), "Load older messages"));
-            QTRY_COMPARE(controller.messages().size(), 80);
+            QTRY_COMPARE(controller.messages().size(), 130);
         } else if (behavior == "own-send-away") {
             item(window->contentItem(), "messageComposer")->setProperty("text", "A locally sent row pins to the tail.");
             QTRY_VERIFY(controller.canSend());
@@ -9093,9 +9097,9 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_COMPARE(controller.messages().size(), 51);
             QTRY_VERIFY(controller.draft().isEmpty());
         } else {
-            auto incoming = row(80, behavior == "own-incoming-away");
+            auto incoming = row(130, behavior == "own-incoming-away");
             incoming["read"] = false;
-            history.insert(80, incoming);
+            history.insert(130, incoming);
             incoming["kind"] = "message.created";
             QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
                 {"uuid", "99999999-9999-4999-8999-000000000080"}, {"payload", incoming}}));
@@ -9305,11 +9309,113 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(closed);
     }
 
+    void programmaticAnchorJumpDoesNotAutoPage()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        const auto uuidOf = [](int number) {
+            return QString("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+        };
+        const auto row = [&](int number) {
+            auto entry = message(QString("Anchor jump fixture %1").arg(number), uuidOf(number));
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Anchor jump"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Anchor jump"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto query = QUrlQuery(request.target);
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.queryItemValue("topic_uuid") == topicId)
+                    pageGets.append({marker, query.queryItemValue("sort_dir")});
+                // Newest-first pages over 120 rows: tail 70..119, then 20..69.
+                const int top = marker.isEmpty() ? 120 : marker == uuidOf(70) ? 70 : -1;
+                if (top < 0) return Response{QJsonObject{}, 404};
+                QJsonArray page;
+                for (int number = top - 1; number >= top - 50 && number >= 0; --number)
+                    page.append(history.value(number));
+                Response response{page};
+                if (top == 120) response.headers.insert("X-Pagination-Marker", uuidOf(70).toUtf8());
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                auto boundary = std::find_if(history.begin(), history.end(), [&id](const auto &entry) {
+                    return entry.value("uuid") == id;
+                });
+                if (boundary == history.end()) return Response{QJsonObject{}, 404};
+                for (auto it = history.begin(); it.key() <= boundary.key(); ++it)
+                    it.value()["read"] = true;
+                return Response{boundary.value()};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Anchor-jump window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 50);
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTRY_VERIFY(list->property("atYEnd").toBool());
+        QCOMPARE(pageGets.size(), 1);
+        QVERIFY(controller.canLoadOlder());
+        // The anchor highlight jump (the code path behind controller.anchorMessageId)
+        // moves contentY onto the oldest loaded row, i.e. inside the 100 px trigger
+        // zone, without any user scrolling: the reference suppresses handleScroll
+        // while anchorHandoffPending, so this must neither mark the seen flag nor
+        // request a page.
+        QVERIFY(QMetaObject::invokeMethod(list, "anchorToMessage", Q_ARG(QVariant, uuidOf(70))));
+        QTRY_VERIFY(list->property("contentY").toReal() - list->property("originY").toReal()
+                    + list->property("topMargin").toReal() <= 100.0);
+        QTest::qWait(300);
+        QCOMPARE(pageGets.size(), 1);
+        QVERIFY(!list->property("userScrollSeen").toBool());
+    }
+
     // docs/NATIVE_DESKTOP_AUTO_PAGING.md: when every row of the loaded window is
     // filtered out by account relevance (the reference zero-visible-window effect,
     // workspace-message-list.ui.tsx:998-1022 at 61dacef78dab2f5d0be76f283bebf49
     // fe29b84af: "an invisible page has no scroll surface from which to request
-    // the next one"), the list advances pages on its own, newer direction first.
+    // the next one"), the list advances pages on its own, older direction first.
     void zeroVisibleWindowAutoAdvances_data()
     {
         QTest::addColumn<QString>("scenario");

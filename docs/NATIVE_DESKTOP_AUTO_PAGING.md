@@ -63,21 +63,30 @@ scroll-driven behaviours above and keeps the manual button as the fallback.
    evaluated in that order on every `contentY` change, mirroring the reference
    handler order (an event at exactly 100 px re-arms and may fire).
 2. User-scroll and programmatic mirrors. The reference marks
-   `userScrollSeenRef` inside `handleScroll` itself, for every trusted
-   non-programmatic scroll event (:1145-1149), and DOM scroll events only fire
-   when `scrollTop` actually changed. The faithful native equivalent is
-   therefore: the list marks `userScrollSeen` on every `contentY` change that
-   happened outside `positioning`. Viewport restoration (the
+   `userScrollSeenRef` from the user input handlers themselves - `handleWheel`
+   and `handleTouchMove` - plus the scroll-to-bottom-after-send effect
+   (:573-584); `contentY` deltas are not a valid proxy, because Qt fires
+   `contentYChanged` for initial layout, reflow and clamp passes where the DOM
+   only fires scroll events for actual user-visible motion. So the native list
+   observes wheel input with a zero-button, non-accepting `MouseArea`
+   (`wheel.accepted = false`, `propagateComposedEvents`) that marks the flag
+   and lets the wheel reach the Flickable and the delegates - a `WheelHandler`
+   inside a `ListView` swallows the wheel instead (verified: the existing wheel
+   regression tests freeze with one) - marks the flag from `movementStarted`
+   (drag/fling), and marks it from the sent-message tail pin
+   (`followSentMessage`), mirroring :584. Viewport restoration (the
    `programmaticScrollRef` analogue) writes `contentY` while `positioning` is
    true, so restore passes can never fire the trigger, and a conversation that
    opens into a short (non-scrollable) window never auto-pages before the user
-   interacts. `hasOlderMessages && !isLoadingOlder` maps to the existing
+   interacts. Recorded deviation: dragging the scrollbar marks the flag in the
+   reference (trusted scroll event) but cannot be attributed in Qt without the
+   contentY proxy; wheel, drag and fling all mark it natively. `hasOlderMessages && !isLoadingOlder` maps to the existing
    `controller.canLoadOlder` property, which also covers snapshot and
-   cache-verification guards. No new controller API is needed. One recorded
-   deviation: the `anchorToMessage` highlight jump moves `contentY` without
-   `positioning`, so it marks the seen flag where the reference would suppress
-   anchor-handoff scroll events; it only makes the trigger available slightly
-   earlier and still requires a real user scroll to fire.
+   cache-verification guards. No new controller API is needed. The reference
+   also suppresses scroll handling entirely while an anchor handoff is pending
+   (`anchorHandoffPending`), so the native highlight jump (`anchorToMessage`)
+   sets an equivalent one-shot `anchorJumpPending` flag: a programmatic jump
+   into the trigger zone neither marks the seen flag nor fires the trigger.
 3. Zero-visible-window auto-advance lives in the view, not the controller.
    The reference places the effect in the widget (`workspace-message-list.ui.tsx`)
    because the account-relevance filter lives in the view projection. Native is

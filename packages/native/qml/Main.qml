@@ -3132,7 +3132,24 @@ ApplicationWindow {
                 readonly property real loadMoreThreshold: 100
                 property bool topPaginationArmed: true
                 property bool userScrollSeen: false
+                property bool anchorJumpPending: false
                 readonly property real distanceFromTop: contentY - originY + topMargin
+                // Drag/fling is user scrolling too (handleTouchMove analogue).
+                onMovementStarted: userScrollSeen = true
+                MouseArea {
+                    // Wheel observer mirroring the reference handleWheel: it
+                    // marks the scroll intent, then propagates the event so the
+                    // Flickable keeps scrolling and delegates keep receiving
+                    // clicks (a WheelHandler inside a ListView would swallow the
+                    // wheel instead; verified against the wheel tests).
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    propagateComposedEvents: true
+                    onWheel: {
+                        messageList.userScrollSeen = true
+                        wheel.accepted = false
+                    }
+                }
                 section.property: "dayKey"
                 section.criteria: ViewSection.FullString
                 section.labelPositioning: ViewSection.InlineLabels | ViewSection.CurrentLabelAtStart
@@ -3635,8 +3652,14 @@ ApplicationWindow {
                     const wanted = serviceAliases[id] || id;
                     for (let i = 0; i < count; ++i) {
                         if (String(renderedMessages.get(i).entry.id) === wanted) {
+                            // Reference analogue: handleScroll returns while
+                            // anchorHandoffPending, so the highlight jump itself
+                            // must not mark user scrolling or fire the 100 px
+                            // auto-page trigger.
+                            anchorJumpPending = true
                             positionViewAtIndex(i, ListView.Contain);
                             forceMeasuredLayout();
+                            Qt.callLater(() => { anchorJumpPending = false })
                             return;
                         }
                     }
@@ -3652,6 +3675,9 @@ ApplicationWindow {
                     for (let i = 0; i < count; ++i) {
                         if (String(renderedMessages.get(i).entry.id) !== id)
                             continue;
+                        // Reference pinTailToBottom-on-send marks the scroll
+                        // intent unconditionally (hook :573-584).
+                        userScrollSeen = true
                         const snapshot = pendingViewport || captureViewport();
                         snapshot.followTail = true;
                         pendingViewport = snapshot;
@@ -3711,11 +3737,9 @@ ApplicationWindow {
                 onReadActiveChanged: scheduleVisibleRead()
                 onContentYChanged: {
                     scheduleVisibleRead(); scheduleServiceInspection();
-                    if (!positioning)
-                        userScrollSeen = true
                     if (distanceFromTop >= loadMoreThreshold)
                         topPaginationArmed = true
-                    if (topPaginationArmed && userScrollSeen && !positioning
+                    if (topPaginationArmed && userScrollSeen && !positioning && !anchorJumpPending
                         && distanceFromTop <= loadMoreThreshold && root.controller.canLoadOlder) {
                         topPaginationArmed = false
                         root.controller.loadOlder()
