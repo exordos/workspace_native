@@ -8496,6 +8496,182 @@ private slots:
         QCOMPARE(fixture.controller.error(), refusal);
     }
 
+    // Issue #115: an in-flight edit save belongs to the exact session and buffer revision it
+    // submitted. Text typed after Save must survive the completion of the earlier save, and
+    // while one save is in flight a second PUT for the same message is refused (the save
+    // control is disabled), so concurrent PUTs for one message can never conflict.
+    void inlineEditSaveCompletionCannotDiscardTextTypedAfterSave()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        std::function<void()> releaseSave;
+        int edits = 0; bool holdFirstPut = true;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") {
+                ++edits;
+                newer["payload"] = request.body.value("payload");
+                Response response{newer};
+                if (holdFirstPut) {
+                    holdFirstPut = false;
+                    response.defer = [&](std::function<void()> send) { releaseSave = std::move(send); };
+                }
+                return response;
+            }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("half-written note");
+        QTRY_COMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, saved A");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(static_cast<bool>(releaseSave));
+
+        // Text entered after Save must stay in the buffer while the save is pending, and
+        // a second save of the same message cannot be submitted before the first lands.
+        fixture.controller.setDraft("Second message, typed B");
+        QCOMPARE(fixture.controller.draft(), QString("Second message, typed B"));
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QVERIFY(!fixture.controller.canSaveEdit());
+
+        // Completing the A save verifies body A but must not close the session or clear B:
+        // the completion belongs to an older buffer revision of the session.
+        releaseSave(); releaseSave = {};
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(),
+                     QString("Second message, saved A"));
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QCOMPARE(fixture.controller.draft(), QString("Second message, typed B"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+        QTRY_VERIFY(fixture.controller.canSaveEdit());
+
+        // B is savable now; its own confirmation closes the session and the ordinary draft returns.
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 2);
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(),
+                     QString("Second message, typed B"));
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("half-written note"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+    }
+
+    // Issue #115 trigger 3b: cancel and reopen the same message while the earlier save is
+    // still in flight. The completion belongs to the closed session and must not touch the
+    // reopened one.
+    void inlineEditSaveCompletionCannotCloseAReopenedSession()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        std::function<void()> releaseSave;
+        int edits = 0; bool holdFirstPut = true;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") {
+                ++edits;
+                newer["payload"] = request.body.value("payload");
+                Response response{newer};
+                if (holdFirstPut) {
+                    holdFirstPut = false;
+                    response.defer = [&](std::function<void()> send) { releaseSave = std::move(send); };
+                }
+                return response;
+            }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("ordinary draft");
+        QTRY_COMPARE(drafts.text(streamId, topicId), QString("ordinary draft"));
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, saved A");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(static_cast<bool>(releaseSave));
+
+        fixture.controller.cancelEditMessage();
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("ordinary draft"));
+
+        // Reopen the same UUID while the earlier PUT is still in flight.
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, typed B");
+
+        releaseSave(); releaseSave = {};
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(),
+                     QString("Second message, saved A"));
+        // The reopened session survives the old completion untouched.
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QCOMPARE(fixture.controller.draft(), QString("Second message, typed B"));
+        QTRY_VERIFY(fixture.controller.canSaveEdit());
+
+        fixture.controller.cancelEditMessage();
+        QCOMPARE(fixture.controller.draft(), QString("ordinary draft"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("ordinary draft"));
+        QCOMPARE(edits, 1);
+    }
+
+    // Issue #115: repeated saves of one session cannot run concurrently; a second submit
+    // while the first PUT is pending is refused outright.
+    void inlineEditSecondSaveIsRefusedWhileFirstIsPending()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        std::function<void()> releaseSave;
+        int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") {
+                ++edits;
+                newer["payload"] = request.body.value("payload");
+                Response response{newer};
+                response.defer = [&](std::function<void()> send) { releaseSave = std::move(send); };
+                return response;
+            }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, saved A");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(static_cast<bool>(releaseSave));
+        QCOMPARE(edits, 1);
+
+        // Same buffer, second submit: refused, no second PUT goes out.
+        QVERIFY(!fixture.controller.canSaveEdit());
+        fixture.controller.submitEditMessage();
+        QTest::qWait(250);
+        QCOMPARE(edits, 1);
+
+        releaseSave(); releaseSave = {};
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(),
+                     QString("Second message, saved A"));
+        // The buffer was never changed, so this completion does close the session.
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(edits, 1);
+    }
+
     // Reference contract (workspace_ui 61dacef): features/workspace-reply
     // serializes a reply as "[Name](urn:quote:<uuid>)" + blank line + answer
     // (workspace-reply.lib.ts:190-212); the composer preview header is
