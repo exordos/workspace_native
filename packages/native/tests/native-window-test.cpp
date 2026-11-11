@@ -11,6 +11,8 @@
 #include "message-images.h"
 
 #include <functional>
+#include <algorithm>
+#include <memory>
 #include <optional>
 #include <tuple>
 
@@ -20383,6 +20385,324 @@ QTRY_VERIFY(create->property("enabled").toBool());
     }
 
 
+    // #141: opening a populated text-only topic must not livelock the Qt Quick
+    // layout (GUI thread pinned at ~1 CPU and unbounded RSS growth, reported
+    // against 0.10.0; both direct topic selection and a message deep link from
+    // a populated channel aggregate reproduced it). A layout livelock hangs
+    // the GUI thread inside polish, which would starve an in-process test's
+    // own watchdog, so the scene runs in a child process (the cachePhase
+    // worker pattern): the parent serves the fixture through MockServer,
+    // reads the child's FREEZEPROBE report line, and treats a silent child as
+    // the reproduction.
+    void openingPopulatedTopicKeepsTheGuiResponsive_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("topic-open") << QStringLiteral("topic-open");
+        QTest::newRow("aggregate-deeplink") << QStringLiteral("aggregate-deeplink");
+        QTest::newRow("repeat-switch") << QStringLiteral("repeat-switch");
+        QTest::newRow("cache-restore") << QStringLiteral("cache-restore");
+        QTest::newRow("topic-open-wide") << QStringLiteral("topic-open-wide");
+    }
+
+    void openingPopulatedTopicKeepsTheGuiResponsive()
+    {
+        QFETCH(QString, scenario);
+        // The fixture mirrors the live report in the issue: the affected topic
+        // caches a latest page of 50 markdown messages, longest body 480
+        // characters, seven date groups, mixed peer and own author runs,
+        // inline references, and reaction footers.
+        const QString otherPeer = QStringLiteral("99999999-9999-4999-8999-999999999999");
+        QTemporaryDir cacheDir;
+        QVERIFY(cacheDir.isValid());
+        int historyDelay = 0;
+        const auto bodyFor = [](int number) {
+            switch (number % 6) {
+            case 0: return QStringLiteral("Short reply.");
+            case 1: return QStringLiteral("Agreed - ship it today.");
+            case 2: return QStringLiteral("Deploy notes [runbook](https://example.invalid/runbook) plus "
+                "[status board](https://example.invalid/status) for the release train.");
+            case 3: return QStringLiteral("First line\nSecond line\nThird line\nFourth line");
+            case 4: {
+                const QString filler = QStringLiteral(
+                    "wrap pressure across the bubble width while references stay inline and reactions sit in the footer ");
+                QString text = filler;
+                while (text.size() < 460)
+                    text += filler;
+                return text.left(480);
+            }
+            default: return QStringLiteral("Mixed reference [topic](https://example.invalid/t) and a multi\nline tail for wrap variance.");
+            }
+        };
+        const auto rowFor = [&](int number, const QString &topic, const QString &uuidPrefix) {
+            auto entry = message(bodyFor(number),
+                QString("%1-0000-4000-8000-%2").arg(uuidPrefix)
+                    .arg(number + 1, 12, 10, QLatin1Char('0')), topic);
+            const bool own = number % 5 >= 2 && number % 5 < 4;
+            entry["author_uuid"] = own ? userId : (number % 5 == 0 ? channelPeer : otherPeer);
+            entry["is_own"] = own;
+            entry["created_at"] = QDateTime(QDate(2026, 1, 1).addDays(number / 8), QTime(10, 0))
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            if (number % 7 == 3) {
+                entry["reactions"] = QJsonObject{{"heart", 2}};
+                entry["reaction_users"] = QJsonObject{{"heart", QJsonArray{userId, channelPeer}}};
+            }
+            return entry;
+        };
+        QJsonArray primary, secondary;
+        for (int number = 0; number < 50; ++number)
+            primary.append(rowFor(number, topicId, QStringLiteral("81000000")));
+        for (int number = 0; number < 20; ++number)
+            secondary.append(rowFor(number, secondTopicId, QStringLiteral("82000000")));
+        const QString anchor = primary.at(24).toObject().value("uuid").toString();
+        QJsonArray combined;
+        {   // The aggregate view shows the newest 50 rows across both topics.
+            QList<QJsonObject> merged;
+            for (const auto &value : primary)
+                merged.append(value.toObject());
+            for (const auto &value : secondary)
+                merged.append(value.toObject());
+            std::stable_sort(merged.begin(), merged.end(), [](const QJsonObject &left, const QJsonObject &right) {
+                return left.value("created_at").toString() < right.value("created_at").toString(); });
+            for (auto it = merged.cend() - std::min<qsizetype>(50, merged.size()); it != merged.cend(); ++it)
+                combined.append(*it);
+        }
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Freeze probe"},
+                {"encryption", false}, {"unread_count", primary.size() + secondary.size()},
+                {"active_unread_count", primary.size() + secondary.size()}, {"passive_unread_count", 0},
+                {"last_message_uuid", primary.last().toObject().value("uuid")}};
+        };
+        const auto topicDto = [&](const QString &id) {
+            const auto &rows = id == topicId ? primary : secondary;
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", id == topicId ? "Freeze probe topic" : "Probe companion"},
+                {"unread_count", rows.size()}, {"active_unread_count", rows.size()}, {"passive_unread_count", 0},
+                {"last_message_uuid", rows.last().toObject().value("uuid")}};
+        };
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{
+                QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+                QJsonObject{{"uuid", channelPeer}, {"username", "alice"}, {"first_name", "Alice"}},
+                QJsonObject{{"uuid", otherPeer}, {"username", "bob"}, {"first_name", "Bob"}}}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{topicDto(topicId), topicDto(secondTopicId)}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto(topicId)};
+            if (path.endsWith("/stream_topics/" + secondTopicId)) return Response{topicDto(secondTopicId)};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (topic == topicId) return Response{primary, 200, historyDelay};
+                if (topic == secondTopicId) return Response{secondary};
+                return Response{combined};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) return Response{QJsonObject{}};
+            if (request.method == "GET") {
+                for (const auto &value : primary)
+                    if (path.endsWith("/messages/" + value.toObject().value("uuid").toString()))
+                        return Response{value.toObject()};
+                for (const auto &value : secondary)
+                    if (path.endsWith("/messages/" + value.toObject().value("uuid").toString()))
+                        return Response{value.toObject()};
+            }
+            return sessionResponse(request);
+        };
+        QProcess process;
+        const auto runChild = [&](const QString &phase, int timeoutMs) {
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert(QStringLiteral("CASSI_NATIVE_LIVELOCK_CHILD_PHASE"), phase);
+            environment.insert(QStringLiteral("CASSI_NATIVE_LIVELOCK_CHILD_ORIGIN"), server.origin().toString());
+            environment.insert(QStringLiteral("CASSI_NATIVE_LIVELOCK_CHILD_ANCHOR"), anchor);
+            environment.insert(QStringLiteral("CASSI_NATIVE_LIVELOCK_CHILD_CACHE"), cacheDir.path());
+            process.setProcessEnvironment(environment);
+            process.setProcessChannelMode(QProcess::MergedChannels);
+            process.start(QCoreApplication::applicationFilePath(), {QStringLiteral("livelockPhase")});
+            QVERIFY(process.waitForStarted(10000));
+        };
+        const auto pumpChild = [&](int timeoutMs, QString *out) {
+            // A GUI-thread livelock starves the child's own watchdog: silence IS
+            // the reproduction, and QProcess' destructor ends the child on scope
+            // exit. The parent keeps pumping so the mock server keeps serving.
+            QElapsedTimer waited;
+            waited.start();
+            while (process.state() != QProcess::NotRunning && waited.elapsed() < timeoutMs)
+                QTest::qWait(20);
+            QVERIFY2(process.state() == QProcess::NotRunning,
+                "freeze probe child stayed silent (livelock reproduction) or crashed");
+            *out = QString::fromUtf8(process.readAll());
+        };
+        QString output;
+        if (scenario == QStringLiteral("cache-restore")) {
+            // The live report ran against an existing disk cache, so the frozen
+            // presentation was the cached page followed by its revalidation
+            // commit. Seed the cache in one child, then reproduce offline-first
+            // with a delayed revalidation landing mid-monitor.
+            runChild(QStringLiteral("cache-seed"), 120000);
+            QString seedOutput;
+            pumpChild(120000, &seedOutput);
+            QVERIFY2(seedOutput.contains(QStringLiteral("FREEZEPROBE seed")),
+                "cache seeding child failed");
+            historyDelay = 700;
+            runChild(scenario, 120000);
+            pumpChild(120000, &output);
+        } else {
+            runChild(scenario, 120000);
+            pumpChild(120000, &output);
+        }
+        QString line;
+        for (const auto &candidate : output.split(QLatin1Char('\n'))) {
+            if (candidate.contains(QStringLiteral("FREEZEPROBE"))) {
+                line = candidate;
+                break;
+            }
+        }
+        QVERIFY2(!line.isEmpty(), QStringLiteral("scenario=%1 child produced no FREEZEPROBE report\n%2")
+            .arg(scenario, output).toUtf8().constData());
+        const auto field = [&line](const QString &key) {
+            return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
+        };
+        qDebug().noquote() << "freeze probe" << scenario << line;
+        QVERIFY2(field("settled") == "1", QStringLiteral("scenario=%1 layout never settled\n%2")
+            .arg(scenario, line).toUtf8().constData());
+        QVERIFY2(field("settleMs").toInt() <= 5000, line.toUtf8().constData());
+        QVERIFY2(field("maxRssKib").toLongLong() < 1500000, line.toUtf8().constData());
+        QVERIFY2(field("ticks").toLongLong() >= 50, line.toUtf8().constData());
+    }
+};
+
+class NativeLivelockWindowWorker final : public QObject {
+    Q_OBJECT
+private slots:
+    // #141 watchdog child. Runs the freeze-probe scene in its own process so
+    // a GUI-thread livelock (layout never quiescing, unbounded RSS, or a hard
+    // hang inside polish) surfaces as a parent-visible failure instead of
+    // hanging the in-process window group.
+    void livelockPhase()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTest::failOnWarning(QRegularExpression(".*Binding loop detected.*"));
+        const auto phase = qEnvironmentVariable("CASSI_NATIVE_LIVELOCK_CHILD_PHASE");
+        const auto origin = QUrl(qEnvironmentVariable("CASSI_NATIVE_LIVELOCK_CHILD_ORIGIN"));
+        const auto anchor = qEnvironmentVariable("CASSI_NATIVE_LIVELOCK_CHILD_ANCHOR");
+        QVERIFY(origin.host() == "127.0.0.1");
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(QDir(directory.path()).filePath("appearance.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        const auto cachePath = qEnvironmentVariable("CASSI_NATIVE_LIVELOCK_CHILD_CACHE");
+        std::unique_ptr<NativeCacheService> cache;
+        if (phase.startsWith(QLatin1String("cache")) && !cachePath.isEmpty()) {
+            cache = std::make_unique<NativeCacheService>(cachePath, NativeCacheService::Policy{}, true);
+            controller.useCache(cache.get());
+        }
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        if (phase.endsWith(QLatin1String("-wide")))
+            window->resize(1900, 1040);   // the live report ran on a large desktop window
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        auto *content = window->contentItem();
+        session.login(origin, "synthetic-user", "synthetic-password");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 15000);
+        session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 15000);
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.topics().size(), 2, 15000);
+        const auto monitor = [&] {
+            auto *list = item(content, "messageList");
+            QVERIFY(list);
+            qint64 ticks = 0;
+            QTimer heartbeat;
+            heartbeat.setInterval(10);
+            QObject::connect(&heartbeat, &QTimer::timeout, [&ticks] { ++ticks; });
+            heartbeat.start();
+            const auto rssKiB = [] {
+                QFile status(QStringLiteral("/proc/self/status"));
+                if (!status.open(QIODevice::ReadOnly | QIODevice::Text))
+                    return qint64{0};
+                const auto lines = QString::fromLatin1(status.readAll()).split(QLatin1Char('\n'));
+                for (const auto &entry : lines)
+                    if (entry.startsWith(QStringLiteral("VmHWM:")))
+                        return entry.mid(6).simplified().split(QLatin1Char(' ')).first().toLongLong();
+                return qint64{0};
+            };
+            QElapsedTimer clock;
+            clock.start();
+            qint64 maxRss = 0;
+            int unstable = 0, lastMoveMs = 0, settleMs = -1;
+            qreal previousY = -1e9, previousOrigin = -1e9, previousExtent = -1e9;
+            while (clock.elapsed() < 8000) {
+                QTest::qWait(50);
+                const qreal contentY = list->property("contentY").toReal();
+                const qreal originY = list->property("originY").toReal();
+                const qreal extent = list->property("contentHeight").toReal();
+                const bool moved = !qIsFinite(contentY) || !qIsFinite(originY) || !qIsFinite(extent)
+                    || qAbs(contentY - previousY) > 0.01 || qAbs(originY - previousOrigin) > 0.01
+                    || qAbs(extent - previousExtent) > 0.01;
+                if (moved) {
+                    ++unstable;
+                    lastMoveMs = clock.elapsed();
+                }
+                previousY = contentY;
+                previousOrigin = originY;
+                previousExtent = extent;
+                maxRss = std::max(maxRss, rssKiB());
+                if (settleMs < 0 && !list->property("positioning").toBool() && !moved
+                        && clock.elapsed() - lastMoveMs >= 600)
+                    settleMs = clock.elapsed();
+            }
+            heartbeat.stop();
+            qInfo("FREEZEPROBE phase=%s settled=%d settleMs=%d unstable=%d ticks=%lld maxRssKib=%lld",
+                qPrintable(phase), settleMs >= 0 ? 1 : 0, settleMs, unstable, ticks, maxRss);
+        };
+        if (phase == "cache-seed") {
+            // Persist one full topic page into the shared cache directory and
+            // end cleanly, mirroring the installed app quitting after browsing.
+            click(window, item(content, "topic-" + topicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            QTest::qWait(700);
+            window->close();
+            cache->shutdown();
+            QTRY_VERIFY_WITH_TIMEOUT(cache->stopped(), 20000);
+            qInfo("FREEZEPROBE seed ok=1");
+        } else if (phase == "cache-restore") {
+            // Cached rows appear instantly; the delayed revalidation commits
+            // mid-monitor - the exact "history presented then re-positioned"
+            // transition the live report froze on.
+            click(window, item(content, "topic-" + topicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            monitor();
+            cache->shutdown();
+            QTRY_VERIFY_WITH_TIMEOUT(cache->stopped(), 20000);
+        } else if (phase.startsWith(QLatin1String("topic-open"))) {
+            click(window, item(content, "topic-" + topicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            monitor();
+        } else if (phase == "aggregate-deeplink") {
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            controller.openMessageInChat(anchor);
+            monitor();
+        } else if (phase == "repeat-switch") {
+            click(window, item(content, "topic-" + topicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            click(window, item(content, "topic-" + secondTopicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 20, 15000);
+            click(window, item(content, "topic-" + topicId));
+            QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            monitor();
+        } else {
+            QFAIL("unknown freeze probe phase");
+        }
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {
@@ -20565,6 +20885,10 @@ int main(int argc, char **argv)
     }
     if (qEnvironmentVariableIsSet("CASSI_NATIVE_CACHE_CHILD_PHASE")) {
         NativeCacheWindowWorker worker;
+        return QTest::qExec(&worker, argc, argv);
+    }
+    if (qEnvironmentVariableIsSet("CASSI_NATIVE_LIVELOCK_CHILD_PHASE")) {
+        NativeLivelockWindowWorker worker;
         return QTest::qExec(&worker, argc, argv);
     }
     NativeWindowTest test;
