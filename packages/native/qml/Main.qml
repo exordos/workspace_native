@@ -7548,6 +7548,113 @@ ApplicationWindow {
                 root.controller.deleteMessage(root.menuMessageId);
         }
     }
+    // Issue #146: top overlay banners over the sidebar/chat split, mirroring
+    // the reference layout-top-banner overlay (offline > rate-limit countdown >
+    // reconnecting > degraded) and the bootstrap error banner whose Retry
+    // re-runs the snapshot bootstrap. Anchored under the header so the split
+    // is covered but header clicks keep reaching the top bar.
+    Column {
+        id: topBannerOverlay
+        objectName: "topBannerOverlay"
+        anchors.top: topBar.bottom
+        anchors.topMargin: 4
+        anchors.left: parent.left
+        anchors.right: parent.right
+        spacing: 0
+        visible: root.controller.authenticated
+            && (root.controller.bootstrapError || root.controller.connectionPhase !== "online")
+
+        Rectangle {
+            id: bootstrapErrorBanner
+            objectName: "bootstrapErrorBanner"
+            visible: root.controller.bootstrapError
+            width: topBannerOverlay.width
+            // Column still lays out hidden children, so a hidden strip must
+            // collapse to zero height to keep the visible one flush at top.
+            height: visible ? implicitHeight : 0
+            readonly property color accent: root.colors["notice-base"]
+            implicitHeight: bootstrapBannerContent.implicitHeight + 24
+            color: Qt.rgba(accent.r, accent.g, accent.b, 0.2)
+            Accessible.role: Accessible.AlertMessage
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 2
+                color: Qt.rgba(bootstrapErrorBanner.accent.r, bootstrapErrorBanner.accent.g,
+                    bootstrapErrorBanner.accent.b, 0.6)
+            }
+            RowLayout {
+                id: bootstrapBannerContent
+                anchors.fill: parent
+                anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.topMargin: 12; anchors.bottomMargin: 12
+                spacing: 12
+                Text {
+                    objectName: "bootstrapErrorText"
+                    Layout.fillWidth: true
+                    text: root.controller.error.length > 0
+                        ? root.controller.error : qsTr("Failed to load your messages.")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    color: root.colors["text-primary"]
+                    font.pixelSize: 14
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: text
+                }
+                NativeButton {
+                    objectName: "bootstrapRetryButton"
+                    colors: root.colors
+                    primary: true
+                    text: qsTr("Retry")
+                    onClicked: root.controller.retryBootstrap()
+                }
+            }
+        }
+
+        Rectangle {
+            id: connectionBanner
+            objectName: "connectionBanner"
+            visible: root.controller.connectionPhase !== "online"
+            width: topBannerOverlay.width
+            height: visible ? implicitHeight : 0
+            readonly property color accent: root.controller.connectionSeverity === "critical"
+                ? root.colors.danger : root.colors["notice-base"]
+            readonly property string bannerText: root.controller.connectionPhase === "offline"
+                ? qsTr("You are offline.")
+                : root.controller.connectionPhase === "rate_limited"
+                    ? qsTr("Too many requests. Retrying in %1 seconds.")
+                        .arg(root.controller.connectionRetryInSeconds)
+                    : root.controller.connectionPhase === "degraded"
+                        ? qsTr("The connection is degraded.")
+                        : qsTr("Reconnecting...")
+            implicitHeight: connectionBannerContent.implicitHeight + 24
+            color: Qt.rgba(accent.r, accent.g, accent.b, 0.2)
+            Accessible.role: Accessible.AlertMessage
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 2
+                color: Qt.rgba(connectionBanner.accent.r, connectionBanner.accent.g,
+                    connectionBanner.accent.b, 0.6)
+            }
+            RowLayout {
+                id: connectionBannerContent
+                anchors.fill: parent
+                anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.topMargin: 12; anchors.bottomMargin: 12
+                spacing: 12
+                Text {
+                    objectName: "connectionBannerText"
+                    Layout.fillWidth: true
+                    text: connectionBanner.bannerText
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    color: root.colors["text-primary"]
+                    font.pixelSize: 14
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: text
+                }
+            }
+        }
+    }
     NativeMediaViewer {
         anchors.fill: parent
         viewer: root.controller.mediaViewer

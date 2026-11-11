@@ -946,6 +946,26 @@
             <source>App version</source>
             <translation>Версия приложения</translation>
         </message>
+        <message>
+            <source>Failed to load your messages.</source>
+            <translation>Не удалось загрузить сообщения.</translation>
+        </message>
+        <message>
+            <source>You are offline.</source>
+            <translation>Нет подключения к сети.</translation>
+        </message>
+        <message>
+            <source>Too many requests. Retrying in %1 seconds.</source>
+            <translation>Слишком много запросов. Повтор через %1 секунд.</translation>
+        </message>
+        <message>
+            <source>The connection is degraded.</source>
+            <translation>Соединение нестабильно.</translation>
+        </message>
+        <message>
+            <source>Reconnecting...</source>
+            <translation>Переподключение...</translation>
+        </message>
     </context>
     <context>
         <name>NativeQuickReactions</name>

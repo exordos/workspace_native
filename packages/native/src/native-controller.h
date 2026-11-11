@@ -109,6 +109,13 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool canLoadNewer READ canLoadNewer NOTIFY stateChanged)
     Q_PROPERTY(QString title READ title NOTIFY stateChanged)
     Q_PROPERTY(QString syncState READ syncState NOTIFY stateChanged)
+    // Issue #146 top overlay banners: derived, read-only view of the existing
+    // realtime/transport health, prioritized like the reference layout
+    // (offline > rate_limited > reconnecting > degraded > online).
+    Q_PROPERTY(QString connectionPhase READ connectionPhase NOTIFY stateChanged)
+    Q_PROPERTY(QString connectionSeverity READ connectionSeverity NOTIFY stateChanged)
+    Q_PROPERTY(int connectionRetryInSeconds READ connectionRetryInSeconds NOTIFY stateChanged)
+    Q_PROPERTY(bool bootstrapError READ bootstrapError NOTIFY stateChanged)
     Q_PROPERTY(QString ownerKey READ ownerKey NOTIFY stateChanged)
     Q_PROPERTY(bool canAttach READ canAttach NOTIFY stateChanged)
     Q_PROPERTY(MediaViewerModel *mediaViewer READ mediaViewer CONSTANT)
@@ -230,6 +237,12 @@ public:
         && (!m_cacheProtection || m_historyVerified); }
     QString title() const;
     QString syncState() const { return m_syncState; }
+    // docs/NATIVE_DESKTOP_OVERLAY_BANNERS.md: mapping of realtime sync state,
+    // transport failures and HTTP 429 retries into the reference banner kinds.
+    QString connectionPhase() const;
+    QString connectionSeverity() const;
+    int connectionRetryInSeconds() const;
+    bool bootstrapError() const { return m_bootstrapError; }
     QString ownerKey() const { return authenticated()
         ? SessionVault::accountId(m_api->server(), m_session->project(), m_session->user()) : QString{}; }
     bool canAttach() const;
@@ -275,6 +288,9 @@ public:
     Q_INVOKABLE void setWindowFocused(bool focused);
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
+    // Reference bootstrap error banner Retry (bootstrapRetryNonce analogue):
+    // re-runs the existing snapshot bootstrap path.
+    Q_INVOKABLE void retryBootstrap();
     Q_INVOKABLE void showDrafts();
     Q_INVOKABLE void closeDrafts();
     Q_INVOKABLE void refreshDrafts();
@@ -683,6 +699,7 @@ private:
     void openCache();
     void closeCache();
     void markCacheStale();
+    void observeTransport(const ApiResult &result);
     void invalidateCache(NativeCache::Kind kind, const QString &stream = {}, const QString &topic = {});
     void invalidateConversation(const QString &stream, const QString &topic, bool counters = true);
     void staleCache(NativeCache::Kind kind, const QString &stream = {}, const QString &topic = {});
@@ -1037,6 +1054,10 @@ private:
     bool m_organizationLoading = false;
     quint64 m_organizationAttempt = 0;
     QString m_syncState;
+    QTimer m_connectionCountdown{this};
+    qint64 m_rateLimitedUntilMs = 0;
+    bool m_transportOffline = false;
+    bool m_bootstrapError = false;
     QString m_notice;
     int m_uploads = 0;
     int m_downloads = 0;

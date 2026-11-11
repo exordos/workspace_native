@@ -26,6 +26,11 @@ struct ApiResult {
     // Kept on canonical HTTP errors too: draft conflicts carry the current
     // snapshot and its strong revision. Never retained for cancelled requests.
     QByteArray etag{};
+    // Seconds parsed from the Retry-After response header (0 when absent).
+    int retryAfterSeconds = 0;
+    // True only when the request never completed at the transport level
+    // (connection refused/reset/closed): reachability failed, not the server.
+    bool transportFailed = false;
 
     bool ok() const { return status >= 200 && status < 300 && error.isEmpty(); }
 };
