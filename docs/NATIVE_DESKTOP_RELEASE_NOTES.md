@@ -1,3 +1,20 @@
+# Workspace Native 0.9.1 - Linux development preview
+
+Editing no longer loses your typing. If you keep typing after pressing Save - or cancel and
+reopen the same message while the earlier save is still travelling to the server - the
+finishing save no longer wipes the newer text: the message keeps exactly what was saved,
+your composer keeps what you typed, and Save comes back for it. A second save of the same
+message can no longer race one that is still in progress; it simply waits its turn
+(issue #115).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.9.0...0.9.1](https://github.com/exordos/workspace_native/compare/0.9.0...0.9.1)
+
+---
+
 # Workspace Native 0.9.0 - Linux development preview
 
 Replies arrived in the native client. Choosing **Reply** in a message menu opens a
