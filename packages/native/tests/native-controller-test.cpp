@@ -8682,6 +8682,43 @@ private slots:
             return row.value("quoteContent").toString() == QLatin1String("edited origin"); })(), 5000);
     }
 
+    // A confirmed deletion of the origin drops the cached preview; the frame then
+    // re-resolves against the server and lands on unavailable (review #119).
+    void quotePreviewBecomesUnavailableAfterTheOriginIsDeleted()
+    {
+        Fixture fixture;
+        fixture.extraTopic = true;
+        fixture.aggregateMessages = true;
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(farId), returnedId);
+        bool deleted = false; int deletes = 0;
+        const auto fresh = [&] { return message("far origin", farId, secondTopicId); };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "DELETE") { deleted = true; ++deletes; return {QJsonObject{}, 200}; }
+            if (request.method != "GET") return {QJsonArray{reply}};
+            if (path.endsWith("/" + farId)) return deleted ? Response{QJsonObject{}, 404} : Response{fresh()};
+            if (query.hasQueryItem("uuid")) return deleted ? Response{QJsonArray{}} : Response{QJsonArray{fresh()}};
+            if (query.queryItemValue("topic_uuid") == secondTopicId)
+                return deleted ? Response{QJsonArray{}} : Response{QJsonArray{fresh()}};
+            return {QJsonArray{reply}};
+        };
+        QVERIFY(fixture.start());
+        QVariantMap row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteStatus").toString() == QLatin1String("ready"); })(), 5000);
+
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!modelMessage(fixture.controller, farId).isEmpty());
+        fixture.controller.deleteMessage(farId);
+        QTRY_COMPARE(deletes, 1);
+
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return row.value("quoteStatus").toString() == QLatin1String("unavailable"); })(), 5000);
+    }
+
     // A message consisting of only a quote anchor keeps an empty answer body;
     // the frame replaces the anchor instead of the body duplicating it.
     void quoteOnlyMessageKeepsAnEmptyAnswerBody()
