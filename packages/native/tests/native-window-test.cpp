@@ -11130,6 +11130,30 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *thumb = visibleItem(content, "mediaViewer-thumb-1"); QVERIFY(thumb);
         QCOMPARE(thumb->width(), 56.0); QCOMPARE(thumb->height(), 56.0);
 
+        // Review reproduction (exo-review finding=5): each arrow must expose its
+        // own accessible name; a previous arrow bound to the wrong property
+        // reports the wrong label for the previous arrow. QQuickAccessibleAttached
+        // is a private header, so the attached object is read as the item's only
+        // non-item child that carries a "name" property.
+        const auto accessibleName = [](QQuickItem *target) {
+            for (auto *child : target->children())
+                if (!child->inherits("QQuickItem") && child->metaObject()->indexOfProperty("name") != -1)
+                    return child->property("name").toString();
+            return QString{};
+        };
+        QCOMPARE(accessibleName(prev), QString("Previous"));
+        QCOMPARE(accessibleName(next), QString("Next"));
+
+        // Review reproduction (exo-review finding=4): the image element's box
+        // equals its painted image in the reference (object-contain img), so a
+        // click inside the item bounds but outside the painted pixels (the
+        // 96x64 fixture paints 1062x708, leaving pillarbox bands at x in
+        // [64,189] and [1251,1376]) is a backdrop click and closes the viewer.
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(100, 450));
+        QTRY_VERIFY(!viewer->open());
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+
         // Click and keyboard navigation clamps without wrap-around.
         click(window, next);
         QCOMPARE(viewer->index(), 1);

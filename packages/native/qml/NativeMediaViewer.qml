@@ -64,8 +64,20 @@ Item {
             Accessible.ignored: true
         }
         // The reference media element stopPropagation()s clicks
-        // (media-viewer-overlay.ui.tsx:159,169), so the backdrop must not see them.
-        MouseArea { anchors.fill: mediaImage }
+        // (media-viewer-overlay.ui.tsx:159,169), so the backdrop must not see
+        // them. The reference <img> box equals its painted pixels
+        // (object-contain), so clicks landing in the PreserveAspectFit
+        // letterbox bands behave like backdrop clicks and close the viewer.
+        MouseArea {
+            anchors.fill: mediaImage
+            onClicked: (mouse) => {
+                const insidePainted = mediaImage.status !== Image.Ready
+                    || (Math.abs(mouse.x - mediaImage.width / 2) <= mediaImage.paintedWidth / 2 + 1
+                        && Math.abs(mouse.y - mediaImage.height / 2) <= mediaImage.paintedHeight / 2 + 1);
+                if (!insidePainted)
+                    viewerRoot.viewer.close();
+            }
+        }
         Text {
             anchors.centerIn: parent
             width: Math.min(480, mediaArea.width)
@@ -115,7 +127,7 @@ Item {
                 }
             }
         }
-        Accessible.name: right ? qsTr("Next") : qsTr("Previous")
+        Accessible.name: arrow.pointsRight ? qsTr("Next") : qsTr("Previous")
     }
     ViewerArrow {
         objectName: "mediaViewer-prev"
