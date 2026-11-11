@@ -38,6 +38,9 @@ struct Response {
     std::function<void(std::function<void()>)> defer; // optional test-owned delivery gate
     QByteArray rawBody; // Null keeps every existing JSON response unchanged.
     QByteArray rawContentType = "application/octet-stream";
+    // Test-only transport drop: the socket is aborted without any response,
+    // exactly what a client sees when the server goes away mid-request.
+    bool abortConnection = false;
 };
 
 class MockServer final : public QTcpServer {
@@ -85,6 +88,7 @@ public:
                         auto *socket = guarded.data();
                         if (!socket || socket->state() != QAbstractSocket::ConnectedState)
                             return;
+                        if (response.abortConnection) { socket->abort(); return; }
                         auto body = response.data.isArray()
                             ? QJsonDocument(response.data.toArray()).toJson(QJsonDocument::Compact)
                             : QJsonDocument(response.data.toObject()).toJson(QJsonDocument::Compact);

@@ -1089,6 +1089,55 @@ private slots:
     }
 };
 
+// Issue #146: drives the transport/rate-limit/bootstrap shapes the top
+// overlay banners react to, over the same Main.qml harness as other window
+// tests (drop = one aborted streams GET, break = malformed catalog row).
+class WindowBannerFixture {
+public:
+    MockServer server;
+    int streamsGets = 0, rateLimitAfterSeconds = 0;
+    bool breakStreams = false, dropRound = false;
+    WindowBannerFixture() {
+        server.handler = [this](const Request &request) -> Response {
+            const auto path = request.target.path();
+            // Outage window: every GET dies at the transport level, so no
+            // unrelated in-flight response can clear the offline phase.
+            if (dropRound && request.method == "GET") {
+                Response dropped; dropped.abortConnection = true; return dropped;
+            }
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return {windowChannel(streamId, "Banner workspace")};
+            if (path.endsWith("/streams/") && request.method == "GET") {
+                ++streamsGets;
+                if (breakStreams)
+                    return {QJsonArray{QJsonObject{{"uuid", QStringLiteral("not-a-uuid")}}}};
+                if (rateLimitAfterSeconds > 0) {
+                    Response limited{QJsonArray{}, 429};
+                    limited.headers.insert("Retry-After", QByteArray::number(rateLimitAfterSeconds));
+                    return limited;
+                }
+                return {QJsonArray{windowChannel(streamId, "Banner workspace")}};
+            }
+            if (path.endsWith("/users/"))
+                return {QJsonArray{QJsonObject{{"uuid", userId}, {"username", "cassi"}}}};
+            if (path.endsWith("/stream_topics/"))
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "General")}};
+            if (path.endsWith("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+    }
+    bool start(NativeController &controller) {
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return controller.streams().size() == 1; }, 2000)) return false;
+        controller.selectStream(streamId);
+        if (!QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000)) return false;
+        controller.selectTopic(topicId);
+        return QTest::qWaitFor([&] { return !controller.busy(); }, 2000);
+    }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -11754,6 +11803,78 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "mediaViewer-strip")->isVisible());
         click(window, visibleItem(content, "mediaViewer-close"));
         QTRY_VERIFY(!viewer->open());
+    }
+
+    void topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks()
+    {
+        WindowBannerFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("overlay-banners.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Overlay banner teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!visibleItem("connectionBanner"));
+        QVERIFY(!visibleItem("bootstrapErrorBanner"));
+        // A transport drop raises the critical connection banner over the split.
+        fixture.dropRound = true;
+        controller.refresh();
+        QTRY_VERIFY(visibleItem("connectionBanner"));
+        auto *banner = visibleItem("connectionBanner");
+        QCOMPARE(banner->property("bannerText").toString(), QString("You are offline."));
+        QCOMPARE(banner->property("accent").value<QColor>(), QColor("#d92d20"));
+        auto *topBar = visibleItem("topBar"); auto *sidebar = visibleItem("sidebar");
+        QVERIFY(topBar && sidebar);
+        // The outage also fails the in-flight snapshot, so the bootstrap strip
+        // may stack under the connection strip; measure the overlay layer.
+        auto *overlay = visibleItem("topBannerOverlay"); QVERIFY(overlay);
+        const auto overlayTop = overlay->mapToScene(QPointF(0, 0)).y();
+        const auto headerBottom = topBar->mapToScene(QPointF(0, topBar->height())).y();
+        const auto splitTop = sidebar->mapToScene(QPointF(0, 0)).y();
+        QVERIFY2(overlayTop >= headerBottom - 1, "the overlay starts below the header");
+        QVERIFY2(overlayTop <= splitTop + 1, "the overlay sits over the top of the split view");
+        QVERIFY(banner->height() > 0);
+        // Header clicks keep reaching the top bar while the banner is up.
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window, overlay); // press outside closes the account popup
+        QTRY_VERIFY(!visibleItem("ownStatusAction"));
+        // The next successful response clears the banner again.
+        fixture.dropRound = false;
+        controller.refresh();
+        QTRY_VERIFY(!visibleItem("connectionBanner"));
+        // HTTP 429 renders the warning countdown and expires on its own.
+        fixture.rateLimitAfterSeconds = 1;
+        controller.refresh();
+        QTRY_VERIFY(visibleItem("connectionBanner"));
+        banner = visibleItem("connectionBanner");
+        QVERIFY(banner->property("bannerText").toString().contains("Retrying in"));
+        QVERIFY(banner->property("accent").value<QColor>() != QColor("#d92d20"));
+        fixture.rateLimitAfterSeconds = 0;
+        QTRY_VERIFY(!visibleItem("connectionBanner"));
+        // A bootstrap failure shows the Retry banner; the header stays usable
+        // and clicking Retry against the healthy server recovers the shell.
+        fixture.breakStreams = true;
+        controller.refresh();
+        QTRY_VERIFY(visibleItem("bootstrapErrorBanner"));
+        QVERIFY(visibleItem("bootstrapRetryButton"));
+        QVERIFY(!visibleItem("bootstrapErrorText")->property("text").toString().isEmpty());
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window, overlay); // press outside closes the account popup
+        QTRY_VERIFY(!visibleItem("ownStatusAction"));
+        fixture.breakStreams = false;
+        click(window, visibleItem("bootstrapRetryButton"));
+        QTRY_VERIFY(!visibleItem("bootstrapErrorBanner"));
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QVERIFY(fixture.streamsGets >= 4);
     }
 };
 
