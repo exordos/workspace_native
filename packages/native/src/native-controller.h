@@ -9,6 +9,7 @@
 #include "native-notifications.h"
 
 #include <QHash>
+#include <QLocale>
 #include <QSet>
 #include <QStringList>
 #include <QQueue>
@@ -147,6 +148,11 @@ public:
     void reloadSnapshot();
     bool applyRealtimeEvent(const QJsonObject &envelope);
     bool authenticated() const { return m_session->ready(); }
+    // Sidebar row previews and the reference relative-time label, measured in
+    // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md; exposed for the QtTest contract cases.
+    static QString summarizeRowPreview(const QString &plainText);
+    static QString formatRowTime(const QDateTime &created, const QLocale &locale,
+                                 const QDate &today, const QString &yesterdayLabel);
     bool busy() const { return m_busy || m_loading || m_sending || m_snapshotActive || m_topicChanging || m_cacheForgettingAccount; }
     QString error() const { return m_error; }
     QVariantList projects() const;
@@ -796,6 +802,17 @@ private:
     static UserPresentation makeUserPresentation(const QString &name, const QJsonObject &row,
         bool authoritative, const UserPresentation &previous);
     QString userDisplayName(const QString &id, const QString &fallback = {}) const;
+    // Sidebar row previews, docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md.
+    struct RowPreview {
+        QString sender, text;
+        bool locked = false;
+        QDateTime created;
+    };
+    std::optional<RowPreview> rowPreview(const QString &uuid) const;
+    std::optional<RowPreview> rowPreviewOf(const Message &message) const;
+    qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
+    int streamGroupRank(const Stream &stream) const;
+    QVariantMap rowPreviewFields(const QString &lastMessage) const;
     QString userAvatar(const QString &id) const;
     QString userPresence(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
