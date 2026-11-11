@@ -240,10 +240,30 @@ for `Reply` and `Cancel`.
   `loading -> ready` via `GET /messages/?uuid=` for an unloaded origin and
   `-> unavailable` for a miss; `openMessageInChat` anchors a loaded message
   and deep-walks for an unloaded origin (existing bounded-walk path).
-- `native-native-window`: `replyFlowUsesComposerBannerAndJump` — reply from
-  a peer message shows `replyNotice` (33 px strip, 2 px accent bar,
-  `Reply: Bob` header, excerpt body), Escape cancels, send keeps the
-  `sendButton` objectName; an incoming message with a quote reference shows
-  `message-quote-<id>` with the measured frame, clicking it sets
-  `controller.anchorMessageId` and surfaces `messageHighlight-<origin>`.
+- `native-native-window`: `replyBannerAndQuoteJumpUseTheComposer` — reply from
+  a peer message shows `replyNotice` (composer-surface frame: 2 px accent bar,
+  12/16 px accent `Reply: <author>` header, 14/20 px two-line excerpt body),
+  Escape cancels, send keeps the `sendButton` objectName; an incoming message
+  with a quote reference shows `message-quote-<id>` with the measured frame,
+  clicking it sets `controller.anchorMessageId` and surfaces
+  `messageHighlight-<origin>`; a quote-only message keeps an empty answer body.
 - `native-native-locale`: catalog guard covers the new strings.
+
+## Quote freshness and retries (review round on PR #119)
+
+- An authoritative server miss caches `unavailable`. A transport failure keeps the
+  reference loader's `stale` semantics (`messenger-quote-loader.lib.ts`): the lookup
+  stays retriable, backed off for 3 s and retried on the next projection, so a
+  recovered connection resolves the frame instead of freezing it.
+- A confirmed payload mutation (`verifyMutation`) propagates the new content into
+  cached quote previews that reference the message, so an edit made in one
+  conversation refreshes frames in every other conversation.
+- A confirmed deletion removes the cached quote record; the next re-resolution lands
+  on `unavailable`, mirroring the reference `removeUnavailableQuoteMessage`, which
+  also purges the durable cache entry on an authoritative miss.
+- Revocation of an origin without deletion has no client-visible signal in the
+  reference either (a resolved quote body lives in the message store until the
+  account resets); neither client revalidates a resolved quote before display.
+- Lookup demand is data-driven and deduplicated: at most one request per id per
+  projection, one per unresolved id appearing in loaded windows - the same shape as
+  the reference `inFlightQuoteMessageLoads` map, which likewise carries no cap.

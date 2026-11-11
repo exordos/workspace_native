@@ -9073,6 +9073,7 @@ void NativeController::openMessageInChat(const QString &id)
 void NativeController::scheduleQuoteFetch(const QString &id) const
 {
     if (m_quotes.contains(id) || m_quoteInFlight.contains(id)) return;
+    if (m_quoteRetryAfter.value(id, 0) > QDateTime::currentMSecsSinceEpoch()) return;
     m_quoteInFlight.insert(id);
     auto *self = const_cast<NativeController *>(this);
     QMetaObject::invokeMethod(self, [self, id] {
@@ -9080,6 +9081,15 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
         self->request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", id}},
             [self, id](const ApiResult &result) {
             self->m_quoteInFlight.remove(id);
+            if (!result.ok()) {
+                // A transport failure is not an authoritative miss: keep the lookup
+                // retriable with a short backoff (messenger-quote-loader.lib.ts keeps
+                // "stale" distinct from "unavailable"), matching the design doc.
+                self->m_quoteRetryAfter.insert(id, QDateTime::currentMSecsSinceEpoch() + 3000);
+                emit self->messagesChanged();
+                return;
+            }
+            self->m_quoteRetryAfter.remove(id);
             QuoteRecord record;
             const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
             const auto parsed = rows.isEmpty() ? std::optional<Message>{}
@@ -9378,6 +9388,12 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                 if (field == NativeCache::Projection::Payload) {
                     updated.kind = message->kind;
                     updated.content = message->content;
+                    // Confirmed payload edits flow into cached quote previews that
+                    // reference this message from other conversations (review #119).
+                    if (auto quoteIt = m_quotes.find(id); quoteIt != m_quotes.end() && !quoteIt->missing) {
+                        quoteIt->content = message->content;
+                        quoteIt->authorId = message->author;
+                    }
                     auto &state = m_messageFields[id];
                     state.payloadHash = QCryptographicHash::hash(
                         QJsonDocument(result.data.toObject().value("payload").toObject())
@@ -9576,6 +9592,9 @@ void NativeController::deleteMessage(const QString &id)
         ++m_messageRevision;
         m_messages.erase(std::remove_if(m_messages.begin(), m_messages.end(),
             [&id](const Message &candidate) { return candidate.uuid == id; }), m_messages.end());
+        // A deleted origin must not keep rendering from the quote cache; the next
+        // projection re-resolves and lands on "unavailable" (review #119).
+        m_quotes.remove(id);
         emit messagesChanged();
         emit stateChanged();
     });

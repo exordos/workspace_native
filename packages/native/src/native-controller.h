@@ -906,6 +906,9 @@ private:
     QString m_replyMessage, m_replyRoute;
     struct QuoteRecord { QString authorId, content; bool missing = false; };
     mutable QHash<QString, QuoteRecord> m_quotes;
+    // Transport failures stay retriable (reference loader keeps "stale" out of
+    // the resolved store); value = earliest epoch-ms to re-issue the lookup.
+    mutable QHash<QString, qint64> m_quoteRetryAfter;
     mutable QSet<QString> m_quoteInFlight;
     QPointer<NativeDrafts> m_draftStore;
     QString m_draftOwner;

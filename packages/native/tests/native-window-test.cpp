@@ -10921,6 +10921,8 @@ mv -Tf "$root/.current-new" "$root/current"
         origin["is_own"] = false;
         const QString quotedId = "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a";
         const auto quoted = message(QString("[Peer](urn:quote:%1)\n\nanswer body").arg(messageId), quotedId);
+        const QString quoteOnlyId = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c";
+        const auto quoteOnly = message(QString("[Peer](urn:quote:%1)").arg(messageId), quoteOnlyId);
         QJsonObject posted; int posts = 0;
         fixture.server.handler = [&, fallback](const Request &request) -> Response {
             const auto path = request.target.path();
@@ -10929,7 +10931,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 return {message(posted.value("payload").toObject().value("content").toString(), returnedId), 201};
             }
             if (request.method == "GET" && path.endsWith("/messages/"))
-                return {QJsonArray{origin, quoted}};
+                return {QJsonArray{origin, quoted, quoteOnly}};
             if (request.method == "GET" && path.endsWith("/" + returnedId))
                 return {message(posted.value("payload").toObject().value("content").toString(), returnedId)};
             return fallback(request);
@@ -10949,7 +10951,7 @@ mv -Tf "$root/.current-new" "$root/current"
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
-        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_COMPARE(controller.messages().size(), 3);
         auto *content = window->contentItem();
         auto *composer = item(content, "messageComposer"); QVERIFY(composer);
         auto *shell = item(content, "messageComposerShell"); QVERIFY(shell);
@@ -11016,6 +11018,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), messageId, 3000);
         auto *highlight = item(content, "messageHighlight-" + messageId);
         QTRY_VERIFY(highlight && highlight->isVisible());
+
+        // A quote-only message shows the frame alone: the body never re-renders
+        // the raw anchor the frame already consumed.
+        auto *bareBody = item(content, "message-content-" + quoteOnlyId); QVERIFY(bareBody);
+        QVERIFY2(!bareBody->property("text").toString().contains("urn:quote"),
+                 qPrintable(bareBody->property("text").toString()));
+        QTRY_VERIFY(item(content, "message-quote-" + quoteOnlyId)->isVisible());
     }
 };
 
