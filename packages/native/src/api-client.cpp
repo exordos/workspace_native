@@ -414,6 +414,7 @@ void ApiClient::finish(QNetworkReply *reply)
     m_requestReplies.remove(pending->serial);
     ApiResult result;
     result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    result.retryAfterSeconds = reply->rawHeader("Retry-After").toInt();
     if (pending->callerCancelled) {
         result.status = 0;
         result.error = ApiClient::tr("Request cancelled.");
@@ -434,6 +435,7 @@ void ApiClient::finish(QNetworkReply *reply)
         } else if (result.status == 0 || (reply->error() != QNetworkReply::NoError
                                          && result.status >= 200 && result.status < 300)) {
             result.error = ApiClient::tr("Network request failed.");
+            result.transportFailed = true;
         } else {
             const auto response = pending->response.trimmed();
             if (!response.isEmpty()) {

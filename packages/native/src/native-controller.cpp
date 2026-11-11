@@ -5256,6 +5256,23 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // Issue #146: a failed bootstrap stays announced until the next snapshot
+    // completes (reference layout-bootstrap-error-banner), and the rate-limit
+    // countdown ticks so the banner label counts down in place.
+    connect(this, &NativeController::snapshotFailed, this, [this] {
+        if (!m_bootstrapError) { m_bootstrapError = true; emit stateChanged(); }
+    });
+    connect(this, &NativeController::snapshotReloaded, this, [this] {
+        if (m_bootstrapError) { m_bootstrapError = false; emit stateChanged(); }
+    });
+    m_connectionCountdown.setInterval(1000);
+    connect(&m_connectionCountdown, &QTimer::timeout, this, [this] {
+        if (m_rateLimitedUntilMs <= QDateTime::currentMSecsSinceEpoch()) {
+            m_rateLimitedUntilMs = 0;
+            m_connectionCountdown.stop();
+        }
+        emit stateChanged();
+    });
     m_notifications.setParent(this);
     // A notification click navigates to the conversation it reported, exactly
     // like the reference click route (layout-workspace-notifications.hook.ts).
@@ -5687,8 +5704,10 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
     return m_api->request(method, path, body, query, [self, owner, callback](const ApiResult &result) {
-        if (self && self->m_api->generation() == owner)
+        if (self && self->m_api->generation() == owner) {
+            self->observeTransport(result);
             callback(result);
+        }
     });
 }
 
@@ -6044,6 +6063,11 @@ void NativeController::reset()
     m_before.clear();
     m_after.clear();
     m_error.clear();
+    // Sign-out must not keep a banner alive across accounts (#146).
+    m_bootstrapError = false;
+    m_transportOffline = false;
+    m_rateLimitedUntilMs = 0;
+    m_connectionCountdown.stop();
     m_loading = m_sending = m_busy = false;
     m_topicChanging = false;
     ++m_topicMutation;
@@ -7804,6 +7828,63 @@ void NativeController::refresh()
         return;
     }
     reloadSnapshot();
+}
+
+void NativeController::retryBootstrap()
+{
+    // The reference Retry re-runs messenger bootstrap (bootstrapRetryNonce);
+    // reloadSnapshot is the same path the realtime snapshot recovery uses.
+    reloadSnapshot();
+}
+
+void NativeController::observeTransport(const ApiResult &result)
+{
+    bool changed = false;
+    if (result.transportFailed) {
+        if (!m_transportOffline) { m_transportOffline = true; changed = true; }
+    } else if (result.status > 0) {
+        // Any HTTP response proves the server is reachable again.
+        if (m_transportOffline) { m_transportOffline = false; changed = true; }
+        if (result.status == 429) {
+            // The reference keeps the rate-limit countdown running until it
+            // expires (connection-health retryAfterMs); a fresh 429 extends it.
+            const auto seconds = result.retryAfterSeconds > 0 ? result.retryAfterSeconds : 30;
+            m_rateLimitedUntilMs = QDateTime::currentMSecsSinceEpoch() + qint64(seconds) * 1000;
+            if (!m_connectionCountdown.isActive()) m_connectionCountdown.start();
+            changed = true;
+        }
+    }
+    if (changed)
+        emit stateChanged();
+}
+
+QString NativeController::connectionPhase() const
+{
+    // Reference priority (layout-connection-banner.lib.ts:8-40): offline >
+    // rate limit countdown > reconnecting > degraded.
+    if (m_transportOffline)
+        return QStringLiteral("offline");
+    if (m_rateLimitedUntilMs > QDateTime::currentMSecsSinceEpoch())
+        return QStringLiteral("rate_limited");
+    if (m_syncState == QLatin1String("connecting") || m_syncState == QLatin1String("catching_up")
+        || m_syncState == QLatin1String("retrying") || m_syncState == QLatin1String("waiting_for_session"))
+        return QStringLiteral("reconnecting");
+    if (m_syncState == QLatin1String("invalid_data") || m_syncState == QLatin1String("snapshot_required"))
+        return QStringLiteral("degraded");
+    return QStringLiteral("online");
+}
+
+QString NativeController::connectionSeverity() const
+{
+    // Critical for offline/blocked kinds, warning for everything else.
+    return connectionPhase() == QLatin1String("offline")
+        ? QStringLiteral("critical") : QStringLiteral("warning");
+}
+
+int NativeController::connectionRetryInSeconds() const
+{
+    const auto remaining = m_rateLimitedUntilMs - QDateTime::currentMSecsSinceEpoch();
+    return remaining > 0 ? int((remaining + 999) / 1000) : 0;
 }
 
 void NativeController::reloadSnapshot()
