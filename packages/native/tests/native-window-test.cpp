@@ -11181,6 +11181,88 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
+    void mediaViewerBackdropClickClosesWhileSlotLoadsAndStaysOpenWhenReady()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QByteArray png = avatarProbePng(false);
+        bool holdFirstDownload = true;
+        std::function<void()> releaseDownload;
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    if (holdFirstDownload) {
+                        holdFirstDownload = false;
+                        result.defer = [&](std::function<void()> send) { releaseDownload = std::move(send); };
+                    }
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("loading-slot.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, &releaseDownload, guard = QPointer<QQuickWindow>(window)] {
+            if (releaseDownload) releaseDownload();
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Loading-slot viewer window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        QVERIFY(releaseDownload);
+        // Review reproduction (exo-review finding=4 follow-up): while the slot
+        // is still loading there is no reference media element to click, so a
+        // click in the media area is a backdrop click and must close the
+        // viewer, exactly like the reference placeholder markup allows.
+        QVERIFY(!visibleItem(content, "mediaViewer-image"));
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(720, 450));
+        QTRY_VERIFY(!viewer->open());
+        if (releaseDownload) releaseDownload();
+        releaseDownload = nullptr;
+
+        // Once the bytes exist, a click inside the painted image must not close.
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(720, 450));
+        QTest::qWait(150);
+        QVERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
     void mediaViewerSingleImageHidesNavigationAndStrip()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());

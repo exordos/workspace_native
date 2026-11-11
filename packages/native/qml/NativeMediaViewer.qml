@@ -71,9 +71,9 @@ Item {
         MouseArea {
             anchors.fill: mediaImage
             onClicked: (mouse) => {
-                const insidePainted = mediaImage.status !== Image.Ready
-                    || (Math.abs(mouse.x - mediaImage.width / 2) <= mediaImage.paintedWidth / 2 + 1
-                        && Math.abs(mouse.y - mediaImage.height / 2) <= mediaImage.paintedHeight / 2 + 1);
+                const insidePainted = mediaImage.status === Image.Ready
+                    && Math.abs(mouse.x - mediaImage.width / 2) <= mediaImage.paintedWidth / 2 + 1
+                    && Math.abs(mouse.y - mediaImage.height / 2) <= mediaImage.paintedHeight / 2 + 1;
                 if (!insidePainted)
                     viewerRoot.viewer.close();
             }
