@@ -153,6 +153,27 @@ bindings evaluated during polish. Instead:
 A row whose last message cannot be resolved keeps the empty line box, which is exactly the
 reference behaviour for a message the client has not hydrated.
 
+### 2.1 Memo lifecycle across payload changes (issue #116)
+
+A memo entry is derived text for one message payload, so it may not outlive that payload:
+
+- every authoritative payload change routes the memo through it: the confirmed edit
+  verification (`verifyMutation`, Payload field) re-derives the memo from the verified body;
+  `message.created`/`message.updated` live events do the same from the event DTO, and
+  `message.deleted` plus a confirmed `deleteMessage` re-derive it to the quiet tombstone
+  shape (the same negative entry a cold-cache miss stores);
+- each change also bumps a per-uuid revision fence. A hydration body read captures the
+  fence when it starts and discards its result when the fence has moved by completion, so
+  an older disk read that lands after a confirmed change cannot re-memoize the superseded
+  body; the rows pointed at the uuid are re-bound either way. The fence map is bounded by
+  bulk reset (owner sign-out clears it; on overflow it is dropped wholesale, which at worst
+  admits a disk read of the canonical body that the same change projected);
+- negative lookups keep the same lifecycle: a payload change replaces a stale negative memo
+  with the new preview instead of letting the memoized miss suppress it forever.
+
+The re-derived or tombstoned memo notifies the rows that point at the uuid, mirroring the
+pump's post-hydration rule, so a live edit repaints the sidebar row without a snapshot.
+
 ### 3. Ordering
 
 `streams()` sorts by the reference comparator, adapted to the fields the native model has:

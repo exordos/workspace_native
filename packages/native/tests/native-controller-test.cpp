@@ -12903,6 +12903,206 @@ private slots:
         }
     }
 
+private:
+    // --- sidebar preview memo lifecycle (issue #116) ---
+
+    // Shared scene for the cases below: one stream with two topics. The second topic's row
+    // keeps its last-message pointer at `last`, and the message DTO is only ever served to
+    // the second topic's history page: selecting the first topic pushes the message out of
+    // controller.messages() again, so the row projects from the memo cache - exactly the
+    // state where the stale memo bug surfaced.
+    static void previewMemoScene(Fixture &test, const QString &last,
+        const std::function<QJsonObject()> &current,
+        const std::function<void(const QString &)> &applyEdit = {})
+    {
+        const auto topicRow = [](const QString &id, const QString &name, const QJsonValue &pointer) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", name}, {"is_done", false}, {"is_default", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", pointer}, {"updated_at", "2026-01-02T10:00:05Z"}};
+        };
+        test.topics = [topicRow, last](const Request &) {
+            return Response{QJsonArray{topicRow(topicId, "First topic", QJsonValue::Null),
+                topicRow(secondTopicId, "Second topic", QString(last))}};
+        };
+        test.counters = [topicRow, last](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith(secondTopicId))
+                return Response{topicRow(secondTopicId, "Second topic", QString(last))};
+            if (path.endsWith(topicId))
+                return Response{topicRow(topicId, "First topic", QJsonValue::Null)};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}}};
+        };
+        test.messages = [last, current, applyEdit](const Request &request) {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messages/" + last)) {
+                if (applyEdit)
+                    applyEdit(request.body.value("payload").toObject().value("content").toString());
+                return Response{current()};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/" + last))
+                return Response{current()}; // the successful edit's verification GET
+            if (request.method == "DELETE" && path.endsWith("/messages/" + last))
+                return Response{QJsonObject{}, 204};
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId) {
+                QJsonArray rows;
+                rows.append(current());
+                return Response{rows};
+            }
+            return Response{QJsonArray{}}; // the first topic never held the pointer
+        };
+    }
+
+    // Seeded login: the scene is driven the way the multi-stream hydration case drives
+    // it, pausing after the catalogs so the disk body can be stored before any topic row
+    // (the only pointer to the message in this scene) can arm a hydration read. Without
+    // this ordering a negative lookup can settle first and mask the memo being tested.
+    static bool startPreviewSceneWithSeed(NativeController &controller, const QUrl &origin,
+        const std::function<void()> &seed)
+    {
+        controller.login(origin.toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return controller.streams().size() == 1; }, 2000)) return false;
+        seed();
+        controller.selectStream(streamId);
+        if (!QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000)) return false;
+        controller.selectTopic(topicId);
+        return QTest::qWaitFor([&] { return !controller.busy(); }, 2000);
+    }
+
+    static QString previewMemoText(const NativeController &controller, const QString &topic)
+    {
+        for (const auto &entry : controller.topics()) {
+            const auto row = entry.toMap();
+            if (row.value("id").toString() == topic) return row.value("previewText").toString();
+        }
+        return QStringLiteral("<missing topic row>");
+    }
+
+    static void seedPreviewBody(NativeCacheService &cache, const QString &last, const QString &body)
+    {
+        auto diskRow = message(body, last, secondTopicId);
+        diskRow["user_uuid"] = userId; // captured owner, like every real Body write
+        bool stored = false;
+        QVERIFY(cache.putMessageBody(cache.lease(), diskRow, &cache,
+            [&stored](bool okay) { stored = okay; }));
+        QVERIFY(QTest::qWaitFor([&stored] { return stored; }, 2000));
+    }
+
+private slots:
+    // The issue trigger itself: hydrate the memo from disk while the row is unselected,
+    // confirm an edit inside the conversation, then navigate away. The memo must own the
+    // edited body; before #116 the stale disk preview returned once the message left
+    // controller.messages().
+    void sidebarPreviewKeepsConfirmedEditAfterNavigatingAway()
+    {
+        Fixture test;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000c16");
+        const QString disk = QStringLiteral("Memoized disk body");
+        const QString edited = QStringLiteral("Confirmed edited body");
+        auto content = disk;
+        previewMemoScene(test, last, [&] { return message(content, last, secondTopicId); },
+            [&content](const QString &text) { content = text; });
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        QVERIFY(startPreviewSceneWithSeed(test.controller, test.server.origin(),
+            [&] { seedPreviewBody(cache, last, disk); }));
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId) == disk, 5000);
+        test.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!test.controller.messages().isEmpty());
+        test.controller.editMessage(last, edited);
+        QTRY_COMPARE(modelMessage(test.controller, last).value("content").toString(), edited);
+        test.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(test.controller.messages().isEmpty(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId) == edited, 2000);
+        // A superseded disk body may not sneak back into the memo afterwards.
+        QTest::qWait(300);
+        QCOMPARE(previewMemoText(test.controller, secondTopicId), edited);
+    }
+
+    // A live edit for an unselected conversation and a persisted negative lookup share the
+    // memo table: the never-resolved pointer keeps its quiet memo (proven by the late-seeded
+    // disk row below staying suppressed), and the confirmed event payload must replace it.
+    void sidebarPreviewFollowsLiveEditOverNegativeMemo()
+    {
+        Fixture test;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000c17");
+        const QString edited = QStringLiteral("Confirmed live edit");
+        previewMemoScene(test, last, [&] { return message(edited, last, secondTopicId); });
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        QVERIFY(test.start());
+        QTRY_VERIFY(cache.available());
+        // Project the unresolved pointer once so the bounded pump resolves the miss.
+        previewMemoText(test.controller, secondTopicId);
+        QTest::qWait(400);
+        seedPreviewBody(cache, last, QStringLiteral("Late disk body"));
+        QTest::qWait(300);
+        QCOMPARE(previewMemoText(test.controller, secondTopicId), QString()); // negative memo held
+        QVERIFY(test.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            message(edited, last, secondTopicId), 4317)));
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId) == edited, 3000);
+    }
+
+    // A disk read issued while the memo is empty must not land after a live update and
+    // re-memoize its stale body. The fence bumped by the event drops that read; any later
+    // hydration resolves against the canonical row the event projected.
+    void stalePreviewReadCannotOverwriteLiveEdit()
+    {
+        Fixture test;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000c18");
+        const QString disk = QStringLiteral("Stale disk body");
+        const QString edited = QStringLiteral("Confirmed live edit");
+        previewMemoScene(test, last, [&] { return message(edited, last, secondTopicId); });
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        QVERIFY(test.start());
+        QTRY_VERIFY(cache.available());
+        seedPreviewBody(cache, last, disk);
+        // Start a read from the empty memo table, then confirm the live edit while it is
+        // in flight. The row may only settle on the edited body, never the stale disk row.
+        previewMemoText(test.controller, secondTopicId);
+        QTest::qWait(2);
+        QVERIFY(test.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            message(edited, last, secondTopicId), 4318)));
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId) == edited, 3000);
+        QTest::qWait(300);
+        QCOMPARE(previewMemoText(test.controller, secondTopicId), edited);
+    }
+
+    // A confirmed deletion carries the same memo lifecycle: the row keeps its pointer at
+    // the deleted uuid, so the memo must go quiet right away - a deleted body may not keep
+    // rendering from the memo, and re-hydration may not resurrect it while it rests on disk.
+    void sidebarPreviewQuietsAfterConfirmedDelete()
+    {
+        Fixture test;
+        const auto last = QStringLiteral("88888888-8888-4888-8888-000000000c19");
+        const QString disk = QStringLiteral("Deleted disk body");
+        previewMemoScene(test, last, [&] { return message(disk, last, secondTopicId); });
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        QVERIFY(startPreviewSceneWithSeed(test.controller, test.server.origin(),
+            [&] { seedPreviewBody(cache, last, disk); }));
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId) == disk, 5000);
+        test.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!test.controller.messages().isEmpty());
+        test.controller.deleteMessage(last);
+        QTRY_VERIFY_WITH_TIMEOUT(test.controller.messages().isEmpty(), 2000);
+        test.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(test.controller.messages().isEmpty(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(previewMemoText(test.controller, secondTopicId).isEmpty(), 2000);
+        QTest::qWait(400);
+        QCOMPARE(previewMemoText(test.controller, secondTopicId), QString());
+    }
+
     // --- media viewer (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md) ---
 
     void mediaViewerGalleryCollectsImageSlotsAndRejectsUnknownFile()

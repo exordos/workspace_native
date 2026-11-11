@@ -859,12 +859,20 @@ private:
     void scheduleRowPreviewHydration() const;
     void pumpRowPreviewHydration();
     void announceStreamRowPreviews(const QVector<Message> &rows);
+    // Issue #116: a memo preview must not outlive the payload it was derived from. The
+    // authoritative payload paths (confirmed edit verification, live message events and
+    // deletions) route through these so the memo tracks the payload and stale in-flight
+    // disk reads cannot resurrect an older body.
+    void refreshRowPreviewFromPayload(const Message &message);
+    void markRowPreviewDeleted(const QString &uuid);
+    void announceRowPreviewRows(const QString &uuid);
+    quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
     int streamGroupRank(const Stream &stream) const;
     QVariantMap rowPreviewFields(const QString &lastMessage) const;
     // Bounded cache warm for row previews (docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2):
-    // the projection is const and memoizes misses here; only the pump and the sign-out reset
-    // mutate these fields, always on the GUI thread.
+    // the projection is const and memoizes misses here; only the pump, the payload-change
+    // paths and the sign-out reset mutate these fields, always on the GUI thread.
     static constexpr int rowPreviewCacheLimit = 512;
     static constexpr int rowPreviewHydrationBatch = 8;
     mutable QHash<QString, RowPreview> m_rowPreviews;
@@ -872,6 +880,15 @@ private:
     mutable QSet<QString> m_rowPreviewPending;
     mutable QSet<QString> m_rowPreviewInFlight;
     mutable bool m_rowPreviewPumpQueued = false;
+    // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
+    // verification, live update, deletion). A hydration read captures the revision when it
+    // starts and discards its body when the revision has moved by completion, so an older
+    // disk read can never overwrite the memo a newer payload already wrote. The map is only
+    // live for the duration of a read; it is cleared on owner reset and wholesale on
+    // overflow, and a lost fence only lets a disk read through, which projects the same
+    // canonical body the payload path wrote.
+    QHash<QString, quint64> m_rowPreviewFence;
+    quint64 m_nextRowPreviewFence = 0;
     QString userAvatar(const QString &id) const;
     QString userPresence(const QString &id) const;
     QString userStatusLabel(const QString &id) const;

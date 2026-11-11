@@ -6023,6 +6023,8 @@ void NativeController::reset()
     m_rowPreviewOrder.clear();
     m_rowPreviewPending.clear();
     m_rowPreviewInFlight.clear();
+    m_rowPreviewFence.clear();
+    m_nextRowPreviewFence = 0;
     m_viewerDirectoryName.clear();
     m_viewerDirectoryOwner.clear();
     m_channelChoices.clear();
@@ -6198,6 +6200,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 emit messagesChanged();
             }
             if (!current()) return true;
+            // Issue #116: a background (or in-place) edit/update moves the payload the memo
+            // may have been derived from; a live tombstone ends it. Same lifecycle as the
+            // confirmed edit verification and deleteMessage paths.
+            if (deleted) markRowPreviewDeleted(message->uuid);
+            else refreshRowPreviewFromPayload(*message);
         }
     } else if (kind == "message_reaction.created" || kind == "message_reaction.updated" || kind == "message_reaction.deleted") {
         const auto source = payload.value("source_name").toString();
@@ -9145,6 +9152,53 @@ void NativeController::storeRowPreview(const QString &uuid, const std::optional<
         m_rowPreviews.remove(m_rowPreviewOrder.dequeue());
 }
 
+quint64 NativeController::bumpRowPreviewFence(const QString &uuid)
+{
+    // Issue #116: every authoritative payload change invalidates previews derived from its
+    // predecessor. The fence only needs to outlive an in-flight hydration read, so the map is
+    // bounded by bulk reset instead of per-entry eviction: dropping old fences lets at most a
+    // disk read through, and the disk row is written by the same canonical projections that
+    // moved the payload, so it carries the new body.
+    if (!m_rowPreviewFence.contains(uuid)
+        && m_rowPreviewFence.size() >= rowPreviewCacheLimit * 4)
+        m_rowPreviewFence.clear();
+    return m_rowPreviewFence[uuid] = ++m_nextRowPreviewFence;
+}
+
+void NativeController::refreshRowPreviewFromPayload(const Message &message)
+{
+    // Issue #116: a confirmed or live payload change owns the memo the sidebar row may
+    // already hold for this uuid: without this the memo keeps the pre-change body and shows
+    // it again as soon as the message leaves m_messages (navigate away from the edited
+    // conversation). Bumping the fence also discards hydration reads started before the
+    // change, so an older disk body cannot land after this update and re-memoize itself.
+    bumpRowPreviewFence(message.uuid);
+    if (m_rowPreviews.contains(message.uuid))
+        storeRowPreview(message.uuid, rowPreviewOf(message));
+    announceRowPreviewRows(message.uuid);
+}
+
+void NativeController::markRowPreviewDeleted(const QString &uuid)
+{
+    // Issue #116: a deletion removes the payload behind the memo too. Re-derive from the
+    // tombstone: a quiet (negative) preview, the same shape a cold-cache negative lookup
+    // stores, while the fence drops in-flight reads of the now-deleted body.
+    bumpRowPreviewFence(uuid);
+    if (m_rowPreviews.contains(uuid))
+        storeRowPreview(uuid, RowPreview{});
+    announceRowPreviewRows(uuid);
+}
+
+void NativeController::announceRowPreviewRows(const QString &uuid)
+{
+    // Mirror of the hydration pump's notification rule: a row whose last-message pointer
+    // references this uuid re-binds when its memo changes shape.
+    for (const auto &stream : m_streams)
+        if (stream.lastMessage == uuid) { emit streamsChanged(); emit topicsChanged(); return; }
+    for (const auto &topic : m_topics)
+        if (topic.lastMessage == uuid) { emit streamsChanged(); emit topicsChanged(); return; }
+}
+
 void NativeController::scheduleRowPreviewHydration() const
 {
     if (m_rowPreviewPumpQueued) return;
@@ -9176,16 +9230,25 @@ void NativeController::pumpRowPreviewHydration()
         m_rowPreviewInFlight.insert(uuid);
         ++started;
         const QPointer<NativeController> guard(this);
-        cache->getMessageBody(lease, uuid, this, [this, guard, uuid, owner](std::optional<NativeCache::MessageBody> body) {
+        // Issue #116: the read fence moves whenever the authoritative payload changes; a
+        // body read that started before the move is older than the payload path's memo.
+        const auto fence = m_rowPreviewFence.value(uuid);
+        cache->getMessageBody(lease, uuid, this, [this, guard, uuid, owner, fence](std::optional<NativeCache::MessageBody> body) {
             if (!guard) return;
             m_rowPreviewInFlight.remove(uuid);
             // A body that answers after the session or its owner changed belongs to nobody.
             if (!authenticated() || creationOwnerKey() != owner) return;
-            const auto parsed = body ? parseMessage(body->row, m_session->project()) : std::nullopt;
-            if (parsed && parsed->uuid == uuid)
+            if (m_rowPreviewFence.value(uuid) != fence) {
+                // Issue #116: the payload moved while this body was in flight, so the memo
+                // already belongs to the newer payload (or the message is deleted). Storing
+                // this stale body would resurrect the superseded preview; notify the rows
+                // only, so they re-project from the fresh memo.
+            } else if (const auto parsed = body ? parseMessage(body->row, m_session->project()) : std::nullopt;
+                       parsed && parsed->uuid == uuid) {
                 storeRowPreview(uuid, rowPreviewOf(*parsed));
-            else
+            } else {
                 storeRowPreview(uuid, RowPreview{}); // negative lookup: projections stay quiet
+            }
             bool affectsRow = false;
             for (const auto &stream : m_streams)
                 if (stream.lastMessage == uuid) { affectsRow = true; break; }
@@ -9599,6 +9662,10 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                             .toJson(QJsonDocument::Compact),
                         QCryptographicHash::Sha256);
                     state.payload = ++m_nextMessageField;
+                    // Issue #116: the verified body owns the memoized row preview too.
+                    // Without this the sidebar keeps showing the pre-edit body as soon as
+                    // the message leaves m_messages after navigating away.
+                    refreshRowPreviewFromPayload(updated);
                 } else {
                     updated.starred = message->starred;
                     m_messageFields[id].starred = message->starred;
@@ -9820,6 +9887,9 @@ void NativeController::deleteMessage(const QString &id)
         // A deleted origin must not keep rendering from the quote cache; the next
         // projection re-resolves and lands on "unavailable" (review #119).
         m_quotes.remove(id);
+        // Issue #116: the preview memo gets the same lifecycle as the quote cache: a row
+        // still pointing at this uuid must not keep rendering the deleted body.
+        if (m_rowPreviews.contains(id)) markRowPreviewDeleted(id);
         emit messagesChanged();
         emit stateChanged();
     });
