@@ -11865,6 +11865,76 @@ private slots:
         QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
             qPrintable(row.value("previewText").toString()));
     }
+
+    // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2: a row whose last message the client
+    // does not hold in memory is filled asynchronously from the disk cache by the bounded
+    // pump, and the projection re-emits once the body resolves. This is the same best-effort
+    // rule the reference applies to messages it has not hydrated.
+    void sidebarPreviewsHydrateFromTheCacheAsynchronously()
+    {
+        Fixture test;
+        const auto hidden = QStringLiteral("88888888-8888-4888-8888-000000000b00");
+        const auto second = QStringLiteral("33333333-3333-4333-8333-666666666666");
+        const auto streamRow = [](const QString &uuid, const QString &name, const QJsonValue &last) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{streamRow(streamId, "Native channel", QJsonValue::Null),
+                    streamRow(second, "Cached channel", QString(hidden))}};
+            return Response{streamRow(streamId, "Native channel", QJsonValue::Null)};
+        };
+        // The hidden message is never served to client memory: only the cache holds it.
+        test.messages = [](const Request &) { return Response{QJsonArray{}}; };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        // The scene has two streams, so the single-stream start() helper does not apply;
+        // the login flow is driven the way the multi-stream order case drives it.
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QTRY_COMPARE(test.controller.streams().size(), 2);
+        auto cached = message("Cached preview body", hidden);
+        // The body row belongs to the captured owner, like every real Body write.
+        cached["user_uuid"] = userId;
+        bool stored = false;
+        QVERIFY(cache.putMessageBody(cache.lease(), cached, &cache, [&stored](bool okay) { stored = okay; }));
+        QVERIFY(QTest::qWaitFor([&stored] { return stored; }, 2000));
+        // The first projections ran before the body existed, so the pump must resolve the
+        // pointer through the cache and re-emit the row without another snapshot.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &entry : test.controller.streams()) {
+                const auto row = entry.toMap();
+                if (row.value("id").toString() == second)
+                    return row.value("previewText").toString() == QStringLiteral("Cached preview body")
+                        && !row.value("rowTime").toString().isEmpty();
+            }
+            return false;
+        })(), 5000);
+        // A message the cache also lacks keeps the empty preview line instead of a spinner
+        // or a stale value; the negative lookup is remembered, so projections stay silent.
+        const auto unknown = QStringLiteral("88888888-8888-4888-8888-000000000b99");
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{streamRow(streamId, "Native channel", QJsonValue::Null),
+                    streamRow(second, "Cached channel", QString(hidden)),
+                    streamRow(unknown, "Unknown channel", QStringLiteral("99999999-9999-4999-8999-999999999999"))}};
+            return Response{streamRow(streamId, "Native channel", QJsonValue::Null)};
+        };
+        test.controller.refresh();
+        QTRY_COMPARE(test.controller.streams().size(), 3);
+        for (const auto &entry : test.controller.streams()) {
+            const auto row = entry.toMap();
+            if (row.value("id").toString() == unknown) {
+                QCOMPARE(row.value("previewText").toString(), QString());
+                QCOMPARE(row.value("rowTime").toString(), QString());
+            }
+        }
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

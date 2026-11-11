@@ -804,15 +804,31 @@ private:
     QString userDisplayName(const QString &id, const QString &fallback = {}) const;
     // Sidebar row previews, docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md.
     struct RowPreview {
-        QString sender, text;
+        QString text;
+        QString author;
+        bool own = false;
         bool locked = false;
         QDateTime created;
     };
     std::optional<RowPreview> rowPreview(const QString &uuid) const;
     std::optional<RowPreview> rowPreviewOf(const Message &message) const;
+    void storeRowPreview(const QString &uuid, const std::optional<RowPreview> &preview) const;
+    void scheduleRowPreviewHydration() const;
+    void pumpRowPreviewHydration();
+    void announceStreamRowPreviews(const QVector<Message> &rows);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
     int streamGroupRank(const Stream &stream) const;
     QVariantMap rowPreviewFields(const QString &lastMessage) const;
+    // Bounded cache warm for row previews (docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2):
+    // the projection is const and memoizes misses here; only the pump and the sign-out reset
+    // mutate these fields, always on the GUI thread.
+    static constexpr int rowPreviewCacheLimit = 512;
+    static constexpr int rowPreviewHydrationBatch = 8;
+    mutable QHash<QString, RowPreview> m_rowPreviews;
+    mutable QQueue<QString> m_rowPreviewOrder;
+    mutable QSet<QString> m_rowPreviewPending;
+    mutable QSet<QString> m_rowPreviewInFlight;
+    mutable bool m_rowPreviewPumpQueued = false;
     QString userAvatar(const QString &id) const;
     QString userPresence(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
