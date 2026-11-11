@@ -13224,6 +13224,40 @@ private slots:
         QCOMPARE(fixture.controller.connectionSeverity(), QString("critical"));
         held.clear(); // never released: teardown aborts the pending requests
     }
+
+    // exo-review finding 2: a later 429 with a shorter Retry-After must not
+    // shorten an already announced rate-limit countdown.
+    void overlayBannerRateLimitKeepsTheLaterRetryDeadline()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        const auto base = fixture.server.handler;
+        auto limitedFor = [base](const QString &seconds) {
+            return [base, seconds](const Request &request) {
+                if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                    Response limited{QJsonArray{}, 429};
+                    limited.headers.insert("Retry-After", seconds.toLatin1());
+                    return limited;
+                }
+                return base(request);
+            };
+        };
+        fixture.server.handler = limitedFor("60");
+        fixture.controller.refresh();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("rate_limited"));
+        const auto announced = fixture.controller.connectionRetryInSeconds();
+        QVERIFY2(announced > 50, qPrintable(QString::number(announced)));
+        // A racing response with a shorter Retry-After arrives afterwards.
+        QSignalSpy snapshotFailed(&fixture.controller, &NativeController::snapshotFailed);
+        QVERIFY(snapshotFailed.isValid());
+        fixture.server.handler = limitedFor("5");
+        fixture.controller.refresh();
+        // The callback that fails the snapshot runs after the transport
+        // observer has already seen this second 429.
+        QVERIFY(snapshotFailed.wait(5000));
+        const auto remaining = fixture.controller.connectionRetryInSeconds();
+        QVERIFY2(remaining > 30 && remaining <= announced, qPrintable(QString::number(remaining)));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

@@ -7847,9 +7847,13 @@ void NativeController::observeTransport(const ApiResult &result)
         if (m_transportOffline) { m_transportOffline = false; changed = true; }
         if (result.status == 429) {
             // The reference keeps the rate-limit countdown running until it
-            // expires (connection-health retryAfterMs); a fresh 429 extends it.
+            // expires (connection-health retryAfterMs); a fresh 429 extends
+            // it but never shortens it: a racing response with a smaller
+            // Retry-After must not clear the banner before the deadline of
+            // the earlier 429 expires.
             const auto seconds = result.retryAfterSeconds > 0 ? result.retryAfterSeconds : 30;
-            m_rateLimitedUntilMs = QDateTime::currentMSecsSinceEpoch() + qint64(seconds) * 1000;
+            const auto nextDeadline = QDateTime::currentMSecsSinceEpoch() + qint64(seconds) * 1000;
+            m_rateLimitedUntilMs = qMax(m_rateLimitedUntilMs, nextDeadline);
             if (!m_connectionCountdown.isActive()) m_connectionCountdown.start();
             changed = true;
         }
