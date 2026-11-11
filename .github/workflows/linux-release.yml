@@ -11,6 +11,13 @@ on:
     branches: [master]
     tags:
       - "[0-9]*"
+  pull_request:
+    branches: [master]
+
+# Superseded PR runs are cancelled; push/tag runs always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -108,7 +115,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib
 
       - name: Build
-        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test native-updater-http2-recovery-driver native-updater-http2-controls-driver api-client-test domain-test native-draft-store-test native-draft-service-test native-drafts-test native-draft-sync-test --parallel 3
+        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test native-updater-http2-recovery-driver native-updater-http2-controls-driver api-client-test domain-test native-draft-store-test native-draft-service-test native-drafts-test native-draft-sync-test --parallel "$(nproc)"
 
       - name: Check owned draft storage and conditional HTTP metadata
         run: ctest --test-dir build/linux-release -R '^native-(api-client|domain|native-draft-(store|service|sync)|native-drafts)$' --output-on-failure
@@ -159,6 +166,7 @@ jobs:
             --probe "${GITHUB_WORKSPACE}/build/linux-release/native-runtime-probe"
 
       - name: Upload Linux packages for review
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: workspace-native-linux-${{ github.sha }}
