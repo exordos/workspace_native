@@ -8361,6 +8361,139 @@ private slots:
         QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
     }
 
+    void inlineEditSessionKeepsTheStoredDraftAndClosesOnAConfirmedSave()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        int edits = 0, sends = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") { ++edits; newer["payload"] = request.body.value("payload"); return {newer}; }
+            if (request.method == "POST") { ++sends; return {message("racing send", returnedId), 201}; }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("half-written note");
+        QTRY_COMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+
+        // A Source edit session loads the message body into the composer and never touches
+        // the stored draft (message-composer-draft.hook.ts never calls onValueChange while editing).
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QCOMPARE(fixture.controller.draft(), QString("Second message"));
+        QVERIFY(fixture.controller.canSaveEdit());
+        QVERIFY(!fixture.controller.canSend());
+        QCOMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+
+        // Typing inside the session rewrites only the edit buffer.
+        fixture.controller.setDraft("Second message, edited");
+        QCOMPARE(fixture.controller.draft(), QString("Second message, edited"));
+        QTest::qWait(200);
+        QCOMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+
+        // A blank buffer cannot be saved (reference: send disabled when value.trim() is empty).
+        fixture.controller.setDraft("   ");
+        QVERIFY(!fixture.controller.canSaveEdit());
+        fixture.controller.submitEditMessage();
+        QTest::qWait(200);
+        QCOMPARE(edits, 0);
+        QVERIFY(fixture.controller.editingMessageId() == returnedId);
+        fixture.controller.setDraft("Second message, edited");
+
+        // Sending a new message while a session is open is refused.
+        fixture.controller.send();
+        QTest::qWait(200);
+        QCOMPARE(sends, 0);
+
+        // A confirmed server result closes the session and the stored draft returns.
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 1);
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(),
+                     QString("Second message, edited"));
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("half-written note"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("half-written note"));
+        QVERIFY(!fixture.controller.canSaveEdit());
+        QVERIFY(fixture.controller.canSend());
+    }
+
+    void inlineEditCancelFailureAndRouteChangePreserveTheStoredDraft()
+    {
+        QTemporaryDir draftDirectory;
+        NativeDraftService draftStorage(draftDirectory.path()); NativeDrafts drafts(&draftStorage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts); fixture.extraTopic = true;
+        auto older = message("First message", messageId);
+        auto newer = message("Second message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        int edits = 0; bool failing = false;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId
+                    ? QJsonArray{older, newer} : QJsonArray{}};
+            if (request.method == "PUT") {
+                if (failing) return {QJsonObject{{"detail", "nope"}}, 500};
+                ++edits; newer["payload"] = request.body.value("payload"); return {newer};
+            }
+            return {path.endsWith(messageId) ? older : newer};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("work in progress");
+        QTRY_COMPARE(drafts.text(streamId, topicId), QString("work in progress"));
+
+        // Cancelling restores the pre-edit draft and stores nothing.
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, half typed");
+        fixture.controller.cancelEditMessage();
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("work in progress"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("work in progress"));
+        QCOMPARE(edits, 0);
+
+        // A failed save keeps the session and the typed text open with an error.
+        failing = true;
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft("Second message, retry soon");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(!fixture.controller.error().isEmpty());
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QCOMPARE(fixture.controller.draft(), QString("Second message, retry soon"));
+        fixture.controller.cancelEditMessage();
+        QCOMPARE(fixture.controller.draft(), QString("work in progress"));
+
+        // Leaving the conversation ends the session (reference clears the edit session on route change).
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.selectTopic(secondTopicId);
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QVERIFY(!fixture.controller.canSaveEdit());
+
+        // Up-to-edit-last picks the newest own markdown message.
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(!fixture.controller.busy());
+        fixture.controller.editLastMessage();
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        fixture.controller.cancelEditMessage();
+
+        // A message that cannot be edited reports instead of starting a session.
+        fixture.controller.beginEditMessage("00000000-0000-4000-8000-000000000000");
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QVERIFY(!fixture.controller.error().isEmpty());
+        const QString refusal = fixture.controller.error();
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!fixture.controller.busy());
+        fixture.controller.editLastMessage();
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.error(), refusal);
+    }
+
     void attachmentUploadKeepsItsConversationAndEscapesMarkdown()
     {
         QTemporaryDir draftDirectory;

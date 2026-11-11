@@ -913,7 +913,6 @@ ApplicationWindow {
                 reopenTopicMenu.close();
             if (root.menuOwner !== root.controller.ownerKey || root.menuStream !== root.controller.selectedStream || root.menuTopic !== root.controller.selectedTopic) {
                 messageMenu.close();
-                editDialog.close();
                 deleteDialog.close();
             }
             if (!root.reactionPickerAllowed)
@@ -3433,7 +3432,7 @@ ApplicationWindow {
                 property int layoutTicket: 0
                 property bool positioning: false
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !editDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
+                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
                 function routeKey() {
                     return serviceScope();
                 }
@@ -5173,7 +5172,10 @@ ApplicationWindow {
                 objectName: "messageComposerShell"
                 visible: root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed && !root.aggregateConversation
                 Layout.fillWidth: true
+                // Source measured geometry: the composer box plus the 33 px edit notice
+                // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
                 Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
+                    + (editMessageNotice.visible ? editMessageNotice.height : 0)
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -5181,10 +5183,68 @@ ApplicationWindow {
                     height: 1
                     color: root.colors["border-subtle"]
                 }
+                Rectangle {
+                    id: editMessageNotice
+                    objectName: "editMessageNotice"
+                    width: parent.width
+                    height: 33
+                    color: root.colors["composer-outer"]
+                    visible: root.controller.editingMessageId.length > 0
+                    Accessible.role: Accessible.Notification
+                    Accessible.name: editMessageNoticeText.text
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: root.colors["border-subtle"]
+                    }
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 12
+                        Text {
+                            id: editMessageNoticeText
+                            objectName: "editMessageNoticeText"
+                            Layout.fillWidth: true
+                            text: qsTr("Edit message")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            lineHeightMode: Text.FixedHeight
+                            lineHeight: 20
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            color: root.colors["text-primary"]
+                        }
+                        Rectangle {
+                            id: cancelEditNoticeControl
+                            Layout.preferredWidth: Math.max(40, cancelEditNoticeText.implicitWidth + 24)
+                            Layout.preferredHeight: 28
+                            radius: 8
+                            color: cancelEditNoticeArea.containsMouse ? Qt.alpha(root.colors["text-primary"], 0.08) : "transparent"
+                            Text {
+                                id: cancelEditNoticeText
+                                objectName: "cancelEditButton"
+                                anchors.centerIn: parent
+                                text: qsTr("Cancel")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                color: root.colors["text-muted"]
+                            }
+                            MouseArea {
+                                id: cancelEditNoticeArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.controller.cancelEditMessage()
+                            }
+                        }
+                    }
+                }
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: 8
-                    anchors.topMargin: 9
+                    anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
                     spacing: 12
                     Rectangle {
                         Layout.fillWidth: true
@@ -5236,7 +5296,7 @@ ApplicationWindow {
                                     Accessible.name: qsTr("Message")
                                     readonly property bool formattingAllowed: enabled && visible && activeFocus
                                         && root.active && !inputMethodComposing
-                                        && !ownStatusDialog.visible && !editDialog.visible && !deleteDialog.visible
+                                        && !ownStatusDialog.visible && !deleteDialog.visible
                                         && !createTopicDialog.visible && !createChatDialog.visible && !referenceNotice.visible
                                         && !attachmentPicker.visible && !attachmentSaveDialog.visible
                                     function wrapFormatting(marker) {
@@ -5288,12 +5348,40 @@ ApplicationWindow {
                                             event.accepted = true;
                                     }
                                     onContentHeightChanged: if (composerEmojiPicker.visible) root.positionComposerEmojiPicker()
+                                    Connections {
+                                        target: root.controller
+                                        // The edit buffer becomes the composer text and the stored
+                                        // draft returns with the session, so the draft binding is
+                                        // re-established even after direct typing broke it.
+                                        function onEditSessionChanged() {
+                                            composerText.text = Qt.binding(() => root.controller.draft);
+                                            if (root.controller.editingMessageId.length)
+                                                composerText.forceActiveFocus();
+                                        }
+                                    }
                                     Keys.onPressed: event => {
+                                        const editing = root.controller.editingMessageId.length > 0;
                                         if (event.key === Qt.Key_Escape && composerEmojiPicker.visible) {
                                             composerEmojiPicker.close();
                                             event.accepted = true;
-                                        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && root.controller.canSend && !root.controller.busy && !inputMethodComposing) {
-                                            root.controller.send();
+                                        } else if (event.key === Qt.Key_Escape && editing) {
+                                            // Source: Escape leaves the edit mode and is swallowed.
+                                            root.controller.cancelEditMessage();
+                                            event.accepted = true;
+                                        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && !root.controller.busy && !inputMethodComposing) {
+                                            if (editing) {
+                                                if (root.controller.canSaveEdit) {
+                                                    root.controller.submitEditMessage();
+                                                    event.accepted = true;
+                                                }
+                                            } else if (root.controller.canSend) {
+                                                root.controller.send();
+                                                event.accepted = true;
+                                            }
+                                        } else if (event.key === Qt.Key_Up && !(event.modifiers & Qt.ShiftModifier) && !editing
+                                                   && text.trim().length === 0 && root.composerAvailable && !root.controller.busy) {
+                                            // Up-to-edit-last, the Source composer.editLastMessage hotkey.
+                                            root.controller.editLastMessage();
                                             event.accepted = true;
                                         }
                                     }
@@ -5337,22 +5425,31 @@ ApplicationWindow {
                     NativeIconButton {
                         id: sendControl
                         colors: root.colors
-                        objectName: "sendButton"
+                        // The Source reuses the send control as the save control while an
+                        // edit session is open (message-composer.ui.tsx aria-label common.save).
+                        objectName: root.controller.editingMessageId.length ? "saveEditButton" : "sendButton"
                         asset: "composer-send.svg"
-                        help: qsTr("Send message")
+                        help: root.controller.editingMessageId.length ? qsTr("Save") : qsTr("Send message")
                         iconColor: root.colors["on-accent"]
                         implicitWidth: 40
                         implicitHeight: 40
                         glyphSize: 24
                         glyphHeight: 20
-                        enabled: root.composerAvailable && root.controller.canSend && !root.controller.busy
+                        enabled: root.controller.editingMessageId.length
+                            ? root.controller.canSaveEdit && !root.controller.busy
+                            : root.composerAvailable && root.controller.canSend && !root.controller.busy
                         Layout.alignment: Qt.AlignBottom
                         background: Rectangle {
                             radius: 10
                             color: root.colors["composer-send"]
                             opacity: sendControl.enabled ? (sendControl.down ? 0.8 : 1) : 0.5
                         }
-                        onClicked: root.controller.send()
+                        onClicked: {
+                            if (root.controller.editingMessageId.length)
+                                root.controller.submitEditMessage();
+                            else
+                                root.controller.send();
+                        }
                     }
                 }
             }
@@ -7121,10 +7218,7 @@ ApplicationWindow {
             asset: "pen.svg"
             text: qsTr("Edit")
             enabled: visible && root.messageMutationAllowed
-            onTriggered: {
-                editInput.text = root.menuMessageContent;
-                editDialog.open();
-            }
+            onTriggered: root.controller.beginEditMessage(root.menuMessageId)
         }
         MessageMenuAction {
             objectName: "deleteMessageAction"
@@ -7148,35 +7242,6 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: messageMenu.visible && !reactionPicker.visible
         onActivated: messageMenu.focusEdge(true)
-    }
-    Dialog {
-        id: editDialog
-        objectName: "editMessageDialog"
-        anchors.centerIn: parent
-        width: Math.min(root.width - 48, 520)
-        title: qsTr("Edit message")
-        modal: true
-        standardButtons: Dialog.Save | Dialog.Cancel
-        onOpened: {
-            const save = editDialog.standardButton(Dialog.Save);
-            save.objectName = "saveMessageEditButton";
-            save.enabled = Qt.binding(() => root.messageMutationAllowed);
-        }
-        contentItem: ScrollView {
-            implicitHeight: 180
-            TextArea {
-                id: editInput
-                objectName: "editMessageInput"
-                textFormat: TextEdit.PlainText
-                wrapMode: TextEdit.Wrap
-                selectByMouse: true
-                Accessible.name: qsTr("Message text")
-            }
-        }
-        onAccepted: {
-            if (root.messageMutationAllowed)
-                root.controller.editMessage(root.menuMessageId, editInput.text);
-        }
     }
     Dialog {
         id: deleteDialog

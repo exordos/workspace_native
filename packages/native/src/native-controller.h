@@ -95,6 +95,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString selectedStream READ selectedStream NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTopic READ selectedTopic NOTIFY stateChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
+    Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
+    Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
     Q_PROPERTY(bool canCompose READ canCompose NOTIFY stateChanged)
     Q_PROPERTY(bool canSend READ canSend NOTIFY stateChanged)
     Q_PROPERTY(bool canLoadOlder READ canLoadOlder NOTIFY stateChanged)
@@ -301,6 +303,12 @@ public:
     Q_INVOKABLE void starMessage(const QString &id);
     Q_INVOKABLE void deleteMessage(const QString &id);
     Q_INVOKABLE void editMessage(const QString &id, const QString &text);
+    Q_INVOKABLE bool beginEditMessage(const QString &id);
+    Q_INVOKABLE void cancelEditMessage();
+    Q_INVOKABLE void submitEditMessage();
+    Q_INVOKABLE void editLastMessage();
+    QString editingMessageId() const { return m_editingMessage; }
+    bool canSaveEdit() const;
     Q_INVOKABLE void quoteMessage(const QString &id);
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);
@@ -315,6 +323,7 @@ signals:
     void anchorChanged();
     void savedAccountsChanged();
     void draftChanged();
+    void editSessionChanged();
     void streamsChanged();
     void topicsChanged();
     void messagesChanged();
@@ -742,7 +751,15 @@ private:
     void historyPage(bool older, quint64 selection, quint64 revision,
                      std::optional<Message> boundary, QByteArray marker,
                      QVector<Message> accumulated, QSet<QByteArray> seen, int pages = 0, qint64 bytes = 0);
-    void verifyMutation(const QString &id, quint64 selection, NativeCache::Projection field);
+    void verifyMutation(const QString &id, quint64 selection, NativeCache::Projection field,
+                        const std::function<void(bool)> &settled = {});
+    // Inline edit session (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the buffer replaces the
+    // composer draft and the conversation's stored draft is never written while it is open.
+    void submitMessageEdit(const QString &id, const QString &text,
+                           const std::function<void(bool)> &settled);
+    void closeEditSession();
+    void settleEditRouteChange();
+    const Message *editableMessage(const QString &id) const;
     void reset();
     void report(const QString &message);
     void finishSnapshotPart(unsigned part);
@@ -867,6 +884,9 @@ private:
     quint64 m_nextTopicCreation = 0;
     QHash<QString, QString> m_drafts;
     QHash<QString, quint64> m_draftRevisions;
+    // Inline edit session (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the buffer stands in for
+    // the composer draft; m_editRoute is the conversationKey() the session belongs to.
+    QString m_editingMessage, m_editBuffer, m_editRoute;
     QPointer<NativeDrafts> m_draftStore;
     QString m_draftOwner;
     QString m_draftFallbackOwner, m_draftFallbackRoute, m_draftFallback;

@@ -10807,6 +10807,101 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "userInput"));
         window->close();
     }
+    void upToEditLastAndSaveUseTheComposerEditMode()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto older = message("Older own message", messageId);
+        auto newer = message("Newest own message", returnedId);
+        newer["created_at"] = "2026-01-02T10:00:01.000Z";
+        int puts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{older, newer}};
+            if (request.method == "PUT") { ++puts; newer["payload"] = request.body.value("payload"); return {newer}; }
+            if (request.method == "GET" && path.endsWith("/" + returnedId)) return {newer};
+            if (request.method == "GET" && path.endsWith("/" + messageId)) return {older};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Inline edit teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-edit", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        auto *shell = item(content, "messageComposerShell"); QVERIFY(shell);
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        const auto restingHeight = shell->height();
+
+        // Shift+ArrowUp is a text selection, not the Source hotkey (hotkeys.lib.ts matcher).
+        QTest::keyClick(window, Qt::Key_Up, Qt::ShiftModifier);
+        QVERIFY(controller.editingMessageId().isEmpty());
+
+        // Up-to-edit-last on the empty composer edits the newest own message.
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(controller.editingMessageId(), returnedId);
+        QCOMPARE(controller.draft(), QString("Newest own message"));
+        auto *notice = item(content, "editMessageNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        QCOMPARE(notice->height(), 33.0);
+        QCOMPARE(item(content, "editMessageNoticeText")->property("font").value<QFont>().pixelSize(), 14);
+        QTRY_COMPARE(shell->height(), restingHeight + 33.0);
+        auto *saveEdit = window->findChild<QObject *>("saveEditButton"); QVERIFY(saveEdit);
+        QTRY_VERIFY(saveEdit->property("enabled").toBool());
+        // Escape leaves the mode; the composer keeps the draft that was there before.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!notice->isVisible());
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
+        QTRY_COMPARE(shell->height(), restingHeight);
+
+        // A draft typed before editing survives the whole session (Source snapshot/restore).
+        QInputMethodEvent typed; typed.setCommitString("note typed before editing");
+        QCoreApplication::sendEvent(composer, &typed);
+        QTRY_COMPARE(drafts.text(streamId, topicId), QString("note typed before editing"));
+        const auto typedHeight = shell->height();
+        auto *bubble = item(content, "message-" + returnedId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *editAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("editMessageAction")); QVERIFY(editAction);
+        QTRY_VERIFY(editAction->isEnabled());
+        click(window, editAction);
+        QTRY_VERIFY(notice->isVisible());
+        QTRY_COMPARE(shell->height(), typedHeight + 33.0);
+        QTRY_COMPARE(composer->property("text").toString(), QString("Newest own message"));
+        QTest::qWait(200);
+        QCOMPARE(drafts.text(streamId, topicId), QString("note typed before editing"));
+        QVERIFY(saveEdit->property("enabled").toBool());
+
+        // Enter saves the edit instead of sending a new message.
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(puts, 1);
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
+        QTRY_VERIFY(!notice->isVisible());
+        QTRY_COMPARE(shell->height(), typedHeight);
+        QCOMPARE(drafts.text(streamId, topicId), QString("note typed before editing"));
+        QTRY_COMPARE(controller.draft(), QString("note typed before editing"));
+        QTRY_COMPARE(composer->property("text").toString(), QString("note typed before editing"));
+        QVERIFY(controller.error().isEmpty());
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {
@@ -10913,25 +11008,37 @@ private slots:
             auto *editAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("editMessageAction"));
             QVERIFY(editAction && editAction->isEnabled());
             click(window, editAction);
-            auto *dialog = window->findChild<QObject *>("editMessageDialog");
-            QVERIFY(dialog);
-            QTRY_VERIFY(dialog->property("visible").toBool());
-            QTRY_VERIFY(window->findChild<QObject *>("saveMessageEditButton"));
-            auto *saveEdit = window->findChild<QObject *>("saveMessageEditButton");
-            auto *edit = item(content, "editMessageInput");
-            QVERIFY(edit);
-            edit->setProperty("text", "Uncommitted edit during connection recovery");
+            // The Source edit mode is the composer itself: a notice bar above the input
+            // (6+20+6 px plus the 1 px rule) and the message body pre-filled.
+            auto *editNotice = item(content, "editMessageNotice");
+            QVERIFY(editNotice);
+            QTRY_VERIFY(editNotice->property("visible").toBool());
+            QCOMPARE(editNotice->height(), 33.0);
+            QCOMPARE(item(content, "editMessageNoticeText")->property("text").toString(), QString("Edit message"));
+            // The composer is pre-filled with the body the server last confirmed.
+            const auto confirmedBody = controller.messages().first().toMap().value("content").toString();
+            QVERIFY(!confirmedBody.isEmpty());
+            QTRY_COMPARE(composer->property("text").toString(), confirmedBody);
+            // The send control is reused as the save control while the session is open.
+            QVERIFY(window->findChild<QObject *>("saveEditButton"));
+            // A blank buffer cannot be saved, exactly like the disabled send control in Source.
+            composer->setProperty("text", " ");
+            QTRY_VERIFY(!controller.canSaveEdit());
+            composer->setProperty("text", "Uncommitted edit during connection recovery");
+            QTRY_VERIFY(controller.canSaveEdit());
             controller.refresh();
             QVERIFY(controller.busy());
-            QVERIFY(dialog->property("visible").toBool());
-            QCOMPARE(edit->property("text").toString(), QString("Uncommitted edit during connection recovery"));
-            QVERIFY(!saveEdit->property("enabled").toBool());
+            QVERIFY(editNotice->property("visible").toBool());
             QTRY_VERIFY(!controller.busy());
-            QVERIFY(dialog->property("visible").toBool());
-            QVERIFY(saveEdit->property("enabled").toBool());
-            QCOMPARE(edit->property("text").toString(), QString("Uncommitted edit during connection recovery"));
+            QVERIFY(editNotice->property("visible").toBool());
+            QCOMPARE(composer->property("text").toString(), QString("Uncommitted edit during connection recovery"));
+            QCOMPARE(controller.editingMessageId(), messageId);
+            QCOMPARE(controller.draft(), QString("Uncommitted edit during connection recovery"));
+            // Escape leaves the mode and the draft written before the edit is back.
             QTest::keyClick(window, Qt::Key_Escape);
-            QTRY_VERIFY(!dialog->property("visible").toBool());
+            QTRY_VERIFY(!editNotice->property("visible").toBool());
+            QVERIFY(controller.editingMessageId().isEmpty());
+            QCOMPARE(controller.draft(), QString("Draft while saved history is being checked"));
 
             // A new identity must not see the previous account's persisted rows
             // while its own delayed catalog requests are still pending.
@@ -10948,6 +11055,7 @@ private slots:
         cache.shutdown();
         QTRY_VERIFY(cache.stopped());
     }
+
 };
 
 int main(int argc, char **argv)
