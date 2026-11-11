@@ -425,6 +425,9 @@ void ApiClient::finish(QNetworkReply *reply)
         result.error = ApiClient::tr("Server response exceeds the allowed size.");
     } else if (pending->timedOut) {
         result.error = ApiClient::tr("Request timed out.");
+        // A request that never completed at the transport level says nothing
+        // about the server's HTTP layer: reachability failed, not the server.
+        result.transportFailed = true;
     } else if (result.status >= 300 && result.status < 400) {
         result.error = ApiClient::tr("Redirects are not allowed.");
     } else {

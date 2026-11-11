@@ -28,8 +28,9 @@ restyle. Reference: workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af,
   A snapshot that cannot complete calls `report()`, which cancels the snapshot and
   emits `snapshotFailed`; completion emits `snapshotReloaded`.
 - Transport health: `ApiClient::finish` distinguishes a transport-level failure
-  (no HTTP response: refused/reset/closed) from an HTTP status. `ApiResult` now
-  carries `transportFailed` and `retryAfterSeconds` (parsed `Retry-After`).
+  (no HTTP response: refused/reset/closed, or the request timed out without
+  completing) from an HTTP status. `ApiResult` now carries `transportFailed`
+  and `retryAfterSeconds` (parsed `Retry-After`).
 
 ## New read-only state on NativeController
 

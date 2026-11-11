@@ -29,7 +29,8 @@ struct ApiResult {
     // Seconds parsed from the Retry-After response header (0 when absent).
     int retryAfterSeconds = 0;
     // True only when the request never completed at the transport level
-    // (connection refused/reset/closed): reachability failed, not the server.
+    // (connection refused/reset/closed, or it timed out without completing):
+    // reachability failed, not the server.
     bool transportFailed = false;
 
     bool ok() const { return status >= 200 && status < 300 && error.isEmpty(); }

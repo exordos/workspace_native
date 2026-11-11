@@ -13200,6 +13200,30 @@ private slots:
         // The gateway accepts the reconnect again and the banner clears itself.
         QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 15000);
     }
+
+    // exo-review finding 1: a server that never answers must mark the
+    // connection offline when the client request timeout fires.
+    void overlayBannerRequestTimeoutMarksConnectionOffline()
+    {
+        // Handler captures must outlive the Fixture and every deferred send.
+        QVector<std::function<void()>> held;
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        // An outage window that never answers: the requests are neither
+        // completed nor refused, so the client timeout fires without any
+        // HTTP response - a transport-level failure for connection health.
+        fixture.server.handler = [&held](const Request &) {
+            Response hold{QJsonArray{}};
+            hold.defer = [&held](std::function<void()> send) { held.append(std::move(send)); };
+            return hold;
+        };
+        fixture.controller.refresh();
+        // ApiClient::RequestTimeoutMs is 30 s; wait out the client timer.
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("offline"), 35000);
+        QCOMPARE(fixture.controller.connectionSeverity(), QString("critical"));
+        held.clear(); // never released: teardown aborts the pending requests
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
