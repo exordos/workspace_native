@@ -131,6 +131,22 @@
             <translation>Ответить</translation>
         </message>
         <message>
+            <source>Reply: %1</source>
+            <translation>Ответить: %1</translation>
+        </message>
+        <message>
+            <source>Quote</source>
+            <translation>Цитата</translation>
+        </message>
+        <message>
+            <source>Message unavailable</source>
+            <translation>Сообщение недоступно</translation>
+        </message>
+        <message>
+            <source>Loading messages</source>
+            <translation>Загрузка сообщений</translation>
+        </message>
+        <message>
             <source>Copy text</source>
             <translation>Копировать текст</translation>
         </message>
@@ -1640,6 +1656,14 @@
         <message>
             <source>This message can no longer be edited</source>
             <translation>Это сообщение уже нельзя редактировать</translation>
+        </message>
+        <message>
+            <source>This message can no longer be replied to.</source>
+            <translation>Это сообщение уже нельзя открыть для ответа.</translation>
+        </message>
+        <message>
+            <source>Quote</source>
+            <translation>Цитата</translation>
         </message>
         <message>
             <source>Could not confirm whether the topic reopened. Refresh before trying again.</source>

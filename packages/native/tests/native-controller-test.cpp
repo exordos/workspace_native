@@ -5737,7 +5737,9 @@ private slots:
         const auto a = modelMessage(fixture.controller, messageId), b = modelMessage(fixture.controller, returnedId);
         QCOMPARE(a.value("topicId").toString(), topicId); QCOMPARE(b.value("topicId").toString(), secondTopicId);
         QCOMPARE(a.value("authorId").toString(), userId); QCOMPARE(b.value("topicName").toString(), QString("Second topic"));
-        fixture.controller.setDraft("must not become implicit General draft"); fixture.controller.quoteMessage(messageId);
+        fixture.controller.setDraft("must not become implicit General draft");
+        QVERIFY(!fixture.controller.beginReply(messageId)); // An implicit General stream has no reply slot.
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
         QVERIFY(fixture.controller.draft().isEmpty()); QVERIFY(!fixture.controller.canSend()); QVERIFY(!fixture.controller.canAttach());
         first["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Live A"}};
         QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated", first)));
@@ -8492,6 +8494,241 @@ private slots:
         fixture.controller.editLastMessage();
         QVERIFY(fixture.controller.editingMessageId().isEmpty());
         QCOMPARE(fixture.controller.error(), refusal);
+    }
+
+    // Reference contract (workspace_ui 61dacef): features/workspace-reply
+    // serializes a reply as "[Name](urn:quote:<uuid>)" + blank line + answer
+    // (workspace-reply.lib.ts:190-212); the composer preview header is
+    // "Reply: Name" with an 80-character summary body
+    // (message-composer-reply-quote-preview.ui.tsx, QUOTE_PREVIEW_MAX=80 in
+    // message-composer-constants.lib.ts:3).
+
+    void replySessionComposesTheQuoteLineOnAConfirmedSend()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        auto note = message("Peer note\nsecond line", messageId);
+        note["is_own"] = false; note["author_uuid"] = peerId;
+        QJsonObject posted; int posts = 0;
+        const auto savedContent = [&]{ return posted.value("payload").toObject().value("content").toString(); };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST") {
+                ++posts; posted = request.body;
+                auto saved = message(savedContent(), returnedId);
+                return {saved, 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{note}};
+            return {message(savedContent(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.setDraft("carry-over answer");
+
+        QVERIFY(fixture.controller.beginReply(messageId));
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
+        QTRY_COMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Peer note second line"));
+        // The answer must not be blank: canSend stays gated on the draft
+        // (reference disables send when the composer value is empty).
+        fixture.controller.setDraft("");
+        QVERIFY(!fixture.controller.canSend());
+        fixture.controller.send();
+        QTest::qWait(200);
+        QCOMPARE(posts, 0);
+
+        // Starting a reply keeps whatever the composer already holds as the answer.
+        fixture.controller.setDraft("my answer");
+        QVERIFY(fixture.controller.canSend());
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 1);
+        QCOMPARE(savedContent(), QString("[Bobby](urn:quote:%1)\n\nmy answer").arg(messageId));
+        QTRY_VERIFY(fixture.controller.replyMessageId().isEmpty());
+        QTRY_VERIFY(fixture.controller.draft().isEmpty());
+
+        // The echoed message comes back with the quote frame in its row map.
+        const auto row = modelMessage(fixture.controller, returnedId);
+        QCOMPARE(row.value("quoteId").toString(), messageId);
+        QCOMPARE(row.value("displayContent").toString(), QString("my answer"));
+        // A leading anchor carries its author in the link text: the frame renders
+        // ready without any extra fetch (docs/NATIVE_DESKTOP_REPLIES.md).
+        QCOMPARE(row.value("quoteAuthorName").toString(), QString("Bobby"));
+        QCOMPARE(row.value("quoteStatus").toString(), QString("ready"));
+    }
+
+    // An inline (non-leading) urn:quote anchor stays in the body text for the
+    // markdown renderer, and openMessageInChat resolves the origin for the click.
+    void replyAnchorInsideTheBodyStaysRenderableAndNavigable()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        auto note = message("Peer note", messageId);
+        note["is_own"] = false; note["author_uuid"] = peerId;
+        QJsonObject posted; int posts = 0; int lookups = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST") {
+                ++posts; posted = request.body;
+                return {message(posted.value("payload").toObject().value("content").toString(), returnedId), 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")) {
+                ++lookups;
+                return {QJsonArray{note}};
+            }
+            return {message(posted.value("payload").toObject().value("content").toString(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.setDraft("note [Bobby](urn:quote:" + messageId + ") above");
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 1);
+        QVariantMap row;
+        // The echo lands asynchronously; wait for the row instead of racing it.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = modelMessage(fixture.controller, returnedId);
+            return !row.isEmpty(); })(), 5000);
+        QCOMPARE(row.value("quoteId").toString(), QString());
+        QVERIFY(row.value("displayContent").toString().contains(QLatin1String("(urn:quote:")));
+        // Clicking the anchor routes to the origin: the shipped message-link
+        // machinery resolves it and arms the highlight flash on the row.
+        fixture.controller.openMessageInChat(messageId);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), messageId);
+    }
+
+    void replyCancelFailureAndRouteChangePreserveTheAnswer()
+    {
+        Fixture fixture; fixture.extraTopic = true;
+        auto note = message("Peer note", messageId);
+        note["is_own"] = false;
+        auto ownNote = message("Own note", returnedId);
+        ownNote["created_at"] = "2026-01-02T10:00:01.000Z";
+        bool failing = false; int posts = 0;
+        QString postedContent;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST") {
+                if (failing) return {QJsonObject{{"detail", "nope"}}, 500};
+                ++posts;
+                postedContent = request.body.value("payload").toObject().value("content").toString();
+                return {message(postedContent, returnedId), 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId
+                    ? QJsonArray{note, ownNote} : QJsonArray{}};
+            return {message(postedContent, returnedId)};
+        };
+        QVERIFY(fixture.start());
+
+        // Cancel closes the session and leaves the typed answer alone.
+        QVERIFY(fixture.controller.beginReply(messageId));
+        fixture.controller.setDraft("half typed");
+        fixture.controller.cancelReply();
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("half typed"));
+
+        // A failed send keeps both the session and the answer (edit-session precedent).
+        failing = true;
+        QVERIFY(fixture.controller.beginReply(messageId));
+        fixture.controller.send();
+        QTRY_VERIFY(!fixture.controller.error().isEmpty());
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
+        QCOMPARE(fixture.controller.draft(), QString("half typed"));
+        QCOMPARE(posts, 0);
+        failing = false;
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 1);
+        QTRY_VERIFY(fixture.controller.replyMessageId().isEmpty());
+
+        // Leaving the conversation ends the session (reply slot is conversation-scoped).
+        QVERIFY(fixture.controller.beginReply(messageId));
+        fixture.controller.selectTopic(secondTopicId);
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QTRY_VERIFY(!fixture.controller.busy());
+
+        // A message that cannot be quoted reports instead of starting a session.
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(!fixture.controller.beginReply("00000000-0000-4000-8000-000000000000"));
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QVERIFY(!fixture.controller.error().isEmpty());
+
+        // Reply and edit sessions are mutually exclusive.
+        QVERIFY(fixture.controller.beginReply(messageId));
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        QVERIFY(fixture.controller.beginReply(messageId));
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
+    }
+
+    void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString absent = "2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b";
+        const QString gone = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c";
+        const QString farId = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d";
+        auto origin = message("Origin text", messageId);
+        origin["is_own"] = false; origin["author_uuid"] = peerId;
+        auto replied = message(QString("[Bobby](urn:quote:%1)\n\nanswer here").arg(messageId), returnedId);
+        auto quotedRemote = message(QString("[Far](urn:quote:%1)\n\nremote answer").arg(absent), farId);
+        auto quotedGone = message(QString("[Gone](urn:quote:%1?text=kept%20selection)\n\nlate").arg(gone),
+                                  "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e");
+        int absentLookups = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) {
+                if (query.queryItemValue("uuid") == absent) {
+                    ++absentLookups;
+                    return Response{QJsonArray{message("Far body", absent, secondTopicId)}};
+                }
+                return Response{QJsonArray{}};
+            }
+            return Response{QJsonArray{origin, replied, quotedRemote, quotedGone}};
+        };
+        QVERIFY(fixture.start());
+
+        // Origin inside the loaded window resolves synchronously.
+        const auto row = modelMessage(fixture.controller, returnedId);
+        QCOMPARE(row.value("quoteId").toString(), messageId);
+        QCOMPARE(row.value("quoteLabel").toString(), QString("Bobby"));
+        QVERIFY(row.value("quoteText").toString().isEmpty());
+        QCOMPARE(row.value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(row.value("quoteAuthorName").toString(), QString("Bobby"));
+        QCOMPARE(row.value("quoteContent").toString(), QString("Origin text"));
+        QCOMPARE(row.value("displayContent").toString(), QString("answer here"));
+
+        // An origin outside the window fetches GET /messages/?uuid= exactly once.
+        auto remote = modelMessage(fixture.controller, farId);
+        QCOMPARE(remote.value("quoteStatus").toString(), QString("loading"));
+        QTRY_COMPARE(modelMessage(fixture.controller, farId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(modelMessage(fixture.controller, farId).value("quoteContent").toString(), QString("Far body"));
+        QCOMPARE(absentLookups, 1);
+
+        // A missing origin becomes the reference's "Message unavailable" state;
+        // the ?text= selection survives decoding.
+        QTRY_COMPARE(modelMessage(fixture.controller, "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e")
+            .value("quoteStatus").toString(), QString("unavailable"));
+        QCOMPARE(modelMessage(fixture.controller, "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e")
+            .value("quoteText").toString(), QString("kept selection"));
+    }
+
+    void openMessageInChatAnchorsLoadedMessagesAndReportsUnknownOnes()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        auto note = message("Peer note", messageId);
+        note["is_own"] = false;
+        fixture.messages = [&](const Request &) -> Response { return Response{QJsonArray{note}}; };
+        QVERIFY(fixture.start());
+        fixture.controller.openMessageInChat(messageId);
+        QTRY_COMPARE(fixture.controller.anchorMessageId(), messageId);
+        fixture.controller.openMessageInChat("6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f");
+        QTRY_VERIFY(fixture.controller.anchorMessageId().isEmpty());
+        QVERIFY(!fixture.controller.notice().isEmpty());
     }
 
     void attachmentUploadKeepsItsConversationAndEscapesMarkdown()

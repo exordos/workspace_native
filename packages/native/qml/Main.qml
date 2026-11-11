@@ -883,6 +883,10 @@ ApplicationWindow {
         const reference = root.markdown.reference(link);
         if (reference.kind === "external") {
             root.markdown.openExternal(link);
+        } else if ((reference.kind === "quote" || reference.kind === "message") && root.controller.authenticated) {
+            // Quote frames and inline message anchors jump to the origin (source
+            // workspace-message-quote.ui.tsx:353-397 onOpenMessage contract).
+            root.controller.openMessageInChat(reference.id);
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
         } else if (["file", "image", "video"].indexOf(reference.kind) >= 0 && root.controller.authenticated) {
@@ -3889,7 +3893,7 @@ ApplicationWindow {
                     readonly property bool hasDivider: root.aggregateConversation && topicRunStart && !keyControl
                     readonly property real bubbleOffset: hasDivider ? topicDivider.height + 8 : 0
                     readonly property var avatar: messageList.avatarPlacement(messageRow, index)
-                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel : String(modelData.content))
+                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel : String(modelData.displayContent || modelData.content))
                     readonly property var imageParts: rendered.parts || []
                     readonly property bool hasInlineImages: !!root.messageImages && !encryptedLocked && !keyControl
                         && incomingKeyRequest === null && !keyResponse && modelData.kind !== "key_announced"
@@ -4091,6 +4095,93 @@ ApplicationWindow {
                             y: messageRow.keyControl ? 4 : 8
                             width: parent.width - 24
                             spacing: 4
+                            // Quote frame (docs/NATIVE_DESKTOP_REPLIES.md). Source message-surface
+                            // frame (workspace_ui 61dacef workspace-message-quote.ui.tsx + frame.ui.tsx:8-18):
+                            // bg at 35 % alpha, radius 6 px, 2 px accent left bar, vertical margin
+                            // 4 px, padding 8 x / 6 y; header 12 px / 16 px weight-500 accent
+                            // (fallback label, else "Quote"), muted "Message unavailable" when the
+                            // origin is gone, 12 px muted "Loading messages" while resolving, body
+                            // 14 px / 20 px; clicking the frame jumps to the origin (quote.ui.tsx:353-397).
+                            Rectangle {
+                                id: messageQuoteFrame
+                                objectName: "message-quote-" + messageRow.modelData.id
+                                visible: String(messageRow.modelData.quoteId || "").length > 0
+                                    && !messageRow.keyControl && !messageRow.encryptedLocked
+                                width: parent.width
+                                height: messageQuoteContents.height + 12
+                                radius: 6
+                                color: Qt.alpha(root.colors["bg"], 0.35)
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.controller.openMessageInChat(messageRow.modelData.quoteId)
+                                }
+                                Rectangle {
+                                    objectName: "quoteAccentBar-" + messageRow.modelData.id
+                                    width: 2
+                                    height: parent.height
+                                    radius: 1
+                                    color: root.colors.accent
+                                }
+                                readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready"
+                                    && String(messageRow.modelData.quoteText || "").length === 0
+                                    ? String(root.markdown.render(String(messageRow.modelData.quoteContent)).html)
+                                        .replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
+                                    : ""
+                                Column {
+                                    id: messageQuoteContents
+                                    x: 10
+                                    width: parent.width - 18
+                                    y: 6
+                                    spacing: 2
+                                    Text {
+                                        width: parent.width
+                                        text: String(messageRow.modelData.quoteStatus) === "unavailable"
+                                            ? qsTr("Message unavailable")
+                                            : String(messageRow.modelData.quoteAuthorName || messageRow.modelData.quoteLabel || "") || qsTr("Quote")
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 12
+                                        font.weight: Font.Medium
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 16
+                                        elide: Text.ElideRight
+                                        color: String(messageRow.modelData.quoteStatus) === "unavailable"
+                                            ? root.colors["text-muted"] : root.colors.accent
+                                    }
+                                    Text {
+                                        visible: String(messageRow.modelData.quoteStatus) === "loading"
+                                        text: qsTr("Loading messages")
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 12
+                                        color: root.colors["text-muted"]
+                                    }
+                                    Text {
+                                        visible: String(messageRow.modelData.quoteStatus) === "ready"
+                                            && String(messageRow.modelData.quoteText || "").length > 0
+                                        width: parent.width
+                                        text: String(messageRow.modelData.quoteText || "")
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 14
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        wrapMode: Text.Wrap
+                                        color: root.colors["text-primary"]
+                                    }
+                                    Text {
+                                        visible: messageQuoteFrame.quoteHtml.length > 0
+                                        width: parent.width
+                                        text: messageQuoteFrame.quoteHtml
+                                        textFormat: Text.RichText
+                                        font.pixelSize: 14
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        wrapMode: Text.Wrap
+                                        linkColor: root.colors.accent
+                                        onLinkActivated: link => root.openReference(link)
+                                        color: root.colors["text-primary"]
+                                    }
+                                }
+                            }
                             Row {
                                 id: authorHeader
                                 visible: !messageRow.keyControl && !messageRow.externalAuthor && messageRow.groupFirst && (!messageRow.own || messageRow.displayedTopic.length > 0)
@@ -5176,6 +5267,7 @@ ApplicationWindow {
                 // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
                 Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
+                    + (replyNotice.visible ? replyNotice.height : 0)
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -5241,10 +5333,111 @@ ApplicationWindow {
                         }
                     }
                 }
+                // Reply preview (docs/NATIVE_DESKTOP_REPLIES.md). Source measures
+                // (workspace_ui 61dacef message-composer-reply-quote-preview.ui.tsx +
+                // shared/ui/workspace-message-quote-frame + message-composer-preface.ui.tsx:222-262):
+                // composer surface, row padding top 8 / bottom 4 with 8 px inset, quote
+                // frame radius 6 px with a 2 px accent left bar, padding 8 x / 6 y,
+                // header 12 px / 16 px weight-500 accent "Reply: <name>", body 14 px /
+                // 20 px text-primary clamped to two lines (QUOTE_PREVIEW_MAX 80 summary).
+                Rectangle {
+                    id: replyNotice
+                    objectName: "replyNotice"
+                    y: editMessageNotice.visible ? editMessageNotice.height : 0
+                    width: parent.width
+                    height: 12 + replyQuoteFrame.height
+                    color: root.colors["composer-outer"]
+                    visible: root.controller.replyMessageId.length > 0
+                    Accessible.role: Accessible.Notification
+                    Accessible.name: replyAuthorText.text
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        anchors.topMargin: 8
+                        anchors.bottomMargin: 4
+                        spacing: 8
+                        Rectangle {
+                            id: replyQuoteFrame
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: replyQuoteContents.height + 12
+                            radius: 6
+                            color: root.colors["composer-outer"]
+                            Rectangle {
+                                id: replyAccentBar
+                                objectName: "replyAccentBar"
+                                width: 2
+                                height: parent.height
+                                radius: 1
+                                color: root.colors.accent
+                            }
+                            Column {
+                                id: replyQuoteContents
+                                x: 10
+                                width: replyQuoteFrame.width - 18
+                                y: 6
+                                spacing: 2
+                                Text {
+                                    id: replyAuthorText
+                                    objectName: "replyAuthorText"
+                                    width: parent.width
+                                    text: qsTr("Reply: %1").arg(root.controller.replyAuthor)
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 12
+                                    font.weight: Font.Medium
+                                    lineHeightMode: Text.FixedHeight
+                                    lineHeight: 16
+                                    elide: Text.ElideRight
+                                    color: root.colors.accent
+                                }
+                                Text {
+                                    id: replyExcerptText
+                                    objectName: "replyExcerptText"
+                                    width: parent.width
+                                    visible: text.length > 0
+                                    text: root.controller.replyExcerpt
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    lineHeightMode: Text.FixedHeight
+                                    lineHeight: 20
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                    wrapMode: Text.Wrap
+                                    color: root.colors["text-primary"]
+                                }
+                            }
+                        }
+                        Rectangle {
+                            id: cancelReplyControl
+                            Layout.alignment: Qt.AlignTop
+                            Layout.preferredWidth: Math.max(40, cancelReplyText.implicitWidth + 24)
+                            Layout.preferredHeight: 28
+                            radius: 8
+                            color: cancelReplyArea.containsMouse ? Qt.alpha(root.colors["text-primary"], 0.08) : "transparent"
+                            Text {
+                                id: cancelReplyText
+                                objectName: "cancelReplyButton"
+                                anchors.centerIn: parent
+                                text: qsTr("Cancel")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                color: root.colors["text-muted"]
+                            }
+                            MouseArea {
+                                id: cancelReplyArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.controller.cancelReply()
+                            }
+                        }
+                    }
+                }
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: 8
                     anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
+                        + (replyNotice.visible ? replyNotice.height : 0)
                     spacing: 12
                     Rectangle {
                         Layout.fillWidth: true
@@ -5367,6 +5560,10 @@ ApplicationWindow {
                                         } else if (event.key === Qt.Key_Escape && editing) {
                                             // Source: Escape leaves the edit mode and is swallowed.
                                             root.controller.cancelEditMessage();
+                                            event.accepted = true;
+                                        } else if (event.key === Qt.Key_Escape && root.controller.replyMessageId.length > 0) {
+                                            // The reply banner mirrors the edit banner: Escape dismisses and is swallowed.
+                                            root.controller.cancelReply();
                                             event.accepted = true;
                                         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && !root.controller.busy && !inputMethodComposing) {
                                             if (editing) {
@@ -7188,7 +7385,7 @@ ApplicationWindow {
             enabled: visible
             asset: "reply.svg"
             text: qsTr("Reply")
-            onTriggered: root.controller.quoteMessage(root.menuMessageId)
+            onTriggered: root.controller.beginReply(root.menuMessageId)
         }
         MessageMenuSeparator {
             visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation

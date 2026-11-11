@@ -8100,7 +8100,10 @@ mv -Tf "$root/.current-new" "$root/current"
                 QTest::keyClick(window, Qt::Key_Home);
                 QTRY_VERIFY(reply->hasActiveFocus());
                 QTest::keyClick(window, Qt::Key_Return);
-                QTRY_COMPARE(controller.draft(), QString("> Reaction fixture body\n\n"));
+                // Reply opens the composer reply session (docs/NATIVE_DESKTOP_REPLIES.md),
+                // it no longer inserts a markdown blockquote into the draft.
+                QTRY_COMPARE(controller.replyMessageId(), messageId);
+                QVERIFY(controller.draft().isEmpty());
                 QTRY_VERIFY(!menu->property("visible").toBool());
                 QCOMPARE(posts + deletes, 0);
                 const bool closed=closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
@@ -10901,6 +10904,118 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.draft(), QString("note typed before editing"));
         QTRY_COMPARE(composer->property("text").toString(), QString("note typed before editing"));
         QVERIFY(controller.error().isEmpty());
+    }
+
+    // Reply banner + quote jump, measured against workspace_ui 61dacef:
+    // composer preview chrome (message-composer-reply-quote-preview.ui.tsx and
+    // message-composer-preface.ui.tsx:222-262): 2 px accent left bar (#7087ff),
+    // 12 px/16 px weight-500 accent header "Reply: <name>", 14 px/20 px body,
+    // frame padding 8 x / 6 y; bubble quote frame (workspace-message-quote.ui.tsx):
+    // same accent bar, radius 6, vertical margin 4 px.
+    void replyBannerAndQuoteJumpUseTheComposer()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message("Peer origin", messageId);
+        origin["is_own"] = false;
+        const QString quotedId = "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a";
+        const auto quoted = message(QString("[Peer](urn:quote:%1)\n\nanswer body").arg(messageId), quotedId);
+        QJsonObject posted; int posts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++posts; posted = request.body;
+                return {message(posted.value("payload").toObject().value("content").toString(), returnedId), 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{origin, quoted}};
+            if (request.method == "GET" && path.endsWith("/" + returnedId))
+                return {message(posted.value("payload").toObject().value("content").toString(), returnedId)};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        auto *shell = item(content, "messageComposerShell"); QVERIFY(shell);
+        const auto restingHeight = shell->height();
+
+        // The reply entry opens the banner over the composer.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction")); QVERIFY(replyAction);
+        click(window, replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        QTRY_COMPARE(shell->height(), restingHeight + notice->height());
+        auto *header = item(content, "replyAuthorText"); QVERIFY(header);
+        QVERIFY2(header->property("text").toString().startsWith("Reply: "),
+                 qPrintable(header->property("text").toString()));
+        QCOMPARE(header->property("font").value<QFont>().pixelSize(), 12);
+        QCOMPARE(header->property("lineHeight").toReal(), 16.0);
+        auto *bar = item(content, "replyAccentBar"); QVERIFY(bar);
+        QCOMPARE(bar->property("width").toReal(), 2.0);
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QCOMPARE(excerpt->property("text").toString(), QString("Peer origin"));
+        QCOMPARE(excerpt->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(excerpt->property("maximumLineCount").toInt(), 2);
+
+        // Cancel closes the banner without sending anything.
+        auto *cancel = item(content, "cancelReplyButton"); QVERIFY(cancel);
+        click(window, qobject_cast<QQuickItem *>(cancel));
+        QTRY_VERIFY(!notice->isVisible());
+        QTRY_COMPARE(shell->height(), restingHeight);
+        QCOMPARE(posts, 0);
+
+        // Typing an answer and sending posts the composed urn:quote line.
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QVERIFY(controller.beginReply(messageId));
+        QTRY_VERIFY(notice->isVisible());
+        QInputMethodEvent typed; typed.setCommitString("answer typed");
+        QCoreApplication::sendEvent(composer, &typed);
+        auto *sendButton = window->findChild<QObject *>("sendButton"); QVERIFY(sendButton);
+        QTRY_VERIFY(sendButton->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(sendButton));
+        QTRY_COMPARE(posts, 1);
+        const auto wire = posted.value("payload").toObject().value("content").toString();
+        QVERIFY2(wire.contains("urn:quote:" + messageId), qPrintable(wire));
+        QVERIFY2(wire.endsWith("\n\nanswer typed"), qPrintable(wire));
+        QTRY_VERIFY(controller.replyMessageId().isEmpty());
+        QTRY_VERIFY(!notice->isVisible());
+
+        // Escape leaves an open reply session while the composer has focus.
+        QVERIFY(controller.beginReply(messageId));
+        QTRY_VERIFY(notice->isVisible());
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(controller.replyMessageId().isEmpty());
+
+        // The received message renders the quote frame and jumps to the origin.
+        auto *quote = item(content, "message-quote-" + quotedId); QVERIFY(quote);
+        QTRY_VERIFY(quote->isVisible());
+        auto *quoteBar = item(content, "quoteAccentBar-" + quotedId); QVERIFY(quoteBar);
+        QCOMPARE(quoteBar->property("width").toReal(), 2.0);
+        click(window, qobject_cast<QQuickItem *>(quote));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), messageId, 3000);
+        auto *highlight = item(content, "messageHighlight-" + messageId);
+        QTRY_VERIFY(highlight && highlight->isVisible());
     }
 };
 
