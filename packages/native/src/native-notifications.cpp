@@ -159,10 +159,18 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
     // A long-running aggregate must not retain every body it ever saw: keep
     // the newest rows, drop the coldest ones along with their index entries.
     while (entry.messages.size() > kAggregateRowsPerTag) {
-        auto oldest = entry.messages.begin();
-        for (auto it = entry.messages.begin(); it != entry.messages.end(); ++it)
-            if (it.value().createdMicros < oldest.value().createdMicros)
+        auto oldest = entry.messages.constEnd();
+        for (auto it = entry.messages.constBegin(); it != entry.messages.constEnd(); ++it) {
+            if (it.key() == candidate.messageUuid)
+                continue; // never drop the message the banner just displayed
+            if (oldest == entry.messages.constEnd()
+                || it.value().createdMicros < oldest->createdMicros
+                || (it.value().createdMicros == oldest->createdMicros
+                    && it.key() < oldest.key()))
                 oldest = it;
+        }
+        if (oldest == entry.messages.constEnd())
+            break; // degenerate single-row bucket at the bound
         m_messageToTag.remove(
             candidate.owner + QStringLiteral("::message:") + oldest.key());
         entry.messages.erase(oldest);

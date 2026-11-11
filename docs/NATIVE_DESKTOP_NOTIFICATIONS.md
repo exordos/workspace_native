@@ -219,3 +219,10 @@ survived logout before the fix).
   banner can end up untracked, so sign-out closes every remaining one
   (regression case drives 300 generic banners; RED observed with the old
   capped-skip tracking - banners past the cap survived logout).
+
+## Reviewer round 5 hardening
+
+- Per-bucket row eviction never evicts the message that was just inserted and
+  resolves timestamp ties deterministically (lowest message uuid first)
+  instead of relying on hash iteration order, so a burst of same-timestamp
+  messages cannot evict the banner body it just displayed.
