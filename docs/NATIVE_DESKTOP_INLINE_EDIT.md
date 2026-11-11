@@ -149,7 +149,7 @@ New state, one active session per conversation:
 ### QML (`packages/native/qml/Main.qml`)
 
 - Inside `messageComposerShell`, an `editMessageNotice` strip (objectName
-  `editMessageNotice`, `Accessible` role status) rendered only while
+  `editMessageNotice`, `Accessible` role notification) rendered only while
   `controller.editingMessageId` is not empty: height 33 px (32 + 1 px bottom rule in
   `border-subtle`), `composer-outer` background, 8 px horizontal inset, 12 px gap, label
   `editMessageNoticeText` "Edit message" (14 px / 20 px, `text-primary`) and a `Cancel`
@@ -163,10 +163,10 @@ New state, one active session per conversation:
 - `editDialog`, `editMessageDialog`, `editMessageInput` and `saveMessageEditButton` are
   deleted, including their terms in `readActive` and `composerText.formattingAllowed` and
   the `editDialog.close()` route guard.
-- Composer keys (`messageComposer`): `Escape` closes the emoji picker first (unchanged),
-  otherwise cancels an open edit session; `Enter` submits an open edit session when
-  `canSaveEdit`; `ArrowUp` without Shift on a blank composer with no session open calls
-  `editLastMessage()`.
+- Composer keys (on the composer input `composerText`): `Escape` closes the emoji picker
+  first (unchanged), otherwise cancels an open edit session; `Enter` submits an open edit
+  session when `canSaveEdit`; `ArrowUp` without Shift on a blank composer with no session
+  open calls `editLastMessage()`.
 - The single send control keeps the objectName `sendButton` and gains objectName
   `saveEditButton` while a session is open, with `help` "Save" and enablement from
   `canSaveEdit`.

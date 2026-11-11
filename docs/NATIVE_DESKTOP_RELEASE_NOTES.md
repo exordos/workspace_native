@@ -1,3 +1,21 @@
+# Workspace Native 0.8.0 - Linux development preview
+
+Messages are now edited where they are written. Choosing **Edit** in the message menu puts the
+message text into the composer under an "Edit message" strip with a **Cancel** action: Enter,
+or the send control - which becomes **Save** while an edit is open - saves the new text, and
+Escape leaves the edit without saving. Pressing Up in an empty composer edits your own latest
+message, the same hotkey the desktop client offers. A draft typed before the edit is left
+untouched for the whole session and returns when the edit closes, and a refresh or a dropped
+connection can no longer discard text you have already started editing (issue #5).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.7.0...0.8.0](https://github.com/exordos/workspace_native/compare/0.7.0...0.8.0)
+
+---
+
 # Workspace Native 0.7.0 - Linux development preview
 
 The sidebar now previews conversations. Every stream and topic row shows the last
