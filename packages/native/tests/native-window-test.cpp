@@ -6766,6 +6766,103 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md (issue #2): the measured preview line and the
+    // time column (workspace_ui 61dacef widgets/sidebar/sidebar-message-preview.ui.tsx and
+    // sidebar-chat-row-meta.ui.tsx) render inside the existing 60 px stream and 56 px topic
+    // rows. Colors are the blue-cold light palette of qml/NativeTheme.qml: sidebar-sender
+    // #7087ff, text-secondary #787878, text-muted #989898.
+    void sidebarRowsRenderPreviewAndTime()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        // The newest source-scene message is the last-message pointer to attach; the stream
+        // list/detail DTOs and the default topic DTO must all carry it or the projection
+        // drops the pointer before the rows are built.
+        const QString lastMessage = QStringLiteral("81000000-0000-4000-8000-000000000007");
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            auto response = fallback(request);
+            if (request.method != "GET") return response;
+            const bool streamRoute = path.endsWith("/streams/")
+                || path.endsWith("/streams/" + streamId)
+                || path.endsWith("/stream_topics/") || path.endsWith("/stream_topics/" + topicId);
+            if (!streamRoute) return response;
+            if (response.data.isArray()) {
+                QJsonArray patched;
+                for (const auto &value : response.data.toArray()) {
+                    auto row = value.toObject();
+                    if (row.value("uuid").toString() == streamId || row.value("uuid").toString() == topicId)
+                        row["last_message_uuid"] = lastMessage;
+                    patched.append(row);
+                }
+                response.data = patched;
+            } else if (response.data.isObject()
+                && response.data.toObject().value("uuid").toString() == streamId) {
+                auto row = response.data.toObject();
+                row["last_message_uuid"] = lastMessage;
+                response.data = row;
+            }
+            return response;
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-previews.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar preview window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.topics().size() >= 3);
+        // The source-scene author is the Alice user of the fixture catalog (first_name only).
+        const QString previewText = QStringLiteral("A message with missing topic metadata has no invented label.");
+        // The preview exists only after the selected channel's history has been hydrated.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto *row = visibleItem("streamPreviewText-" + streamId);
+            return row && row->property("text").toString() == previewText;
+        })(), 4000);
+        QTRY_VERIFY(visibleItem("streamPreviewSender-"+streamId));
+        QCOMPARE(visibleItem("streamPreviewSender-"+streamId)->property("text").toString(),QStringLiteral("Alice: "));
+        QCOMPARE(visibleItem("streamPreviewText-"+streamId)->property("text").toString(),previewText);
+        QCOMPARE(visibleItem("streamPreviewSender-"+streamId)->property("color").value<QColor>(),QColor("#7087ff"));
+        QCOMPARE(visibleItem("streamPreviewText-"+streamId)->property("color").value<QColor>(),QColor("#787878"));
+        QCOMPARE(visibleItem("streamPreviewText-"+streamId)->property("font").value<QFont>().pixelSize(),12);
+        // The row time is the last-message instant (2026-01-02T10:06:00Z, the seventh source
+        // message) under formatMessageTimeRelative, muted token, bottom of the meta column.
+        const auto created = QDateTime::fromString("2026-01-02T10:06:00.000Z",Qt::ISODateWithMs);
+        auto *streamTime = visibleItem("streamTime-"+streamId); QVERIFY(streamTime);
+        QCOMPARE(streamTime->property("text").toString(),NativeController::formatRowTime(
+            created,QLocale("en"),QDate::currentDate(),QStringLiteral("Yesterday")));
+        QCOMPARE(streamTime->property("color").value<QColor>(),QColor("#989898"));
+        QCOMPARE(visibleItem("stream-"+streamId)->height(),60); // the measured row box is unchanged
+        // The default topic row carries the same message; Planning has no last message and
+        // still keeps the full 56 px row with its empty 20 px preview line mounted.
+        QVERIFY(visibleItem("topic-"+topicId));
+        QCOMPARE(visibleItem("topic-"+topicId)->height(),56);
+        QCOMPARE(visibleItem("topicPreviewText-"+topicId)->property("text").toString(),previewText);
+        QCOMPARE(visibleItem("topicTime-"+topicId)->property("text").toString(),
+            streamTime->property("text").toString());
+        QVERIFY(visibleItem("topic-"+secondTopicId));
+        QCOMPARE(visibleItem("topic-"+secondTopicId)->height(),56);
+        auto *planningLine = visibleItem("topicPreviewLine-"+secondTopicId); QVERIFY(planningLine);
+        QCOMPARE(planningLine->height(),20); // an unresolved row keeps the min-h-5 line box
+        QCOMPARE(visibleItem("topicPreviewSender-"+secondTopicId)->property("text").toString(),QString());
+        QCOMPARE(visibleItem("topicPreviewText-"+secondTopicId)->property("text").toString(),QString());
+        QVERIFY(!visibleItem("topicTime-"+secondTopicId));
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
     void sidebarChannelOffersTopicCreationWithoutChangingSelection()
     {
         QTemporaryDir directory;

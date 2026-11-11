@@ -3783,6 +3783,9 @@ void NativeController::closeCache()
     ++m_cacheRevision;
     m_cacheHydrations.clear();
     m_cacheWasAvailable = false;
+    // Row-preview lookups belong to the discarded lease, not to whatever opens next.
+    m_rowPreviewPending.clear();
+    m_rowPreviewInFlight.clear();
     const auto lease = m_cacheLease;
     m_cacheLease = {};
     if (m_cache && m_cache->lease().owner == lease.owner
@@ -3803,6 +3806,8 @@ void NativeController::openCache()
     if (cache && authenticated() && cache->open(m_api->server(), m_session->project(), m_session->user())
         && guard && cache && m_cache == cache)
         m_cacheLease = cache->lease();
+    // Rows projected before the cache attached already registered their preview misses.
+    scheduleRowPreviewHydration();
 }
 
 void NativeController::markCacheStale()
@@ -5996,6 +6001,12 @@ void NativeController::reset()
     m_messages.clear();
     m_messageFields.clear();
     m_names.clear();
+    // No row preview (positive or negative) survives an owner change, like the reference
+    // previewTextCache that is dropped together with the session owner.
+    m_rowPreviews.clear();
+    m_rowPreviewOrder.clear();
+    m_rowPreviewPending.clear();
+    m_rowPreviewInFlight.clear();
     m_viewerDirectoryName.clear();
     m_viewerDirectoryOwner.clear();
     m_channelChoices.clear();
@@ -8258,6 +8269,7 @@ void NativeController::loadMessages(bool older)
                     ++m_historyCommitRevision;
                     emit messagesChanged();
                     if (guard) emit topicsChanged();
+                    if (guard) announceStreamRowPreviews(rows);
                     if (guard) emit stateChanged();
                     return;
                 }
@@ -8275,6 +8287,7 @@ void NativeController::loadMessages(bool older)
                     if (!guard) return;
                     emit topicsChanged();
                     if (!guard) return;
+                    announceStreamRowPreviews(rows);
                 }
             }
             if (!savedOnly) network();
@@ -8387,6 +8400,8 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         emit messagesChanged();
         if (!guard) return;
         emit topicsChanged();
+        if (!guard) return;
+        announceStreamRowPreviews(accumulated);
         if (!guard) return;
         finishSnapshotPart(8);
         if (!guard) return;
@@ -8718,7 +8733,10 @@ std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const
     // and the resolved display name otherwise, omitted entirely for an unknown author.
     RowPreview preview;
     preview.created = message.created;
-    preview.sender = message.own ? tr("You") : userDisplayName(message.author);
+    // The sender label is resolved at projection time so a late-arriving display name or a
+    // language change reaches the row; the cache only stores the author identity.
+    preview.own = message.own;
+    preview.author = message.author;
     QString body;
     if (message.kind == QLatin1String("markdown")) {
         body = message.content;
@@ -8745,6 +8763,14 @@ std::optional<NativeController::RowPreview> NativeController::rowPreview(const Q
     if (uuid.isEmpty()) return std::nullopt;
     for (const auto &message : m_messages)
         if (message.uuid == uuid) return rowPreviewOf(message);
+    const auto cached = m_rowPreviews.constFind(uuid);
+    if (cached != m_rowPreviews.constEnd()) return *cached;
+    // The body may still exist on disk: record the miss and let the bounded pump resolve it
+    // through the cache, then re-emit the affected rows.
+    if (!m_rowPreviewPending.contains(uuid) && !m_rowPreviewInFlight.contains(uuid)) {
+        m_rowPreviewPending.insert(uuid);
+        scheduleRowPreviewHydration();
+    }
     return std::nullopt;
 }
 
@@ -8774,13 +8800,98 @@ int NativeController::streamGroupRank(const Stream &stream) const
 QVariantMap NativeController::rowPreviewFields(const QString &lastMessage) const
 {
     const auto preview = rowPreview(lastMessage);
-    if (!preview)
+    // An unresolved pointer (or a remembered negative lookup, whose created stays invalid)
+    // keeps the reference empty preview line; a locked row is valid without any text.
+    if (!preview || (!preview->locked && !preview->created.isValid()))
         return QVariantMap{{"previewSender", QString{}}, {"previewText", QString{}},
             {"previewLocked", false}, {"rowTime", QString{}}};
-    return QVariantMap{{"previewSender", preview->sender}, {"previewText", preview->text},
+    const auto sender = preview->own ? tr("You") : userDisplayName(preview->author);
+    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
+    return QVariantMap{{"previewSender", sender}, {"previewText", preview->text},
         {"previewLocked", preview->locked},
-        {"rowTime", formatRowTime(preview->created, QLocale::system(), QDate::currentDate(),
+        {"rowTime", formatRowTime(preview->created, locale, QDate::currentDate(),
             tr("Yesterday"))}};
+}
+
+void NativeController::announceStreamRowPreviews(const QVector<Message> &rows)
+{
+    // A history commit can complete a row preview: the reference re-derives the sidebar row
+    // from the messenger cache the moment its last message becomes known, and the native
+    // activity comparator reads the same instants. Only streams actually pointed at one of
+    // the new messages re-bind, so browsing a channel never reflows the whole list.
+    if (rows.isEmpty()) return;
+    QSet<QString> ids;
+    for (const auto &row : rows) ids.insert(row.uuid);
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (stream.archived || stream.lastMessage.isEmpty()) continue;
+        if (ids.contains(stream.lastMessage)) { emit streamsChanged(); return; }
+    }
+}
+
+void NativeController::storeRowPreview(const QString &uuid, const std::optional<RowPreview> &preview) const
+{
+    if (!preview) return;
+    // The derived-text cache in the reference is bounded (512 rows, messenger-topic-list.lib.ts
+    // previewTextCache); this evicts in insertion order at the same ceiling.
+    if (!m_rowPreviews.contains(uuid)) m_rowPreviewOrder.enqueue(uuid);
+    m_rowPreviews.insert(uuid, *preview);
+    while (m_rowPreviews.size() > rowPreviewCacheLimit)
+        m_rowPreviews.remove(m_rowPreviewOrder.dequeue());
+}
+
+void NativeController::scheduleRowPreviewHydration() const
+{
+    if (m_rowPreviewPumpQueued) return;
+    m_rowPreviewPumpQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_rowPreviewPumpQueued = false;
+        // The pump emits change signals and holds the QPointer receiver contract, so it runs
+        // on the owning instance itself; the const projection may only have reached it
+        // through the memoization bookkeeping above.
+        const_cast<NativeController *>(this)->pumpRowPreviewHydration();
+    });
+}
+
+void NativeController::pumpRowPreviewHydration()
+{
+    if (m_rowPreviewPending.isEmpty()) return;
+    // Without an available cache there is nothing to read; the rows keep the reference empty
+    // preview and the pending marks are released so a later cache attach can try again.
+    if (!authenticated() || !m_cache || !m_cache->available()) { m_rowPreviewPending.clear(); return; }
+    const auto owner = creationOwnerKey();
+    const auto cache = m_cache;
+    const auto lease = m_cacheLease;
+    int started = 0;
+    const auto pending = m_rowPreviewPending.values();
+    for (const auto &uuid : pending) {
+        if (started >= rowPreviewHydrationBatch) break;
+        m_rowPreviewPending.remove(uuid);
+        if (m_rowPreviews.contains(uuid) || m_rowPreviewInFlight.contains(uuid)) continue;
+        m_rowPreviewInFlight.insert(uuid);
+        ++started;
+        const QPointer<NativeController> guard(this);
+        cache->getMessageBody(lease, uuid, this, [this, guard, uuid, owner](std::optional<NativeCache::MessageBody> body) {
+            if (!guard) return;
+            m_rowPreviewInFlight.remove(uuid);
+            // A body that answers after the session or its owner changed belongs to nobody.
+            if (!authenticated() || creationOwnerKey() != owner) return;
+            const auto parsed = body ? parseMessage(body->row, m_session->project()) : std::nullopt;
+            if (parsed && parsed->uuid == uuid)
+                storeRowPreview(uuid, rowPreviewOf(*parsed));
+            else
+                storeRowPreview(uuid, RowPreview{}); // negative lookup: projections stay quiet
+            bool affectsRow = false;
+            for (const auto &stream : m_streams)
+                if (stream.lastMessage == uuid) { affectsRow = true; break; }
+            if (!affectsRow)
+                for (const auto &topic : m_topics)
+                    if (topic.lastMessage == uuid) { affectsRow = true; break; }
+            if (affectsRow) { emit streamsChanged(); emit topicsChanged(); }
+        });
+    }
+    // A bounded pass leaves the remainder queued for the next tick, so every row of a large
+    // sidebar still reaches its eventual preview without a burst of disk reads.
+    if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
 void NativeController::quoteMessage(const QString &id)

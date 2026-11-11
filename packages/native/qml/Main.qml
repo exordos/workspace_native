@@ -2529,6 +2529,13 @@ ApplicationWindow {
                     id: streamDelegate
                     required property var modelData
                     readonly property bool matches: root.sidebarQuery.length === 0 || root.streamDisplayName(modelData).toLocaleLowerCase().indexOf(root.sidebarQuery.toLocaleLowerCase()) >= 0
+                    // workspace_ui 61dacef sidebar-message-preview.ui.tsx: sender in the
+                    // sidebar-sender token + ": " + body in text-secondary, one 20 px line.
+                    readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
+                    readonly property string previewSenderLabel: {
+                        const sender = String(modelData.previewSender || "")
+                        return sender.length && previewBody.length ? sender + ": " : ""
+                    }
                     width: streamList.width
                     height: matches ? implicitHeight : 0
                     visible: matches
@@ -2619,20 +2626,71 @@ ApplicationWindow {
                                 Item {
                                     Layout.fillHeight: true
                                 }
+                                Row {
+                                    // The line box stays mounted empty so every row keeps the
+                                    // measured 60 px height (reference min-h-5 rule).
+                                    id: streamPreviewLine
+                                    objectName: "streamPreviewLine-" + streamDelegate.modelData.id
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 20
+                                    spacing: 0
+                                    Text {
+                                        id: streamPreviewSenderText
+                                        objectName: "streamPreviewSender-" + streamDelegate.modelData.id
+                                        text: streamDelegate.previewSenderLabel
+                                        textFormat: Text.PlainText
+                                        color: root.colors["sidebar-sender"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                    }
+                                    Text {
+                                        objectName: "streamPreviewText-" + streamDelegate.modelData.id
+                                        x: streamPreviewSenderText.width
+                                        width: Math.max(0, streamPreviewLine.width - streamPreviewSenderText.implicitWidth)
+                                        text: streamDelegate.previewBody
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-secondary"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        elide: Text.ElideRight
+                                    }
+                                }
                             }
-                            Rectangle {
-                                visible: Number(streamDelegate.modelData.unread) > 0
-                                implicitWidth: Math.max(20, streamUnread.implicitWidth + 8)
-                                implicitHeight: 20
-                                radius: 10
-                                color: root.colors["badge-bg"]
+                            ColumnLayout {
+                                // workspace_ui 61dacef sidebar-chat-row-meta.ui.tsx: a 40 px
+                                // min-width column, badge on top, timestamp at the bottom.
+                                Layout.minimumWidth: 40
+                                Layout.fillHeight: true
+                                spacing: 0
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                                    visible: Number(streamDelegate.modelData.unread) > 0
+                                    implicitWidth: Math.max(20, streamUnread.implicitWidth + 8)
+                                    implicitHeight: 20
+                                    radius: 10
+                                    color: root.colors["badge-bg"]
+                                    Text {
+                                        id: streamUnread
+                                        anchors.centerIn: parent
+                                        text: root.countText(Number(streamDelegate.modelData.unread))
+                                        textFormat: Text.PlainText
+                                        color: root.colors["badge-text"]
+                                        font.pixelSize: 11
+                                    }
+                                }
+                                Item {
+                                    Layout.fillHeight: true
+                                }
                                 Text {
-                                    id: streamUnread
-                                    anchors.centerIn: parent
-                                    text: root.countText(Number(streamDelegate.modelData.unread))
+                                    objectName: "streamTime-" + streamDelegate.modelData.id
+                                    Layout.alignment: Qt.AlignBottom | Qt.AlignRight
+                                    visible: text.length > 0
+                                    text: String(streamDelegate.modelData.rowTime || "")
                                     textFormat: Text.PlainText
-                                    color: root.colors["badge-text"]
-                                    font.pixelSize: 11
+                                    color: root.colors["text-muted"]
+                                    font.pixelSize: 12
                                 }
                             }
                         }
@@ -2642,6 +2700,11 @@ ApplicationWindow {
                         delegate: NativeButton {
                             id: topicButton
                             required property var modelData
+                            readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
+                            readonly property string previewSenderLabel: {
+                                const sender = String(modelData.previewSender || "")
+                                return sender.length && previewBody.length ? sender + ": " : ""
+                            }
                             colors: root.colors
                             objectName: "topic-" + modelData.id
                             width: streamList.width
@@ -2657,6 +2720,12 @@ ApplicationWindow {
                                 border.color: root.colors.accent
                             }
                             contentItem: Item {
+                                id: topicRowSurface
+                                // The reference meta column is min-w-10 with the badge on top
+                                // and the timestamp at the bottom; both share one width slot.
+                                readonly property real metaWidth: Math.max(
+                                    topicUnread.visible ? topicUnread.width : 0,
+                                    topicTime.visible ? topicTime.implicitWidth : 0)
                                 Rectangle {
                                     x: 38
                                     width: 3
@@ -2668,7 +2737,7 @@ ApplicationWindow {
                                 Text {
                                     x: 53
                                     y: 8
-                                    width: parent.width - 61 - topicUnread.width
+                                    width: topicRowSurface.width - 61 - topicRowSurface.metaWidth
                                     text: String(topicButton.modelData.name).startsWith("#") ? topicButton.modelData.name : "#" + topicButton.modelData.name
                                     textFormat: Text.PlainText
                                     font.pixelSize: 14
@@ -2678,6 +2747,39 @@ ApplicationWindow {
                                     font.strikeout: Boolean(topicButton.modelData.done)
                                     color: root.colors["text-primary"]
                                     elide: Text.ElideRight
+                                }
+                                Row {
+                                    // Same preview contract as the stream row: the 20 px line
+                                    // box stays mounted when the row has no last message.
+                                    id: topicPreviewLine
+                                    objectName: "topicPreviewLine-" + topicButton.modelData.id
+                                    x: 53
+                                    y: 28
+                                    width: topicRowSurface.width - 61 - topicRowSurface.metaWidth
+                                    height: 20
+                                    spacing: 0
+                                    Text {
+                                        id: topicPreviewSenderText
+                                        objectName: "topicPreviewSender-" + topicButton.modelData.id
+                                        text: topicButton.previewSenderLabel
+                                        textFormat: Text.PlainText
+                                        color: root.colors["sidebar-sender"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                    }
+                                    Text {
+                                        objectName: "topicPreviewText-" + topicButton.modelData.id
+                                        x: topicPreviewSenderText.width
+                                        width: Math.max(0, topicPreviewLine.width - topicPreviewSenderText.implicitWidth)
+                                        text: topicButton.previewBody
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-secondary"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        elide: Text.ElideRight
+                                    }
                                 }
                                 Rectangle {
                                     id: topicUnread
@@ -2697,6 +2799,18 @@ ApplicationWindow {
                                         font.pixelSize: 11
                                         color: root.colors["badge-text"]
                                     }
+                                }
+                                Text {
+                                    id: topicTime
+                                    objectName: "topicTime-" + topicButton.modelData.id
+                                    anchors.right: topicRowSurface.right
+                                    anchors.rightMargin: 8
+                                    y: 28
+                                    visible: text.length > 0
+                                    text: String(topicButton.modelData.rowTime || "")
+                                    textFormat: Text.PlainText
+                                    color: root.colors["text-muted"]
+                                    font.pixelSize: 12
                                 }
                             }
                         }
