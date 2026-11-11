@@ -253,8 +253,9 @@ for `Reply` and `Cancel`.
 
 - An authoritative server miss caches `unavailable`. A transport failure keeps the
   reference loader's `stale` semantics (`messenger-quote-loader.lib.ts`): the lookup
-  stays retriable, backed off for 3 s and retried on the next projection, so a
-  recovered connection resolves the frame instead of freezing it.
+  stays retriable, backed off for 3 s and re-issued by a self-scheduled timer (not
+  only on the next projection), so a recovered connection resolves the frame even
+  with an idle interface.
 - A confirmed payload mutation (`verifyMutation`) propagates the new content into
   cached quote previews that reference the message, so an edit made in one
   conversation refreshes frames in every other conversation.
