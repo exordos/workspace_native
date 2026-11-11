@@ -1,3 +1,21 @@
+# Workspace Native 0.13.0 - Linux development preview
+
+The app now tells you how the connection is doing. A banner at the top of the
+window shows when you are offline, when the app is reconnecting, or when the
+server rate-limits requests, including a live countdown until requests may be
+sent again - the most important notice always wins and the banner clears itself
+once the connection recovers, including when only the realtime channel comes
+back. And if the initial workspace load fails, the same banner offers
+**Retry** to load it again without restarting the app (issue #146).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.12.0...0.13.0](https://github.com/exordos/workspace_native/compare/0.12.0...0.13.0)
+
+---
+
 # Workspace Native 0.12.0 - Linux development preview
 
 Long conversations now keep loading upward on their own. Scrolling toward the

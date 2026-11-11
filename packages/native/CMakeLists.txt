@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(WorkspaceNative VERSION 0.12.0 LANGUAGES CXX)
+project(WorkspaceNative VERSION 0.13.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -402,4 +402,17 @@ if(BUILD_TESTING)
         add_test(NAME native-chat-key-vault-platform COMMAND native-chat-key-vault-platform-test)
         set_tests_properties(native-chat-key-vault-platform PROPERTIES TIMEOUT 150 LABELS "platform;secure-store")
     endif()
+    # Two-tier test gate (issue #150).
+    # gui label: suites that need a real window manager (Xvnc + openbox) because
+    # they measure window geometry, palette resolution or drive real input.
+    # The headless quick gate runs everything else in parallel offscreen:
+    #   QT_QPA_PLATFORM=offscreen ctest -j 8 -LE gui
+    # RESOURCE_LOCK "xdisplay": window-driving suites must never overlap on a
+    # shared display (focus and keyboard-grab races), so a parallel pre-release
+    # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
+    # remaining suites concurrently.
+    set_tests_properties(native-native-window native-native-draft-workload native-native-e2ee-ui native-native-preferences
+        PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
+    set_tests_properties(native-native-desktop native-native-e2ee-read
+        PROPERTIES RESOURCE_LOCK "xdisplay")
 endif()
