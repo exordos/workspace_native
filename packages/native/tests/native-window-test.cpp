@@ -796,6 +796,19 @@ static QJsonObject avatarProbeMetadata(const QString &uuid, const QByteArray &pn
         {"hash", QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex())}};
 }
 
+// A markdown row carrying one standalone image (media viewer tests, issue #8).
+static QJsonObject mediaViewerRow(const QString &uuid, const QString &fileUuid, qint64 byteSize)
+{
+    const auto urn = QStringLiteral("urn:image:%1?name=shot.png&content_type=image%2Fpng&w=96&h=64&size=%2")
+        .arg(fileUuid, QString::number(byteSize));
+    auto row = message(QStringLiteral("Look\n\n![shot.png](%1)").arg(urn), uuid);
+    row["user_uuid"] = userId;
+    row["author_uuid"] = channelPeer; row["is_own"] = false;
+    row["pinned"] = false; row["reactions"] = QJsonObject{};
+    row["reaction_users"] = QJsonObject{}; row["updated_at"] = row.value("created_at");
+    return row;
+}
+
 static QQuickItem *avatarProbeCircle(QQuickItem *root, qreal diameter)
 {
     if (!root || !root->isVisible()) return nullptr;
@@ -11025,6 +11038,187 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY2(!bareBody->property("text").toString().contains("urn:quote"),
                  qPrintable(bareBody->property("text").toString()));
         QTRY_VERIFY(item(content, "message-quote-" + quoteOnlyId)->isVisible());
+    }
+
+    // --- media viewer (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md) ---
+    // Geometry assertions cite the measured reference at workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af through the design-doc table.
+
+    void mediaViewerOpensNavigatesAndClosesLikeTheReference()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + second));
+        auto *viewer = controller.mediaViewer();
+        QVERIFY(viewer && !viewer->open());
+        QVERIFY(!item(content, "mediaViewer-overlay")->isVisible());
+
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("1 / 2"));
+
+        // 48x48 nav circles 16 px from the edges, vertically centered
+        // (media-viewer-controls.ui.tsx:6-7); 40x40 toolbar buttons top-right
+        // 16 px (media-viewer-toolbar.ui.tsx:7-8,52); strip anchored to the
+        // bottom with 56x56 thumbnails (media-viewer-thumbnails.ui.tsx:78-90).
+        auto *prev = visibleItem(content, "mediaViewer-prev");
+        auto *next = visibleItem(content, "mediaViewer-next");
+        QCOMPARE(prev->width(), 48.0); QCOMPARE(prev->height(), 48.0);
+        QCOMPARE(prev->mapToItem(content, QPointF(0, 0)).x(), 16.0);
+        QCOMPARE(prev->mapToItem(content, QPointF(0, 0)).y(), content->height() / 2 - 24.0);
+        QCOMPARE(next->mapToItem(content, QPointF(0, 0)).x(), content->width() - 16.0 - 48.0);
+        auto *closeButton = visibleItem(content, "mediaViewer-close");
+        QCOMPARE(closeButton->width(), 40.0); QCOMPARE(closeButton->height(), 40.0);
+        QCOMPARE(closeButton->mapToItem(content, QPointF(0, 0)).x(), content->width() - 16.0 - 40.0);
+        QCOMPARE(closeButton->mapToItem(content, QPointF(0, 0)).y(), 16.0);
+        auto *strip = visibleItem(content, "mediaViewer-strip"); QVERIFY(strip);
+        QCOMPARE(strip->y() + strip->height(), content->height());
+        auto *thumb = visibleItem(content, "mediaViewer-thumb-1"); QVERIFY(thumb);
+        QCOMPARE(thumb->width(), 56.0); QCOMPARE(thumb->height(), 56.0);
+
+        // Click and keyboard navigation clamps without wrap-around.
+        click(window, next);
+        QCOMPARE(viewer->index(), 1);
+        QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("2 / 2"));
+        click(window, next);
+        QCOMPARE(viewer->index(), 1);
+        QTest::keyClick(window, Qt::Key_Left);
+        QCOMPARE(viewer->index(), 0);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(viewer->index(), 1);
+        // Escape closes (media-viewer-backdrop.ui.tsx:27-51).
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+        QVERIFY(!item(content, "mediaViewer-overlay")->isVisible());
+
+        // A thumbnail navigates; a backdrop click closes the overlay.
+        click(window, visibleItem(content, "inline-image-" + second));
+        QTRY_VERIFY(viewer->open());
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
+        click(window, visibleItem(content, "mediaViewer-thumb-0"));
+        QCOMPARE(viewer->index(), 0);
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(8, 300));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    void mediaViewerSingleImageHidesNavigationAndStrip()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("single-image.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Single-image viewer window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        QCOMPARE(viewer->count(), 1);
+        // The strip and the arrows are rendered only for galleries of more
+        // than one item (media-viewer-thumbnails.ui.tsx:75, controls.ui.tsx:30).
+        QVERIFY(!item(content, "mediaViewer-prev")->isVisible());
+        QVERIFY(!item(content, "mediaViewer-next")->isVisible());
+        QVERIFY(!item(content, "mediaViewer-strip")->isVisible());
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
     }
 };
 

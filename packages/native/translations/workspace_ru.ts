@@ -2488,4 +2488,39 @@
             </translation>
         </message>
     </context>
+    <context>
+        <name>NativeMediaViewer</name>
+        <message>
+            <source>Media viewer</source>
+            <translation>Просмотр медиа</translation>
+        </message>
+        <message>
+            <source>Loading media…</source>
+            <translation>Медиа загружается…</translation>
+        </message>
+        <message>
+            <source>This media cannot be displayed. You can download the file instead.</source>
+            <translation>Не удалось показать медиа. Файл можно скачать.</translation>
+        </message>
+        <message>
+            <source>Previous</source>
+            <translation>Предыдущее</translation>
+        </message>
+        <message>
+            <source>Next</source>
+            <translation>Следующее</translation>
+        </message>
+        <message>
+            <source>Download</source>
+            <translation>Скачать</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>Media %1</source>
+            <translation>Медиа %1</translation>
+        </message>
+    </context>
 </TS>
