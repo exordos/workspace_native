@@ -37,8 +37,12 @@ restyle. Reference: workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af,
 - `connectionPhase` (`online` | `reconnecting` | `degraded` | `rate_limited` |
   `offline`), NOTIFY `stateChanged`. Precedence reproduces the reference:
   1. `offline` - the last JSON request failed at the transport level
-     (`transportFailed`); any HTTP response (status > 0) proves reachability
-     again and clears it. This is the navigator online/offline analogue the
+     (`transportFailed`, including requests that timed out without any
+     response); any HTTP response (status > 0) proves reachability
+     again and clears it, and so does a realtime connection that reaches
+     `live` again (a healthy websocket link proves reachability even when
+     no JSON response was observed in between). This is the navigator
+     online/offline analogue the
      reference uses; the optional `QNetworkInformation` source was left out
      because its Linux backend is not guaranteed on the supported targets.
   2. `rate_limited` - a JSON request answered HTTP 429; `Retry-After` seconds
@@ -90,6 +94,9 @@ Russian catalog together with every new user-visible string.
   - a 429 with `Retry-After` shows `rate_limited` with a positive countdown that
     clears when the countdown expires, and a later 429 with a shorter
     `Retry-After` never shortens the announced countdown;
+  - a request that times out without any response (client timeout) flips the
+    phase to `offline`, and a realtime reconnect that reaches `live` clears a
+    stale offline flag even when no JSON response was observed in between;
   - a malformed bootstrap catalog sets `bootstrapError`; `retryBootstrap()`
     against a healthy server clears the error and the flag.
 - `native-native-window`: the overlay renders above the split view below the

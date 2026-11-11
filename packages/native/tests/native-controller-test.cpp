@@ -13258,6 +13258,55 @@ private slots:
         const auto remaining = fixture.controller.connectionRetryInSeconds();
         QVERIFY2(remaining > 30 && remaining <= announced, qPrintable(QString::number(remaining)));
     }
+
+    // exo-review finding 3: a successful realtime reconnect must clear a
+    // stale transport-offline flag even when no JSON response was observed.
+    void overlayBannerRealtimeReconnectClearsTransportOffline()
+    {
+        // Handler captures must outlive the Fixture and every deferred send.
+        QVector<std::function<void()>> heldCatchUps;
+        auto holdNextCatchUp = std::make_shared<bool>(false);
+        Fixture fixture; fixture.extraTopic = true;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [holdNextCatchUp, &heldCatchUps](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            Response response{QJsonArray{}};
+            if (*holdNextCatchUp) {
+                *holdNextCatchUp = false;
+                response.defer = [&heldCatchUps](std::function<void()> send) { heldCatchUps.append(std::move(send)); };
+            }
+            return response;
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QString("live"));
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        // Stall the reconnect catch-up so the websocket cannot report live
+        // before the transport outage below has been observed by the client.
+        *holdNextCatchUp = true;
+        gateway.sockets.first()->close();
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("reconnecting"));
+        QTRY_VERIFY(!heldCatchUps.isEmpty());
+        // A controller request that dies at the transport level marks the
+        // connection offline while realtime is still down.
+        fixture.messages = [](const Request &) {
+            Response dropped; dropped.abortConnection = true; return dropped;
+        };
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("offline"));
+        // The websocket reconnect completes without observing any JSON
+        // response; a healthy realtime link must not leave the offline
+        // banner set on top of live sync state.
+        const auto catchUps = heldCatchUps;
+        heldCatchUps.clear();
+        for (const auto &send : catchUps)
+            send();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("live"), 15000);
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("online"));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
