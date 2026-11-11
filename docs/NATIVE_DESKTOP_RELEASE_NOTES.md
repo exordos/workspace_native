@@ -1,3 +1,22 @@
+# Workspace Native 0.9.0 - Linux development preview
+
+Replies arrived in the native client. Choosing **Reply** in a message menu opens a
+compact quote preview above the composer - the quoted author and a two-line excerpt of
+their message - with a **Cancel** action, and sending your answer posts it together
+with the quote, so other clients render your message as a reply. Escape closes the
+preview without discarding your answer. Clicking the quoted message inside a reply
+jumps to its origin: the client opens the conversation that contains it, scrolls the
+origin into view and flashes a highlight, the same behaviour the desktop client gives.
+Quotes whose origin was deleted show "Message unavailable" in the frame (issue #6).
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.8.0...0.9.0](https://github.com/exordos/workspace_native/compare/0.8.0...0.9.0)
+
+---
+
 # Workspace Native 0.8.0 - Linux development preview
 
 Messages are now edited where they are written. Choosing **Edit** in the message menu puts the
