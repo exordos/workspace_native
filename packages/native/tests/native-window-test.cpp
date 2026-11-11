@@ -9137,6 +9137,329 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed=closeIncubatedTestWindow(engine,window);if(closed)closeBeforeEngine.dismiss();QVERIFY(closed);
     }
 
+    // docs/NATIVE_DESKTOP_AUTO_PAGING.md: a wheel that brings the viewport within
+    // LOAD_MORE_THRESHOLD = 100 px of the loaded top (workspace-message-list-scroll
+    // .hook.ts:22,1185-1197 at 61dacef78dab2f5d0be76f283bebf49fe29b84af) issues the
+    // older-page request with no button click; it never fires before the user
+    // scrolls, never re-fires while the viewport stays inside the zone, and re-arms
+    // only after the viewport returns past 100 px (:1172-1174).
+    void scrollNearTopAutoLoadsOlderPages()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        const auto uuidOf = [](int number) {
+            return QString("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+        };
+        const auto row = [&](int number) {
+            auto entry = message(QString("Paging fixture %1").arg(number), uuidOf(number));
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        bool holdSecondPage = true;
+        QVector<std::function<void()>> heldSecondPage;
+        QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Paging fixture"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Auto paging"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto query = QUrlQuery(request.target);
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.queryItemValue("topic_uuid") == topicId)
+                    pageGets.append({marker, query.queryItemValue("sort_dir")});
+                // Newest-first pages over 120 rows: tail 70..119, then 20..69, then 0..19.
+                const int top = marker.isEmpty() ? 120 : marker == uuidOf(70) ? 70 : marker == uuidOf(20) ? 20 : -1;
+                if (top < 0) return Response{QJsonObject{}, 404};
+                QJsonArray page;
+                for (int number = top - 1; number >= top - 50 && number >= 0; --number) page.append(history.value(number));
+                Response response{page};
+                if (top == 120) response.headers.insert("X-Pagination-Marker", uuidOf(70).toUtf8());
+                else if (top == 70) {
+                    response.headers.insert("X-Pagination-Marker", uuidOf(20).toUtf8());
+                    if (holdSecondPage)
+                        response.defer = [&heldSecondPage](std::function<void()> send) { heldSecondPage.append(send); };
+                }
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                auto boundary = std::find_if(history.begin(), history.end(), [&id](const auto &entry) {
+                    return entry.value("uuid") == id;
+                });
+                if (boundary == history.end()) return Response{QJsonObject{}, 404};
+                for (auto it = history.begin(); it.key() <= boundary.key(); ++it)
+                    it.value()["read"] = true;
+                return Response{boundary.value()};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Auto-paging window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 50);
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTRY_VERIFY(list->property("atYEnd").toBool());
+        QCOMPARE(pageGets.size(), 1);
+        const auto settleWheel = [&] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto distanceFromTop = [&] {
+            return list->property("contentY").toReal() - list->property("originY").toReal()
+                + list->property("topMargin").toReal();
+        };
+        // Opening a mid-conversation window is programmatic motion only: the
+        // reference userScrollSeen gate (handleScroll :1145-1149) forbids any
+        // older-page request before a real (non-positioning) scroll movement.
+        QTest::qWait(300);
+        QCOMPARE(pageGets.size(), 1);
+        QVERIFY(controller.canLoadOlder());
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        int steps = 0;
+        while (pageGets.size() < 2 && steps < 20) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+            ++steps;
+        }
+        QCOMPARE(pageGets.size(), 2); // scrolling alone requested the older page, no button click
+        QCOMPARE(pageGets.at(1).first, uuidOf(70));
+        QCOMPARE(pageGets.at(1).second, QString("desc"));
+        QVERIFY(distanceFromTop() <= 100);
+        // The held page is still in flight while the viewport stays inside the
+        // trigger zone: extra wheel input must not fire a second request.
+        for (int extra = 0; extra < 3; ++extra) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+        }
+        QTest::qWait(300);
+        QCOMPARE(pageGets.size(), 2);
+        QCOMPARE(controller.messages().size(), 50);
+        QCOMPARE(heldSecondPage.size(), 1);
+        heldSecondPage.takeFirst()();
+        QTRY_COMPARE(controller.messages().size(), 100);
+        // The preserved viewport sits past 100 px again, so continuing to wheel to
+        // the new top re-arms the trigger and fetches the final page.
+        steps = 0;
+        while (pageGets.size() < 3 && steps < 40) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+            ++steps;
+        }
+        QCOMPARE(pageGets.size(), 3);
+        QTRY_COMPARE(controller.messages().size(), 120);
+        QVERIFY(!controller.canLoadOlder());
+        for (int extra = 0; extra < 3; ++extra) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+        }
+        QCOMPARE(pageGets.size(), 3); // exhausted history stops the walk cleanly
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
+
+    // docs/NATIVE_DESKTOP_AUTO_PAGING.md: when every row of the loaded window is
+    // filtered out by account relevance (the reference zero-visible-window effect,
+    // workspace-message-list.ui.tsx:998-1022 at 61dacef78dab2f5d0be76f283bebf49
+    // fe29b84af: "an invisible page has no scroll surface from which to request
+    // the next one"), the list advances pages on its own, newer direction first.
+    void zeroVisibleWindowAutoAdvances_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("tail") << QString("tail");
+        QTest::newRow("anchor") << QString("anchor");
+    }
+
+    void zeroVisibleWindowAutoAdvances()
+    {
+        QFETCH(QString, scenario);
+        const bool anchor = scenario == "anchor";
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        const auto uuidOf = [](int number) {
+            return QString("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+        };
+        const auto ordinaryRow = [&](int number) {
+            auto entry = message(QString("Ordinary fixture %1").arg(number), uuidOf(number));
+            entry["author_uuid"] = QString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            entry["is_own"] = false;
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        const auto announcedRow = [&](int number) {
+            auto entry = ordinaryRow(number);
+            entry["payload"] = QJsonObject{{"kind", "key_announced"},
+                {"key_uuid", QString("77000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'))}};
+            return entry;
+        };
+        QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Service fixture"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", anchor ? uuidOf(60) : uuidOf(119)}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Announcement run"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", anchor ? uuidOf(60) : uuidOf(119)}};
+        };
+        const auto withMarker = [](Response response, const QByteArray &marker) {
+            response.headers.insert("X-Pagination-Marker", marker);
+            return response;
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto query = QUrlQuery(request.target);
+                const auto wanted = query.queryItemValue("uuid");
+                if (!wanted.isEmpty()) {
+                    if (anchor && wanted == uuidOf(60)) return Response{QJsonArray{announcedRow(60)}};
+                    return Response{QJsonArray{}};
+                }
+                const auto marker = query.queryItemValue("page_marker");
+                const auto dir = query.queryItemValue("sort_dir");
+                if (query.queryItemValue("topic_uuid") == topicId)
+                    pageGets.append({marker, dir});
+                if (!anchor) {
+                    // Tail window is all announcements; two older pages are
+                    // announcements too, the third brings ordinary rows.
+                    if (marker.isEmpty())
+                        return withMarker(Response{QJsonArray{announcedRow(119), announcedRow(118),
+                            announcedRow(117), announcedRow(116)}}, "svc-older-1");
+                    if (marker == "svc-older-1" && dir == "desc")
+                        return withMarker(Response{QJsonArray{announcedRow(115), announcedRow(114),
+                            announcedRow(113), announcedRow(112)}}, "svc-older-2");
+                    if (marker == "svc-older-2" && dir == "desc")
+                        return Response{QJsonArray{ordinaryRow(100), ordinaryRow(101)}};
+                    return Response{QJsonArray{}, 404};
+                }
+                // Anchor around the announcement row 60: before = announcements
+                // (older end), first newer page = announcements with a marker,
+                // second newer page = ordinary rows.
+                if (dir == "desc" && marker == uuidOf(60))
+                    return Response{QJsonArray{announcedRow(58), announcedRow(59)}};
+                if (dir == "asc" && marker == uuidOf(60))
+                    return withMarker(Response{QJsonArray{announcedRow(61), announcedRow(62)}}, "newer-2");
+                if (dir == "asc" && marker == "newer-2")
+                    return Response{QJsonArray{ordinaryRow(63), ordinaryRow(64)}};
+                return Response{QJsonArray{}}; // a bounded walk fallback: stays invisible, test fails
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) return Response{QJsonObject{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Zero-visible window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        if (!anchor) {
+            click(window, item(window->contentItem(), "stream-" + streamId));
+            QTRY_COMPARE(controller.topics().size(), 1);
+            click(window, item(window->contentItem(), "topic-" + topicId));
+            QTRY_VERIFY(controller.messages().size() >= 4);
+        } else {
+            click(window, item(window->contentItem(), "stream-" + streamId));
+            QTRY_COMPARE(controller.topics().size(), 1);
+            controller.openMessageInChat(uuidOf(60));
+            QTRY_COMPARE(controller.anchorMessageId(), uuidOf(60));
+            QTRY_VERIFY(!controller.messages().isEmpty());
+        }
+        QTRY_VERIFY(!controller.busy());
+        // Every row on the loaded window is an account-irrelevant announcement
+        // (accountRelevant returns false for key_announced), so no bubble renders.
+        QTest::qWait(300);
+        QVERIFY(!item(window->contentItem(), "message-" + uuidOf(anchor ? 60 : 119)));
+        // No scroll input happened: the first additional page must arrive on its
+        // own. The tail window has no newer boundary so it advances older; the
+        // anchor window has one and must prefer it (reference direction order).
+        if (!anchor) {
+            QTRY_VERIFY(pageGets.size() >= 2);
+            QCOMPARE(pageGets.at(1).first, QString("svc-older-1"));
+            QCOMPARE(pageGets.at(1).second, QString("desc"));
+            QTRY_COMPARE(pageGets.size(), 3);
+            QTRY_COMPARE(controller.messages().size(), 10);
+        } else {
+            QTRY_VERIFY(std::any_of(pageGets.cbegin(), pageGets.cend(), [](const auto &entry) {
+                return entry.first == "newer-2" && entry.second == "asc";
+            }));
+        }
+        // An ordinary row ends the auto-advance: it renders and nothing further loads.
+        QTRY_VERIFY(item(window->contentItem(), "message-" + uuidOf(anchor ? 63 : 100)));
+        const auto settledGets = pageGets.size();
+        QTest::qWait(400);
+        QCOMPARE(pageGets.size(), settledGets);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
+
     void resolvedTopicReopensThroughTheVisibleMenu_data()
     {
         QTest::addColumn<QString>("scenario");

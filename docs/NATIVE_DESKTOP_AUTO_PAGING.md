@@ -62,15 +62,22 @@ scroll-driven behaviours above and keeps the manual button as the fallback.
    reference comparisons unchanged (`>= 100` re-arm, `<= 100` trigger) and are
    evaluated in that order on every `contentY` change, mirroring the reference
    handler order (an event at exactly 100 px re-arms and may fire).
-2. User-scroll and programmatic mirrors. `userScrollSeen` is set from a
-   non-accepting `WheelHandler` over the list and from `movementStarted`
-   (drag/touch analogue), mirroring `handleWheel`/`handleTouchMove`; the
-   reference's `programmaticScrollRef` maps to the existing `positioning`
-   flag, so viewport restoration writes can never fire the trigger, and a
-   conversation opened into a short (non-scrollable) window never auto-pages
-   before the user interacts. `hasOlderMessages && !isLoadingOlder` maps to
-   the existing `controller.canLoadOlder` property, which also covers snapshot
-   and cache-verification guards. No new controller API is needed.
+2. User-scroll and programmatic mirrors. The reference marks
+   `userScrollSeenRef` inside `handleScroll` itself, for every trusted
+   non-programmatic scroll event (:1145-1149), and DOM scroll events only fire
+   when `scrollTop` actually changed. The faithful native equivalent is
+   therefore: the list marks `userScrollSeen` on every `contentY` change that
+   happened outside `positioning`. Viewport restoration (the
+   `programmaticScrollRef` analogue) writes `contentY` while `positioning` is
+   true, so restore passes can never fire the trigger, and a conversation that
+   opens into a short (non-scrollable) window never auto-pages before the user
+   interacts. `hasOlderMessages && !isLoadingOlder` maps to the existing
+   `controller.canLoadOlder` property, which also covers snapshot and
+   cache-verification guards. No new controller API is needed. One recorded
+   deviation: the `anchorToMessage` highlight jump moves `contentY` without
+   `positioning`, so it marks the seen flag where the reference would suppress
+   anchor-handoff scroll events; it only makes the trigger available slightly
+   earlier and still requires a real user scroll to fire.
 3. Zero-visible-window auto-advance lives in the view, not the controller.
    The reference places the effect in the widget (`workspace-message-list.ui.tsx`)
    because the account-relevance filter lives in the view projection. Native is
