@@ -1638,6 +1638,10 @@
             <translation>Не удалось изменить сообщение. %1</translation>
         </message>
         <message>
+            <source>This message can no longer be edited</source>
+            <translation>Это сообщение уже нельзя редактировать</translation>
+        </message>
+        <message>
             <source>Could not confirm whether the topic reopened. Refresh before trying again.</source>
             <translation>Не удалось подтвердить повторное открытие темы. Обновите данные перед следующей попыткой.</translation>
         </message>

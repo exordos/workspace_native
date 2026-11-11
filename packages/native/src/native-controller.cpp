@@ -3927,6 +3927,8 @@ bool NativeController::durableDraftRoute() const
 
 QString NativeController::draft() const
 {
+    // An open edit session owns the composer text; the stored draft waits underneath it.
+    if (!m_editingMessage.isEmpty()) return m_editBuffer;
     if (durableDraftRoute()) return m_draftStore->text(m_stream, m_topic);
     const auto *stream = currentStream();
     if (stream && !stream->encrypted && m_draftFallbackOwner == creationOwnerKey()
@@ -5964,6 +5966,7 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    closeEditSession();
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
@@ -7564,6 +7567,8 @@ void NativeController::recoverEncryptedSend(bool retry)
 
 bool NativeController::canSend() const
 {
+    // While an edit session is open the save control, not send, owns submission.
+    if (!m_editingMessage.isEmpty()) return false;
     const auto *stream = currentStream();
     if (stream && stream->encrypted)
         return canCompose() && !m_sending && m_pendingSends.value(conversationKey()).uuid.isEmpty()
@@ -7644,6 +7649,15 @@ void NativeController::reopenTopic()
 
 void NativeController::setDraft(const QString &text)
 {
+    // Reference parity: while editing, composer typing never reaches the draft store
+    // (message-composer-draft.hook.ts skips onValueChange while isEditing).
+    if (!m_editingMessage.isEmpty()) {
+        if (m_editBuffer == text) return;
+        m_editBuffer = text;
+        emit draftChanged();
+        emit stateChanged();
+        return;
+    }
     if ((m_topic.isEmpty() && (!currentStream() || !currentStream()->encrypted || !hasConversation())) || draft() == text)
         return;
     const QPointer<NativeController> guard(this);
@@ -7869,6 +7883,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
     rememberConversation();
+    settleEditRouteChange();
     m_topics = initialTopic ? QVector<Topic>{*initialTopic}
         : verifiedTopics ? *verifiedTopics : QVector<Topic>{};
     m_topicsVerified = verifiedTopics != nullptr && !initialTopic;
@@ -8194,6 +8209,7 @@ void NativeController::selectTopic(const QString &id)
     ++m_selection;
     m_topic = id;
     rememberConversation();
+    settleEditRouteChange();
     m_historyVerified = false;
     m_messages.clear();
     pruneMessageFields();
@@ -8417,6 +8433,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
 
 void NativeController::send()
 {
+    if (!m_editingMessage.isEmpty()) return;
     if (currentStream() && currentStream()->encrypted) { sendEncryptedText(); return; }
     if (!canSend())
         return;
@@ -9162,12 +9179,13 @@ void NativeController::refreshReadStreamCounter(const Message &boundary)
     });
 }
 
-void NativeController::verifyMutation(const QString &id, quint64 selection, NativeCache::Projection field)
+void NativeController::verifyMutation(const QString &id, quint64 selection, NativeCache::Projection field,
+                                      const std::function<void(bool)> &settled)
 {
     const auto versions = m_messageFields.value(id);
     const auto context = projectionContext();
     request("GET", messenger + "/messages/" + id, {}, {},
-            [this, id, selection, field, versions, context](const ApiResult &result) {
+            [this, id, selection, field, versions, context, settled](const ApiResult &result) {
                 const auto currentVersions = m_messageFields.value(id);
                 const bool unchanged = field == NativeCache::Projection::Payload
                                            ? versions.payload == currentVersions.payload
@@ -9176,10 +9194,12 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                 const auto message = parseMessage(result.data.toObject(), m_session->project());
                 if (selection != m_selection || currentVersions.deleted || !current || !unchanged) {
                     finishMessageIntent(id);
+                    if (settled) settled(false);
                     return;
                 }
                 if (!result.ok() || !message || message->uuid != id || !inConversation(*message) || message->topic != current->topic || message->author != current->author) {
                     finishMessageIntent(id);
+                    if (settled) settled(false);
                     report(tr("The message change could not be verified."));
                     return;
                 }
@@ -9204,6 +9224,8 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                 projectCanonical(result.data.toObject(), field, context);
                 m_messages = mergeMessages(m_messages, {updated});
                 finishMessageIntent(id);
+                // An inline edit session closes only once the server body is confirmed here.
+                if (settled) settled(true);
                 emit messagesChanged();
                 emit stateChanged();
             });
@@ -9233,26 +9255,125 @@ void NativeController::starMessage(const QString &id)
 
 void NativeController::editMessage(const QString &id, const QString &text)
 {
-    if (!authoritativeRoute()) return;
+    submitMessageEdit(id, text, {});
+}
+
+// The Source edits in the composer (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the message body
+// becomes the composer text, the conversation's stored draft is not written while the
+// session is open, and the session ends on cancel, on a confirmed save or on a route change.
+bool NativeController::beginEditMessage(const QString &id)
+{
+    const auto *message = editableMessage(id);
+    if (!message) {
+        report(tr("This message can no longer be edited"));
+        return false;
+    }
+    m_editingMessage = id;
+    m_editBuffer = message->content;
+    m_editRoute = conversationKey();
+    emit editSessionChanged();
+    emit draftChanged();
+    emit stateChanged();
+    return true;
+}
+
+void NativeController::cancelEditMessage()
+{
+    closeEditSession();
+}
+
+void NativeController::submitEditMessage()
+{
+    if (m_editingMessage.isEmpty()) return;
+    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
+    const auto id = m_editingMessage;
+    const auto text = m_editBuffer;
+    submitMessageEdit(id, text, [this, id](bool confirmed) {
+        if (confirmed && m_editingMessage == id) closeEditSession();
+    });
+}
+
+void NativeController::editLastMessage()
+{
+    const auto *stream = currentStream();
+    if (authoritativeRoute() && stream && !stream->encrypted) {
+        // m_messages is sorted oldest first, so the tail is the newest message.
+        for (auto it = m_messages.constEnd(); it != m_messages.constBegin();) {
+            --it;
+            const bool own = it->own || it->author == m_session->user();
+            if (!own || it->kind != "markdown") continue;
+            if (it->stream != m_stream || it->topic != m_topic) continue;
+            beginEditMessage(it->uuid);
+            return;
+        }
+    }
+    report(tr("This message can no longer be edited"));
+}
+
+bool NativeController::canSaveEdit() const
+{
+    if (m_editingMessage.isEmpty() || !authoritativeRoute()) return false;
+    if (conversationKey() != m_editRoute) return false;
+    const auto *stream = currentStream();
+    if (!stream || stream->encrypted) return false;
+    return !m_editBuffer.trimmed().isEmpty() && m_editBuffer.size() <= 40000;
+}
+
+void NativeController::closeEditSession()
+{
+    if (m_editingMessage.isEmpty()) return;
+    m_editingMessage.clear();
+    m_editBuffer.clear();
+    m_editRoute.clear();
+    emit editSessionChanged();
+    emit draftChanged();
+    emit stateChanged();
+}
+
+void NativeController::settleEditRouteChange()
+{
+    if (!m_editingMessage.isEmpty() && conversationKey() != m_editRoute)
+        closeEditSession();
+}
+
+const Message *NativeController::editableMessage(const QString &id) const
+{
+    if (!authoritativeRoute()) return nullptr;
+    const auto *stream = currentStream();
+    const auto *message = findMessage(id);
+    if (!message || !stream || stream->encrypted) return nullptr;
+    if (!message->own && message->author != m_session->user()) return nullptr;
+    if (message->kind != "markdown") return nullptr;
+    if (message->stream != m_stream || message->topic != m_topic) return nullptr;
+    return message;
+}
+
+void NativeController::submitMessageEdit(const QString &id, const QString &text,
+                                         const std::function<void(bool)> &settled)
+{
+    if (!authoritativeRoute()) { if (settled) settled(false); return; }
     const auto *message = findMessage(id);
     const auto *stream = currentStream();
     if (!message || (!message->own && message->author != m_session->user())
         || message->kind != "markdown" || text.trimmed().isEmpty()
-        || text.size() > 40000 || !stream || stream->encrypted)
+        || text.size() > 40000 || !stream || stream->encrypted) {
+        if (settled) settled(false);
         return;
+    }
     ++m_messageFields[id].pending;
     const auto selection = m_selection;
     const auto streamId = message->stream, topic = message->topic;
     staleConversation(streamId, topic);
     request("PUT", messenger + "/messages/" + id,
         QJsonObject{{"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}}, {},
-        [this, id, selection, streamId, topic](const ApiResult &result) {
+        [this, id, selection, streamId, topic, settled](const ApiResult &result) {
         staleConversation(streamId, topic);
-        if (selection != m_selection) { finishMessageIntent(id); return; }
+        if (selection != m_selection) { finishMessageIntent(id); if (settled) settled(false); return; }
         if (!result.ok()) {
             finishMessageIntent(id);
+            if (settled) settled(false);
             report(tr("Could not edit the message. %1").arg(result.error));
-        } else verifyMutation(id, selection, NativeCache::Projection::Payload);
+        } else verifyMutation(id, selection, NativeCache::Projection::Payload, settled);
     });
 }
 
