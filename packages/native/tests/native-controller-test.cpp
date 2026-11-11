@@ -11560,6 +11560,44 @@ private slots:
                  "eviction must tag-close the evicted desktop banner");
     }
 
+    void aggregateEvictionKeepsTheNewestTiedRow()
+    {
+        // Eviction must never drop the message the banner just displayed,
+        // even when every row shares one timestamp (burst of same-millisecond
+        // messages). Pre-fix the tie winner was hash iteration order, so the
+        // fresh row could be evicted immediately (banner body goes stale).
+        RecordingNotifications sent;
+        NotificationService service;
+        service.setTransport(&sent);
+        QString newestUuid;
+        for (int i = 0; i < 66; ++i) {
+            NotificationCandidate candidate;
+            candidate.owner = QStringLiteral("owner-tie");
+            newestUuid = QStringLiteral("ffff0000-0000-4000-8000-%1")
+                             .arg(65 - i, 12, 10, QLatin1Char('0'));
+            candidate.messageUuid = newestUuid;
+            candidate.streamUuid = QStringLiteral("stream-tie");
+            candidate.topicUuid = QStringLiteral("topic-tie");
+            candidate.authorUuid = QStringLiteral("eeee0000-0000-4000-8000-eeeeeeeeeeee");
+            candidate.content = QStringLiteral("Tied body %1").arg(i);
+            candidate.senderName = QStringLiteral("Tie");
+            candidate.topicName = QStringLiteral("Ties");
+            candidate.streamMode = QStringLiteral("all_messages");
+            candidate.topicMode = QStringLiteral("default");
+            candidate.streamKnown = true;
+            candidate.topicKnown = true;
+            candidate.createdMicros = 480LL * 1000000; // identical timestamps
+            service.ingest(candidate);
+        }
+        const auto tag = sent.lastTag();
+        QVERIFY(!tag.isEmpty());
+        // The newest message must still be displayable (its body is not the
+        // evicted one): the count kept growing and rows stayed at the bound.
+        QCOMPARE(service.aggregateCount(tag), 66);
+        QCOMPARE(service.aggregateRowCount(tag), 64);
+        service.setTransport(nullptr);
+    }
+
     void signOutClosesGenericFallbackBanners()
     {
         // Generic fallback banners (metadata unresolved past the grace window)
