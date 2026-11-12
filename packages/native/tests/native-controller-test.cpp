@@ -149,6 +149,25 @@ public:
     }
 };
 
+// Secure store that holds a removal in flight: the completion is parked until
+// the test invokes releaseRemove, mirroring the mock-server Response `defer`
+// pattern so races can be reproduced without sleeping.
+class ControllerHeldRemovalSecrets final : public SessionSecretStore {
+public:
+    QMap<QString, QByteArray> values;
+    std::function<void()> releaseRemove;
+    void write(const QString &key, const QByteArray &secret, Completion done) override {
+        values.insert(key, secret); QTimer::singleShot(0, this, [done] { done(Error::None); });
+    }
+    void read(const QString &key, Loaded done) override {
+        const auto value = values.value(key);
+        QTimer::singleShot(0, this, [done, value] { done(value, value.isEmpty() ? Error::NotFound : Error::None); });
+    }
+    void remove(const QString &key, Completion done) override {
+        releaseRemove = [this, key, done] { values.remove(key); done(Error::None); };
+    }
+};
+
 class RealtimeGateway final : public QTcpServer {
 public:
     QWebSocketServer websocket{"Controller integration", QWebSocketServer::NonSecureMode};
@@ -14007,6 +14026,92 @@ private slots:
         QTRY_VERIFY(!controller.authenticated());
         QCOMPARE(controller.loginStep(), QString("organization"));
         QVERIFY(controller.error().isEmpty());
+    }
+
+    void sessionSwitcherDelayedLogoutKeepsNewerAccountChoice()
+    {
+        // exo-review #170 round 2: a logout whose secure-store removal stays
+        // in flight must not override a session the user picked meanwhile.
+        // The successor handover is captured at logout time; releasing the
+        // held removal after the user selected another account must leave
+        // the newer choice in charge.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ControllerHeldRemovalSecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const QUrl server("https://switcher.invalid");
+        const QString userB{"66666666-6666-4666-8666-666666666666"};
+        const QString projectB{"77777777-7777-4777-8777-777777777777"};
+        const QString userC{"88888888-8888-4888-8888-888888888888"};
+        const QString projectC{"99999999-9999-4999-9999-999999999999"};
+        SavedAccount a{SessionVault::accountId(server, projectId, userId), server, projectId, userId, "alice", "Alpha"};
+        SavedAccount b{SessionVault::accountId(server, projectB, userB), server, projectB, userB, "bob", "Beta"};
+        SavedAccount c{SessionVault::accountId(server, projectC, userC), server, projectC, userC, "cara", "Gamma"};
+        bool savedA = false;
+        bool savedB = false;
+        bool savedC = false;
+        vault.save(a, "switch-refresh-a", [&](const QString &error) { QVERIFY(error.isEmpty()); savedA = true; });
+        vault.save(b, "switch-refresh-b", [&](const QString &error) { QVERIFY(error.isEmpty()); savedB = true; });
+        vault.save(c, "switch-refresh-c", [&](const QString &error) { QVERIFY(error.isEmpty()); savedC = true; });
+        QTRY_VERIFY(savedA && savedB && savedC);
+        auto transport = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        auto current = std::make_shared<QPair<QString, QString>>();
+        transport->insert("switch-refresh-a", {userId, projectId});
+        transport->insert("switch-refresh-b", {userB, projectB});
+        transport->insert("switch-refresh-c", {userC, projectC});
+        ApiClient api;
+        Session session(&api, nullptr, [transport, current, &api](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            QJsonValue data; int status = 404; QString error{"not found"};
+            if (path.endsWith("/actions/get_token/invoke")) {
+                *current = transport->value(body.toObject().value("refresh_token").toString());
+                data = QJsonObject{{"access_token", "synthetic-token"}, {"refresh_token",
+                    body.toObject().value("refresh_token").toString()}, {"expires_in", 3600}};
+                status = 200; error.clear();
+            } else if (path.endsWith("/actions/introspect")) {
+                data = QJsonObject{{"user_info", QJsonObject{{"uuid", current->first}}},
+                    {"project_id", current->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                status = 200; error.clear();
+            } else if (path == "/api/core/v1/iam/projects/") {
+                data = QJsonArray{QJsonObject{{"uuid", current->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                status = 200; error.clear();
+            }
+            const ApiResult result{data, status, {}, error};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.resumeSavedAccount(a.id);
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        // Log out of the current account; the secure-store removal is held.
+        controller.logoutWorkspaceSession(a.id);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return secrets.releaseRemove != nullptr; })(), 5000);
+        QTRY_VERIFY(!controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        // While the removal is pending, the user picks another remembered
+        // account. The session binds the newer choice immediately, even while
+        // the vault queue parks its load behind the pending removal.
+        controller.selectWorkspaceSession(c.id);
+        QCOMPARE(session.currentSavedAccountId(), c.id);
+        // The removal completes late; its captured successor must not win.
+        // The vault completion runs synchronously inside release(), so the
+        // session binding right afterwards already shows the overwrite.
+        const auto release = std::exchange(secrets.releaseRemove, {});
+        QVERIFY(release);
+        release();
+        QCOMPARE(session.currentSavedAccountId(), c.id);
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ const auto rows = controller.sessionSwitcherSessions();
+            return !rows.isEmpty() && rows.first().toMap().value("id").toString() == c.id
+                && rows.first().toMap().value("isCurrent").toBool(); })(), 10000);
+        // The released removal did land; the untouched accounts survive.
+        QVERIFY(!secrets.values.contains(a.id));
+        QVERIFY(secrets.values.contains(b.id));
+        QVERIFY(secrets.values.contains(c.id));
     }
 };
 
