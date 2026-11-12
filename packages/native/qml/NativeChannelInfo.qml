@@ -32,6 +32,12 @@ Item {
             if (id === page.watchedStream)
                 return
             page.watchedStream = id
+            // A stale selection must not survive a stream change: what was
+            // picked for the previous stream may never be submitted on the
+            // new one, open dialog or not.
+            addMembersDialog.selectedUsers = [];
+            if (addMembersDialog.visible)
+                addMembersSearch.text = "";
             if (id.length > 0)
                 page.controller.refreshChannelInfo()
         }
@@ -537,7 +543,9 @@ Item {
             border.color: page.colors["border-subtle"]
         }
         onClosed: {
-            page.selectedUsers = [];
+            // The selection and search live on the dialog itself; resetting
+            // them keeps a reopen from submitting an earlier request.
+            addMembersDialog.selectedUsers = [];
             addMembersSearch.text = "";
         }
         property var selectedUsers: []
