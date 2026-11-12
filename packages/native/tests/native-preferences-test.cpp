@@ -338,8 +338,13 @@ private slots:
         QCOMPARE(restored.paletteId(), QString("orange-warm"));
         QCOMPARE(restored.mode(), QString("light"));
         QSettings settings(path, QSettings::IniFormat);
+        // Global layout keys are exactly the sidebar width and the composer toolbar
+        // expansion flag: settings.model.ts keeps composerToolbarExpanded in the same
+        // global scope as the sidebar width, and NativePreferences::persist() flushes
+        // both together (src/native-preferences.cpp:259-260). Any other key is a leak.
         for (const auto &key : settings.allKeys()) {
-            QVERIFY(key == "layout/sidebarWidth" || key.startsWith("appearance/owners/" + ownerA + '/')
+            QVERIFY(key == "layout/sidebarWidth" || key == "layout/composerToolbarExpanded"
+                    || key.startsWith("appearance/owners/" + ownerA + '/')
                     || key.startsWith("appearance/owners/" + ownerB + '/'));
             QVERIFY(!key.contains("user") && !key.contains("server") && !key.contains("token"));
         }
