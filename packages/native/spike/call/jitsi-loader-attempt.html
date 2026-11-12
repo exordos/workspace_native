@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>jitsi embed spike (vendored loader)</title>
+<style>html,body{margin:0;height:100%;background:#000}#conf{position:fixed;inset:0}
+#st{position:fixed;top:0;left:0;font:13px monospace;color:#0f0;background:#000d;padding:4px;z-index:9;max-width:100%}</style>
+</head><body><div id="st"></div><div id="conf"></div>
+<script>
+const st = document.getElementById('st');
+const log = m => { st.textContent += m + '\n'; console.log('JITSI ' + m); };
+// Mirrors the reference loader contract (workspace_ui
+// jitsi-external-api.loader.ts:9-27): the script is served from OUR OWN base
+// url (app://spike/vendor/..., vendored like public/vendor/jitsi-external_api.js),
+// injected once, resolves when window.JitsiMeetExternalAPI exists.
+function ensureJitsiExternalApiLoaded() {
+  if (window.JitsiMeetExternalAPI != null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = new URL('vendor/jitsi-external_api.js', location.href).href;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Failed to load Jitsi external_api from ' + s.src));
+    document.head.appendChild(s);
+  });
+}
+const room = (location.hash || 'WSNativeSpikeRoom').slice(1);
+(async () => {
+  log('room=' + room + ' secureContext=' + window.isSecureContext);
+  try { await ensureJitsiExternalApiLoaded(); log('LOADER_OK'); }
+  catch (e) { log('LOADER_ERR ' + e.message); return; }
+  // Reference embed config: audio muted at join, prejoin off (jitsi-call.ui.tsx:18-21).
+  const api = new window.JitsiMeetExternalAPI('meet.jit.si', {
+    roomName: room, width: '100%', height: '100%', parentNode: document.getElementById('conf'),
+    configOverwrite: { startWithAudioMuted: true, startWithVideoMuted: true,
+      prejoinConfig: { enabled: false }, disableDeepLinking: true },
+    allow: 'camera; microphone; fullscreen; display-capture',
+  });
+  api.addListener('videoConferenceJoined', p => log('JOINED room=' + p.roomName + ' id=' + (p.id || '')));
+  api.addListener('participantJoined', p => log('PARTICIPANT_JOINED ' + p.displayName));
+  api.addListener('participantLeft', () => log('PARTICIPANT_LEFT'));
+  api.addListener('readyToClose', () => log('READY_TO_CLOSE'));
+  log('API_CREATED');
+  setTimeout(() => {
+    const f = document.querySelector('#conf iframe');
+    log('IFRAME src=' + (f ? f.src.slice(0, 60) : 'NONE') +
+        ' w=' + (f ? f.clientWidth : 0) + ' h=' + (f ? f.clientHeight : 0));
+  }, 12000);
+})();
+</script></body></html>
