@@ -7048,7 +7048,13 @@ void NativeController::logoutWorkspaceSession(const QString &id)
     // successor must be chosen before the removal, because the vault list
     // drops the entry synchronously.
     forgetSavedAccountWithFollowUp(id, [this, nextId] {
-        if (!nextId.isEmpty()) m_session->resumeSavedAccount(nextId);
+        // exo-review #170 round 2: the user may pick another account while the
+        // removal is in flight. resumeSavedAccount binds its identity to the
+        // session synchronously, so a bound saved account here means a newer
+        // session choice already took over - that choice wins over the
+        // successor captured when this logout was issued.
+        if (nextId.isEmpty() || !m_session->currentSavedAccountId().isEmpty()) return;
+        m_session->resumeSavedAccount(nextId);
     });
 }
 
