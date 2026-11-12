@@ -22,6 +22,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QString locale READ locale WRITE setLocale NOTIFY localeChanged)
     Q_PROPERTY(bool dark READ dark NOTIFY darkChanged)
     Q_PROPERTY(qreal sidebarPreferredWidth READ sidebarPreferredWidth WRITE setSidebarPreferredWidth NOTIFY sidebarPreferredWidthChanged)
+    Q_PROPERTY(bool composerToolbarExpanded READ composerToolbarExpanded WRITE setComposerToolbarExpanded NOTIFY composerToolbarExpandedChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
     Q_PROPERTY(int cacheLimitGb READ cacheLimitGb WRITE setCacheLimitGb NOTIFY cacheLimitGbChanged)
     Q_PROPERTY(QString cacheError READ cacheError NOTIFY cacheErrorChanged)
@@ -41,6 +42,7 @@ public:
     QString locale() const { return m_locale; }
     bool dark() const;
     qreal sidebarPreferredWidth() const { return m_sidebarWidth; }
+    bool composerToolbarExpanded() const { return m_composerToolbarExpanded; }
     QString error() const { return m_error; }
     int cacheLimitGb() const { return m_cacheLimitGb; }
     QString cacheError() const { return m_cacheError; }
@@ -67,6 +69,7 @@ public:
     void reportCacheError(const QString &error);
     void reportCacheStatus(bool busy, bool available, qint64 appliedLimitBytes, qint64 usageBytes);
     void setSidebarPreferredWidth(qreal width);
+    void setComposerToolbarExpanded(bool expanded);
     Q_INVOKABLE void toggleMode();
     Q_INVOKABLE void recordSuggestedReaction(const QString &name, const QString &expectedOwner);
     Q_INVOKABLE void recordQuickReactionUse(const QString &name, const QString &expectedOwner);
@@ -81,6 +84,7 @@ signals:
     void localeChanged();
     void darkChanged();
     void sidebarPreferredWidthChanged();
+    void composerToolbarExpandedChanged();
     void errorChanged();
     void cacheLimitGbChanged();
     void cacheErrorChanged();
@@ -113,6 +117,9 @@ private:
     QJsonObject m_quickUsage;
     std::function<QDate()> m_utcToday;
     qreal m_sidebarWidth = 299;
+    // Global composer toolbar expansion, mirroring settings.model.ts
+    // composerToolbarExpanded (default false).
+    bool m_composerToolbarExpanded = false;
     bool m_systemDark = false;
     QPointer<QWindow> m_window;
     QTimer m_windowSaveTimer;

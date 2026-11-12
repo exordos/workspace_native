@@ -423,8 +423,52 @@
             <translation>чтобы отправить сообщение</translation>
         </message>
         <message>
-            <source>Formatting controls are not implemented yet</source>
-            <translation>Управление форматированием ещё не реализовано</translation>
+            <source>Show formatting tools</source>
+            <translation>Показать инструменты форматирования</translation>
+        </message>
+        <message>
+            <source>Hide formatting tools</source>
+            <translation>Скрыть инструменты форматирования</translation>
+        </message>
+        <message>
+            <source>Link</source>
+            <translation>Ссылка</translation>
+        </message>
+        <message>
+            <source>Bold</source>
+            <translation>Жирный</translation>
+        </message>
+        <message>
+            <source>Italic</source>
+            <translation>Курсив</translation>
+        </message>
+        <message>
+            <source>Strikethrough</source>
+            <translation>Зачёркнутый</translation>
+        </message>
+        <message>
+            <source>Numbered list</source>
+            <translation>Нумерованный список</translation>
+        </message>
+        <message>
+            <source>Bulleted list</source>
+            <translation>Маркированный список</translation>
+        </message>
+        <message>
+            <source>Code block</source>
+            <translation>Блок кода</translation>
+        </message>
+        <message>
+            <source>Code</source>
+            <translation>Код</translation>
+        </message>
+        <message>
+            <source>Spoiler</source>
+            <translation>Спойлер</translation>
+        </message>
+        <message>
+            <source>link text</source>
+            <translation>текст ссылки</translation>
         </message>
         <message>
             <source>Write a message…</source>
