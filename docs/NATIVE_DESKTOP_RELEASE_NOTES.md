@@ -1,3 +1,30 @@
+# Workspace Native 0.17.0 - Linux development preview
+
+Two features ported from the reference desktop:
+
+- Chats can start and join Jitsi meetings: when the workspace configures a meet
+  host, the chat header shows the call action, and a meeting link posted in a
+  chat renders as a call card with the room name, participant initials and a
+  join button. The room name follows the reference six-segment contract, a
+  meeting only opens after the server confirms the message carrying its link,
+  and only one call can be active at a time - starting a different one is
+  refused with an inline notice before anything is sent. The embedded call
+  window ships in the next release.
+- Idle sessions now sign themselves out: after the configured idle window
+  (6 hours to 7 days, default 3 days, with "never" to disable), the app signs
+  out through the same path as a manual sign-out, so stored credentials are
+  wiped the same way. The timer follows your keyboard and mouse activity, pauses
+  while every window is hidden or minimized, and the setting is remembered per
+  account. There is no countdown warning, matching the reference.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.16.0...0.17.0](https://github.com/exordos/workspace_native/compare/0.16.0...0.17.0)
+
+---
+
 # Workspace Native 0.16.0 - Linux development preview
 
 Two features ported from the reference desktop:
