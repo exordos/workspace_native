@@ -41,7 +41,11 @@ a `QObject` that owns one deadline and one `QTimer`.
   interval is 1000 ms; the idle thresholds are hours, so this cannot shift an
   expiry by a meaningful amount. Tests use a short interval and a fake clock.
 - Any activity event resets `deadline = now + timeoutMs` (the reference's
-  `resetTimer` at `auth-guard.ts:194-201`).
+  `resetTimer` at `auth-guard.ts:194-201`). Activity never extends a deadline
+  that has already elapsed: because the poll timer can lag the deadline, the
+  guard enforces an expired deadline when activity arrives before the pending
+  check callback runs, so late input signs the session out instead of
+  refreshing it.
 - On expiry the guard stops itself first (so the action can never re-enter an
   armed guard), then invokes the injected expiry action exactly once. A throwing
   action is swallowed, mirroring "failures logged, expiry still fires" at
@@ -72,10 +76,13 @@ embedders drive it directly). While paused the deadline stamp is retained; on
 return, if the stored deadline already passed the expiry fires immediately,
 exactly like the reference's `scheduleSessionExpiryTimer`.
 
-Deviation: a minimized window reports `isExposed() == false` on X11, so it
-pauses the deadline the same way a hidden window does. The web reference pauses
-only on tab visibility; native has no tab equivalent, and the issue prescribes
-"no window visible/exposed" as the pause condition.
+Deviation: "visible/exposed" is tested as `isVisible() && isExposed()` plus a
+non-hidden/non-minimized `visibility()`, so a minimized window (which reports
+`isExposed() == false` on X11) and a mapped window whose platform `Expose`
+event has not arrived yet both pause the deadline the same way a hidden window
+does; exposing the window resumes it from the retained deadline. The web
+reference pauses only on tab visibility; native has no tab equivalent, and the
+issue prescribes "no window visible/exposed" as the pause condition.
 
 ### Live preset reaction
 
@@ -88,7 +95,9 @@ and `authIdleTimeoutChanged` fires whenever the effective value changes
 `NativeAuthGuard::setTimeoutPreset`, so a settings change re-arms the live
 deadline immediately - the counterpart of the layout hook's effect dependency
 (`layout-auth-guard.hook.ts:14-30`, contract test `:87-109`: switch to `never`
-is cleanup-only).
+is cleanup-only). `setPreferences()` re-reads the current preset on every
+attachment (while a connection made for a detached object ignores the changes
+applied in the meantime) and connects the signal at most once per object.
 
 ### Wiring and credential wipe
 
