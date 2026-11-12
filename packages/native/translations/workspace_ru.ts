@@ -25,6 +25,37 @@
         </message>
     </context>
     <context>
+        <name>SessionSwitcher</name>
+        <message>
+            <source>Select account</source>
+            <translation>Выбрать аккаунт</translation>
+        </message>
+        <message>
+            <source>Current server</source>
+            <translation>Текущий сервер</translation>
+        </message>
+        <message>
+            <source>Logout from organization</source>
+            <translation>Выйти из организации</translation>
+        </message>
+        <message>
+            <source>Log out from %1?</source>
+            <translation>Выйти из организации %1?</translation>
+        </message>
+        <message>
+            <source>Add server</source>
+            <translation>Добавить сервер</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Log out</source>
+            <translation>Выйти</translation>
+        </message>
+    </context>
+    <context>
         <name>Main</name>
         <message>
             <source>Add server</source>

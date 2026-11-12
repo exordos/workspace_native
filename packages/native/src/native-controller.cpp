@@ -5256,6 +5256,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // Issue #144: the top bar switcher re-reads its rows whenever the live
+    // identity or the remembered account set changes.
+    connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
+    connect(m_session, &Session::signedOut, this, &NativeController::sessionSwitcherChanged);
+    connect(m_session, &Session::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
     // Issue #146: a failed bootstrap stays announced until the next snapshot
     // completes (reference layout-bootstrap-error-banner), and the rate-limit
     // countdown ticks so the banner label counts down in place.
@@ -5371,6 +5376,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit stateChanged();
     });
     connect(session, &Session::savedAccountsChanged, this, &NativeController::savedAccountsChanged);
+    connect(this, &NativeController::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
+    connect(this, &NativeController::stateChanged, this, &NativeController::sessionSwitcherChanged);
     connect(session, &Session::authenticated, this, [this] {
         // The reference records the organization into history only after a
         // login committed its session (workspace-organization-history.lib.ts).
@@ -5940,6 +5947,11 @@ void NativeController::resumeSavedAccount(const QString &id)
 
 void NativeController::forgetSavedAccount(const QString &id)
 {
+    forgetSavedAccountWithFollowUp(id, {});
+}
+
+void NativeController::forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done)
+{
     if (busy()) return;
     m_error.clear();
     if (m_cache) for (const auto &account : m_session->savedAccounts()) {
@@ -5952,7 +5964,7 @@ void NativeController::forgetSavedAccount(const QString &id)
         emit stateChanged();
         if (!guard || !cache || cache != m_cache || generation != m_api->generation()) return;
         const bool accepted = cache->forgetAccount(account.server, account.project, account.user, this,
-            [this, guard, cache, id, generation](bool erased) {
+            [this, guard, cache, id, generation, done = std::move(done)](bool erased) {
             if (!guard || cache != m_cache || generation != m_api->generation()) return;
             m_cacheForgettingAccount = false;
             if (!erased) {
@@ -5960,7 +5972,9 @@ void NativeController::forgetSavedAccount(const QString &id)
                 return;
             }
             m_session->forgetSavedAccount(id);
+            m_sessionProjections.remove(id);
             if (guard) emit stateChanged();
+            if (done) done();
         });
         if (!guard) return;
         if (!accepted) {
@@ -5970,7 +5984,9 @@ void NativeController::forgetSavedAccount(const QString &id)
         return;
     }
     m_session->forgetSavedAccount(id);
+    m_sessionProjections.remove(id);
     emit stateChanged();
+    if (done) done();
 }
 
 void NativeController::logout()
@@ -6820,6 +6836,195 @@ QVariantList NativeController::savedAccounts() const
             {"project", account.project}, {"user", account.user},
             {"login", account.login}, {"projectName", account.projectName}});
     return result;
+}
+
+namespace {
+QString workspaceSessionHost(const QUrl &server)
+{
+    // Mirrors the reference getHostLabel: the origin hostname, with the origin
+    // text itself as the fallback when the stored value is not URL-shaped.
+    const auto text = server.toString().trimmed();
+    auto host = server.host();
+    if (host.isEmpty())
+        host = QUrl(text.startsWith(QLatin1String("http")) ? text
+            : QLatin1String("https://") + text).host();
+    return host.isEmpty() ? text : host;
+}
+
+bool backgroundCandidateActive(const QVariantMap &candidate, const QVariantMap &snapshotsById)
+{
+    // top-bar-workspace-session-switcher unread lib: a candidate counts when it
+    // is not own/read and its current message snapshot is missing or still an
+    // unread, non-deleted row.
+    if (candidate.value(QStringLiteral("isOwn")).toBool() || candidate.value(QStringLiteral("read")).toBool())
+        return false;
+    const auto message = candidate.value(QStringLiteral("messageUuid")).toString();
+    if (!snapshotsById.contains(message)) return true;
+    const auto snapshot = snapshotsById.value(message).toMap();
+    if (snapshot.value(QStringLiteral("read")).toBool()) return false;
+    return !snapshot.contains(QStringLiteral("deletedAt"))
+        || snapshot.value(QStringLiteral("deletedAt")).isNull();
+}
+}
+
+int NativeController::backgroundProjectionUnread(const QVariantMap &projection)
+{
+    // Direct port of getBackgroundProjectionUnreadCount
+    // (top-bar-workspace-session-unread.lib.ts:21-72 at the pinned revision):
+    // all-folder count, then all-folder item sum, then folder sum, then
+    // folder-item sum, then non-archived stream sum plus one pending
+    // unknown-stream candidate, then candidate presence. No projection => 0.
+    static const QLatin1String allFolder("00000000-0000-0000-0000-000000000000");
+    if (projection.isEmpty()) return 0;
+    const auto folderUnread = projection.value(QStringLiteral("unreadByFolderId")).toMap();
+    const auto itemUnread = projection.value(QStringLiteral("unreadByFolderItemId")).toMap();
+    if (folderUnread.contains(QString::fromLatin1(allFolder)))
+        return qMax(0, folderUnread.value(QString::fromLatin1(allFolder)).toInt());
+    const auto topology = projection.value(QStringLiteral("folderItemTopologyById")).toMap();
+    bool hasAllFolderItems = false;
+    int sum = 0;
+    for (auto it = topology.cbegin(); it != topology.cend(); ++it) {
+        if (it.value().toMap().value(QStringLiteral("folderUuid")).toString() != QString::fromLatin1(allFolder))
+            continue;
+        hasAllFolderItems = true;
+        sum += qMax(0, itemUnread.value(it.key()).toInt());
+    }
+    if (hasAllFolderItems) return sum;
+    if (!folderUnread.isEmpty()) {
+        for (auto it = folderUnread.cbegin(); it != folderUnread.cend(); ++it) sum += qMax(0, it.value().toInt());
+        return sum;
+    }
+    if (!itemUnread.isEmpty()) {
+        for (auto it = itemUnread.cbegin(); it != itemUnread.cend(); ++it) sum += qMax(0, it.value().toInt());
+        return sum;
+    }
+    const auto streams = projection.value(QStringLiteral("streamSnapshotsById")).toMap();
+    const auto candidates = projection.value(QStringLiteral("notificationCandidates")).toList();
+    const auto snapshotsById = projection.value(QStringLiteral("messageIdSnapshotsById")).toMap();
+    if (!streams.isEmpty()) {
+        QSet<QString> knownStreams;
+        for (auto it = streams.cbegin(); it != streams.cend(); ++it) {
+            const auto snapshot = it.value().toMap();
+            knownStreams.insert(snapshot.value(QStringLiteral("streamUuid")).toString());
+            if (snapshot.value(QStringLiteral("isArchived")).toBool()) continue;
+            const auto active = snapshot.value(QStringLiteral("activeUnreadCount"));
+            sum += qMax(0, active.isNull() || !active.isValid()
+                ? snapshot.value(QStringLiteral("unreadCount")).toInt() : active.toInt());
+        }
+        bool pendingUnknownStream = false;
+        for (const auto &value : candidates) {
+            const auto candidate = value.toMap();
+            if (knownStreams.contains(candidate.value(QStringLiteral("streamUuid")).toString())) continue;
+            if (backgroundCandidateActive(candidate, snapshotsById)) { pendingUnknownStream = true; break; }
+        }
+        return sum + (pendingUnknownStream ? 1 : 0);
+    }
+    for (const auto &value : candidates)
+        if (backgroundCandidateActive(value.toMap(), snapshotsById)) return 1;
+    return 0;
+}
+
+QString NativeController::unreadBadgeLabel(int unread)
+{
+    // The dropdown Badge uses UNREAD_COUNT_DISPLAY_LIMIT = 1000. Issue #144
+    // pins the native rendering to the exact cap label "1000+" above 1000.
+    return unread > 1000 ? QStringLiteral("1000+") : QString::number(unread);
+}
+
+QVariantList NativeController::sessionSwitcherSessions() const
+{
+    QVariantList result;
+    const auto activeId = m_session->currentSavedAccountId();
+    const auto liveServer = m_api->server();
+    const auto liveId = authenticated() ? SessionVault::accountId(liveServer,
+        m_session->project(), m_session->user()) : QString();
+    QSet<QString> seen;
+    const auto appendRow = [&](const QString &id, const QUrl &server, const QString &project,
+        const QString &login) {
+        if (seen.contains(id)) return;
+        seen.insert(id);
+        const auto host = workspaceSessionHost(server);
+        const auto secondary = QStringLiteral("%1 \xC2\xB7 %2").arg(host, project);
+        const auto projection = m_sessionProjections.constFind(id);
+        const auto currentViewer = viewerDisplayName();
+        result.append(QVariantMap{{"id", id}, {"primaryLabel", login},
+            {"secondaryLabel", secondary},
+            {"title", QStringLiteral("%1 \xC2\xB7 %2").arg(login, secondary)},
+            // The native client has no per-account profile store yet: the live
+            // row keeps the verified viewer name, remembered rows keep the
+            // saved login, mirroring the reference username fallback.
+            {"displayName", (!activeId.isEmpty() && id == activeId && !currentViewer.isEmpty())
+                ? currentViewer : login},
+            {"server", server.toString()},
+            {"isCurrent", activeId.isEmpty()
+                ? (!liveId.isEmpty() && id == liveId) : id == activeId},
+            {"unread", projection == m_sessionProjections.cend() ? 0
+                : backgroundProjectionUnread(projection.value())}});
+    };
+    // The reference renders the live session first even when it is not (yet)
+    // a remembered account (top-bar-session-store.ts accountsFromApiSession).
+    if (authenticated()) {
+        const auto liveLogin = m_session->loginName().trimmed();
+        appendRow(liveId, liveServer, m_session->project(),
+            liveLogin.isEmpty() ? m_session->user() : liveLogin);
+    }
+    for (const auto &account : m_session->savedAccounts()) {
+        const auto login = account.login.trimmed();
+        appendRow(account.id, account.server, account.project,
+            login.isEmpty() ? account.user : login);
+    }
+    return result;
+}
+
+void NativeController::publishSessionProjection(const QString &accountId, const QVariantMap &projection)
+{
+    if (accountId.isEmpty()) return;
+    if (projection.isEmpty()) m_sessionProjections.remove(accountId);
+    else m_sessionProjections.insert(accountId, projection);
+    emit sessionSwitcherChanged();
+}
+
+void NativeController::selectWorkspaceSession(const QString &id)
+{
+    if (busy() || id.isEmpty() || id == m_session->currentSavedAccountId()) return;
+    bool remembered = false;
+    for (const auto &account : m_session->savedAccounts()) remembered = remembered || account.id == id;
+    if (!remembered) return;
+    m_error.clear();
+    // The live identity leaves memory (signedOut runs the standard reset) while
+    // every remembered identity survives, then the target resumes like the
+    // sign-in screen's Continue.
+    m_session->detach();
+    m_session->resumeSavedAccount(id);
+}
+
+void NativeController::logoutWorkspaceSession(const QString &id)
+{
+    if (busy() || id.isEmpty()) return;
+    const bool current = id == m_session->currentSavedAccountId();
+    if (!current) { forgetSavedAccount(id); return; }
+    // Removing the active session detaches the live identity, removes the
+    // remembered account through the same durable-cache path, then activates
+    // the next remembered inbox (resolveWorkspacePostLogoutRoute). The
+    // successor must be chosen before the removal, because the vault list
+    // drops the entry synchronously.
+    QString nextId;
+    for (const auto &account : m_session->savedAccounts()) {
+        if (account.id == id) continue;
+        nextId = account.id;
+        break;
+    }
+    forgetSavedAccountWithFollowUp(id, [this, nextId] {
+        if (!nextId.isEmpty()) m_session->resumeSavedAccount(nextId);
+    });
+}
+
+void NativeController::openAddServer()
+{
+    if (busy()) return;
+    // The reference "Add server" navigates to /login with remembered sessions
+    // intact; the native sign-in step opens once the live session is gone.
+    m_session->detach();
 }
 
 namespace {

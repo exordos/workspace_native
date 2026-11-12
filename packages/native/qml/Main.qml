@@ -1411,48 +1411,10 @@ ApplicationWindow {
         Row {
             x: 28
             anchors.verticalCenter: sectionButtons.verticalCenter
-            spacing: 6
-            NativeIconButton {
-                objectName: "organizationButton"
+            SessionSwitcher {
+                objectName: "sessionSwitcher"
                 colors: root.colors
-                help: qsTr("Organization")
-                width: 40
-                height: 40
-                selected: true
-                contentItem: Item {
-                    Rectangle {
-                        width: 36
-                        height: 36
-                        anchors.centerIn: parent
-                        color: root.colors.bg
-                        radius: 6
-                        clip: true
-                        Image {
-                            objectName: "organizationLogo"
-                            anchors.fill: parent
-                            source: "qrc:/workspace/brand/organization-fallback.svg"
-                            fillMode: Image.PreserveAspectFit
-                            Accessible.ignored: true
-                        }
-                        Rectangle {
-                            anchors.fill: parent
-                            color: "transparent"
-                            radius: 6
-                            border.width: 2
-                            border.color: root.colors["border-subtle"]
-                        }
-                    }
-                }
-                onClicked: accountPopup.open()
-            }
-            NativeIconButton {
-                colors: root.colors
-                asset: "chevron-down.svg"
-                help: qsTr("Account and appearance")
-                width: 24
-                height: 40
-                glyphSize: 16
-                onClicked: accountPopup.open()
+                controller: root.controller
             }
         }
         Row {
