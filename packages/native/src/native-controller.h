@@ -289,6 +289,9 @@ public:
     bool bootstrapError() const { return m_bootstrapError; }
     QString ownerKey() const { return authenticated()
         ? SessionVault::accountId(m_api->server(), m_session->project(), m_session->user()) : QString{}; }
+    // Loopback-safe owner scope used by the mention frecency store and the
+    // chat-member authority (tests pin preferences to this identity).
+    QString creationOwnerKey() const;
     bool canAttach() const;
     MediaViewerModel *mediaViewer() const { return m_mediaViewer; }
     bool topicClosed() const;
@@ -405,6 +408,29 @@ public:
     Q_INVOKABLE void attachFiles(const QVariantList &localUrls);
     Q_INVOKABLE void downloadFile(const QString &id, const QUrl &destination);
 
+    // ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
+    // Conversation context for mention ranking (MentionRankingContext in the
+    // reference): self penalty, channel membership when known, recent authors,
+    // DM partners and per-user mention frecency.
+    struct MentionRankingContext
+    {
+        QString selfUserUuid;
+        bool membersKnown = false;
+        QSet<QString> channelMembers;
+        QStringList recentAuthorUuids;
+        QStringList dmPartnerUuids;
+        QVariantMap frecencyByUserUuid;
+    };
+
+    // Pure ranking over candidate row maps (userUuid/displayName/username/email/
+    // status/avatarUrl). Orders by match tier, then context score, then shorter
+    // name, then locale order; membership marks carry "outsideChannel".
+    static QVariantList rankMentionSuggestions(const QString &query, const QVariantList &candidates,
+        const MentionRankingContext &context);
+    Q_INVOKABLE QVariantList mentionSuggestions(const QString &query) const;
+    Q_INVOKABLE bool composerMentionsEnabled() const;
+    Q_INVOKABLE void recordMentionPick(const QString &userUuid);
+
 signals:
     void chatKeyStoreOpenRequested();
     void archivedChatsChanged();
@@ -431,6 +457,11 @@ signals:
 private:
     void applyDeepLink(const QString &url);
     void flushPendingDeepLink(bool settle = true);
+    // Mention suggestion sources for mentionSuggestions()/send serialization.
+    QVariantList mentionCandidates() const;
+    MentionRankingContext mentionRankingContext() const;
+    QVector<ComposerMention> composerMentionEntries() const;
+    NativePreferences *mentionPreferences() const;
     void applyMessageRoute(const QString &org, const QString &project, const QString &message);
     void setAnchorMessage(const QString &id);
     void clearAnchor(const QString &notice = {});
@@ -681,7 +712,6 @@ private:
         NativeCache::Lease lease;
         bool busy = false, uncertain = false, confirmed = false, deleted = false;
     };
-    QString creationOwnerKey() const;
     const TopicCreation *topicCreation() const;
     bool topicCreationAllowed(const QString &stream) const;
     bool topicCreationContext(const QString &owner, const QString &id, quint64 ticket);

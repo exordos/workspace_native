@@ -1,5 +1,6 @@
 #include "domain.h"
 
+#include "workspace-reference.h"
 #include <QHash>
 #include <QFile>
 #include <QJsonDocument>
@@ -435,6 +436,49 @@ QVector<Message> mergeMessages(const QVector<Message> &existing, const QVector<M
         return a.createdMicros == b.createdMicros ? a.uuid < b.uuid : a.createdMicros < b.createdMicros;
     });
     return result;
+}
+
+QString serializeComposerMentions(const QString &value, const QVector<ComposerMention> &mentions)
+{
+    // message-composer-body.lib.ts serializeWorkspaceComposerMentions: visible
+    // names convert to "[Name](urn:user:uuid)" only at a non-word boundary, the
+    // longest visible text wins, emails and ambiguous bare names stay literal.
+    if (value.isEmpty() || mentions.isEmpty()) return value;
+    QVector<const ComposerMention *> unique;
+    for (const auto &mention : mentions)
+    {
+        if (sourceTrimmed(mention.visibleText).isEmpty()) continue;
+        const auto existing = std::find_if(unique.begin(), unique.end(),
+            [&mention](const ComposerMention *candidate) { return candidate->visibleText == mention.visibleText; });
+        if (existing != unique.end()) *existing = &mention;
+        else unique.append(&mention);
+    }
+    if (unique.isEmpty()) return value;
+    std::stable_sort(unique.begin(), unique.end(), [](const ComposerMention *left, const ComposerMention *right) {
+        return left->visibleText.size() > right->visibleText.size();
+    });
+    QStringList alternatives;
+    for (const auto *mention : unique)
+        alternatives << QRegularExpression::escape(mention->visibleText);
+    const QRegularExpression pattern(QStringLiteral("(^|[^\\p{L}\\p{N}_.-])@(")
+        + alternatives.join(QLatin1Char('|')) + QStringLiteral(")(?![\\p{L}\\p{N}_.-])"));
+    QString result;
+    qsizetype consumed = 0;
+    auto match = pattern.globalMatch(value);
+    while (match.hasNext())
+    {
+        const auto found = match.next();
+        const ComposerMention *mention = nullptr;
+        for (const auto *candidate : unique)
+            if (candidate->visibleText == found.captured(2)) { mention = candidate; break; }
+        const auto converted = mention == nullptr ? QString()
+            : buildWorkspaceUserMention(mention->displayName, mention->userUuid);
+        if (converted.isEmpty()) continue; // ambiguous or unconvertible: stays literal
+        result += value.mid(consumed, found.capturedStart() - consumed);
+        result += found.captured(1) + converted;
+        consumed = found.capturedEnd();
+    }
+    return result + value.mid(consumed);
 }
 
 }

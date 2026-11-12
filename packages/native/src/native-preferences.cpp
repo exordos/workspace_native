@@ -537,4 +537,125 @@ void NativePreferences::activateWindow()
     m_window->requestActivate();
 }
 
+namespace {
+// mention-frecency.lib.ts: counts decay with a 14-day half-life; a decayed
+// entry below 0.05 no longer changes any order, and at most 200 are kept.
+constexpr double MentionFrecencyHalfLifeMs = 14.0 * 24 * 60 * 60 * 1000;
+constexpr qsizetype MentionFrecencyMaxEntries = 200;
+constexpr double MentionFrecencyMinKeptScore = 0.05;
+constexpr qsizetype MentionFrecencyMaxBytes = 2 * 1024 * 1024;
+const QRegularExpression validOwnerHash(QStringLiteral("^[0-9a-f]{64}$"));
+const QRegularExpression mentionFrecencyUuidPattern(
+    QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
+
+double mentionFrecencyDecay(double count, double ageMs)
+{
+    if (count <= 0) return 0;
+    if (ageMs <= 0) return count;
+    return count * std::pow(2.0, -ageMs / MentionFrecencyHalfLifeMs);
+}
+
+bool validMentionFrecencyEntry(const QJsonValue &value)
+{
+    if (!value.isObject()) return false;
+    const auto entry = value.toObject();
+    const auto count = entry.value("count");
+    const auto lastUsedAt = entry.value("lastUsedAt");
+    return count.isDouble() && count.toDouble() > 0 && lastUsedAt.isDouble();
+}
+} // namespace
+
+qint64 NativePreferences::nowMs() const
+{
+    return m_nowMs ? m_nowMs() : QDateTime::currentMSecsSinceEpoch();
+}
+
+void NativePreferences::setNowProvider(std::function<qint64()> nowMs)
+{
+    m_nowMs = std::move(nowMs);
+}
+
+void NativePreferences::ensureMentionStore(const QString &owner)
+{
+    if (m_mentionStoreLoaded && m_mentionStoreOwner == owner) return;
+    m_mentionStore = {};
+    m_mentionStoreOwner = owner;
+    m_mentionStoreLoaded = true;
+    if (owner.isEmpty()) return;
+    const auto raw = m_settings.value(QStringLiteral("mentions/owners/") + owner + "/frecency").toByteArray();
+    if (raw.isEmpty() || raw.size() > MentionFrecencyMaxBytes) return;
+    const auto parsed = QJsonDocument::fromJson(raw).object();
+    for (auto it = parsed.begin(); it != parsed.end(); ++it)
+    {
+        if (!mentionFrecencyUuidPattern.match(it.key()).hasMatch()
+            || !validMentionFrecencyEntry(it.value())) continue;
+        m_mentionStore.insert(it.key(), it.value());
+        if (m_mentionStore.size() >= MentionFrecencyMaxEntries) break;
+    }
+}
+
+QVariantMap NativePreferences::mentionFrecencyFor(const QString &owner)
+{
+    // Decayed scores per user, ready to be fed into ranking; entries decayed
+    // below the minimum drop out (loadMentionFrecency in the reference).
+    ensureMentionStore(owner);
+    const auto now = static_cast<double>(nowMs());
+    QVariantMap scores;
+    for (auto it = m_mentionStore.begin(); it != m_mentionStore.end(); ++it)
+    {
+        const auto entry = it.value().toObject();
+        const auto score = mentionFrecencyDecay(entry.value("count").toDouble(),
+            now - entry.value("lastUsedAt").toDouble());
+        if (score >= MentionFrecencyMinKeptScore) scores.insert(it.key(), score);
+    }
+    return scores;
+}
+
+void NativePreferences::recordMentionPick(const QString &userUuid, const QString &owner)
+{
+    // The owner is the opaque per-account scope supplied by the caller
+    // (NativeController::creationOwnerKey), a 64-hex hash on every transport.
+    if (!validOwnerHash.match(owner).hasMatch()) return;
+    if (!mentionFrecencyUuidPattern.match(userUuid).hasMatch()) return;
+    ensureMentionStore(owner);
+    const auto now = static_cast<double>(nowMs());
+    QJsonObject entry;
+    if (m_mentionStore.contains(userUuid))
+    {
+        const auto previous = m_mentionStore.value(userUuid).toObject();
+        const auto decayed = mentionFrecencyDecay(previous.value("count").toDouble(),
+            now - previous.value("lastUsedAt").toDouble());
+        entry = QJsonObject{{"count", decayed + 1.0}, {"lastUsedAt", static_cast<qint64>(now)}};
+    }
+    else entry = QJsonObject{{"count", 1.0}, {"lastUsedAt", static_cast<qint64>(now)}};
+    m_mentionStore.insert(userUuid, entry);
+    persistMentionFrecency(owner);
+    emit mentionFrecencyChanged();
+}
+
+void NativePreferences::persistMentionFrecency(const QString &owner)
+{
+    if (owner.isEmpty()) return;
+    // Prune decayed entries and keep the strongest MentionFrecencyMaxEntries.
+    const auto now = static_cast<double>(nowMs());
+    QVector<QPair<QString, double>> scored;
+    for (auto it = m_mentionStore.begin(); it != m_mentionStore.end(); ++it)
+    {
+        const auto entry = it.value().toObject();
+        const auto score = mentionFrecencyDecay(entry.value("count").toDouble(),
+            now - entry.value("lastUsedAt").toDouble());
+        if (score >= MentionFrecencyMinKeptScore) scored.append({it.key(), score});
+    }
+    std::sort(scored.begin(), scored.end(), [](const auto &left, const auto &right) {
+        return left.second > right.second;
+    });
+    if (scored.size() > MentionFrecencyMaxEntries) scored.resize(MentionFrecencyMaxEntries);
+    QJsonObject store;
+    for (const auto &kept : scored) store.insert(kept.first, m_mentionStore.value(kept.first));
+    m_mentionStore = store;
+    m_settings.setValue(QStringLiteral("mentions/owners/") + owner + "/frecency",
+        QJsonDocument(m_mentionStore).toJson(QJsonDocument::Compact));
+    m_settings.sync();
+}
+
 } // namespace workspace

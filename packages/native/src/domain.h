@@ -134,4 +134,18 @@ std::optional<Message> parseMessage(const QJsonObject &json, const QString &proj
 QVector<Message> mergeMessages(const QVector<Message> &existing,
                               const QVector<Message> &incoming);
 
+// Composer mention entries for the send body (message-composer-body.lib.ts
+// WorkspaceComposerMention). visibleText is what the user sees in the draft;
+// ambiguous display names disambiguate with the username before serialization.
+struct ComposerMention {
+    QString userUuid;
+    QString displayName;
+    QString visibleText;
+};
+
+// Converts visible "@DisplayName" texts to the canonical Workspace mention URNs
+// at send time (message-composer-body.lib.ts serializeWorkspaceComposerMentions):
+// email addresses and ambiguous bare names stay literal.
+QString serializeComposerMentions(const QString &value, const QVector<ComposerMention> &mentions);
+
 }

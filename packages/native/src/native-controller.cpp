@@ -21,6 +21,7 @@
 #include <QPointer>
 #include <QUuid>
 #include <QLocale>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace workspace {
@@ -6096,6 +6097,246 @@ void NativeController::setPreferences(NativePreferences *preferences)
     m_preferences = preferences;
 }
 
+// ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
+
+namespace {
+// mention-suggest.lib.ts normalizeMentionText: fold case and combining marks.
+// Qt strings arrive precomposed (QTextCursor composes), so the documented
+// combining-mark removal only has to cover the explicit Cyrillic yo fold.
+QString mentionNormalize(const QString &value)
+{
+    auto folded = value.toLower();
+    folded.replace(QChar(0x0451), QChar(0x0455));
+    return sourceTrimmed(folded);
+}
+
+// mention-suggest.lib.ts WORD_SEPARATOR.
+QStringList mentionWords(const QString &folded)
+{
+    static const QRegularExpression separators(
+        QStringLiteral("[\\s._\\-/|\\\\,()\\[\\]<>@]+"));
+    return folded.split(separators, Qt::SkipEmptyParts);
+}
+
+// mention-suggest.lib.ts resolveMatchTier (0 exact, 1 prefix, 2 word prefix,
+// 3 substring, 4 email, 5 uuid, none = -1).
+int mentionMatchTier(const QString &query, const QStringList &tokens, const QVariantMap &candidate)
+{
+    const auto displayName = mentionNormalize(candidate.value("displayName").toString());
+    const auto username = mentionNormalize(candidate.value("username").toString());
+    const auto email = mentionNormalize(candidate.value("email").toString());
+    const auto atIndex = email.indexOf(QLatin1Char('@'));
+    const auto emailLocal = atIndex > 0 ? email.left(atIndex) : email;
+    const auto words = mentionWords(displayName) + mentionWords(username);
+    const auto userUuid = candidate.value("userUuid").toString().toLower();
+    const auto startsWord = [&](const QString &prefix) {
+        return std::any_of(words.cbegin(), words.cend(),
+            [&](const QString &word) { return word.startsWith(prefix); });
+    };
+    if ((username.size() && username == query) || (displayName.size() && displayName == query))
+        return 0;
+    if ((username.size() && username.startsWith(query)) || (displayName.size() && displayName.startsWith(query)))
+        return 1;
+    if (startsWord(query) || emailLocal.startsWith(query))
+        return 2;
+    // Every query token must open a word of its own ("iv pe" finds "Ivan Petrov").
+    if (tokens.size() > 1)
+    {
+        QSet<int> taken;
+        const bool allTokens = std::all_of(tokens.cbegin(), tokens.cend(), [&](const QString &token) {
+            for (int index = 0; index < words.size(); ++index)
+                if (!taken.contains(index) && words.at(index).startsWith(token)) { taken.insert(index); return true; }
+            return false;
+        });
+        if (allTokens) return 2;
+    }
+    if ((username.size() && username.contains(query)) || (displayName.size() && displayName.contains(query)))
+        return 3;
+    if (email.size() && email.contains(query))
+        return 4;
+    if (query.size() >= 4 && userUuid.contains(query))
+        return 5;
+    return -1;
+}
+} // namespace
+
+QVariantList NativeController::rankMentionSuggestions(const QString &query,
+    const QVariantList &candidates, const MentionRankingContext &context)
+{
+    const auto normalizedQuery = mentionNormalize(query);
+    const auto tokens = mentionWords(normalizedQuery);
+    struct Scored { QVariantMap row; int tier; int score; };
+    QVector<Scored> scored;
+    for (const auto &value : candidates)
+    {
+        const auto row = value.toMap();
+        const auto uuid = row.value("userUuid").toString();
+        const auto tier = normalizedQuery.isEmpty() ? 0 : mentionMatchTier(normalizedQuery, tokens, row);
+        if (tier < 0) continue;
+        // Context scores (mention-suggest.lib.ts): recent author 4000-100*i (i<20),
+        // channel member +1500, DM partner 1200-40*i (i<20), frecency min(f,10)*60,
+        // self -5000.
+        int score = 0;
+        const auto recentIndex = context.recentAuthorUuids.indexOf(uuid);
+        if (recentIndex >= 0 && recentIndex < 20) score += 4000 - recentIndex * 100;
+        if (context.membersKnown && context.channelMembers.contains(uuid)) score += 1500;
+        const auto dmIndex = context.dmPartnerUuids.indexOf(uuid);
+        if (dmIndex >= 0 && dmIndex < 20) score += 1200 - dmIndex * 40;
+        const auto frecency = context.frecencyByUserUuid.value(uuid).toDouble();
+        if (frecency > 0) score += int(std::min(frecency, 10.0) * 60);
+        if (!context.selfUserUuid.isEmpty() && context.selfUserUuid == uuid) score -= 5000;
+        scored.append({row, tier, score});
+    }
+    std::stable_sort(scored.begin(), scored.end(), [&](const Scored &left, const Scored &right) {
+        if (left.tier != right.tier) return left.tier < right.tier;
+        if (left.score != right.score) return left.score > right.score;
+        // A shorter name is the closer answer to a typed query; with no query it
+        // means nothing (mention-suggest.lib.ts tie order).
+        if (!normalizedQuery.isEmpty()) {
+            const auto lengthDelta = left.row.value("displayName").toString().size()
+                - right.row.value("displayName").toString().size();
+            if (lengthDelta != 0) return lengthDelta < 0;
+        }
+        const auto nameDelta = left.row.value("displayName").toString().localeAwareCompare(
+            right.row.value("displayName").toString());
+        if (nameDelta != 0) return nameDelta < 0;
+        return left.row.value("userUuid").toString().localeAwareCompare(
+            right.row.value("userUuid").toString()) < 0;
+    });
+    QVariantList rows;
+    for (int index = 0; index < scored.size() && index < 8; ++index) // MENTION_SUGGESTION_LIMIT = 8
+    {
+        auto row = scored.at(index).row;
+        const auto uuid = row.value("userUuid").toString();
+        // applyChannelMembership: only known non-members carry the chip fact.
+        if (context.membersKnown && !context.channelMembers.contains(uuid))
+            row.insert("outsideChannel", true);
+        rows.append(row);
+    }
+    return rows;
+}
+
+NativePreferences *NativeController::mentionPreferences() const
+{
+    return m_statusPreferences ? m_statusPreferences.data() : m_preferences.data();
+}
+
+QVariantList NativeController::mentionCandidates() const
+{
+    QVariantList candidates;
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey() || !m_channelDirectoryValid)
+        return candidates;
+    for (const auto &choice : m_channelChoices)
+    {
+        const auto id = choice.value("id").toString();
+        if (id.isEmpty()) continue;
+        candidates.append(QVariantMap{{"userUuid", id},
+            {"displayName", userDisplayName(id, choice.value("displayName").toString())},
+            {"username", choice.value("username").toString()},
+            {"email", choice.value("email").toString()},
+            {"status", userPresence(id)},
+            {"avatarUrl", userAvatar(id)}});
+    }
+    return candidates;
+}
+
+NativeController::MentionRankingContext NativeController::mentionRankingContext() const
+{
+    MentionRankingContext context;
+    if (!authenticated()) return context;
+    context.selfUserUuid = m_session->user();
+    // Native holds stream membership only through the verified encrypted-chat
+    // authority; an ordinary channel keeps membership unknown and marks nothing.
+    const auto *stream = currentStream();
+    if (stream && stream->encrypted && m_chatAuthority.ready
+        && m_chatAuthority.stream == m_stream && m_chatAuthority.owner == creationOwnerKey())
+    {
+        context.membersKnown = true;
+        context.channelMembers = QSet<QString>(m_chatAuthority.roles.keyBegin(), m_chatAuthority.roles.keyEnd());
+    }
+    // Recent authors: the loaded window tail (oldest first), newest seen first,
+    // first-seen wins, at most 20 (message-composer-mention-context.lib.ts).
+    {
+        QStringList authors;
+        QSet<QString> seen;
+        for (auto it = m_messages.cend(); it != m_messages.cbegin();)
+        {
+            --it;
+            const auto &author = it->author;
+            if (author.isEmpty() || seen.contains(author)) continue;
+            seen.insert(author);
+            authors.append(author);
+            if (authors.size() >= 20) break;
+        }
+        context.recentAuthorUuids = authors;
+    }
+    // DM partners by last activity, newest first, at most 20.
+    {
+        QVector<std::pair<qint64, QString>> partners;
+        QSet<QString> seen;
+        for (const auto &streamRow : m_streams)
+        {
+            if (streamRow.directUser.isEmpty() || seen.contains(streamRow.directUser)) continue;
+            seen.insert(streamRow.directUser);
+            partners.append({rowActivityMicros(streamRow.lastMessage, streamRow.updatedMicros), streamRow.directUser});
+        }
+        std::stable_sort(partners.begin(), partners.end(), [](const auto &left, const auto &right) {
+            return left.first > right.first;
+        });
+        QStringList partnersOrder;
+        for (const auto &partner : partners)
+        {
+            partnersOrder.append(partner.second);
+            if (partnersOrder.size() >= 20) break;
+        }
+        context.dmPartnerUuids = partnersOrder;
+    }
+    if (auto *preferences = mentionPreferences())
+        context.frecencyByUserUuid = preferences->mentionFrecencyFor(creationOwnerKey());
+    return context;
+}
+
+QVariantList NativeController::mentionSuggestions(const QString &query) const
+{
+    if (!composerMentionsEnabled()) return {};
+    return rankMentionSuggestions(query, mentionCandidates(), mentionRankingContext());
+}
+
+bool NativeController::composerMentionsEnabled() const
+{
+    const auto *stream = currentStream();
+    // The composer sends plain Markdown only on ordinary channels; encrypted
+    // chats keep the reference's mentionsSupported gate closed.
+    return authenticated() && canCompose() && !(stream && stream->encrypted);
+}
+
+void NativeController::recordMentionPick(const QString &userUuid)
+{
+    if (auto *preferences = mentionPreferences())
+        preferences->recordMentionPick(userUuid, creationOwnerKey());
+}
+
+QVector<ComposerMention> NativeController::composerMentionEntries() const
+{
+    // message-composer.ui.tsx displayNameCounts: users sharing a display name
+    // serialize as "Name (username)" so the bare name stays ambiguous.
+    QVector<ComposerMention> entries;
+    const auto candidates = mentionCandidates();
+    QMap<QString, int> nameCounts;
+    for (const auto &value : candidates)
+        nameCounts[value.toMap().value("displayName").toString()] += 1;
+    for (const auto &value : candidates)
+    {
+        const auto row = value.toMap();
+        const auto displayName = row.value("displayName").toString();
+        const auto visibleText = nameCounts.value(displayName) > 1
+            ? displayName + QStringLiteral(" (") + row.value("username").toString() + QLatin1Char(')')
+            : displayName;
+        entries.append({row.value("userUuid").toString(), displayName, visibleText});
+    }
+    return entries;
+}
+
 QStringList NativeController::organizationHistory() const
 {
     return m_preferences ? m_preferences->organizationHistory() : QStringList{};
@@ -9183,14 +9424,17 @@ void NativeController::send()
     // Reply composition contract (workspace_ui 61dacef workspace-reply.lib.ts:190-212):
     // "[Name](urn:quote:uuid)" + blank line + answer, trailing whitespace trimmed.
     const auto replyId = m_replyMessage;
-    auto wire = text;
+    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
+    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
+    // mention serialization happens before the reply quote prefix join).
+    auto wire = serializeComposerMentions(text, composerMentionEntries());
     if (!replyId.isEmpty()) {
         const auto quoteLine = workspace::buildWorkspaceQuoteReference(replyAuthor(), replyId);
         if (quoteLine.isEmpty()) {
             report(tr("This message can no longer be replied to."));
             return;
         }
-        wire = (quoteLine + QStringLiteral("\n\n") + text).trimmed();
+        wire = (quoteLine + QStringLiteral("\n\n") + wire).trimmed();
     }
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
