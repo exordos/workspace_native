@@ -1940,6 +1940,10 @@
         <source>The saved key response is unresolved. Check does not send it again.</source>
         <translation>Состояние сохранённого ответа на запрос ключа не определено. Проверка не отправляет его повторно.</translation>
     </message>
+    <message>
+        <source>Something went wrong</source>
+        <translation>Что-то пошло не так</translation>
+    </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
@@ -2639,6 +2643,133 @@
         <message>
             <source>Close</source>
             <translation>Закрыть</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeChannelInfo</name>
+        <message>
+            <source>Owner</source>
+            <translation>Владелец</translation>
+        </message>
+        <message>
+            <source>Administrator</source>
+            <translation>Администратор</translation>
+        </message>
+        <message>
+            <source>Moderator</source>
+            <translation>Модератор</translation>
+        </message>
+        <message>
+            <source>Guest</source>
+            <translation>Гость</translation>
+        </message>
+        <message>
+            <source>Member</source>
+            <translation>Участник</translation>
+        </message>
+        <message>
+            <source>online</source>
+            <translation>В сети</translation>
+        </message>
+        <message>
+            <source>away</source>
+            <translation>Отошёл</translation>
+        </message>
+        <message>
+            <source>offline</source>
+            <translation>Не в сети</translation>
+        </message>
+        <message>
+            <source>do not disturb</source>
+            <translation>Не беспокоить</translation>
+        </message>
+        <message numerus="yes">
+            <source>%n member</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n members</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n online</source>
+            <translation>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+            </translation>
+        </message>
+        <message>
+            <source>Notifications</source>
+            <translation>Уведомления</translation>
+        </message>
+        <message>
+            <source>For entire chat</source>
+            <translation>Для всего чата</translation>
+        </message>
+        <message>
+            <source>Mentions only</source>
+            <translation>Только при упоминаниях</translation>
+        </message>
+        <message>
+            <source>Muted</source>
+            <translation>Без уведомлений</translation>
+        </message>
+        <message>
+            <source>All messages</source>
+            <translation>Все сообщения</translation>
+        </message>
+        <message>
+            <source>This action is not available in this conversation yet.</source>
+            <translation>Это действие пока недоступно в этом чате.</translation>
+        </message>
+        <message>
+            <source>Description</source>
+            <translation>Описание</translation>
+        </message>
+        <message>
+            <source>Members</source>
+            <translation>Участники</translation>
+        </message>
+        <message>
+            <source>Add members</source>
+            <translation>Добавить участников</translation>
+        </message>
+        <message>
+            <source>No members found</source>
+            <translation>Участники не найдены</translation>
+        </message>
+        <message>
+            <source>Remove from channel: %1</source>
+            <translation>Удалить из канала: %1</translation>
+        </message>
+        <message>
+            <source>Search users…</source>
+            <translation>Поиск пользователей…</translation>
+        </message>
+        <message>
+            <source>No results found</source>
+            <translation>Ничего не найдено</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Add</source>
+            <translation>Добавить</translation>
         </message>
     </context>
 </TS>

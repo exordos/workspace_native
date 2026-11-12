@@ -3003,6 +3003,289 @@ bool NativeController::canRetryChannelMembers() const
         && !intent->members.isEmpty() && (intent->phase == "members-required" || intent->phase == "members-failed");
 }
 
+// ---- Issue #132 channel info drawer content (docs/NATIVE_DESKTOP_CHANNEL_INFO.md) ----
+
+const Stream *NativeController::channelInfoStreamRow() const
+{
+    if (!authenticated() || m_stream.isEmpty()) return nullptr;
+    const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [this](const Stream &stream) { return stream.uuid == m_stream; });
+    return entry == m_streams.cend() ? nullptr : &*entry;
+}
+
+bool NativeController::channelInfoContext(quint64 ticket, const QString &stream) const
+{
+    return authenticated() && !stream.isEmpty() && m_stream == stream && ticket == m_channelInfoTicket;
+}
+
+QVariantMap NativeController::channelInfoStream() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream) return {};
+    // resolveAvatarBackgroundColor (shared/lib/avatar-color.lib.ts): the API
+    // RGB integer renders as #rrggbb; an absent color stays empty and the QML
+    // avatar falls back to the shared Avatar background token.
+    const auto color = stream->color
+        ? QString("#%1").arg(*stream->color, 6, 16, QChar('0')) : QString{};
+    return {{"id", stream->uuid}, {"title", stream->name}, {"description", stream->description},
+        {"color", color}, {"notificationMode", stream->notificationMode},
+        {"owner", stream->role == "owner"}};
+}
+
+QVariantList NativeController::channelInfoMembers() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || m_channelInfoStreamId != stream->uuid) return {};
+    // Display facts come from the verified directory only while it belongs to
+    // the current owner, exactly like the sidebar avatar/presence projection.
+    const bool directoryOwned = m_channelDirectoryOwner == creationOwnerKey();
+    const auto viewer = m_session->user();
+    const bool isOwner = stream->role == "owner";
+    QVariantList result;
+    for (const auto &member : m_channelInfoMembers) {
+        const auto presentation = m_names.value(member.userUuid);
+        const auto name = !presentation.name.isEmpty() ? presentation.name
+            : (!presentation.email.isEmpty() ? presentation.email : member.userUuid);
+        const bool own = member.userUuid == viewer;
+        result.append(QVariantMap{{"bindingUuid", member.bindingUuid}, {"userUuid", member.userUuid},
+            {"role", member.role}, {"name", name}, {"email", presentation.email},
+            // Raw status drives the resolveWorkspaceStatusLabel(status) ?? email
+            // fallback; unknown status stays empty and never invents presence.
+            {"status", presentation.status}, {"presence", presentation.presence},
+            {"own", own}, {"canRemove", own || isOwner},
+            {"initial", name.isEmpty() ? QString{} : name.left(1)}});
+    }
+    return result;
+}
+
+int NativeController::channelInfoOnlineCount() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || m_channelInfoStreamId != stream->uuid) return 0;
+    // messenger-chat-header.lib.ts:130 counts member users whose status is
+    // active (selectOnlineUserCount); unknown status is never online.
+    return std::count_if(m_channelInfoMembers.cbegin(), m_channelInfoMembers.cend(),
+        [this](const ChannelInfoMember &member) { return m_names.value(member.userUuid).status == "active"; });
+}
+
+bool NativeController::channelInfoIsOwner() const
+{
+    const auto *stream = channelInfoStreamRow();
+    return stream && stream->role == "owner";
+}
+
+QString NativeController::channelInfoNotificationMode() const
+{
+    const auto *stream = channelInfoStreamRow();
+    return stream ? stream->notificationMode : QString{};
+}
+
+void NativeController::refreshChannelInfo()
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream) return;
+    if (m_channelInfoStreamId != stream->uuid) {
+        m_channelInfoStreamId = stream->uuid;
+        m_channelInfoMembers.clear();
+        m_channelInfoMemberError.clear();
+        m_channelInfoNotificationError.clear();
+        m_channelInfoRemoving.clear();
+    }
+    const auto ticket = ++m_channelInfoTicket;
+    m_channelInfoLoading = true;
+    emit stateChanged();
+    loadChannelInfoPage(QString{}, ticket, stream->uuid, {}, {});
+}
+
+void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
+                                           QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers)
+{
+    if (!channelInfoContext(ticket, stream)) return;
+    QUrlQuery query;
+    query.addQueryItem("stream_uuid", stream);
+    query.addQueryItem("page_limit", "200");
+    if (!marker.isEmpty()) query.addQueryItem("page_marker", marker);
+    request("GET", messenger + "/stream_bindings/", {}, query,
+        [this, marker, ticket, stream, accepted, seenUsers](const ApiResult &result) mutable {
+        Q_UNUSED(marker);
+        if (!channelInfoContext(ticket, stream)) return;
+        if (!result.ok() || !result.data.isArray()) {
+            // A rejected page keeps the previous member list untouched; the
+            // next open refreshes again.
+            m_channelInfoLoading = false;
+            emit stateChanged();
+            return;
+        }
+        const auto rows = result.data.toArray();
+        // Same binding page contract as the channel-creation member check:
+        // unique binding/user ids, project, stream, role and mode enums.
+        if (!creationBindings(rows, m_session->project(), stream, &seenUsers)) {
+            m_channelInfoLoading = false;
+            emit stateChanged();
+            return;
+        }
+        for (const auto &value : rows) {
+            const auto raw = value.toObject();
+            accepted.append(ChannelInfoMember{raw.value("uuid").toString().toLower(),
+                raw.value("user_uuid").toString().toLower(), raw.value("role").toString()});
+        }
+        if (!result.nextMarker.isEmpty()) {
+            loadChannelInfoPage(QString::fromUtf8(result.nextMarker), ticket, stream, accepted, seenUsers);
+            return;
+        }
+        m_channelInfoMembers = accepted;
+        m_channelInfoLoading = false;
+        emit stateChanged();
+    });
+}
+
+void NativeController::setChannelInfoNotificationMode(const QString &mode)
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || m_channelInfoNotificationBusy || stream->notificationMode.isEmpty()
+        || stream->notificationMode == mode || !channelModes.contains(mode)) return;
+    const auto owner = ownerKey();
+    const auto generation = m_api->generation();
+    const auto streamUuid = stream->uuid;
+    m_channelInfoNotificationBusy = true;
+    m_channelInfoNotificationError.clear();
+    emit stateChanged();
+    // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
+    // notifications/invoke; the canonical stream DTO answers and the store
+    // value then feeds the switch (store mode wins over any stale info).
+    request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
+        QJsonObject{{"notification_mode", mode}}, {},
+        [this, owner, generation, streamUuid](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
+            || m_stream != streamUuid) return;
+        const auto parsed = result.ok() && result.data.isObject()
+            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
+        const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
+            [streamUuid](const Stream &row) { return row.uuid == streamUuid; });
+        m_channelInfoNotificationBusy = false;
+        if (!parsed || parsed->uuid != streamUuid || entry == m_streams.end()) {
+            // The reference shows t("app.error") on any failed update.
+            m_channelInfoNotificationError = tr("Something went wrong");
+            emit stateChanged();
+            return;
+        }
+        *entry = *parsed;
+        emit streamsChanged();
+        emit stateChanged();
+    });
+}
+
+void NativeController::removeChannelInfoMember(const QString &bindingUuid)
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || m_channelInfoStreamId != stream->uuid) return;
+    const auto wanted = bindingUuid.toLower();
+    const auto member = std::find_if(m_channelInfoMembers.cbegin(), m_channelInfoMembers.cend(),
+        [wanted](const ChannelInfoMember &row) { return row.bindingUuid == wanted; });
+    if (member == m_channelInfoMembers.cend()) return;
+    const auto viewer = m_session->user();
+    const bool own = member->userUuid == viewer;
+    // member.canRemove selector: any member can remove themselves, and only
+    // the stream owner may remove other members.
+    if (!own && stream->role != "owner") return;
+    if (m_channelInfoRemoving.contains(member->userUuid)) return;
+    const auto owner = ownerKey();
+    const auto generation = m_api->generation();
+    const auto streamUuid = stream->uuid;
+    const auto userUuid = member->userUuid;
+    const auto binding = member->bindingUuid;
+    m_channelInfoRemoving.append(userUuid);
+    m_channelInfoMemberError.clear();
+    emit stateChanged();
+    request("DELETE", messenger + "/stream_bindings/" + binding, {}, {},
+        [this, owner, generation, streamUuid, userUuid, binding](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
+            || m_stream != streamUuid) return;
+        m_channelInfoRemoving.removeOne(userUuid);
+        if (!result.ok()) {
+            m_channelInfoMemberError = tr("Something went wrong");
+            emit stateChanged();
+            return;
+        }
+        m_channelInfoMembers.erase(std::remove_if(m_channelInfoMembers.begin(), m_channelInfoMembers.end(),
+            [binding](const ChannelInfoMember &row) { return row.bindingUuid == binding; }),
+            m_channelInfoMembers.end());
+        emit stateChanged();
+    });
+}
+
+void NativeController::addChannelInfoMembers(const QStringList &userUuids)
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || stream->role != "owner" || m_channelInfoAddBusy) return;
+    if (m_channelInfoStreamId != stream->uuid) return;
+    // Submit re-filters already-existing members before the POST (reference
+    // lines 509-523): members who joined while the dialog was open are never
+    // sent twice, and nothing left to send closes the dialog without a POST.
+    QSet<QString> existing;
+    for (const auto &member : m_channelInfoMembers) existing.insert(member.userUuid);
+    QStringList candidates;
+    QSet<QString> seen;
+    for (const auto &value : userUuids) {
+        const auto user = value.toLower();
+        if (!isUuid(user) || seen.contains(user) || existing.contains(user)) continue;
+        seen.insert(user);
+        candidates.append(user);
+    }
+    if (candidates.isEmpty()) {
+        ++m_channelInfoAddSettled;
+        emit channelInfoAddSettledChanged();
+        emit stateChanged();
+        return;
+    }
+    const auto owner = ownerKey();
+    const auto generation = m_api->generation();
+    const auto streamUuid = stream->uuid;
+    QJsonArray members;
+    for (const auto &user : candidates) members.append(user);
+    m_channelInfoAddBusy = true;
+    m_channelInfoAddError.clear();
+    emit stateChanged();
+    request("POST", messenger + "/streams/" + streamUuid + "/actions/add_users/invoke",
+        QJsonObject{{"member", members}}, {},
+        [this, owner, generation, streamUuid, candidates](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
+            || m_stream != streamUuid) return;
+        QSet<QString> addedUsers;
+        const bool valid = result.ok() && result.data.isArray()
+            && creationBindings(result.data.toArray(), m_session->project(), streamUuid, &addedUsers);
+        const bool complete = valid && std::all_of(candidates.cbegin(), candidates.cend(),
+            [&addedUsers](const QString &user) { return addedUsers.contains(user); });
+        m_channelInfoAddBusy = false;
+        if (!complete) {
+            m_channelInfoAddError = tr("Something went wrong");
+            emit stateChanged();
+            return;
+        }
+        const auto rows = result.data.toArray();
+        for (const auto &value : rows) {
+            const auto raw = value.toObject();
+            const auto user = raw.value("user_uuid").toString().toLower();
+            if (!candidates.contains(user)) continue;
+            const auto binding = raw.value("uuid").toString().toLower();
+            if (std::any_of(m_channelInfoMembers.cbegin(), m_channelInfoMembers.cend(),
+                    [binding](const ChannelInfoMember &row) { return row.bindingUuid == binding; }))
+                continue;
+            m_channelInfoMembers.append(ChannelInfoMember{binding, user, raw.value("role").toString()});
+        }
+        ++m_channelInfoAddSettled;
+        emit channelInfoAddSettledChanged();
+        emit stateChanged();
+    });
+}
+
+void NativeController::resetChannelInfoAddState()
+{
+    if (m_channelInfoAddBusy) return;
+    m_channelInfoAddError.clear();
+    emit stateChanged();
+}
+
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
 {
     QMap<QString, QVariantMap> choices;

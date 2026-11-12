@@ -74,7 +74,8 @@ ApplicationWindow {
         }
     }
     // Right drawer shell (issue #129): docks beside the chat like aboutDrawer.
-    // Content layers mount on the body slot later (issue #72).
+    // The channel info content (issue #132) mounts on the body slot as the
+    // chat-info root screen content.
     NativeRightDrawer {
         id: rightDrawer
         anchors.right: parent.right
@@ -82,6 +83,24 @@ ApplicationWindow {
         anchors.topMargin: root.controller.authenticated ? 4 : 8
         anchors.bottom: parent.bottom
         colors: root.colors
+        NativeChannelInfo {
+            id: channelInfoLayer
+            objectName: "channelInfoLayer"
+            colors: root.colors
+            controller: root.controller
+            visible: rightDrawer.topLayerKind === "chat-info"
+                && rightDrawer.currentMode === "info"
+                && rightDrawer.currentChatScreen === ""
+                && rightDrawer.currentProfileOverride === ""
+        }
+    }
+    // While the add-members dialog is open its Escape closes only the dialog;
+    // the drawer layer shortcut must stay silent until the dialog settles.
+    Binding {
+        target: rightDrawer
+        property: "enabled"
+        value: !channelInfoLayer.addDialogOpen
+        when: root.controller.authenticated
     }
     // The reference runtime generation is a login-generation counter: a new
     // authenticated session drops hidden chat screens of the previous runtime.
