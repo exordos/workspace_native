@@ -19,7 +19,8 @@ Window {
         if (t === 1) return "microphone"
         if (t === 2) return "camera"
         if (t === 3) return "microphone and camera"
-        return "screen" // 4/5 desktop capture
+        if (t === 5) return "screen and audio"
+        return "screen" // 4 desktop video capture
     }
 
     function showNextConsentRequest() {
@@ -178,6 +179,7 @@ Window {
                         }
                         Keys.onReturnPressed: spikeWindow.resolveConsent(true)
                         Keys.onEnterPressed: spikeWindow.resolveConsent(true)
+                        Keys.onEscapePressed: spikeWindow.resolveConsent(false)
                         Keys.onTabPressed: denyButton.forceActiveFocus()
                         MouseArea {
                             anchors.fill: parent
