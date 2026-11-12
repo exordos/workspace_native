@@ -17,6 +17,7 @@
 #include <tuple>
 
 #include <QCryptographicHash>
+#include <QBuffer>
 #include <QColor>
 #include <QImage>
 #include <QInputMethodEvent>
@@ -877,6 +878,28 @@ static QJsonObject avatarProbeMetadata(const QString &uuid, const QByteArray &pn
     return {{"uuid", uuid}, {"stream_uuid", QJsonValue::Null}, {"name", "public-avatar.png"},
         {"content_type", "image/png"}, {"size_bytes", png.size()},
         {"hash", QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex())}};
+}
+
+// #141: the live report's standalone image is a 1309 x 715 PNG (~96 KiB on the
+// wire). Generate a deterministic, moderately compressible bitmap of the same
+// dimensions so the real FileClient -> decode -> preview async lifecycle runs
+// during topic-open layout instead of a placeholder short-circuiting it.
+static QByteArray freezeProbeStandalonePng()
+{
+    QImage image(1309, 715, QImage::Format_RGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int block = ((x >> 3) * 73856093) ^ ((y >> 3) * 19349663);
+            line[x] = qRgb(((x * 255) / image.width() + block) & 0xff,
+                ((y * 255) / image.height()) & 0xff, ((x ^ y) * 7) & 0xff);
+        }
+    }
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return bytes;
 }
 
 // A markdown row carrying one standalone image (media viewer tests, issue #8).
@@ -20410,18 +20433,39 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // The fixture mirrors the live report in the issue: the affected topic
         // caches a latest page of 50 markdown messages, longest body 480
         // characters, seven date groups, mixed peer and own author runs,
-        // inline references, and reaction footers.
+        // inline references, and reaction footers (five rows, seven reaction
+        // entries, total count nine). The reporter follow-up adds the two
+        // missing shapes: ten leading reply frames "[Name](urn:quote:uuid)"
+        // whose targets all live on the same page (three of them quoting rows
+        // that carry an image reference, no quote chains), and five urn:image
+        // references - four ordinary Markdown links without dimension
+        // parameters plus one standalone Markdown image declaring a 1309x715
+        // PNG that the real message-image pipeline decodes during layout.
         const QString otherPeer = QStringLiteral("99999999-9999-4999-8999-999999999999");
         QTemporaryDir cacheDir;
         QVERIFY(cacheDir.isValid());
         int historyDelay = 0;
-        const auto bodyFor = [](int number) {
+        const QByteArray standalonePng = freezeProbeStandalonePng();
+        QVERIFY(standalonePng.size() > 1000);
+        const QImage standaloneDecoded = QImage::fromData(standalonePng, "PNG");
+        QCOMPARE(standaloneDecoded.size(), QSize(1309, 715));
+        const QStringList imageFiles{
+            QStringLiteral("a5140000-0000-4000-8000-000000000001"), // standalone 1309x715
+            QStringLiteral("a5140000-0000-4000-8000-000000000002"),
+            QStringLiteral("a5140000-0000-4000-8000-000000000003"),
+            QStringLiteral("a5140000-0000-4000-8000-000000000004"),
+            QStringLiteral("a5140000-0000-4000-8000-000000000005")};
+        const QString standaloneUrn = QStringLiteral(
+            "urn:image:%1?name=photo.png&content_type=image%2Fpng&w=1309&h=715&size=%2")
+            .arg(imageFiles.first(), QString::number(standalonePng.size()));
+        const auto bodyFor = [&](int number) {
             switch (number % 6) {
             case 0: return QStringLiteral("Short reply.");
-            case 1: return QStringLiteral("Agreed - ship it today.");
+            case 1: return QStringLiteral("Agreed - ship it today. cc [Alice](urn:user:%1) 🚀")
+                .arg(channelPeer);
             case 2: return QStringLiteral("Deploy notes [runbook](https://example.invalid/runbook) plus "
                 "[status board](https://example.invalid/status) for the release train.");
-            case 3: return QStringLiteral("First line\nSecond line\nThird line\nFourth line");
+            case 3: return QStringLiteral("Первая строка\nВторая строка\nТретья строка\nFourth line");
             case 4: {
                 const QString filler = QStringLiteral(
                     "wrap pressure across the bubble width while references stay inline and reactions sit in the footer ");
@@ -20434,7 +20478,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
             }
         };
         const auto rowFor = [&](int number, const QString &topic, const QString &uuidPrefix) {
-            auto entry = message(bodyFor(number),
+            QString body = bodyFor(number);
+            if (topic == topicId && number == 31)
+                body = QStringLiteral("Фото дня\n\n![photo.png](%1)").arg(standaloneUrn);
+            else if (topic == topicId && (number == 7 || number == 17 || number == 27 || number == 47))
+                body += QStringLiteral(" [вложение](urn:image:%1)")
+                    .arg(number == 47 ? imageFiles.at(4) : imageFiles.at(number / 10 + 1));
+            auto entry = message(body,
                 QString("%1-0000-4000-8000-%2").arg(uuidPrefix)
                     .arg(number + 1, 12, 10, QLatin1Char('0')), topic);
             const bool own = number % 5 >= 2 && number % 5 < 4;
@@ -20442,9 +20492,33 @@ QTRY_VERIFY(create->property("enabled").toBool());
             entry["is_own"] = own;
             entry["created_at"] = QDateTime(QDate(2026, 1, 1).addDays(number / 8), QTime(10, 0))
                 .addSecs(number).toString(Qt::ISODateWithMs);
-            if (number % 7 == 3) {
-                entry["reactions"] = QJsonObject{{"heart", 2}};
-                entry["reaction_users"] = QJsonObject{{"heart", QJsonArray{userId, channelPeer}}};
+            if (topic == topicId) {
+                // Reactions on five rows: seven reaction entries, total count nine.
+                switch (number) {
+                case 5:
+                    entry["reactions"] = QJsonObject{{"heart", 2}, {"+1", 1}};
+                    entry["reaction_users"] = QJsonObject{{"heart", QJsonArray{userId, channelPeer}},
+                        {"+1", QJsonArray{userId}}};
+                    break;
+                case 12:
+                    entry["reactions"] = QJsonObject{{"eyes", 1}};
+                    entry["reaction_users"] = QJsonObject{{"eyes", QJsonArray{channelPeer}}};
+                    break;
+                case 23:
+                    entry["reactions"] = QJsonObject{{"rocket", 2}, {"tada", 1}};
+                    entry["reaction_users"] = QJsonObject{{"rocket", QJsonArray{userId, channelPeer}},
+                        {"tada", QJsonArray{userId}}};
+                    break;
+                case 34:
+                    entry["reactions"] = QJsonObject{{"heart", 1}};
+                    entry["reaction_users"] = QJsonObject{{"heart", QJsonArray{channelPeer}}};
+                    break;
+                case 41:
+                    entry["reactions"] = QJsonObject{{"+1", 1}};
+                    entry["reaction_users"] = QJsonObject{{"+1", QJsonArray{userId}}};
+                    break;
+                default: break;
+                }
             }
             return entry;
         };
@@ -20453,6 +20527,20 @@ QTRY_VERIFY(create->property("enabled").toBool());
             primary.append(rowFor(number, topicId, QStringLiteral("81000000")));
         for (int number = 0; number < 20; ++number)
             secondary.append(rowFor(number, secondTopicId, QStringLiteral("82000000")));
+        {   // Ten leading reply frames (reporter follow-up): the wire format is
+            // "[Name](urn:quote:uuid)" + blank line + answer
+            // (docs/NATIVE_DESKTOP_REPLIES.md). Every target lives on this same
+            // page and three targets carry an urn:image reference; no reply
+            // targets another reply, so the page has no quote chains.
+            const QList<QPair<int, int>> replies{{2, 7}, {6, 17}, {12, 27}, {19, 0}, {24, 4},
+                {29, 9}, {34, 13}, {39, 21}, {44, 30}, {48, 36}};
+            for (const auto &reply : replies) {
+                auto row = primary.at(reply.first).toObject();
+                const auto target = primary.at(reply.second).toObject().value("uuid").toString();
+                row["content"] = QStringLiteral("[Alice](urn:quote:%1)\n\nТак, принял — разбираюсь по этому треду.").arg(target);
+                primary.replace(reply.first, row);
+            }
+        }
         const QString anchor = primary.at(24).toObject().value("uuid").toString();
         QJsonArray combined;
         {   // The aggregate view shows the newest 50 rows across both topics.
@@ -20480,6 +20568,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 {"last_message_uuid", rows.last().toObject().value("uuid")}};
         };
         MockServer server;
+        static const QLatin1String filesPrefix("/api/workspace/v1/messenger/files/");
         server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
             if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
@@ -20493,10 +20582,41 @@ QTRY_VERIFY(create->property("enabled").toBool());
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto(topicId)};
             if (path.endsWith("/stream_topics/" + secondTopicId)) return Response{topicDto(secondTopicId)};
             if (path.endsWith("/messages/") && request.method == "GET") {
-                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                const QUrlQuery query(request.target);
+                const auto quoteUuid = query.queryItemValue("uuid");
+                if (!quoteUuid.isEmpty()) {
+                    // Quote-lookup shape used by scheduleQuoteFetch:
+                    // GET /messages/?project_id=&uuid= answered with a
+                    // single-row array (docs/NATIVE_DESKTOP_REPLIES.md).
+                    for (const auto &value : primary)
+                        if (value.toObject().value("uuid").toString() == quoteUuid)
+                            return Response{QJsonArray{value.toObject()}};
+                    for (const auto &value : secondary)
+                        if (value.toObject().value("uuid").toString() == quoteUuid)
+                            return Response{QJsonArray{value.toObject()}};
+                    return Response{QJsonArray{}};
+                }
+                const auto topic = query.queryItemValue("topic_uuid");
                 if (topic == topicId) return Response{primary, 200, historyDelay};
                 if (topic == secondTopicId) return Response{secondary};
                 return Response{combined};
+            }
+            if (path.startsWith(filesPrefix)) {
+                auto rest = path.mid(filesPrefix.size());
+                const bool download = rest.endsWith(QLatin1String("/actions/download"));
+                if (download) rest.chop(static_cast<int>(std::char_traits<char>::length("/actions/download")));
+                if (!imageFiles.contains(rest)) return Response{QJsonObject{}, 404};
+                if (!download) {
+                    auto metadata = avatarProbeMetadata(rest, standalonePng);
+                    metadata["stream_uuid"] = streamId;
+                    metadata["name"] = rest == imageFiles.first() ? "photo.png" : "attachment.png";
+                    return Response{metadata};
+                }
+                if (rest != imageFiles.first()) return Response{QJsonObject{}, 404};
+                Response binary;
+                binary.rawBody = standalonePng;
+                binary.rawContentType = "image/png";
+                return binary;
             }
             if (path.endsWith("/actions/read_up_to/invoke")) return Response{QJsonObject{}};
             if (request.method == "GET") {
@@ -20594,7 +20714,13 @@ private slots:
         preferences.setMode("light");
         ApiClient api(nullptr, true);
         Session session(&api);
+        // Reporter follow-up: the standalone image must go through the real
+        // metadata + download + decode pipeline, so the child wires the same
+        // file/message-image stack the shipped client uses.
+        FileClient files(&api);
         NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        MessageImages images(&api, &session, &files);
         const auto cachePath = qEnvironmentVariable("CASSI_NATIVE_LIVELOCK_CHILD_CACHE");
         std::unique_ptr<NativeCacheService> cache;
         if (phase.startsWith(QLatin1String("cache")) && !cachePath.isEmpty()) {
@@ -20602,7 +20728,7 @@ private slots:
             controller.useCache(cache.get());
         }
         QQmlApplicationEngine engine;
-        loadNativeUi(engine, &controller, &preferences);
+        loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
         QVERIFY(window);
         if (phase.endsWith(QLatin1String("-wide")))
