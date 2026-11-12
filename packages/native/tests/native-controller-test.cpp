@@ -9174,6 +9174,181 @@ private slots:
         QCOMPARE(fixture.controller.replyMessageId(), messageId);
     }
 
+    // Multi-reply tabs (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md): the composer
+    // accumulates concurrent quote tabs, each carrying its own answer, and one
+    // send serializes every "[Name](urn:quote:<uuid>)" block plus answer in tab
+    // order (workspace-reply.lib.ts:190-211 at 61dacef).
+    void multiReplyTabsAnswerEachTabAndSendInTabOrder()
+    {
+        Fixture fixture;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString firstId = "11111111-1111-4111-8111-111111111111";
+        const QString secondId = "22222222-2222-4222-8222-222222222222";
+        auto noteA = message("Alpha note", firstId);
+        noteA["is_own"] = false; noteA["author_uuid"] = peerA;
+        auto noteB = message("Beta note", secondId);
+        noteB["is_own"] = false; noteB["author_uuid"] = peerB;
+        QJsonObject posted; int posts = 0;
+        const auto savedContent = [&]{ return posted.value("payload").toObject().value("content").toString(); };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST") { ++posts; posted = request.body; return {message(savedContent(), returnedId), 201}; }
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{noteA, noteB}};
+            return {message(savedContent(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+
+        // The first tab inherits whatever the composer already holds (page wiring
+        // 4166-4181: composer text moves into the first tab of an empty session).
+        fixture.controller.setDraft("carry over");
+        QVERIFY(fixture.controller.beginReply(firstId));
+        QCOMPARE(fixture.controller.replyMessageId(), firstId);
+        QCOMPARE(fixture.controller.draft(), QString("carry over"));
+        fixture.controller.setDraft("answer one");
+        // addReplyTab appends and activates a fresh blank-answer tab.
+        QVERIFY(fixture.controller.addReplyTab(secondId));
+        QCOMPARE(fixture.controller.replyMessageId(), secondId);
+        QVERIFY(fixture.controller.draft().isEmpty());
+        auto tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs.size(), 2);
+        QCOMPARE(tabs[0].toMap().value("message").toString(), firstId);
+        QCOMPARE(tabs[1].toMap().value("message").toString(), secondId);
+        QTRY_COMPARE(tabs[1].toMap().value("author").toString(), QString("Bobby"));
+        QCOMPARE(tabs[1].toMap().value("label").toString(), QString("Bobby: Beta note"));
+        fixture.controller.setDraft("answer two");
+        // Editing the composer edits only the active tab (workspace-reply.lib.ts:113-127).
+        const QString tabA = tabs[0].toMap().value("id").toString();
+        QVERIFY(fixture.controller.selectReplyTab(tabA));
+        QCOMPARE(fixture.controller.draft(), QString("answer one"));
+        fixture.controller.send(); // gated by canSend on the active draft; both tabs go out
+        QTRY_COMPARE(posts, 1);
+        QCOMPARE(savedContent(), QString("[Amy](urn:quote:%1)\n\nanswer one\n\n[Bobby](urn:quote:%2)\n\nanswer two")
+                 .arg(firstId, secondId));
+        QTRY_VERIFY(fixture.controller.replyTabs().isEmpty());
+        QTRY_VERIFY(fixture.controller.draft().isEmpty());
+
+        // A tab with a blank answer serializes as the bare quote line, and a
+        // trailing blank answer leaves no dangling blank lines (trimEnd contract).
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft("only answer");
+        QVERIFY(fixture.controller.addReplyTab(secondId));
+        fixture.controller.send(); // empty active answer cannot send (canSend gate)
+        QTest::qWait(150);
+        QCOMPARE(posts, 1);
+        QVERIFY(fixture.controller.selectReplyTab(fixture.controller.replyTabs()[0].toMap().value("id").toString()));
+        QCOMPARE(fixture.controller.draft(), QString("only answer"));
+        QVERIFY(fixture.controller.canSend());
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 2);
+        QCOMPARE(savedContent(), QString("[Amy](urn:quote:%1)\n\nonly answer\n\n[Bobby](urn:quote:%2)").arg(firstId, secondId));
+        QTRY_VERIFY(fixture.controller.replyTabs().isEmpty());
+
+        // Reorder changes the block order in the serialized reply.
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft("answer one");
+        QVERIFY(fixture.controller.addReplyTab(secondId));
+        fixture.controller.setDraft("answer two");
+        const QString tabB = fixture.controller.replyTabs()[1].toMap().value("id").toString();
+        QVERIFY(fixture.controller.reorderReplyTab(tabB, 0)); // insertion before removal: [B, A]
+        tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs[0].toMap().value("message").toString(), secondId);
+        QCOMPARE(tabs[1].toMap().value("message").toString(), firstId);
+        QCOMPARE(fixture.controller.replyMessageId(), secondId); // active untouched by reorder
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 3);
+        QCOMPARE(savedContent(), QString("[Bobby](urn:quote:%1)\n\nanswer two\n\n[Amy](urn:quote:%2)\n\nanswer one")
+                 .arg(secondId, firstId));
+        QTRY_VERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
+    // Tab store rules ported from workspace-reply.lib.ts: select, close with the
+    // active-tab fallback, reorder bounds, and the draft lockstep with the
+    // active tab's answer.
+    void multiReplyTabCloseSelectAndReorderSemantics()
+    {
+        Fixture fixture;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString firstId = "11111111-1111-4111-8111-111111111111";
+        const QString secondId = "22222222-2222-4222-8222-222222222222";
+        auto noteA = message("Alpha note", firstId);
+        noteA["is_own"] = false; noteA["author_uuid"] = peerA;
+        auto noteB = message("Beta note", secondId);
+        noteB["is_own"] = false; noteB["author_uuid"] = peerB;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) return {QJsonArray{noteA, noteB}};
+            return {QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft("answer one");
+        QVERIFY(fixture.controller.addReplyTab(secondId));
+        fixture.controller.setDraft("answer two");
+        const QString tabA = fixture.controller.replyTabs()[0].toMap().value("id").toString();
+        const QString tabB = fixture.controller.replyTabs()[1].toMap().value("id").toString();
+
+        // Unknown ids are refused without touching the session.
+        QVERIFY(!fixture.controller.addReplyTab("00000000-0000-4000-8000-000000000000"));
+        QVERIFY(!fixture.controller.error().isEmpty());
+        QCOMPARE(fixture.controller.replyTabs().size(), 2);
+        QVERIFY(!fixture.controller.selectReplyTab("missing-tab"));
+        QVERIFY(!fixture.controller.reorderReplyTab("missing-tab", 0));
+        QCOMPARE(fixture.controller.replyTabs().size(), 2);
+
+        // beginReply on an open session replaces only the active tab's quote
+        // (replyToWorkspaceReply keeps the tab id and answer).
+        QVERIFY(fixture.controller.beginReply(firstId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 2);
+        QCOMPARE(fixture.controller.replyTabs()[1].toMap().value("message").toString(), firstId);
+        QCOMPARE(fixture.controller.replyTabs()[1].toMap().value("id").toString(), tabB);
+        QCOMPARE(fixture.controller.draft(), QString("answer two"));
+        // Restore the two-quote session for the remaining assertions.
+        QVERIFY(fixture.controller.selectReplyTab(tabA));
+        fixture.controller.beginReply(firstId);
+        fixture.controller.selectReplyTab(tabB);
+        fixture.controller.beginReply(secondId);
+        fixture.controller.setDraft("answer two");
+
+        // Selecting a tab swaps the composer to that tab's answer.
+        QVERIFY(fixture.controller.selectReplyTab(tabA));
+        QCOMPARE(fixture.controller.draft(), QString("answer one"));
+        QCOMPARE(fixture.controller.replyMessageId(), firstId);
+        QVERIFY(fixture.controller.selectReplyTab(tabB));
+        QCOMPARE(fixture.controller.draft(), QString("answer two"));
+
+        // Reorder bounds: destination is an insertion point clamped to [0, count];
+        // a no-op move reports false (workspace-reply.lib.ts:159-192).
+        QVERIFY(!fixture.controller.reorderReplyTab(tabB, 1)); // already inserted at 1
+        QVERIFY(fixture.controller.reorderReplyTab(tabB, 0)); // [B, A]
+        QVERIFY(!fixture.controller.reorderReplyTab(tabA, 1)); // [B, A] insertion at 1 keeps [B, A]
+        QVERIFY(fixture.controller.reorderReplyTab(tabB, 99)); // clamps to the end: [A, B]
+        QVERIFY(!fixture.controller.reorderReplyTab(tabB, 2)); // already last
+        QCOMPARE(fixture.controller.replyTabs()[1].toMap().value("id").toString(), tabB);
+
+        // Closing the active tab falls back to the following tab, then the previous.
+        fixture.controller.removeReplyTab(tabB);
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        QCOMPARE(fixture.controller.replyMessageId(), firstId);
+        QCOMPARE(fixture.controller.draft(), QString("answer one"));
+        // Closing the last tab empties the session and leaves the answer in the
+        // composer (chat-page-workspace.ui.tsx:3030-3041).
+        fixture.controller.setDraft("typed again");
+        fixture.controller.removeReplyTab(tabA);
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("typed again"));
+        fixture.controller.removeReplyTab(tabA); // closing on an empty session is a no-op
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;

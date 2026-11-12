@@ -136,6 +136,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
     Q_PROPERTY(QString replyMessageId READ replyMessageId NOTIFY replySessionChanged)
+    Q_PROPERTY(QVariantList replyTabs READ replyTabs NOTIFY replySessionChanged)
     Q_PROPERTY(QString replyAuthor READ replyAuthor NOTIFY replySessionChanged)
     Q_PROPERTY(QString replyExcerpt READ replyExcerpt NOTIFY replySessionChanged)
     Q_PROPERTY(bool canCompose READ canCompose NOTIFY stateChanged)
@@ -463,14 +464,22 @@ public:
     Q_INVOKABLE void editLastMessage();
     QString editingMessageId() const { return m_editingMessage; }
     bool canSaveEdit() const;
-    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md): a single quote slot; the
-    // composer draft stays the answer and send() composes the urn:quote line.
+    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md + docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
+    // a tab session of concurrent quote tabs; beginReply keeps the reference
+    // replace-the-active-tab semantics, addReplyTab appends a new tab. The
+    // composer draft mirrors the active tab's answer while the session is open,
+    // and send() composes every "urn:quote" block plus answer in tab order.
     Q_INVOKABLE bool beginReply(const QString &id);
+    Q_INVOKABLE bool addReplyTab(const QString &id);
+    Q_INVOKABLE bool selectReplyTab(const QString &tabId);
+    Q_INVOKABLE void removeReplyTab(const QString &tabId);
+    Q_INVOKABLE bool reorderReplyTab(const QString &tabId, int destinationIndex);
     Q_INVOKABLE void cancelReply();
     Q_INVOKABLE void openMessageInChat(const QString &id);
-    QString replyMessageId() const { return m_replyMessage; }
+    QString replyMessageId() const;
     QString replyAuthor() const;
     QString replyExcerpt() const;
+    QVariantList replyTabs() const;
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);
     Q_INVOKABLE void toggleReaction(const QString &id, const QString &emoji);
@@ -963,6 +972,7 @@ private:
     void closeEditSession();
     void settleEditRouteChange();
     void closeReplySession();
+    QString replyAuthorFor(const QString &id) const;
     void scheduleQuoteFetch(const QString &id) const;
     const Message *editableMessage(const QString &id) const;
     void reset();
@@ -1162,9 +1172,12 @@ private:
     // save for the same message is refused instead of racing the first.
     quint64 m_editSession = 0, m_editRevision = 0;
     QSet<QString> m_editSaveInFlight;
-    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md): quoted message uuid plus
-    // the conversationKey() that owns it; m_quotes caches resolved references.
-    QString m_replyMessage, m_replyRoute;
+    // Reply session (docs/NATIVE_DESKTOP_REPLIES.md + docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
+    // concurrent quote tabs with per-tab answers; the conversationKey() that owns
+    // the session is m_replyRoute. m_quotes caches resolved references.
+    struct ReplyTab { QString id, message, createdAt, answer; };
+    QList<ReplyTab> m_replyTabs;
+    QString m_replyActiveTab, m_replyRoute;
     struct QuoteRecord { QString authorId, content; bool missing = false; };
     mutable QHash<QString, QuoteRecord> m_quotes;
     // Transport failures stay retriable (reference loader keeps "stale" out of

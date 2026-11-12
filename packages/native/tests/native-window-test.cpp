@@ -10,6 +10,7 @@
 #include "avatar-images.h"
 #include "message-images.h"
 
+#include <functional>
 #include <optional>
 #include <tuple>
 
@@ -12084,6 +12085,108 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY2(!bareBody->property("text").toString().contains("urn:quote"),
                  qPrintable(bareBody->property("text").toString()));
         QTRY_VERIFY(item(content, "message-quote-" + quoteOnlyId)->isVisible());
+    }
+
+    // Multi-reply tab strip (issue #200, docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
+    // one row per tab once a second quote joins, and closing one pill cancels
+    // only that tab (workspace-reply.ui.tsx at workspace_ui 61dacef).
+    void replyTabStripShowsRowsAndCloseCancelsOnlyThatTab()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto firstNote = message("Peer first", messageId);
+        firstNote["is_own"] = false;
+        const QString secondMessageId = "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b";
+        auto secondNote = message("Peer second", secondMessageId);
+        secondNote["is_own"] = false;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{firstNote, secondNote}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply tabs teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-replaytabs", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        auto *strip = item(content, "replyTabStrip"); QVERIFY(strip);
+
+        // One tab keeps the plain quote preview: the strip is a >1-tab surface
+        // (chat-page-composer-section.ui.tsx:135-142).
+        QVERIFY(controller.beginReply(messageId));
+        QTRY_VERIFY(notice->isVisible());
+        QCOMPARE(strip->property("height").toReal(), 0.0);
+
+        // The second quote opens the strip with one row per tab.
+        QVERIFY(controller.addReplyTab(secondMessageId));
+        QTRY_COMPARE(strip->property("height").toReal(), 44.0);
+        // Delegate items attach to the visual (item) tree asynchronously after the
+        // model change; walk the item tree until both pills materialize.
+        const auto collectRows = [&strip]{
+            QList<QQuickItem *> found;
+            std::function<void(QQuickItem *)> walk = [&](QQuickItem *it) {
+                for (auto *kid : it->childItems()) {
+                    if (kid->objectName().startsWith("replyTab-")) found << kid;
+                    walk(kid);
+                }
+            };
+            walk(strip);
+            return found;
+        };
+        QList<QQuickItem *> rows;
+        for (int pass = 0; pass < 40 && rows.size() != 2; ++pass) { QTest::qWait(50); rows = collectRows(); }
+        QCOMPARE(rows.size(), 2);
+        for (auto *row : std::as_const(rows)) {
+            QCOMPARE(row->height(), 32.0);
+            QCOMPARE(row->property("radius").toReal(), 12.0);
+        }
+
+        // Closing one pill removes only that tab and re-points the preview.
+        const auto findItemUnder = [&strip](const QString &name){
+            QQuickItem *match = nullptr;
+            std::function<void(QQuickItem *)> walk = [&](QQuickItem *it) {
+                for (auto *kid : it->childItems()) {
+                    if (!match && kid->objectName() == name) match = kid;
+                    walk(kid);
+                }
+            };
+            walk(strip);
+            return match;
+        };
+        const auto tabs = controller.replyTabs();
+        const QString secondTab = tabs[1].toMap().value("id").toString();
+        auto *closeButton = findItemUnder("replyTabClose-" + secondTab); QVERIFY(closeButton);
+        click(window, closeButton);
+        QTRY_COMPARE(controller.replyTabs().size(), 1);
+        QCOMPARE(controller.replyMessageId(), messageId);
+        QVERIFY(notice->isVisible());
+        QCOMPARE(strip->property("height").toReal(), 0.0);
+
+        // Clicking a pill switches the active tab and swaps the composer answer.
+        QVERIFY(controller.addReplyTab(secondMessageId));
+        QTRY_COMPARE(strip->property("height").toReal(), 44.0);
+        controller.setDraft("answer two");
+        const QString firstTab = controller.replyTabs()[0].toMap().value("id").toString();
+        QQuickItem *pill = nullptr;
+        for (int pass = 0; pass < 40 && !pill; ++pass) { QTest::qWait(50); pill = findItemUnder("replyTab-" + firstTab); }
+        QVERIFY(pill);
+        click(window, pill);
+        QTRY_COMPARE(controller.replyMessageId(), messageId);
+        QVERIFY(controller.draft().isEmpty());
     }
 
     // --- media viewer (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md) ---
