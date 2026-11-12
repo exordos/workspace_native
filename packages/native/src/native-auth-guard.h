@@ -61,6 +61,7 @@ private:
     void schedule();
     void fire();
     void applyWindowsVisible(bool visible);
+    void refreshWindowsVisibility();
     void installEventFilter();
     void removeEventFilter();
     qint64 nowMs() const;

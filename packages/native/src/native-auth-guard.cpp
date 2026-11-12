@@ -3,7 +3,9 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QTimer>
+#include <QWindow>
 
 #include <algorithm>
 
@@ -117,7 +119,32 @@ void NativeAuthGuard::setWindowsVisible(bool visible)
 void NativeAuthGuard::applyWindowsVisible(bool visible)
 {
     m_windowsVisible = visible;
-    Q_UNUSED(visible);
+    // auth-guard.ts:171-214: hidden clears the timer but keeps the stored
+    // deadline; becoming visible reschedules from it and fires immediately if
+    // the deadline already passed while hidden.
+    if (visible)
+        schedule();
+    else
+        m_checkTimer.stop();
+}
+
+void NativeAuthGuard::refreshWindowsVisibility()
+{
+    if (m_visibilityExplicit) return;
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance())) return;
+    bool anyVisible = false;
+    for (const auto *window : QGuiApplication::topLevelWindows())
+    {
+        if (!window) continue;
+        if (window->isVisible()
+            && window->visibility() != QWindow::Visibility::Hidden
+            && window->visibility() != QWindow::Visibility::Minimized)
+        {
+            anyVisible = true;
+            break;
+        }
+    }
+    applyWindowsVisible(anyVisible);
 }
 
 void NativeAuthGuard::noteActivity()
@@ -152,6 +179,7 @@ void NativeAuthGuard::schedule()
 {
     m_checkTimer.stop();
     if (!armed()) return;
+    if (!m_windowsVisible) return; // hidden: keep the deadline, clear the timer
     const qint64 remaining = m_deadlineMs - nowMs();
     if (remaining <= 0)
     {
@@ -180,6 +208,7 @@ void NativeAuthGuard::installEventFilter()
     if (m_filterInstalled || !QCoreApplication::instance()) return;
     qApp->installEventFilter(this);
     m_filterInstalled = true;
+    refreshWindowsVisibility();
 }
 
 void NativeAuthGuard::removeEventFilter()
@@ -195,9 +224,28 @@ qint64 NativeAuthGuard::nowMs() const
     return m_nowMs ? m_nowMs() : wallClockMs();
 }
 
-bool NativeAuthGuard::eventFilter(QObject *, QEvent *)
+bool NativeAuthGuard::eventFilter(QObject *, QEvent *event)
 {
-    return false;
+    switch (event->type())
+    {
+    // Qt counterparts of auth-guard.ts:239 mousemove/keydown/click/scroll.
+    case QEvent::MouseMove:
+    case QEvent::KeyPress:
+    case QEvent::MouseButtonPress:
+    case QEvent::Wheel:
+        noteActivity();
+        return false;
+    // Window visibility changes are the document.hidden analogue, not activity.
+    case QEvent::Expose:
+    case QEvent::WindowStateChange:
+    case QEvent::Show:
+    case QEvent::Hide:
+    case QEvent::PlatformSurface:
+        refreshWindowsVisibility();
+        return false;
+    default:
+        return false;
+    }
 }
 
 } // namespace workspace

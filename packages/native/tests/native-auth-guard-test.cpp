@@ -152,6 +152,66 @@ private slots:
         QVERIFY(!guard.active());
         QCOMPARE(activeSpy.count(), 2); // armed once, cancelled once
     }
+
+    // auth-guard.ts:171-214: the expiry timer is cleared while hidden and the
+    // stored deadline reschedules (firing immediately if already elapsed) when
+    // the surface becomes visible again; hidden time alone never signs out.
+    void hiddenWindowsPauseTheDeadlineAndVisibleReturnResumesIt()
+    {
+        FakeClock clock;
+        NativeAuthGuard guard(nullptr, [clockPtr = &clock] { return clockPtr->ms(); });
+        int fired = 0;
+        guard.setExpiryAction([&fired] { ++fired; });
+        guard.setPollIntervalMs(5);
+        guard.setWindowsVisible(true);
+        guard.setSessionActive(true);
+        guard.setTimeoutPreset(QStringLiteral("6h"));
+        guard.setWindowsVisible(false);
+        clock.now += 21600000LL + 1000; // far past the stored deadline
+        QTest::qWait(60);
+        QCOMPARE(fired, 0); // paused: hidden time cannot sign the user out
+        QVERIFY(guard.active()); // the deadline itself is retained, not reset
+        guard.setWindowsVisible(true);
+        QTRY_VERIFY_WITH_TIMEOUT(fired == 1, 2000);
+        QCOMPARE(fired, 1); // rescheduled from the stored deadline, already elapsed
+        QVERIFY(!guard.active());
+    }
+
+    // The event filter maps the Qt activity events (MouseMove/KeyPress/
+    // MouseButtonPress/Wheel - counterparts of auth-guard.ts:239) onto the
+    // deadline reset without consuming events; other events must not extend it.
+    void onlyActivityEventsReArmThroughTheEventFilter()
+    {
+        FakeClock clock;
+        NativeAuthGuard guard(nullptr, [clockPtr = &clock] { return clockPtr->ms(); });
+        guard.setPollIntervalMs(5);
+        guard.setWindowsVisible(true);
+        guard.setSessionActive(true);
+        guard.setTimeoutPreset(QStringLiteral("6h"));
+        clock.now += 3600000LL;
+        QEvent mouseMove(QEvent::MouseMove);
+        QVERIFY(!guard.eventFilter(&guard, &mouseMove));
+        QCOMPARE(guard.expiresAtMs(), clock.now + 21600000LL);
+        clock.now += 3600000LL;
+        QEvent keyPress(QEvent::KeyPress);
+        QVERIFY(!guard.eventFilter(&guard, &keyPress));
+        QCOMPARE(guard.expiresAtMs(), clock.now + 21600000LL);
+        clock.now += 3600000LL;
+        QEvent mousePress(QEvent::MouseButtonPress);
+        QVERIFY(!guard.eventFilter(&guard, &mousePress));
+        QCOMPARE(guard.expiresAtMs(), clock.now + 21600000LL);
+        clock.now += 3600000LL;
+        QEvent wheel(QEvent::Wheel);
+        QVERIFY(!guard.eventFilter(&guard, &wheel));
+        QCOMPARE(guard.expiresAtMs(), clock.now + 21600000LL);
+        const auto deadlineAfterActivity = guard.expiresAtMs();
+        QEvent focusIn(QEvent::FocusIn);
+        QVERIFY(!guard.eventFilter(&guard, &focusIn));
+        QCOMPARE(guard.expiresAtMs(), deadlineAfterActivity); // focus is not activity
+        QEvent showRequest(QEvent::Show);
+        QVERIFY(!guard.eventFilter(&guard, &showRequest));
+        QCOMPARE(guard.expiresAtMs(), deadlineAfterActivity);
+    }
 };
 
 QTEST_MAIN(NativeAuthGuardTest)
