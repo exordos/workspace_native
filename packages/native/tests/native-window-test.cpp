@@ -13102,6 +13102,135 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 3);
     }
 
+    // Issue #186 review round-2 G1: the notification busy state must be tracked
+    // per stream by request token, not as one shared slot. A #1 is deferred;
+    // switching to B and starting B's update may not take over A's tracking
+    // (at head the single busy-stream slot was replaced, so after A->B->A a
+    // second A update was accepted while A #1 was still in flight and that
+    // first response could clear the newer request's busy state). Back on A
+    // the follow-up update must be rejected, and the responses released out of
+    // order (B first) may each only commit their own stream's state.
+    void windowChannelInfoNotificationBusyIsPerStreamRequestScoped()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        bool deferNext = false;
+        std::vector<std::function<void()>> releases;
+        auto base = scene.fixture.server.handler;
+        // The guard restores the fixture handler and releases any still-held
+        // send before the scene tears down (head accepts an extra A request
+        // whose held response the earlier assertions then never release).
+        auto gate = qScopeGuard([&]{ scene.fixture.server.handler = base;
+            for (auto &release : releases) if (release) release(); });
+        scene.fixture.server.handler = [base, &deferNext, &releases](const Request &request) -> Response {
+            auto response = base(request);
+            if (deferNext && request.method == "POST"
+                && request.target.path().endsWith("/actions/notifications/invoke")) {
+                deferNext = false;
+                response.defer = [&releases](std::function<void()> send)
+                { releases.push_back(std::move(send)); };
+            }
+            return response;
+        };
+        // A #1: held by the gate.
+        deferNext = true;
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QTRY_COMPARE(scene.fixture.notifPosts, 1);
+        // B's update: also held; at head this replaces the tracked stream.
+        scene.controller.selectStream(scene.fixture.secondStreamId);
+        QTRY_COMPARE(scene.text("channelInfoTitle"), QStringLiteral("Second channel"));
+        deferNext = true;
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_COMPARE(scene.fixture.notifPosts, 2);
+        // Back on A: A's own in-flight update keeps A busy (the B request may
+        // not steal it), so the switch stays disabled and a second A update is
+        // rejected instead of racing the first one.
+        scene.controller.selectStream(streamId);
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QVERIFY(!visibleItem("channelInfoNotifMuted")->property("enabled").toBool());
+        deferNext = true;
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTest::qWait(250);
+        QCOMPARE(scene.fixture.notifPosts, 2);
+        QVERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        // Out-of-order release: B's response settles only B and never touches
+        // A's busy state or A's row.
+        releases[1](); releases[1] = {};
+        QTest::qWait(250);
+        QVERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("all_messages"));
+        // A #1 is the current request for A: it commits and releases its own
+        // stream only after that.
+        releases[0](); releases[0] = {};
+        QTRY_VERIFY(!scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("muted"));
+        QVERIFY(scene.text("channelInfoNotificationError").isEmpty());
+    }
+
+    // Issue #186 review round-2 G2: same request-token shape for the add flow.
+    // A #1 is deferred; B's held add may not take over A's tracking; back on A
+    // a second add is rejected, and the out-of-order releases each touch only
+    // their own stream (dave lands exactly once, once A's response arrives).
+    void windowChannelInfoAddBusyIsPerStreamRequestScoped()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        bool deferNext = false;
+        std::vector<std::function<void()>> releases;
+        auto base = scene.fixture.server.handler;
+        auto gate = qScopeGuard([&]{ scene.fixture.server.handler = base;
+            for (auto &release : releases) if (release) release(); });
+        scene.fixture.server.handler = [base, &deferNext, &releases](const Request &request) -> Response {
+            auto response = base(request);
+            if (deferNext && request.method == "POST"
+                && request.target.path().endsWith("/actions/add_users/invoke")) {
+                deferNext = false;
+                response.defer = [&releases](std::function<void()> send)
+                { releases.push_back(std::move(send)); };
+            }
+            return response;
+        };
+        deferNext = true;
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});   // A #1 held
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoAddBusy").toBool());
+        QTRY_COMPARE(scene.fixture.memberPosts, 1);
+        scene.controller.selectStream(scene.fixture.secondStreamId);
+        QTRY_COMPARE(scene.text("channelInfoTitle"), QStringLiteral("Second channel"));
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 2);
+        deferNext = true;
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});   // B held
+        QTRY_COMPARE(scene.fixture.memberPosts, 2);
+        scene.controller.selectStream(streamId);
+        // Note: the mock's add handler already mutated the served member list
+        // when it received the (still-held) A #1 POST, so A reloads with dave
+        // present; the client-side row commit is deduplicated by binding uuid.
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        // Back on A: A's own in-flight add keeps A busy; the follow-up add is
+        // rejected, so no second A response can race the first one.
+        QVERIFY(scene.evaluate("controller.channelInfoAddBusy").toBool());
+        deferNext = true;
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});
+        QTest::qWait(250);
+        QCOMPARE(scene.fixture.memberPosts, 2);
+        QVERIFY(scene.evaluate("controller.channelInfoAddBusy").toBool());
+        // Out-of-order release: B's response settles only B's request.
+        releases[1](); releases[1] = {};
+        QTest::qWait(250);
+        QVERIFY(scene.evaluate("controller.channelInfoAddBusy").toBool());
+        QCOMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        // A #1 commits exactly once for A: dave appears and the busy slot frees.
+        releases[0](); releases[0] = {};
+        QTRY_VERIFY(!scene.evaluate("controller.channelInfoAddBusy").toBool());
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        QVERIFY(scene.evaluate("controller.channelInfoAddSettled").toInt() > 0);
+        QVERIFY(scene.text("channelInfoAddError").isEmpty());
+    }
+
     // Issue #186 review F3: closing the add-members dialog must reset the
     // dialog's own selection and search text (the old handler wrote to a
     // non-existent page property, so both survived a reopen).
