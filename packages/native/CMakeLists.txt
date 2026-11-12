@@ -428,3 +428,19 @@ if(BUILD_TESTING)
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
 endif()
+
+# Throwaway Jitsi embed spike for docs/NATIVE_DESKTOP_CALL_STACK.md (#160).
+# Default OFF: the default build tree never sees Qt6::WebEngineQuick, and the
+# spike registers nothing in CTest. Enabled only with
+# -DWORKSPACE_NATIVE_CALL_SPIKE=ON in a separate build directory.
+option(WORKSPACE_NATIVE_CALL_SPIKE
+    "Build the throwaway Jitsi embed spike (no tests, no default-build impact)" OFF)
+if(WORKSPACE_NATIVE_CALL_SPIKE)
+    find_package(Qt6 REQUIRED COMPONENTS WebEngineQuick WebEngineCore)
+    qt_add_executable(native-call-spike MANUAL_FINALIZATION spike/call/main.cpp)
+    target_link_libraries(native-call-spike PRIVATE Qt6::Quick Qt6::WebEngineQuick Qt6::WebEngineCore)
+    qt_add_resources(native-call-spike spike_call_files PREFIX /spike/call BASE spike/call FILES
+        spike/call/CallSpike.qml spike/call/probe.html spike/call/jitsi.html
+        spike/call/jitsi-loader-attempt.html spike/call/vendor/jitsi-external_api.js)
+    qt_finalize_executable(native-call-spike)
+endif()

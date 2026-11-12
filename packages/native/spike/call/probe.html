@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>call spike probe</title>
+<style>body{font:14px monospace;background:#111;color:#0f0;padding:8px;white-space:pre-wrap}</style>
+</head><body><div id="out"></div><video id="v" autoplay playsinline width="320" height="180"></video>
+<script>
+const out = document.getElementById('out');
+const log = m => { out.textContent += m + '\n'; console.log('PROBE ' + m); };
+(async () => {
+  log('secureContext=' + window.isSecureContext + ' scheme=' + location.protocol);
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    devs.forEach(d => log('DEV ' + d.kind + ' ' + (d.label || '(no label yet)')));
+  } catch (e) { log('ENUM_ERR ' + e.name); }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const t = s.getAudioTracks()[0];
+    log('AUDIO_OK track=' + t.label + ' state=' + t.readyState + ' settings=' + JSON.stringify(t.getSettings()));
+    s.getTracks().forEach(tr => tr.stop());
+  } catch (e) { log('AUDIO_ERR ' + e.name + ' ' + e.message); }
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: true });
+    const t = s.getVideoTracks()[0];
+    log('VIDEO_OK settings=' + JSON.stringify(t.getSettings()));
+    s.getTracks().forEach(tr => tr.stop());
+  } catch (e) { log('VIDEO_ERR ' + e.name + ' ' + e.message); }
+  if (location.search.includes('gdm=1')) {
+    try {
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      document.getElementById('v').srcObject = s;
+      log('GDM_OK track=' + s.getVideoTracks()[0].label);
+    } catch (e) { log('GDM_ERR ' + e.name + ' ' + e.message); }
+  } else {
+    // Local loopback: canvas MediaStream into <video> proves the decode/render
+    // path in the QML-hosted view (NOT a WebRTC remote track).
+    const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+    const ctx = c.getContext('2d');
+    let frames = 0;
+    const anim = () => { ctx.fillStyle = 'rgb(0,' + (frames % 255) + ',255)';
+      ctx.fillRect(0, 0, 320, 180); ctx.fillStyle = '#fff'; ctx.fillRect(10 + (frames % 100), 80, 30, 30);
+      frames++; requestAnimationFrame(anim); };
+    anim();
+    document.getElementById('v').srcObject = c.captureStream(10);
+    setTimeout(() => {
+      const v = document.getElementById('v');
+      log('LOOPBACK_VIDEO videoWidth=' + v.videoWidth + ' videoHeight=' + v.videoHeight
+          + ' readyState=' + v.readyState + ' framesDrawn=' + frames);
+      const px = ctx.getImageData(20, 95, 1, 1).data;
+      log('LOOPBACK_PIXEL r=' + px[0] + ' g=' + px[1] + ' b=' + px[2]);
+      log('PROBE_DONE');
+    }, 2500);
+  }
+})();
+</script></body></html>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!-- Throwaway spike page for #160 (docs/NATIVE_DESKTOP_CALL_STACK.md).
+     NOTE (honest limitation, recorded): the issue asked to prove the vendored
+     jitsi-external_api.js loader path. That path was tried from the spike's
+     custom app:// scheme (see jitsi-loader-app-attempt.html) and the remote
+     script load was blocked by Chromium custom-scheme rules on this Qt build,
+     so this page instead proves the embed directly by loading meet.jit.si as
+     the view document. The permission gate (CallSpike.qml) and the QML-hosted
+     WebEngineView render path are identical in both cases. -->
+<html><head><meta charset="utf-8"><title>jitsi embed spike</title>
+<style>html,body{margin:0;height:100%;background:#000}#conf{position:fixed;inset:0}
+#st{position:fixed;top:0;left:0;font:13px monospace;color:#0f0;background:#000d;padding:4px;z-index:9}</style>
+</head><body><div id="st"></div><div id="conf"></div>
+<script>
+const st = document.getElementById('st');
+const log = m => { st.textContent += m + '\n'; console.log('JITSI ' + m); };
+const room = (location.hash || 'WSNativeSpikeRoom').slice(1);
+// Reference embed config: audio muted at join, prejoin off
+// (workspace_ui jitsi-call.ui.tsx:18-21).
+function boot() {
+  if (window.JitsiMeetExternalAPI == null) return log('NO_API_ON_MEET_JIT_SI');
+  log('API_PRESENT type=' + typeof window.JitsiMeetExternalAPI);
+  const api = new window.JitsiMeetExternalAPI('meet.jit.si', {
+    roomName: room, width: '100%', height: '100%', parentNode: document.getElementById('conf'),
+    configOverwrite: { startWithAudioMuted: true, startWithVideoMuted: true,
+      prejoinConfig: { enabled: false }, disableDeepLinking: true },
+    allow: 'camera; microphone; fullscreen; display-capture',
+  });
+  api.addListener('videoConferenceJoined', p => log('JOINED room=' + p.roomName + ' id=' + (p.id || '')));
+  api.addListener('participantJoined', p => log('PARTICIPANT_JOINED ' + p.displayName));
+  api.addListener('readyToClose', () => log('READY_TO_CLOSE'));
+  log('API_CREATED');
+}
+log('boot room=' + room + ' href=' + location.href + ' title=' + document.title);
+boot();
+</script></body></html>
