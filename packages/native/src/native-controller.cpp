@@ -3156,13 +3156,20 @@ void NativeController::setChannelInfoNotificationMode(const QString &mode)
     request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
         [this, owner, generation, streamUuid](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
-            || m_stream != streamUuid) return;
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
+        // The response may only release the busy state its own request set: a
+        // newer request (possibly on another stream) owns the flag once it
+        // superseded this one, and a stream switch must not leave the shared
+        // flag stuck for every later stream.
+        if (m_channelInfoNotificationBusy && m_channelInfoNotificationBusyStream == streamUuid) {
+            m_channelInfoNotificationBusy = false;
+            m_channelInfoNotificationBusyStream.clear();
+        }
+        if (m_stream != streamUuid) return;
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
         const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
             [streamUuid](const Stream &row) { return row.uuid == streamUuid; });
-        m_channelInfoNotificationBusy = false;
         if (!parsed || parsed->uuid != streamUuid || entry == m_streams.end()) {
             // The reference shows t("app.error") on any failed update.
             m_channelInfoNotificationError = tr("Something went wrong");
@@ -3217,7 +3224,7 @@ void NativeController::removeChannelInfoMember(const QString &bindingUuid)
 void NativeController::addChannelInfoMembers(const QStringList &userUuids)
 {
     const auto *stream = channelInfoStreamRow();
-    if (!stream || stream->role != "owner" || m_channelInfoAddBusy) return;
+    if (!stream || stream->role != "owner" || channelInfoAddBusy()) return;
     if (m_channelInfoStreamId != stream->uuid) return;
     // Submit re-filters already-existing members before the POST (reference
     // lines 509-523): members who joined while the dialog was open are never
@@ -3244,19 +3251,29 @@ void NativeController::addChannelInfoMembers(const QStringList &userUuids)
     QJsonArray members;
     for (const auto &user : candidates) members.append(user);
     m_channelInfoAddBusy = true;
+    m_channelInfoAddBusyStream = streamUuid;
     m_channelInfoAddError.clear();
     emit stateChanged();
     request("POST", messenger + "/streams/" + streamUuid + "/actions/add_users/invoke",
         QJsonObject{{"member", members}}, {},
         [this, owner, generation, streamUuid, candidates](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
-            || m_stream != streamUuid) return;
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
+        // Same request-scoped release as the notification switch: the late
+        // response of an abandoned stream may never keep channelInfoAddBusy
+        // set so that every later add request is rejected.
+        if (m_channelInfoAddBusy && m_channelInfoAddBusyStream == streamUuid) {
+            m_channelInfoAddBusy = false;
+            m_channelInfoAddBusyStream.clear();
+        }
+        if (m_stream != streamUuid) {
+            emit stateChanged();
+            return;
+        }
         QSet<QString> addedUsers;
         const bool valid = result.ok() && result.data.isArray()
             && creationBindings(result.data.toArray(), m_session->project(), streamUuid, &addedUsers);
         const bool complete = valid && std::all_of(candidates.cbegin(), candidates.cend(),
             [&addedUsers](const QString &user) { return addedUsers.contains(user); });
-        m_channelInfoAddBusy = false;
         if (!complete) {
             m_channelInfoAddError = tr("Something went wrong");
             emit stateChanged();
@@ -3281,7 +3298,7 @@ void NativeController::addChannelInfoMembers(const QStringList &userUuids)
 
 void NativeController::resetChannelInfoAddState()
 {
-    if (m_channelInfoAddBusy) return;
+    if (channelInfoAddBusy()) return;
     m_channelInfoAddError.clear();
     emit stateChanged();
 }
