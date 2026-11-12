@@ -216,6 +216,18 @@ Row {
                             sessionMenu.close();
                             switcher.controller.selectWorkspaceSession(sessionRow.modelData.id);
                         }
+                        // Keyboard focus must never land on a clipped row
+                        // (review #170): when the tab chain enters this row,
+                        // scroll the viewport so the focus ring is on screen.
+                        onActiveFocusChanged: {
+                            if (!sessionRow.activeFocus) return
+                            const top = sessionRow.mapToItem(sessionMenuScroll.contentItem, 0, 0).y
+                            const bottom = top + sessionRow.height
+                            if (top < sessionMenuScroll.contentY)
+                                sessionMenuScroll.contentY = top
+                            else if (bottom > sessionMenuScroll.contentY + sessionMenuScroll.height)
+                                sessionMenuScroll.contentY = bottom - sessionMenuScroll.height
+                        }
                         Keys.onReturnPressed: (event) => {
                             event.accepted = true;
                             sessionRow.selectSession();
