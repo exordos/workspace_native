@@ -1,3 +1,26 @@
+# Workspace Native 0.15.0 - Linux development preview
+
+Two features ported from the reference desktop:
+
+- The right drawer now shows the full channel info screen: a header with the
+  channel avatar, purpose text and member count; a three-level notification
+  selector (all messages, mentions only, nothing) with optimistic switching;
+  the member list with the active member first; and an add-members dialog
+  with a searchable candidate picker, selection chips and a footer count.
+- Typing @ in the composer opens the reference mention popup: candidates rank
+  by frecency, recents and initials/exact/prefix/substring tiers, with
+  accented and Cyrillic (e/yo) queries folded; duplicate display names insert
+  as "Name (username)"; selected mentions serialize into user links on send
+  and the ranking persists across restarts.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.14.0...0.15.0](https://github.com/exordos/workspace_native/compare/0.14.0...0.15.0)
+
+---
+
 # Workspace Native 0.14.0 - Linux development preview
 
 Three features ported from the reference desktop:
