@@ -1,3 +1,20 @@
+# Workspace Native 0.13.2 - Linux development preview
+
+One fix for existing behavior:
+
+- Clicking a desktop notification now also restores and activates the app
+  window, matching tray-icon activation: a minimized window is restored and a
+  tray-hidden window is shown and focused before the notification's conversation
+  opens. Clicks on stale notifications remain a no-op.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.13.1...0.13.2](https://github.com/exordos/workspace_native/compare/0.13.1...0.13.2)
+
+---
+
 # Workspace Native 0.13.1 - Linux development preview
 
 Two fixes for existing behavior:
