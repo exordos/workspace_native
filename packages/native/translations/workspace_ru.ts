@@ -1401,6 +1401,10 @@
             <translation>Адрес сервера должен быть валидным HTTPS URL</translation>
         </message>
         <message>
+            <source>The saved credential could not be removed. %1</source>
+            <translation>Не удалось удалить сохранённые учётные данные. %1</translation>
+        </message>
+        <message>
             <source>Could not load organization settings. Check the server address and try again.</source>
             <translation>Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.</translation>
         </message>
