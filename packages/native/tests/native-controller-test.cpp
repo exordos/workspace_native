@@ -15331,6 +15331,8 @@ private slots:
                      QStringLiteral("https://meet.example.com/workspace-room-9")),
             QStringLiteral("https://meet.example.com/workspace-room-9"));
         QCOMPARE(configured.controller.callUrlInText(QStringLiteral("https://evil.example/r")), QString());
+    }
+
     // Acceptance (6): the auth idle guard is inactive before login, armed for
     // the live session, and cancelled by a manual sign-out.
     void authIdleGuardFollowsTheLiveSession()
