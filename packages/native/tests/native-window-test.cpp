@@ -13866,6 +13866,119 @@ private:
         QVERIFY(scroll->property("contentY").toReal() > 0.5);
     }
 
+    // ---- Issue #123: composer mention popup, insert, URN send and restart frecency ----
+    static bool mentionPopupVisible(QQuickWindow *window)
+    {
+        auto *popup = window->findChild<QObject *>("composerMentionPopup");
+        return popup && popup->property("visible").toBool();
+    }
+    static QStringList mentionRowTexts(QQuickWindow *window)
+    {
+        QStringList rows;
+        for (int index = 0; index < 8; ++index)
+        {
+            auto *name = window->findChild<QObject *>(QString("composerMentionName%1").arg(index));
+            if (!name || !name->property("visible").toBool()) break;
+            rows.append(name->property("text").toString());
+        }
+        return rows;
+    }
+
+    void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart()
+    {
+        const QString mentionBob = QStringLiteral("52000000-0000-4000-8000-00000000000b");
+        const QString mentionBix = QStringLiteral("52000000-0000-4000-8000-0000000000c0");
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        fixture.users = {QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", channelPeer}, {"username", "alice"}, {"first_name", "Alice"},
+                        {"email", "alice@example.invalid"}},
+            QJsonObject{{"uuid", mentionBob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", mentionBix}, {"username", "bix"}, {"first_name", "Bix"}, {"last_name", "Ray"}}};
+        int posts = 0, confirmations = 0;
+        QJsonObject posted, saved;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path == "/api/workspace/v1/messenger/messages/") {
+                ++posts; posted = request.body;
+                const auto content = request.body.value("payload").toObject().value("content").toString();
+                saved = message(content, QStringLiteral("8c000000-0000-4000-8000-000000000001"));
+                saved["user_uuid"] = userId; saved["updated_at"] = saved.value("created_at");
+                return {saved, 201};
+            }
+            if (request.method == "GET" && !saved.isEmpty()
+                && path == "/api/workspace/v1/messenger/messages/" + saved.value("uuid").toString()) {
+                ++confirmations; return {saved};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("composer-mention.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Composer mention teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled());
+        // An @ inside a word never opens the popup (reference: "does not open
+        // mention popup when @ is inside a word or email").
+        click(window, composer);
+        for (const auto key : QByteArray("hello@a")) QTest::keyClick(window, key);
+        QTRY_COMPARE(controller.draft(), QString("hello@a"));
+        QVERIFY(!mentionPopupVisible(window));
+        // A standalone @ opens the popup; the query refines it; Escape closes it.
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_at); QTest::keyClick(window, Qt::Key_a);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Alice")}));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!mentionPopupVisible(window));
+        // Two equal "B" matches; ArrowDown reaches the second row and Enter inserts
+        // "@Bix Ray " with the caret after the trailing space without sending.
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_b);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Bob Ray"), QString("Bix Ray")}));
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(composer->property("text").toString(), QString("@Bix Ray "));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 9);
+        QVERIFY(!mentionPopupVisible(window));
+        QCOMPARE(posts, 0);
+        // A no-match query shows the no-results row (search.noResults).
+        QTest::keyClick(window, Qt::Key_End);
+        for (const auto key : QByteArray(" hi @zz"))
+            if (key == ' ') QTest::keyClick(window, Qt::Key_Space); else QTest::keyClick(window, key);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        QVERIFY(window->findChild<QObject *>("composerMentionNoResults"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!mentionPopupVisible(window));
+        // Enter sends: the visible mention becomes the canonical URN and the
+        // literal "@zz" survives untouched.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(posts, 1);
+        QTRY_COMPARE(confirmations, 1);
+        QCOMPARE(posted.value("payload").toObject().value("content").toString(),
+            QStringLiteral("[Bix Ray](urn:user:%1) hi @zz").arg(mentionBix));
+        // The pick persists across a fresh preferences instance on the same store
+        // and keeps the restart ranking order (Bix above Bob for query "b").
+        NativePreferences reopened(directory.filePath("composer-mention.ini"));
+        reopened.setOwner(controller.ownerKey());
+        QVERIFY(reopened.mentionFrecency().value(mentionBix).toDouble() >= 0.9);
+        QVERIFY(!reopened.mentionFrecency().contains(mentionBob));
+        controller.setPreferences(&reopened);
+        QCOMPARE(controller.mentionSuggestions(QStringLiteral("b")).first().toMap()
+            .value("displayName").toString(), QString("Bix Ray"));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss(); QVERIFY(closed);
+    }
 };
 
 
