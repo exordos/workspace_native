@@ -174,6 +174,14 @@ void Session::logout()
     });
 }
 
+void Session::detach()
+{
+    // The switcher keeps every remembered identity: only the live in-memory
+    // credentials go away, and the signedOut signal drives the controller's
+    // normal teardown/reset just like sign-out would.
+    clearMemory();
+}
+
 void Session::fail(const QString &message)
 {
     clearMemory();

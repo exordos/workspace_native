@@ -40,6 +40,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString defaultOrganizationName READ defaultOrganizationName CONSTANT)
     Q_PROPERTY(QVariantList projects READ projects NOTIFY stateChanged)
     Q_PROPERTY(QVariantList savedAccounts READ savedAccounts NOTIFY savedAccountsChanged)
+    Q_PROPERTY(QVariantList sessionSwitcherSessions READ sessionSwitcherSessions NOTIFY sessionSwitcherChanged)
     Q_PROPERTY(QVariantMap account READ account NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap ownStatus READ ownStatus NOTIFY stateChanged)
     Q_PROPERTY(QString ownStatusContextKey READ ownStatusContextKey NOTIFY stateChanged)
@@ -174,6 +175,12 @@ public:
     QString error() const { return m_error; }
     QVariantList projects() const;
     QVariantList savedAccounts() const;
+    // Rows for the top bar session switcher: remembered accounts with the
+    // reference labels, projection-backed unread counts and the current mark
+    // (docs/NATIVE_DESKTOP_SESSION_SWITCHER.md, issue #144).
+    QVariantList sessionSwitcherSessions() const;
+    static int backgroundProjectionUnread(const QVariantMap &projection);
+    static QString unreadBadgeLabel(int unread);
     QVariantMap account() const;
     QString viewerDisplayName() const;
     QVariantList directChatChoices() const { return channelMemberChoices(); }
@@ -279,6 +286,11 @@ public:
     Q_INVOKABLE void openProject(const QString &id);
     Q_INVOKABLE void resumeSavedAccount(const QString &id);
     Q_INVOKABLE void forgetSavedAccount(const QString &id);
+    // Top bar workspace session switcher (issue #144).
+    Q_INVOKABLE void selectWorkspaceSession(const QString &id);
+    Q_INVOKABLE void logoutWorkspaceSession(const QString &id);
+    Q_INVOKABLE void openAddServer();
+    Q_INVOKABLE void publishSessionProjection(const QString &accountId, const QVariantMap &projection);
     Q_INVOKABLE void logout();
     Q_INVOKABLE void selectStream(const QString &id);
     Q_INVOKABLE void selectTopic(const QString &id);
@@ -357,6 +369,7 @@ signals:
     void stateChanged();
     void anchorChanged();
     void savedAccountsChanged();
+    void sessionSwitcherChanged();
     void draftChanged();
     void editSessionChanged();
     void replySessionChanged();
@@ -803,6 +816,7 @@ private:
     void scheduleQuoteFetch(const QString &id) const;
     const Message *editableMessage(const QString &id) const;
     void reset();
+    void forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done);
     void report(const QString &message);
     void finishSnapshotPart(unsigned part);
     void cancelSnapshot();
@@ -815,6 +829,9 @@ private:
     QString conversationKey() const { return m_stream + "/" + m_topic; }
 
     ApiClient *m_api;
+    // Per-saved-account background projection facts keyed by saved account id
+    // (issue #144); unread badges for remembered sessions derive from these.
+    QMap<QString, QVariantMap> m_sessionProjections;
     QPointer<NativeChatKeyVault> m_chatKeys;
     Session *m_session;
     QPointer<NativeCacheService> m_cache;

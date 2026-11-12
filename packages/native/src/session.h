@@ -19,6 +19,15 @@ public:
     explicit Session(ApiClient *api, QObject *parent = nullptr, RequestExecutor executor = {});
     void setVault(SessionVault *vault);
     QVector<SavedAccount> savedAccounts() const;
+    // The saved identity backing the live session, empty while anonymous.
+    QString currentSavedAccountId() const { return m_savedAccountId; }
+    // The verified login of the live session, empty before sign-in.
+    QString loginName() const { return m_login; }
+    // Drops the live in-memory session like sign-out but keeps the saved
+    // identity and its secure-store entry: the reference switcher retains
+    // remembered sessions when the active one changes or the sign-in route
+    // reopens for "Add server".
+    void detach();
     void resumeSavedAccount(const QString &id);
     void resumeCurrentAccount();
     void forgetSavedAccount(const QString &id);
