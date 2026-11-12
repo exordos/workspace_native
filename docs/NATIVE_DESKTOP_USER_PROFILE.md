@@ -310,3 +310,62 @@ load/PUT (patch contains only changed keys, refresh-pending detection via the
 directory re-read); avatar upload multipart + reset POST + error mapping;
 `openDirectChatFromProfile` against the direct-chat machinery (open existing,
 create missing, already-open no-op).
+
+## Window test evidence (window-group round)
+
+`native-native-window` implements the plan above in
+`packages/native/tests/native-window-test.cpp` on a `ProfileWindowScene`
+(`WindowProfileFixture` over the seeded direct-chat window fixture: the mock
+serves GET|PUT `/api/core/v1/iam/users/{uuid}`, the messenger projection read
+and the avatar_reset/avatar_upload actions):
+
+- `windowProfileOwnScreenHeaderChipsAndDetails` - account menu -> Personal
+  info: shell title, 64 px avatar, 8 px indicator-green presence dot
+  (`#26c038`, tokens.ts), name, "online" presence line, Favorites/Edit/Share
+  chips, userId/email/joined values, "Temporarily not connected" placeholder,
+  Copyable only on value rows, IAM GET issued exactly once on mount.
+- `windowProfileOtherUserMessageOpensDirectDefaultTopic` - "Information"
+  title, Message/Call/Share chips, Call disabled at opacity 0.5 (gated on
+  epic #33), Message selects the seeded DM stream + its default topic
+  (OpenDefaultTopic) and re-clicking on the DM stream is the AlreadyOpen
+  no-op.
+- `windowProfileEditModeSavesDiffOnlyAndSyncsPreview` - footer 110x40 Cancel
+  and filling 40 px Save, display-name preview tracks the first-name draft,
+  Save PUTs `{"first_name": "Kassi"}` only (diff-only contract), the
+  projection refresh clears refresh-pending, edit mode exits on settle and
+  the header shows the saved name.
+- `windowProfileAvatarDialogGeometryAndDisabledRemove` - 20 px badge opens
+  the dialog at its fixed 323 px width; 32 px rows with the reference gap-2
+  (rows start 40 px apart); 40 px Cancel; Delete disabled without an avatar;
+  Choose opens the file dialog and Cancel closes the popup.
+- `windowProfileAvatarFileValidationReopensDialogWithError` - a > 25 MiB
+  file reopens the dialog with "Image is too large (max 25 MB)" and a wrong
+  mime with "Please choose a valid image file", zero upload requests; the
+  page stays in edit mode. The server-side upload/preview happy paths stay
+  covered by `native-native-controller` (multipart contract).
+- `windowProfileAvatarResetCommittedOnSave` - pending removal with a clean
+  draft takes the empty-patch shortcut: no identity PUT, exactly one
+  `avatar_reset/invoke`, edit mode exits on settle.
+- `windowProfileShareCopiesLinkAndFlipsToCopied` - clipboard equals
+  `{origin}/#user/{uuid}`, the chip reads "Copied" and reverts to "Share"
+  after the 2000 ms copyable flip-back.
+
+Found and fixed while wiring these cases (both reproduced RED first):
+
+- The action-chip `Repeater` delegate instantiated the `ProfileChip`
+  component with `required property var modelData` on the component root;
+  under `pragma ComponentBehavior: Bound` the view context injection cannot
+  satisfy a required property owned by a separate component root, so every
+  chip delegate failed at runtime ("Required property modelData was not
+  initialized"). The delegate is now an inline root that feeds the chip
+  explicitly, same pattern as the detail rows.
+- The page's `Connections` reopened the avatar dialog on
+  `ownAvatarErrorChanged`, a signal the controller never had, so failed
+  mutations surfaced no error. `NativeController` now declares
+  `ownAvatarErrorChanged()` and emits it on every mutation of
+  `m_ownAvatarError` (the property keeps `stateChanged` as NOTIFY for value
+  bindings).
+- The avatar dialog rendered the two action rows at the outer 20 px rhythm;
+  the reference groups them in a `gap-2` (8 px) block before the 20 px gap
+  to Cancel. The row block now matches, which also makes the derived dialog
+  height the measured 172 px stack instead of 184 px.
