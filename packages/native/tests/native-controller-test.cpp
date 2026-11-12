@@ -949,6 +949,63 @@ static QJsonObject incomingDto(QJsonObject row, const QString &author)
 
 static const QString notificationAuthor = QStringLiteral("55555555-5555-4555-8555-555555555555");
 
+// Issue #134: serves the IAM profile endpoint, the messenger user projection
+// re-read and the avatar upload/reset invokes on top of the base fixture.
+class ProfileFixture {
+public:
+    Fixture fixture;
+    QJsonObject iamResponse, directoryRow;
+    int iamGets = 0, iamPuts = 0, avatarPosts = 0, resetPosts = 0, directoryGets = 0;
+    int iamGetStatus = 200, iamPutStatus = 200, directoryStatus = 200;
+    int avatarStatus = 200, resetStatus = 200;
+    QByteArray multipartBody, multipartContentType;
+    QVector<QJsonObject> putBodies;
+    const QString avatarRef = QStringLiteral("urn:image:77777777-7777-4777-8777-777777777777");
+    ProfileFixture()
+    {
+        fixture.users = [](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "self"}, {"first_name", "Cassi"},
+                {"last_name", "Volkova"}, {"email", "cassi@example.invalid"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid", channelMemberA}, {"username", "alice"}, {"first_name", "Alice"},
+                {"last_name", "Adams"}, {"email", "alice@example.invalid"}, {"status", "idle"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}}}; };
+        iamResponse = {{"uuid", userId}, {"username", "self"}, {"first_name", "Cassi"},
+            {"last_name", "Volkova"}, {"email", "cassi@example.invalid"},
+            {"phone", QJsonValue::Null}, {"description", "Hello"}};
+        directoryRow = iamResponse;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/core/v1/iam/users/" + userId) {
+                if (request.method == "GET") { ++iamGets; return {iamResponse, iamGetStatus}; }
+                if (request.method == "PUT") { ++iamPuts; putBodies.append(request.body); return {iamResponse, iamPutStatus}; }
+            }
+            if (path == "/api/workspace/v1/messenger/users/" + userId && request.method == "GET") {
+                ++directoryGets;
+                if (directoryStatus != 200) return {QJsonObject{}, directoryStatus};
+                return {directoryRow};
+            }
+            if (path == "/api/workspace/v1/messenger/users/" + userId + "/actions/avatar_upload/invoke") {
+                ++avatarPosts;
+                multipartBody = request.rawBody;
+                multipartContentType = request.headers.value("content-type");
+                auto row = directoryRow;
+                row["avatar"] = avatarRef;
+                return {row, avatarStatus};
+            }
+            if (path == "/api/workspace/v1/messenger/users/" + userId + "/actions/avatar_reset/invoke") {
+                ++resetPosts;
+                auto row = directoryRow;
+                row["avatar"] = QJsonValue::Null;
+                return {row, resetStatus};
+            }
+            return fallback(request);
+        };
+    }
+    bool start() { return fixture.start(); }
+};
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -14512,6 +14569,278 @@ private slots:
         QCOMPARE(posted.value("payload").toObject().value("content").toString(),
             QStringLiteral("Hi [Alice](urn:user:%1)!").arg(alice));
         QTRY_VERIFY_WITH_TIMEOUT(f.controller.draft().isEmpty(), 4000);
+    }
+
+    // ---- Issue #134 profile drawer content ----
+
+    void profileResolverResolvesTheReferenceBranches()
+    {
+        const QString peer = channelMemberA;
+        const QString dm = directId;
+        const QVector<QPair<QString, QString>> streams{{dm, peer}};
+        const QHash<QString, QString> defaults{{dm, channelDefault}};
+        auto navigation = resolveProfileDirectNavigation(peer, streams, defaults, QString{});
+        QCOMPARE(int(navigation.status), int(ProfileDirectNavigation::Status::OpenDefaultTopic));
+        QCOMPARE(navigation.streamUuid, dm);
+        QCOMPARE(navigation.topicUuid, channelDefault);
+        // Already on the direct stream (stream view or any topic): stay put.
+        navigation = resolveProfileDirectNavigation(peer, streams, defaults, dm);
+        QCOMPARE(int(navigation.status), int(ProfileDirectNavigation::Status::AlreadyOpen));
+        // An existing direct stream without a valid default topic resolves missing.
+        navigation = resolveProfileDirectNavigation(peer, streams, {}, QString{});
+        QCOMPARE(int(navigation.status), int(ProfileDirectNavigation::Status::MissingDefaultTopic));
+        navigation = resolveProfileDirectNavigation(peer, streams, {{dm, "not-a-uuid"}}, QString{});
+        QCOMPARE(int(navigation.status), int(ProfileDirectNavigation::Status::MissingDefaultTopic));
+        // No direct stream for the peer resolves stream-missing (create path).
+        navigation = resolveProfileDirectNavigation(channelMemberB, streams, defaults, streamId);
+        QCOMPARE(int(navigation.status), int(ProfileDirectNavigation::Status::StreamMissing));
+    }
+
+    void profileSnapshotAndDetailsUseTheVerifiedDirectoryRow()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        QVERIFY(controller.profileSnapshot("not-a-uuid").isEmpty());
+        const auto other = controller.profileSnapshot(channelMemberA);
+        QCOMPARE(other.value("title").toString(), QStringLiteral("Alice Adams"));
+        QCOMPARE(other.value("email").toString(), QStringLiteral("alice@example.invalid"));
+        QCOMPARE(other.value("username").toString(), QStringLiteral("alice"));
+        QCOMPARE(other.value("status").toString(), QStringLiteral("idle"));
+        QCOMPARE(other.value("isSelf").toBool(), false);
+        const auto own = controller.profileSnapshot(userId);
+        QCOMPARE(own.value("title").toString(), QStringLiteral("Cassi Volkova"));
+        QCOMPARE(own.value("isSelf").toBool(), true);
+        const auto details = controller.profileDetails(channelMemberA, QStringLiteral("en"));
+        QCOMPARE(details.size(), 12);
+        const auto byId = [&details](const QString &id) {
+            for (const auto &row : details) if (row.toMap().value("id").toString() == id) return row.toMap();
+            return QVariantMap{};
+        };
+        QCOMPARE(byId("userId").value("value").toString(), channelMemberA);
+        QCOMPARE(byId("userId").value("unavailable").toBool(), false);
+        QCOMPARE(byId("email").value("value").toString(), QStringLiteral("alice@example.invalid"));
+        QCOMPARE(byId("joined").value("value").toString(), QStringLiteral("Jan 2, 2026"));
+        QCOMPARE(byId("phone").value("unavailable").toBool(), true);
+        QCOMPARE(byId("phone").value("value").toString(), QStringLiteral("Temporarily not connected"));
+        QCOMPARE(byId("birthday").value("unavailable").toBool(), true);
+        QCOMPARE(byId("role").value("unavailable").toBool(), true);
+        // Identity from the IAM row: the self snapshot resolves to the session user.
+        QCOMPARE(controller.profileDetails(QString{}, QStringLiteral("en")).size(), 0);
+    }
+
+    void profileShareLinkFollowsTheReferenceBuilder()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        const auto origin = test.fixture.server.origin().toString();
+        QVERIFY(!origin.endsWith(QLatin1Char('/')));
+        QCOMPARE(controller.buildProfileShareLink(userId), origin + "/#user/" + userId);
+        // Invalid identities and origins never produce a share link.
+        QCOMPARE(controller.buildProfileShareLink("not-a-uuid"), QString{});
+        QCOMPARE(controller.buildProfileShareLink(QString{}), QString{});
+    }
+
+    void ownProfileLoadPopulatesTheBaselineAndRecoverableFailuresRetry()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        QCOMPARE(controller.ownProfileBusy(), false);
+        controller.loadOwnProfile();
+        QTRY_VERIFY(!controller.ownProfileBusy());
+        QCOMPARE(controller.ownProfileLoaded(), true);
+        const auto profile = controller.ownProfile();
+        QCOMPARE(profile.value("firstName").toString(), QStringLiteral("Cassi"));
+        QCOMPARE(profile.value("lastName").toString(), QStringLiteral("Volkova"));
+        QCOMPARE(profile.value("phone").toString(), QString{});
+        QCOMPARE(profile.value("description").toString(), QStringLiteral("Hello"));
+        QCOMPARE(controller.ownProfileError(), QString{});
+        QCOMPARE(test.iamGets, 1);
+        // A response whose identity does not match the session user is rejected.
+        test.iamResponse["uuid"] = channelMemberA;
+        controller.loadOwnProfile();
+        QTRY_VERIFY(!controller.ownProfileBusy());
+        QCOMPARE(controller.ownProfileLoaded(), true); // baseline kept, error reported
+        QCOMPARE(controller.ownProfileError(), QStringLiteral("Could not load profile. Try again."));
+    }
+
+    void ownProfileSaveSendsOnlyChangedKeysAndRefreshesTheProjection()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        controller.loadOwnProfile();
+        QTRY_VERIFY(controller.ownProfileLoaded());
+        const QSignalSpy settled(&controller, &NativeController::ownProfileSettledChanged);
+        QVERIFY(settled.isValid());
+        controller.saveOwnProfile({{"firstName", "Cassi"}, {"lastName", "Volkova"},
+            {"phone", " +1 555 0100 "}, {"description", "Hello"}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        QTRY_COMPARE(settled.size(), 1);
+        QCOMPARE(controller.ownProfileError(), QString{});
+        QCOMPARE(test.iamPuts, 1);
+        // Only the changed keys are sent and names are trimmed.
+        const QJsonObject expectedPatch{{"phone", "+1 555 0100"}};
+        QCOMPARE(test.putBodies.first(), expectedPatch);
+        QTRY_COMPARE(test.directoryGets, 1);
+        QCOMPARE(controller.ownProfileRefreshPending(), false);
+        // A cleared name becomes null in the patch (reference computePatch).
+        controller.saveOwnProfile({{"firstName", "  "}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        const QJsonObject expectedNullName{{"first_name", QJsonValue::Null}};
+        QCOMPARE(test.putBodies.last(), expectedNullName);
+    }
+
+    void ownProfileSaveFailureKeepsTheEditorOpenWithAMappedError_data()
+    {
+        QTest::addColumn<int>("status");
+        QTest::addColumn<QString>("message");
+        QTest::newRow("transient") << 500 << QStringLiteral("Failed to update profile");
+        QTest::newRow("forbidden") << 403 << QStringLiteral("Your server does not allow this profile request.");
+        QTest::newRow("unsupported") << 404 << QStringLiteral("Profile editing is not available yet");
+        QTest::newRow("invalid") << 400 << QStringLiteral("Check the lengths of the editable fields.");
+    }
+    void ownProfileSaveFailureKeepsTheEditorOpenWithAMappedError()
+    {
+        QFETCH(int, status); QFETCH(QString, message);
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        controller.loadOwnProfile();
+        QTRY_VERIFY(controller.ownProfileLoaded());
+        test.iamPutStatus = status;
+        controller.saveOwnProfile({{"description", "Changed"}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        QCOMPARE(controller.ownProfileError(), message);
+    }
+
+    void ownProfileRefreshFailureMarksRefreshPendingWithoutRollback()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        controller.loadOwnProfile();
+        QTRY_VERIFY(controller.ownProfileLoaded());
+        test.directoryStatus = 503;
+        controller.saveOwnProfile({{"description", "Saved anyway"}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        QCOMPARE(controller.ownProfileError(), QString{});
+        QTRY_VERIFY(controller.ownProfileRefreshPending());
+        // A later successful projection clears the pending marker.
+        test.directoryStatus = 200;
+        controller.saveOwnProfile({{"description", "Saved again"}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        QTRY_VERIFY(!controller.ownProfileRefreshPending());
+    }
+
+    void ownProfileAvatarUploadIsMultipartAndUpdatesTheDirectory()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("avatar.png");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("PNGBYTES-1234"); file.close();
+        QCOMPARE(controller.userAvatar(userId), QString{});
+        controller.uploadOwnProfileAvatar(path);
+        QCOMPARE(controller.ownAvatarBusy(), true);
+        QTRY_VERIFY(!controller.ownAvatarBusy());
+        QCOMPARE(test.avatarPosts, 1);
+        QCOMPARE(controller.ownAvatarError(), QString{});
+        QVERIFY(test.multipartBody.contains("name=\"file\""));
+        QVERIFY(test.multipartBody.contains("filename=\"avatar.png\""));
+        QVERIFY(test.multipartBody.contains("PNGBYTES-1234"));
+        QVERIFY(test.multipartContentType.startsWith("multipart/form-data"));
+        QCOMPARE(controller.userAvatar(userId), test.avatarRef);
+        QCOMPARE(controller.profileSnapshot(userId).value("avatar").toString(), test.avatarRef);
+    }
+
+    void ownProfileAvatarValidationRejectsWrongKindsAndEmptyFiles()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto textPath = directory.filePath("notes.txt");
+        QFile text(textPath); QVERIFY(text.open(QIODevice::WriteOnly));
+        text.write("not an image"); text.close();
+        controller.uploadOwnProfileAvatar(textPath);
+        QCOMPARE(controller.ownAvatarError(), QStringLiteral("Please choose a valid image file"));
+        QCOMPARE(test.avatarPosts, 0);
+        const auto emptyPath = directory.filePath("empty.png");
+        QFile empty(emptyPath); QVERIFY(empty.open(QIODevice::WriteOnly)); empty.close();
+        controller.uploadOwnProfileAvatar(emptyPath);
+        QCOMPARE(controller.ownAvatarError(), QStringLiteral("Please choose a valid image file"));
+        QCOMPARE(test.avatarPosts, 0);
+        const auto bigPath = directory.filePath("big.png");
+        QFile big(bigPath); QVERIFY(big.open(QIODevice::WriteOnly));
+        big.resize(25LL * 1024 * 1024 + 1); big.close();
+        controller.uploadOwnProfileAvatar(bigPath);
+        QCOMPARE(controller.ownAvatarError(), QStringLiteral("Image is too large (max 25 MB)"));
+        QCOMPARE(test.avatarPosts, 0);
+        const auto caps = controller.profileAvatarCapabilities();
+        QCOMPARE(caps.value("maxAvatarFileSizeMib").toInt(), 25);
+        QCOMPARE(caps.value("avatarChangesDisabled").toBool(), false);
+    }
+
+    void ownProfileAvatarResetAndServerFailuresMapTheReferenceErrors_data()
+    {
+        QTest::addColumn<int>("status");
+        QTest::addColumn<QString>("message");
+        QTest::newRow("forbidden") << 403 << QStringLiteral("Avatar changes are disabled by server settings");
+        QTest::newRow("unsupported") << 404 << QStringLiteral("Avatar update is not supported by this server");
+        QTest::newRow("invalid") << 415 << QStringLiteral("Please choose a valid image file");
+        QTest::newRow("transient") << 500 << QStringLiteral("Failed to update avatar");
+    }
+    void ownProfileAvatarResetAndServerFailuresMapTheReferenceErrors()
+    {
+        QFETCH(int, status); QFETCH(QString, message);
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        test.avatarStatus = status;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("avatar.png");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("PNGBYTES"); file.close();
+        controller.uploadOwnProfileAvatar(path);
+        QTRY_VERIFY(!controller.ownAvatarBusy());
+        QCOMPARE(controller.ownAvatarError(), message);
+        // A successful reset clears the avatar reference and settles.
+        test.avatarStatus = 200;
+        const QSignalSpy settled(&controller, &NativeController::ownAvatarSettledChanged);
+        QVERIFY(settled.isValid());
+        controller.removeOwnProfileAvatar();
+        QTRY_VERIFY(!controller.ownAvatarBusy());
+        QCOMPARE(test.resetPosts, 1);
+        QCOMPARE(test.fixture.server.requests.last().body, QJsonObject{});
+        QCOMPARE(controller.ownAvatarError(), QString{});
+        QTRY_COMPARE(settled.size(), 1);
+        QCOMPARE(controller.userAvatar(userId), QString{});
+    }
+
+    void openDirectChatFromProfileOpensExistingDefaultTopic()
+    {
+        DirectChatFixture test; test.seed(); QVERIFY(test.fixture.start()); auto &controller = test.fixture.controller;
+        // Populate the catalog with the existing direct stream via the lookup.
+        controller.startDirectChat(channelMemberA);
+        QTRY_COMPARE(controller.selectedStream(), directId);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy());
+        const auto topicGets = test.topicGets;
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_COMPARE(controller.selectedStream(), directId);
+        QTRY_COMPARE(controller.selectedTopic(), channelDefault);
+        QCOMPARE(test.posts, 0); // resolved via lookup, never a create
+        QVERIFY(test.topicGets > topicGets);
+        // Already on the direct stream (any topic): a repeat request changes nothing.
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.selectedStream(), directId);
+        QCOMPARE(controller.selectedTopic(), channelDefault);
+        QCOMPARE(controller.profileDirectPending(), false);
+    }
+
+    void openDirectChatFromProfileCreatesMissingStreamAndIgnoresBrokenDefaults()
+    {
+        DirectChatFixture test; QVERIFY(test.fixture.start()); auto &controller = test.fixture.controller;
+        const QSignalSpy opened(&controller, &NativeController::directChatOpened);
+        QVERIFY(opened.isValid());
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_COMPARE(opened.size(), 1);
+        QCOMPARE(controller.selectedStream(), directId);
+        QCOMPARE(test.posts, 1);
+        // The session user and invalid identities are rejected without requests.
+        controller.openDirectChatFromProfile(userId);
+        controller.openDirectChatFromProfile("not-a-uuid");
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.selectedStream(), directId);
+        QCOMPARE(test.posts, 1);
     }
 };
 
