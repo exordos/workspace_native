@@ -12140,6 +12140,12 @@ mv -Tf "$root/.current-new" "$root/current"
             << QString("[word](https://)") << 7 << 15;
         QTest::newRow("link-empty") << "composerFormatLink" << "abcd" << 2 << 2
             << QString("ab[link text](https://)cd") << 14 << 22;
+        // exo-review #173: the URL slot search must be anchored to the end of
+        // the inserted template, so a label that itself contains "https://"
+        // cannot move the selection start into the label text.
+        QTest::newRow("link-label-contains-url") << "composerFormatLink"
+            << QString("https://example.com docs") << 0 << 24
+            << QString("[https://example.com docs](https://)") << 27 << 35;
     }
 
     void composerToolbarInsertActionsProduceExactReferenceMarkers()
