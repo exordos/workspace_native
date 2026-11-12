@@ -573,6 +573,9 @@ void NotificationService::click(const QString &tag)
         m_registry.consumeByTag(tag);
         if (m_transport)
             m_transport->closeByTag(tag);
+        // Reference notification click restores and focuses the window
+        // before the routed conversation is delivered (main.ts focusMainWindow).
+        emit activationRequested();
         emit routeRequested(snap->routeStream, snap->routeTopic);
         return;
     }
@@ -581,6 +584,7 @@ void NotificationService::click(const QString &tag)
         return;
     if (m_transport)
         m_transport->closeByTag(tag);
+    emit activationRequested();
     emit routeRequested(route.first, route.second);
 }
 

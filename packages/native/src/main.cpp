@@ -177,6 +177,11 @@ int main(int argc, char **argv)
     preferences.attachWindow(window);
     const auto activate = [&preferences, &shuttingDown] { if (!shuttingDown) preferences.activateWindow(); };
     QObject::connect(&desktop, &workspace::NativeDesktop::activateRequested, &app, activate);
+    // A valid notification click reuses this same guarded activation path as
+    // tray activation and second-instance deep links (issue #117); expired or
+    // unknown tags emit nothing and keep the window untouched.
+    QObject::connect(notifications, &workspace::NotificationService::activationRequested,
+                     &app, activate);
     QObject::connect(&preferences, &workspace::NativePreferences::localeChanged,
                      &desktop, &workspace::NativeDesktop::refreshLabels);
     QString badgeOwner;
