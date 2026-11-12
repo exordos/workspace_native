@@ -535,6 +535,40 @@ private slots:
                  (QStringList{"https://acme.example", "http://127.0.0.1:8080"}));
     }
 
+    void composerToolbarExpansionRoundTripsAcrossRecreatedPreferences()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("composer-toolbar.ini");
+        NativePreferences preferences(path);
+        // Native counterpart of settings.model.ts composerToolbarExpanded,
+        // stored with the global layout keys like the sidebar width.
+        const auto index = preferences.metaObject()->indexOfProperty("composerToolbarExpanded");
+        QVERIFY(index >= 0);
+        const QMetaProperty property = preferences.metaObject()->property(index);
+        QVERIFY(property.isValid());
+        QVERIFY(property.isWritable());
+        // settings.model.ts:74 default: composerToolbarExpanded false.
+        QVERIFY(!property.read(&preferences).toBool());
+        QSignalSpy changed(&preferences, SIGNAL(composerToolbarExpandedChanged()));
+        QVERIFY(changed.isValid());
+        QVERIFY(property.write(&preferences, true));
+        QCOMPARE(changed.count(), 1);
+        QVERIFY(property.read(&preferences).toBool());
+        // Reopening the same settings file restores the expansion choice,
+        // mirroring the toolbar.ui.test "keeps toolbar expansion across
+        // composer instances" contract.
+        NativePreferences reopened(path);
+        const auto reopenedIndex = reopened.metaObject()->indexOfProperty("composerToolbarExpanded");
+        QVERIFY(reopenedIndex >= 0);
+        const QMetaProperty reopenedProperty = reopened.metaObject()->property(reopenedIndex);
+        QVERIFY(reopenedProperty.read(&reopened).toBool());
+        QVERIFY(reopenedProperty.write(&reopened, false));
+        NativePreferences restarted(path);
+        const auto restartedIndex = restarted.metaObject()->indexOfProperty("composerToolbarExpanded");
+        QVERIFY(restartedIndex >= 0);
+        QVERIFY(!restarted.metaObject()->property(restartedIndex).read(&restarted).toBool());
+    }
 };
 
 QTEST_MAIN(NativePreferencesTest)

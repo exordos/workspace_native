@@ -11991,6 +11991,259 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.streams().size(), 1);
         QVERIFY(fixture.streamsGets >= 4);
     }
+
+    // Issue #122: the reference expandable bottom toolbar persists its
+    // expansion (settings.model.ts composerToolbarExpanded, default false)
+    // and keeps 32px hit areas, h-7 w-px bg-border-subtle separators,
+    // mr-[52px] send clearance and the pl-2 leading inset
+    // (message-composer-toolbar.ui.tsx, message-composer-styles.lib.ts).
+    void composerFormattingToolbarExpansionPersistsAcrossRecreation()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto settingsPath = directory.filePath("toolbar-expansion.ini");
+        for (int lifetime = 0; lifetime < 3; ++lifetime) {
+            NativePreferences preferences(settingsPath);
+            preferences.setLocale("en"); preferences.setMode("light");
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard) closeIncubatedTestWindow(engine, guard.data());
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+            QVERIFY(QTest::qWaitForWindowActive(window));
+            QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+            QTRY_VERIFY(controller.selectedTopic() == topicId);
+            const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+            auto *composer = view("messageComposer"); QVERIFY(composer && composer->isEnabled());
+            auto *toolbar = item(window->contentItem(), "composerToolbarRow"); QVERIFY(toolbar);
+            if (lifetime == 0) {
+                // settings.model.ts:74: the default composer starts collapsed
+                // with only the single expand toggle in the input row.
+                QVERIFY(!toolbar->isVisible());
+                auto *expandToggle = view("composerToolbarExpand"); QVERIFY(expandToggle);
+                QVERIFY(!view("composerToolbarCollapse"));
+                // message-composer-styles.lib.ts TOOLBAR_BTN h-8 w-8.
+                QCOMPARE(expandToggle->width(), 32.0);
+                QCOMPARE(expandToggle->height(), 32.0);
+                const auto compactAxis = expandToggle->mapToItem(window->contentItem(), QPointF{}).x();
+                click(window, expandToggle);
+                QTRY_VERIFY(toolbar->isVisible());
+                auto *collapseToggle = view("composerToolbarCollapse"); QVERIFY(collapseToggle);
+                // COMPOSER_LEADING_CONTROLS_INSET pl-2: the collapse toggle
+                // sits 8px from the toolbar row's left edge.
+                QCOMPARE(qRound(collapseToggle->mapToItem(window->contentItem(), QPointF{}).x()
+                    - toolbar->mapToItem(window->contentItem(), QPointF{}).x()), 8);
+                // Reference comment: both 32px toggles stay on one vertical axis.
+                QCOMPARE(qRound(collapseToggle->mapToItem(window->contentItem(), QPointF{}).x()),
+                    qRound(compactAxis));
+                // message-composer-styles.lib.ts TOOLBAR_BTN: every action
+                // keeps the 32x32 hit area.
+                const QStringList actions{"composerFormatLink", "composerFormatBold",
+                    "composerFormatItalic", "composerFormatStrikethrough",
+                    "composerFormatNumbered", "composerFormatBulleted",
+                    "composerFormatQuote", "composerFormatCodeBlock",
+                    "composerFormatCode", "composerFormatSpoiler"};
+                for (const auto &name : actions) {
+                    auto *action = view(name); QVERIFY2(action, qPrintable(name));
+                    QVERIFY2(action->isEnabled(), qPrintable(name));
+                    QCOMPARE(action->width(), 32.0);
+                    QCOMPARE(action->height(), 32.0);
+                }
+                // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
+                const auto separators = toolbar->findChildren<QQuickItem *>("composerToolbarSeparator");
+                QCOMPARE(separators.size(), 3);
+                for (auto *separator : separators) {
+                    QCOMPARE(separator->width(), 1.0);
+                    QCOMPARE(separator->height(), 28.0);
+                    QCOMPARE(QQmlProperty::read(separator, "color").value<QColor>(),
+                        QColor(window->property("colors").toMap().value("border-subtle").toString()));
+                }
+                // COMPOSER_TOOLBAR_SEND_CLEARANCE mr-[52px]: 40px send + 12px row gap.
+                auto *send = view("sendButton"); QVERIFY(send);
+                const auto sendRight = send->mapToItem(window->contentItem(), QPointF(send->width(), 0)).x();
+                const auto toolbarRight
+                    = toolbar->mapToItem(window->contentItem(), QPointF(toolbar->width(), 0)).x();
+                QCOMPARE(qRound(sendRight - toolbarRight), 52);
+                // The expansion now persists as true for the next lifetime.
+            } else if (lifetime == 1) {
+                QTRY_VERIFY_WITH_TIMEOUT(toolbar->isVisible(), 2000); // persisted expansion
+                click(window, view("composerToolbarCollapse"));
+                QTRY_VERIFY(!toolbar->isVisible()); // persisted collapse
+            } else {
+                QVERIFY(!toolbar->isVisible()); // collapsed choice survived recreation
+                QVERIFY(view("composerToolbarExpand"));
+            }
+            QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+        }
+    }
+
+    // Insert text per message-composer-toolbar.ui.tsx actions with the
+    // wrap/selection-restore semantics of message-composer-selection.lib.ts.
+    void composerToolbarInsertActionsProduceExactReferenceMarkers_data()
+    {
+        QTest::addColumn<QString>("button");
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<int>("selectionStart");
+        QTest::addColumn<int>("selectionEnd");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<int>("expectedStart");
+        QTest::addColumn<int>("expectedEnd");
+        // Wrap actions: empty selection gets the caret between the markers,
+        // a selection collapses after the closing marker.
+        QTest::newRow("bold-selection") << "composerFormatBold" << "word" << 0 << 4
+            << QString("**word**") << 8 << 8;
+        QTest::newRow("bold-empty") << "composerFormatBold" << "abcd" << 2 << 2
+            << QString("ab****cd") << 4 << 4;
+        QTest::newRow("italic-selection") << "composerFormatItalic" << "word" << 0 << 4
+            << QString("*word*") << 6 << 6;
+        QTest::newRow("italic-empty") << "composerFormatItalic" << "abcd" << 2 << 2
+            << QString("ab**cd") << 3 << 3;
+        QTest::newRow("inline-code-selection") << "composerFormatCode" << "word" << 0 << 4
+            << QString("`word`") << 6 << 6;
+        QTest::newRow("inline-code-empty") << "composerFormatCode" << "abcd" << 2 << 2
+            << QString("ab``cd") << 3 << 3;
+        QTest::newRow("strike-selection") << "composerFormatStrikethrough" << "word" << 0 << 4
+            << QString("~~word~~") << 8 << 8;
+        QTest::newRow("strike-empty") << "composerFormatStrikethrough" << "abcd" << 2 << 2
+            << QString("ab~~~~cd") << 4 << 4;
+        QTest::newRow("spoiler-selection") << "composerFormatSpoiler" << "word" << 0 << 4
+            << QString("||word||") << 8 << 8;
+        QTest::newRow("spoiler-empty") << "composerFormatSpoiler" << "abcd" << 2 << 2
+            << QString("ab||||cd") << 4 << 4;
+        // Per-line prefix actions.
+        QTest::newRow("quote-selection") << "composerFormatQuote" << "word" << 0 << 4
+            << QString("> word") << 6 << 6;
+        QTest::newRow("quote-empty") << "composerFormatQuote" << "abcd" << 2 << 2
+            << QString("ab> cd") << 4 << 4;
+        QTest::newRow("quote-multiline") << "composerFormatQuote" << "a\nb" << 0 << 3
+            << QString("> a\n> b") << 7 << 7;
+        QTest::newRow("bulleted-selection") << "composerFormatBulleted" << "word" << 0 << 4
+            << QString("- word") << 6 << 6;
+        QTest::newRow("bulleted-empty") << "composerFormatBulleted" << "abcd" << 2 << 2
+            << QString("ab- cd") << 4 << 4;
+        QTest::newRow("bulleted-multiline") << "composerFormatBulleted" << "a\nb" << 0 << 3
+            << QString("- a\n- b") << 7 << 7;
+        QTest::newRow("numbered-selection") << "composerFormatNumbered" << "word" << 0 << 4
+            << QString("1. word") << 7 << 7;
+        QTest::newRow("numbered-empty") << "composerFormatNumbered" << "abcd" << 2 << 2
+            << QString("ab1. cd") << 5 << 5;
+        QTest::newRow("numbered-multiline") << "composerFormatNumbered" << "a\nb" << 0 << 3
+            << QString("1. a\n2. b") << 9 << 9;
+        // Fenced block and link template (URL selected).
+        QTest::newRow("code-block-selection") << "composerFormatCodeBlock" << "word" << 0 << 4
+            << QString("```\nword\n```") << 12 << 12;
+        QTest::newRow("code-block-empty") << "composerFormatCodeBlock" << "abcd" << 2 << 2
+            << QString("ab```\n\n```cd") << 6 << 6;
+        QTest::newRow("link-selection") << "composerFormatLink" << "word" << 0 << 4
+            << QString("[word](https://)") << 7 << 15;
+        QTest::newRow("link-empty") << "composerFormatLink" << "abcd" << 2 << 2
+            << QString("ab[link text](https://)cd") << 14 << 22;
+    }
+
+    void composerToolbarInsertActionsProduceExactReferenceMarkers()
+    {
+        QFETCH(QString, button); QFETCH(QString, text);
+        QFETCH(int, selectionStart); QFETCH(int, selectionEnd);
+        QFETCH(QString, expected); QFETCH(int, expectedStart); QFETCH(int, expectedEnd);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("toolbar-insert.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setComposerToolbarExpanded(true);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(controller.selectedTopic() == topicId);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *composer = view("messageComposer"); QVERIFY(composer && composer->isEnabled());
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        composer->setProperty("text", text);
+        QTRY_COMPARE(controller.draft(), text);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(view(button)), 2000);
+        auto *action = view(button); QVERIFY(action); QVERIFY2(action->isEnabled(), qPrintable(button));
+        QMetaObject::invokeMethod(composer, "select", Q_ARG(int, selectionStart), Q_ARG(int, selectionEnd));
+        QCOMPARE(composer->property("selectionEnd").toInt(), selectionEnd);
+        click(window, action);
+        QTRY_COMPARE(composer->property("text").toString(), expected);
+        QCOMPARE(controller.draft(), expected);
+        // Toolbar clicks must not steal the caret from the composer.
+        QVERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("selectionStart").toInt(), expectedStart);
+        QCOMPARE(composer->property("selectionEnd").toInt(), expectedEnd);
+    }
+
+    // Shift+Enter continuation per message-composer-list-continuation.lib.ts:
+    // matching marker/indent, incremented ordered numbers, and an empty
+    // marker line is deleted instead of extended.
+    void composerShiftEnterContinuesAndExitsMarkdownLists()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("toolbar-continuation.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setComposerToolbarExpanded(true);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(controller.selectedTopic() == topicId);
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled());
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto character : QByteArray("- item")) QTest::keyClick(window, character);
+        QTRY_COMPARE(composer->property("text").toString(), QString("- item"));
+        // "continues unordered list item with matching marker": "- item" -> "- item\n- ".
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("- item\n- "));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 9);
+        for (const auto character : QByteArray("two")) QTest::keyClick(window, character);
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("- item\n- two\n- "));
+        // "exits the list on an empty marker line": the "- " line disappears.
+        // replaceLineWithEmpty in message-composer-list-continuation.lib.ts
+        // deletes [lineStart, lineEnd), so the previous line's terminator stays.
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("- item\n- two\n"));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 13);
+        // "continues ordered list with incremented number": "3. item" -> "4. ".
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto character : QByteArray("3. item")) QTest::keyClick(window, character);
+        QTRY_COMPARE(composer->property("text").toString(), QString("3. item"));
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("3. item\n4. "));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 11);
+        // "exits ordered list on empty marker line" (line terminator retained).
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("3. item\n"));
+        QCOMPARE(composer->property("cursorPosition").toInt(), 8);
+        QCOMPARE(controller.draft(), QString("3. item\n"));
+        // A plain Shift+Enter inside a non-list line still inserts a newline.
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto character : QByteArray("plain")) QTest::keyClick(window, character);
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("plain\n"));
+        // Inside a list line (caret not at line end) the newline stays plain.
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto character : QByteArray("- item")) QTest::keyClick(window, character);
+        QTest::keyClick(window, Qt::Key_Home);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTRY_COMPARE(composer->property("text").toString(), QString("- \nitem"));
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {
