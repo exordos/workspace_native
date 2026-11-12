@@ -116,7 +116,7 @@ reference behavior and Qt's general behavior, and are labeled reference-only.
 | --- | --- | --- | --- |
 | Microphone | App gate: `featurePermissionRequested`(`AudioCapture`) in the page subclass (native counterpart of Electron's handler). Device access goes through PulseAudio API served by PipeWire/pipewire-pulse (confirmed running on this host, PipeWire 1.6.2). No mature microphone portal exists, so no OS prompt is expected outside the app gate. Sandbox/first-run: none on bare X; Flatpak packaging later would need portal device rules. Reference for Electron side: `media` in `allowedPermissions`. | Chromium opens WASAPI capture; OS-level control is Settings → Privacy → Microphone (per-app toggle, reference-only). Sole in-app gate is the page's `featurePermissionRequested` equivalent (Electron: handler). No OS prompt bubble in Electron path. | TCC prompt (once per app, `NSMicrophoneUsageDescription` required in the bundle Info.plist, reference-only). Electron gate = same handler as Linux column. |
 | Camera | App gate: `VideoCapture` on `featurePermissionRequested`. Device path depends on Chromium's Linux camera stack: with PipeWire the camera portal (`org.freedesktop.portal.Camera.AccessCamera` → `OpenPipeWireRemote`) fronts V4L2 (upstream Chromium behavior, cited reference; whether Ubuntu's QtWebEngine 6.10 takes this path on X11 was **not** proven — this host has no camera device, see Spike evidence). Portal permission store can permanently deny after a dismissed dialog — the native app must surface reset guidance (`flatpak permissions`/`dconf`). | Chromium opens Media Foundation capture; OS control is Settings → Privacy → Camera (reference-only). In-app gate as above. | TCC prompt (once, `NSCameraUsageDescription`, reference-only). Gate as above. |
-| Display capture (`getDisplayMedia`) | **Proven on this host (X11): unsupported** — the promise rejected `AbortError: Invalid state` and no permission request reached the Qt 6.10 `permissionRequested` gate (no source chooser). Desktop capture in QtWebEngine as packaged on Ubuntu 26.04 depends on the Wayland + xdg-desktop-portal ScreenCast → PipeWire path (reference: upstream Chromium/portal split; not exercised here). So #87 must be planned for Wayland (portal `PickScreen`/`CreateSession`) and treat X11 as no-screen-share until an upstream path exists. Electron reference: Jitsi electron-sdk owns the picker (`setupScreenSharingMain`, main.ts:364-367) and the gate only admits non-main `https` frames of an active call (main.ts:978, 996-1020) — the native gate must mirror that origin/frame rule. | Electron reference: no OS prompt; `desktopCapturer` enumerates windows, Jitsi's in-app picker (electron-sdk) selects the source. Windows privacy has no display-capture toggle. | Electron reference: Jitsi's in-app picker; macOS Screen Recording privacy (System Settings → Privacy & Security → Screen Recording) must be granted once for capture to return real content (reference-only; TCC applies to the app bundle). |
+| Display capture (`getDisplayMedia`) | **Proven on this host (X11): unsupported** — called from a real user gesture (`navigator.userActivation.isActive=true` at call time), the promise rejected `AbortError: Invalid state` and no permission request reached the Qt 6.10 `permissionRequested` gate (no source chooser). Desktop capture in QtWebEngine as packaged on Ubuntu 26.04 depends on the Wayland + xdg-desktop-portal ScreenCast → PipeWire path (reference: upstream Chromium/portal split; not exercised here). So #87 must be planned for Wayland (portal `PickScreen`/`CreateSession`) and treat X11 as no-screen-share until an upstream path exists. Electron reference: Jitsi electron-sdk owns the picker (`setupScreenSharingMain`, main.ts:364-367) and the gate only admits non-main `https` frames of an active call (main.ts:978, 996-1020) — the native gate must mirror that origin/frame rule. | Electron reference: no OS prompt; `desktopCapturer` enumerates windows, Jitsi's in-app picker (electron-sdk) selects the source. Windows privacy has no display-capture toggle. | Electron reference: Jitsi's in-app picker; macOS Screen Recording privacy (System Settings → Privacy & Security → Screen Recording) must be granted once for capture to return real content (reference-only; TCC applies to the app bundle). |
 | Fullscreen | `featurePermissionRequested`(`Fullscreen`) grant for the call view. Reference allow-policy includes `fullscreen`. | Same as Linux column (Chromium-internal, no OS prompt). | Same. |
 | Notifications (call invites) | Already handled natively (org.freedesktop.Notifications, see notifications module); calls reuse it. | Windows toast (reference). | macOS notification center (reference). |
 
@@ -165,9 +165,11 @@ name remains in the earlier prose as the family term for the gate.
   frame. Native plan: `featurePermissionRequested(DisplayCapture)` → deny unless
   (1) a call session is open, (2) the requesting frame is non-main-frame,
   `https:` and origin-matches the configured Jitsi domain (same rule as
-  reference main.ts:996-1020) → then route to a source picker: QtWebEngine's
-  built-in chooser under X11 (seen during the spike, see evidence) or portal
-  ScreenCast PickScreen under Wayland (reference), and grant.
+  reference main.ts:996-1020) → then route to a source picker: portal
+  ScreenCast PickScreen under Wayland (reference). Under X11 the
+  gesture-triggered probe never produced a QtWebEngine built-in chooser (see
+  evidence), so X11 stays no-screen-share until an upstream path exists — then
+  grant.
 
 ## Spike: what was and was NOT empirically proven on this host
 
@@ -178,8 +180,14 @@ Spike binary `native-call-spike` ran on this host under `Xvnc :34` + openbox
 (1280x800, depth 24, X11), no camera hardware, PipeWire 1.6.2 with an emulated
 ALSA stereo input (`pactl` default source
 `alsa_input.pci-0000_00_04.0.analog-stereo`), internet reachable
-(`https://meet.jit.si/` HTTP 200 from the same host). QtWebEngine ran with
-`--no-sandbox --disable-gpu --disable-dev-shm-usage` (headless VM; recorded).
+(`https://meet.jit.si/` HTTP 200 from the same host). QtWebEngine ran with the
+Chromium sandbox **enabled** (the spike default): every QtWebEngineProcess
+cmdline ran without `--no-sandbox` and the renderer was verified to hold an
+active seccomp filter (`Seccomp: 2`, `Seccomp_filters: 1` in
+`/proc/<renderer>/status`). Extra flags: `--disable-gpu
+--disable-dev-shm-usage` (headless VM; recorded). Sandbox-off is only possible
+as an explicit per-run opt-in (`WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX=1`,
+see `spike/call/main.cpp`) and was not needed on this host.
 
 **Proven on this host** (stdout logs + `import -window root` screenshots):
 
@@ -191,7 +199,10 @@ ALSA stereo input (`pactl` default source
   `WebEngineView::permissionRequested` (`QWebEnginePermission`,
   `type=1` = MediaAudioCapture) from origin `app://spike/`; the spike granted
   it (native counterpart of Electron's `setPermissionRequestHandler`,
-  reference main.ts:978) and the returned track was `state=live`,
+  reference main.ts:978; the spike's handler is deny-by-default:
+  it grants only media capture from its own `app://spike` origin or the Jitsi
+  origins it loads, and display capture from `app://spike` only), and the
+  returned track was `state=live`,
   `sampleRate=48000`, default PipeWire device — a live capture track existed
   (content is the host's emulated silent ALSA source; see non-claims).
 - Device enumeration: `enumerateDevices()` reported 1 audioinput + 1
@@ -221,13 +232,19 @@ ALSA stereo input (`pactl` default source
 
 **Findings that change the matrix (also proven here):**
 
-- `getDisplayMedia` under **X11 with QtWebEngine 6.10**: the call rejected
-  with `AbortError: Invalid state` and **no permission request ever reached
-  the `permissionRequested` gate** — this Qt build offers no display capture
-  on X11 (no source chooser appeared). The #87 hook therefore has to be
-  planned against Wayland + xdg-desktop-portal ScreenCast (reference), or an
-  upstream/patched capture path; treat X11 screen share as unsupported by
-  QtWebEngine as packaged on Ubuntu 26.04.
+- `getDisplayMedia` under **X11 with QtWebEngine 6.10** — re-verified
+  gesture-triggered after review: the probe now calls `getDisplayMedia` only
+  from a real user gesture (an F1 X KeyPress injected via xdotool with the
+  spike window focused; the page logged
+  `GDM_BEGIN via=F1 hasBeenActive=true isActive=true`, proving transient user
+  activation was present). With that precondition satisfied the call still
+  rejected with `AbortError: Invalid state`, and **no permission request ever
+  reached the `permissionRequested` gate** — no display-capture source chooser
+  appeared (log + screenshot). This Qt build therefore offers no display
+  capture on X11. The #87 hook has to be planned against Wayland +
+  xdg-desktop-portal ScreenCast (reference), or an upstream/patched capture
+  path; treat X11 screen share as unsupported by QtWebEngine as packaged on
+  Ubuntu 26.04.
 - A custom **local** scheme page (`app://` registered with
   `LocalScheme | SecureScheme | CorsEnabled | LocalAccessAllowed`, default
   port 443) can host a *vendored* script (loader proof above) but a *remote*

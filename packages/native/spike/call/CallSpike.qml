@@ -14,16 +14,41 @@ Window {
         id: callView
         anchors.fill: parent
         url: spikeStartUrl
+        Component.onCompleted: forceActiveFocus()
         // Qt 6.10 permission API: native counterpart of Electron's
         // setPermissionRequestHandler (workspace_ui main.ts:978). Spike
-        // policy: grant the reference allow-policy set (camera; microphone;
-        // fullscreen; display-capture). Production gates per active-call
-        // frame/origin like isAllowedJitsiDisplayCaptureRequest (main.ts:996).
+        // policy is DENY BY DEFAULT: the view can load remote https content
+        // (meet.jit.si), so a blanket grant would let any remote frame
+        // capture devices. Grants are limited to (a) media capture from the
+        // spike's own app://spike page or the Jitsi origins the spike loads,
+        // and (b) display capture from app://spike only (the F1 gesture
+        // probe in probe.html is its only caller). Production gates per
+        // active-call frame/origin like isAllowedJitsiDisplayCaptureRequest
+        // (main.ts:996).
         onPermissionRequested: (permission) => {
-            console.log("PERM_REQUEST type=" + permission.permissionType
-                        + " origin=" + permission.origin)
-            permission.grant()
-            console.log("PERM_GRANTED type=" + permission.permissionType)
+            const typeName = permission.permissionType
+            const origin = permission.origin.toString().replace(/\/+$/, "")
+            console.log("PERM_REQUEST type=" + typeName + " origin=" + origin)
+            const fromProbe = (origin === "app://spike")
+            const fromJitsi = (origin === "https://meet.jit.si")
+            // Numeric values of QWebEnginePermission::PermissionType from
+            // Qt 6.10.2 qwebenginepermission.h: 0 Unsupported,
+            // 1 MediaAudioCapture, 2 MediaVideoCapture, 3 MediaAudioVideoCapture,
+            // 4 DesktopVideoCapture, 5 DesktopAudioVideoCapture, 6 MouseLock,
+            // 7 Notifications, 8 Geolocation, 9 ClipboardReadWrite, 10 LocalFontsAccess.
+            // (Scoped QML enum lookup proved unreliable in the built app,
+            // so compare the documented numbers.)
+            const t = Number(typeName)
+            const mediaCapture = (t >= 1 && t <= 3)   // audio/video/audio+video capture
+            const desktopCapture = (t === 4 || t === 5) // display capture (F1 gesture probe only)
+            if ((mediaCapture && (fromProbe || fromJitsi))
+                    || (desktopCapture && fromProbe)) {
+                permission.grant()
+                console.log("PERM_GRANTED type=" + typeName + " origin=" + origin)
+            } else {
+                permission.deny()
+                console.log("PERM_DENIED type=" + typeName + " origin=" + origin)
+            }
         }
         onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) =>
             console.log("PAGE> " + message)
