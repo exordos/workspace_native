@@ -73,6 +73,40 @@ ApplicationWindow {
             accountPopup.open();
         }
     }
+    // Right drawer shell (issue #129): docks beside the chat like aboutDrawer.
+    // Content layers mount on the body slot later (issue #72).
+    NativeRightDrawer {
+        id: rightDrawer
+        anchors.right: parent.right
+        anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
+        anchors.topMargin: root.controller.authenticated ? 4 : 8
+        anchors.bottom: parent.bottom
+        colors: root.colors
+    }
+    // The reference runtime generation is a login-generation counter: a new
+    // authenticated session drops hidden chat screens of the previous runtime.
+    property int rightDrawerRuntimeGeneration: 0
+    readonly property var rightDrawerChatScope: ({
+        ownerKey: root.controller.ownerKey,
+        runtimeGeneration: root.rightDrawerRuntimeGeneration,
+        streamUuid: root.controller.selectedStream
+    })
+    function resetRightDrawerChatScreens() {
+        rightDrawer.resetChatScreens(root.rightDrawerChatScope);
+    }
+    onRightDrawerRuntimeGenerationChanged: root.resetRightDrawerChatScreens()
+    Connections {
+        target: root.controller
+        function onStateChanged() {
+            root.resetRightDrawerChatScreens();
+        }
+        function onAuthenticatedChanged() {
+            if (root.controller.authenticated)
+                root.rightDrawerRuntimeGeneration += 1;
+            else
+                rightDrawer.clearAll();
+        }
+    }
     readonly property real preferredSidebarWidth: root.preferences.sidebarPreferredWidth
     readonly property real sidebarMaximum: Math.max(240, Math.min(720, Math.round(width * 0.4)))
     readonly property real sidebarMinimum: Math.min(sidebarMaximum, Math.max(240, Math.round(width * 0.12)))
@@ -2853,6 +2887,7 @@ ApplicationWindow {
                 && !root.controller.inboxVisible
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
             spacing: 0
             Rectangle {
                 objectName: "conversationHeader"
