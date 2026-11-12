@@ -136,7 +136,11 @@ void NativeAuthGuard::refreshWindowsVisibility()
     for (const auto *window : QGuiApplication::topLevelWindows())
     {
         if (!window) continue;
+        // PR #226 review (4555758286): the pause condition is "no window
+        // visible/exposed"; a mapped window whose platform Expose has not
+        // arrived (or a minimized X11 window) is visible but not exposed.
         if (window->isVisible()
+            && window->isExposed()
             && window->visibility() != QWindow::Visibility::Hidden
             && window->visibility() != QWindow::Visibility::Minimized)
         {
@@ -150,6 +154,16 @@ void NativeAuthGuard::refreshWindowsVisibility()
 void NativeAuthGuard::noteActivity()
 {
     if (!armed()) return;
+    // PR #226 review (4555758272/4555758307): the poll-based check timer can
+    // lag the deadline, so activity may arrive after it already passed. The
+    // expired deadline is enforced first; only a live deadline is re-armed.
+    // Hidden windows pause the deadline, so expiry is enforced only while
+    // windows are visible (matching the pause contract).
+    if (m_windowsVisible && m_deadlineMs > 0 && nowMs() >= m_deadlineMs)
+    {
+        fire();
+        return;
+    }
     m_deadlineMs = nowMs() + m_timeoutMs;
     schedule();
 }
