@@ -28,6 +28,7 @@ add_library(workspace-native-core STATIC
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
     src/native-preferences.cpp src/native-preferences.h
+    src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
     src/native-updater.cpp src/native-updater.h
     src/native-cache.cpp src/native-cache.h
@@ -230,7 +231,7 @@ if(BUILD_TESTING)
 
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "native-desktop")
