@@ -36,6 +36,7 @@ add_library(workspace-native-core STATIC
     src/native-draft-service.cpp src/native-draft-service.h
     src/native-drafts.cpp src/native-drafts.h
     src/native-notifications.cpp src/native-notifications.h
+    src/call/jitsi-call.cpp src/call/jitsi-call.h
     src/media-viewer.cpp src/media-viewer.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
@@ -227,7 +228,7 @@ if(BUILD_TESTING)
 
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "native-desktop")
