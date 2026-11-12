@@ -73,6 +73,23 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap channelCreationForm READ channelCreationForm NOTIFY stateChanged)
     Q_PROPERTY(bool canCheckChannelCreation READ canCheckChannelCreation NOTIFY stateChanged)
     Q_PROPERTY(bool canRetryChannelMembers READ canRetryChannelMembers NOTIFY stateChanged)
+    // Issue #132 channel info drawer content for the selected stream
+    // (docs/NATIVE_DESKTOP_CHANNEL_INFO.md): member projection, notification
+    // store mode and the three member/notification mutations.
+    Q_PROPERTY(QVariantMap channelInfoStream READ channelInfoStream NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList channelInfoMembers READ channelInfoMembers NOTIFY stateChanged)
+    Q_PROPERTY(int channelInfoMemberCount READ channelInfoMemberCount NOTIFY stateChanged)
+    Q_PROPERTY(int channelInfoOnlineCount READ channelInfoOnlineCount NOTIFY stateChanged)
+    Q_PROPERTY(bool channelInfoIsOwner READ channelInfoIsOwner NOTIFY stateChanged)
+    Q_PROPERTY(bool channelInfoLoading READ channelInfoLoading NOTIFY stateChanged)
+    Q_PROPERTY(QString channelInfoNotificationMode READ channelInfoNotificationMode NOTIFY stateChanged)
+    Q_PROPERTY(bool channelInfoNotificationBusy READ channelInfoNotificationBusy NOTIFY stateChanged)
+    Q_PROPERTY(QString channelInfoNotificationError READ channelInfoNotificationError NOTIFY stateChanged)
+    Q_PROPERTY(QStringList channelInfoRemovingMembers READ channelInfoRemovingMembers NOTIFY stateChanged)
+    Q_PROPERTY(QString channelInfoMemberError READ channelInfoMemberError NOTIFY stateChanged)
+    Q_PROPERTY(bool channelInfoAddBusy READ channelInfoAddBusy NOTIFY stateChanged)
+    Q_PROPERTY(QString channelInfoAddError READ channelInfoAddError NOTIFY stateChanged)
+    Q_PROPERTY(int channelInfoAddSettled READ channelInfoAddSettled NOTIFY channelInfoAddSettledChanged)
     Q_PROPERTY(bool topicCreationBusy READ topicCreationBusy NOTIFY stateChanged)
     Q_PROPERTY(bool topicCreationUncertain READ topicCreationUncertain NOTIFY stateChanged)
     Q_PROPERTY(bool canCheckTopicCreation READ canCheckTopicCreation NOTIFY stateChanged)
@@ -206,6 +223,20 @@ public:
     QVariantMap channelCreationForm() const;
     bool canCheckChannelCreation() const;
     bool canRetryChannelMembers() const;
+    QVariantMap channelInfoStream() const;
+    QVariantList channelInfoMembers() const;
+    int channelInfoMemberCount() const { return channelInfoStream().isEmpty() ? 0 : int(m_channelInfoMembers.size()); }
+    int channelInfoOnlineCount() const;
+    bool channelInfoIsOwner() const;
+    bool channelInfoLoading() const { return m_channelInfoLoading; }
+    QString channelInfoNotificationMode() const;
+    bool channelInfoNotificationBusy() const { return m_channelInfoNotificationBusy; }
+    QString channelInfoNotificationError() const { return m_channelInfoNotificationError; }
+    QStringList channelInfoRemovingMembers() const { return m_channelInfoRemoving; }
+    QString channelInfoMemberError() const { return m_channelInfoMemberError; }
+    bool channelInfoAddBusy() const { return m_channelInfoAddBusy; }
+    QString channelInfoAddError() const { return m_channelInfoAddError; }
+    int channelInfoAddSettled() const { return m_channelInfoAddSettled; }
     bool topicCreationBusy() const;
     bool topicCreationUncertain() const;
     bool canCheckTopicCreation() const;
@@ -330,6 +361,11 @@ public:
         bool inviteOnly, bool announce, const QVariantList &memberUuids);
     Q_INVOKABLE void checkChannelCreation();
     Q_INVOKABLE void retryChannelMembers();
+    Q_INVOKABLE void refreshChannelInfo();
+    Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
+    Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
+    Q_INVOKABLE void addChannelInfoMembers(const QStringList &userUuids);
+    Q_INVOKABLE void resetChannelInfoAddState();
     Q_INVOKABLE bool canCreateTopicIn(const QString &stream) const;
     Q_INVOKABLE void createTopic(const QString &stream, const QString &name);
     Q_INVOKABLE void checkTopicCreation();
@@ -367,6 +403,7 @@ signals:
     void chatKeyStoreOpenRequested();
     void archivedChatsChanged();
     void stateChanged();
+    void channelInfoAddSettledChanged();
     void anchorChanged();
     void savedAccountsChanged();
     void sessionSwitcherChanged();
@@ -866,6 +903,28 @@ private:
     bool m_drainingUploads = false;
     QTimer m_poll;
     QVector<Stream> m_streams;
+    // Issue #132 channel info drawer state for the selected stream. The
+    // binding rows belong to m_channelInfoStreamId; a projection read with a
+    // different selection stays empty, so stale pages can never leak across
+    // conversations and late responses are dropped by the load ticket.
+    struct ChannelInfoMember {
+        QString bindingUuid, userUuid, role;
+    };
+    const Stream *channelInfoStreamRow() const;
+    bool channelInfoContext(quint64 ticket, const QString &stream) const;
+    void loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
+                             QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
+    QString m_channelInfoStreamId;
+    QVector<ChannelInfoMember> m_channelInfoMembers;
+    quint64 m_channelInfoTicket = 0;
+    bool m_channelInfoLoading = false;
+    bool m_channelInfoNotificationBusy = false;
+    QString m_channelInfoNotificationError;
+    QStringList m_channelInfoRemoving;
+    QString m_channelInfoMemberError;
+    bool m_channelInfoAddBusy = false;
+    QString m_channelInfoAddError;
+    int m_channelInfoAddSettled = 0;
     QVector<Topic> m_topics;
     NotificationService m_notifications;
     bool m_windowFocused = true;
