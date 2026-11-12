@@ -14320,6 +14320,49 @@ private slots:
             (QStringList{word}));
     }
 
+    void mentionRankFoldsCyrillicYeAndAccentedLatin()
+    {
+        // normalizeMentionText (mention-suggest.lib.ts) NFD-decomposes and drops
+        // combining marks before matching: a plain "елена" query must find the
+        // display name spelled with "ё" (U+0451 -> е U+0435), and "jose" must
+        // find "José" through the stripped U+0301.
+        const auto elena = mentionUuid("1a"), jose = mentionUuid("1b");
+        const QVariantList users{
+            mentionRow(elena, QStringLiteral("Елёна Иванова"), "el"),
+            mentionRow(jose, QStringLiteral("José"), "jr7")};
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("елена"), users, {})),
+            (QStringList{elena}));
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("jose"), users, {})),
+            (QStringList{jose}));
+        // The accented query spelling folds onto the same key (case-fold kept).
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("ЕЛЁНА"), users, {})),
+            (QStringList{elena}));
+    }
+
+    void mentionRankRowsCarryDisambiguatedVisibleText()
+    {
+        // message-composer.ui.tsx displayNameCounts: a shared display name gets
+        // the "Name (username)" visible form on the ranked row itself, the exact
+        // string the send serializer matches; unique names keep the bare name.
+        Fixture f;
+        const auto bobOne = mentionUuid("0b0b"), bobTwo = mentionUuid("18"), ann = mentionUuid("0a55");
+        f.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", bobOne}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", bobTwo}, {"username", "bob2"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", ann}, {"username", "ann"}, {"first_name", "Ann"}}}}; };
+        QVERIFY(f.start());
+        QMap<QString, QString> visibleByUuid;
+        for (const auto &value : f.controller.mentionSuggestions(QString{}))
+        {
+            const auto row = value.toMap();
+            visibleByUuid.insert(row.value("userUuid").toString(), row.value("visibleText").toString());
+        }
+        QCOMPARE(visibleByUuid.value(bobOne), QStringLiteral("Bob Ray (bob)"));
+        QCOMPARE(visibleByUuid.value(bobTwo), QStringLiteral("Bob Ray (bob2)"));
+        QCOMPARE(visibleByUuid.value(ann), QStringLiteral("Ann"));
+    }
+
     void mentionUrnsSkipEmailsAndAmbiguousNames()
     {
         const auto bob = mentionUuid("0b0b");
