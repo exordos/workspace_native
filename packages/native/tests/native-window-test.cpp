@@ -1519,6 +1519,58 @@ struct ProfileWindowScene {
     void saveEdit() { QMetaObject::invokeMethod(layer(), "saveEdit"); }
 };
 
+// Issue #161: conversation shell for call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md).
+class WindowCallFixture {
+public:
+    MockServer server;
+    bool meetConfigured = false;
+    QString meetingUrl = QStringLiteral("https://meet.example.com/workspace-call-room");
+    int posts = 0;
+    QJsonObject posted;
+    WindowCallFixture()
+    {
+        server.handler = [this](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return {QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                    {QStringLiteral("meet_url"),
+                        meetConfigured ? QStringLiteral("https://meet.example.com/") : QString()}}};
+            if (path.endsWith("/streams/"))
+                return {QJsonArray{windowChannel(streamId, "Call channel")}};
+            if (path.endsWith("/streams/" + streamId))
+                return {windowChannel(streamId, "Call channel")};
+            if (path.endsWith("/stream_topics/"))
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Calls")}};
+            if (path.endsWith("/stream_topics/" + topicId))
+                return {windowChannelTopic(topicId, streamId, "Calls")};
+            if (path.endsWith("/messages/")) {
+                if (request.method == "POST") {
+                    ++posts;
+                    posted = request.body;
+                    return {message(request.body.value("payload").toObject()
+                        .value("content").toString(), returnedId), 201};
+                }
+                return {QJsonArray{message(meetingUrl, messageId)}};
+            }
+            if (path.endsWith("/messages/" + returnedId))
+                return {message(posted.value("payload").toObject()
+                    .value("content").toString(), returnedId)};
+            return sessionResponse(request);
+        };
+    }
+    bool start(NativeController &controller)
+    {
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return controller.streams().size() == 1; }, 2000)) return false;
+        controller.selectStream(streamId);
+        if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 2000)) return false;
+        controller.selectTopic(topicId);
+        return QTest::qWaitFor([&] { return !controller.busy(); }, 2000);
+    }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -14961,6 +15013,79 @@ private:
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) closeBeforeEngine.dismiss();
         QVERIFY(closed);
+    }
+
+    // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
+
+    void workspaceCallHeaderButtonFollowsMeetHost_data()
+    {
+        QTest::addColumn<bool>("meet");
+        QTest::newRow("without-meet-host") << false;
+        QTest::newRow("with-meet-host") << true;
+    }
+    void workspaceCallHeaderButtonFollowsMeetHost()
+    {
+        QFETCH(bool, meet);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = meet;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call header teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "messageList"), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 2000);
+        if (meet) {
+            QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("headerCallButton")), 2000);
+            QVERIFY(controller.canStartCall());
+        } else {
+            // No Workspace meet_url: no header call action at all
+            // (chat-page-workspace.ui.tsx:4100).
+            QCOMPARE(controller.meetHost(), QString());
+            QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("headerCallButton")));
+            QVERIFY(!controller.canStartCall());
+        }
+    }
+
+    void workspaceMeetingUrlMessageRendersCallCardAndJoins()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call card teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        const auto card = QStringLiteral("call-card-") + messageId;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), card), 2000);
+        // The card replaces the raw text body (reference presentation:906).
+        QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("message-content-") + messageId));
+        auto *cardItem = visibleItem(window->contentItem(), card);
+        auto *name = item(window->contentItem(), QStringLiteral("callCardName"));
+        QVERIFY(name);
+        QCOMPARE(name->property("text").toString(), QStringLiteral("workspace call room"));
+        // Joining from the card opens the room in the single-active-call store.
+        click(window, cardItem);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
+            fixture.meetingUrl);
+        QCOMPARE(controller.callError(), QString());
     }
 };
 

@@ -6099,6 +6099,17 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::signedOut, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
+    // Issue #161: the Workspace meet host lives only as long as the session
+    // does (reference per-owner store, cleared on logout).
+    connect(m_session, &Session::authenticated, this, [this] { fetchCallMeetHost(); });
+    connect(m_session, &Session::signedOut, this, [this] {
+        ++m_callMeetAttempt;
+        m_callStore.clear();
+        m_meetHost.clear();
+        m_callError.clear();
+        m_callPending = false;
+        emit stateChanged();
+    });
     // Issue #146: a failed bootstrap stays announced until the next snapshot
     // completes (reference layout-bootstrap-error-banner), and the rate-limit
     // countdown ticks so the banner label counts down in place.
@@ -11412,6 +11423,112 @@ void NativeController::deleteMessage(const QString &id)
         emit messagesChanged();
         emit stateChanged();
     });
+}
+
+// ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
+
+void NativeController::fetchCallMeetHost()
+{
+    // Reference layout-workspace-messenger-bootstrap.hook.ts:148: per-owner
+    // server_settings.meet_url, origin-only, in memory only.
+    const auto attempt = ++m_callMeetAttempt;
+    request("GET", messenger + "/server_settings", {}, {},
+        [this, attempt](const ApiResult &result) {
+        if (attempt != m_callMeetAttempt || !authenticated())
+            return;
+        const auto next = result.ok() && result.data.isObject()
+            ? normalizeMeetOrigin(result.data.toObject().value(QLatin1String("meet_url")).toString())
+            : QString();
+        if (next != m_meetHost) {
+            m_meetHost = next;
+            emit stateChanged();
+        }
+    });
+}
+
+void NativeController::startCall()
+{
+    m_callError.clear();
+    if (!canStartCall() || m_callPending) {
+        if (!canStartCall())
+            m_callError = tr("Call could not be started.");
+        emit stateChanged();
+        return;
+    }
+    if (const auto *stream = currentStream(); stream && stream->encrypted) {
+        // Recorded deviation: encrypted programmatic send is a follow-up; the
+        // meeting URL must never leave an E2EE stream as plaintext.
+        m_callError = tr("Calls cannot start in encrypted channels yet.");
+        emit stateChanged();
+        return;
+    }
+    const auto meetingUrl = buildJitsiMeetingUrl(buildWorkspaceJitsiRoomName(
+        m_api->server().host(), m_session->project(), m_stream, m_topic,
+        QDateTime::currentMSecsSinceEpoch()), m_meetHost);
+    const auto callKey = createJitsiCallKey(ownerKey(), meetingUrl);
+    if (m_callStore.hasActiveCall()) {
+        // Reference: the same call re-open is a no-op, a different call key is
+        // refused with the generic inline error before anything is sent.
+        if (m_callStore.activeCallKey() != callKey)
+            m_callError = tr("Call could not be started.");
+        emit stateChanged();
+        return;
+    }
+    const auto locationName = isDirectConversation() ? title() : QString();
+    m_callPending = true;
+    emit stateChanged();
+    // The reference posts the meeting URL markdown message first and opens the
+    // call only after the send is applied (chat-page-workspace.ui.tsx:2148-2260).
+    const QJsonObject body{{QStringLiteral("uuid"), QUuid::createUuid().toString(QUuid::WithoutBraces)},
+        {QStringLiteral("stream_uuid"), m_stream}, {QStringLiteral("topic_uuid"), m_topic},
+        {QStringLiteral("payload"), QJsonObject{{QStringLiteral("kind"), QStringLiteral("markdown")},
+            {QStringLiteral("content"), meetingUrl}}}};
+    const auto owner = ownerKey();
+    const auto meet = m_meetHost;
+    request("POST", messenger + "/messages/", body, {},
+        [this, meetingUrl, locationName, owner, meet](const ApiResult &result) {
+        m_callPending = false;
+        if (!result.ok()) {
+            m_callError = tr("Call could not be started.");
+            emit stateChanged();
+            return;
+        }
+        QVariantMap payload;
+        payload.insert(QStringLiteral("meetingUrl"), meetingUrl);
+        payload.insert(QStringLiteral("locationName"), locationName);
+        payload.insert(QStringLiteral("ownerKey"), owner);
+        payload.insert(QStringLiteral("meetUrl"), meet);
+        if (const auto open = m_callStore.requestOpenCall(payload);
+            open.value(QStringLiteral("status")).toString() == QLatin1String("blocked-active"))
+            m_callError = tr("Call could not be started.");
+        emit stateChanged();
+    });
+}
+
+QString NativeController::callUrlInText(const QString &text) const
+{
+    return getJitsiMeetingUrl(text, m_meetHost);
+}
+
+void NativeController::joinCall(const QString &meetingUrl)
+{
+    if (meetingUrl.trimmed().isEmpty())
+        return;
+    m_callError.clear();
+    QVariantMap payload;
+    payload.insert(QStringLiteral("meetingUrl"), meetingUrl);
+    payload.insert(QStringLiteral("locationName"), isDirectConversation() ? title() : QString());
+    payload.insert(QStringLiteral("ownerKey"), ownerKey());
+    payload.insert(QStringLiteral("meetUrl"), m_meetHost);
+    if (const auto open = m_callStore.requestOpenCall(payload);
+        open.value(QStringLiteral("status")).toString() == QLatin1String("blocked-active"))
+        m_callError = tr("Call could not be started.");
+    emit stateChanged();
+}
+
+QString NativeController::callRoomName(const QString &url) const
+{
+    return formatRoomDisplayName(url, m_meetHost);
 }
 
 }

@@ -58,6 +58,10 @@
     <context>
         <name>Main</name>
         <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
+        <message>
             <source>Add server</source>
             <translation>Добавить сервер</translation>
         </message>
@@ -1412,6 +1416,14 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message>
+            <source>Call could not be started.</source>
+            <translation>Не удалось начать звонок.</translation>
+        </message>
+        <message>
+            <source>Calls cannot start in encrypted channels yet.</source>
+            <translation>В защищённых каналах звонки пока недоступны.</translation>
+        </message>
         <message>
             <source>Server address must be a valid HTTPS URL</source>
             <translation>Адрес сервера должен быть валидным HTTPS URL</translation>
@@ -2985,6 +2997,21 @@
         <message>
             <source>online</source>
             <translation>В сети</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeJitsiCard</name>
+        <message>
+            <source>Call</source>
+            <translation>Звонок</translation>
+        </message>
+        <message>
+            <source>Call name</source>
+            <translation>Название звонка</translation>
+        </message>
+        <message>
+            <source>Join call</source>
+            <translation>Подключиться</translation>
         </message>
     </context>
 </TS>
