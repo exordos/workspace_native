@@ -3147,8 +3147,12 @@ void NativeController::setChannelInfoNotificationMode(const QString &mode)
     const auto owner = ownerKey();
     const auto generation = m_api->generation();
     const auto streamUuid = stream->uuid;
-    m_channelInfoNotificationBusy = true;
-    m_channelInfoNotificationBusyStream = streamUuid;
+    // Per-stream in-flight tracking: the request stamps its own token into its
+    // stream's slot, so a request on any other stream never takes over this
+    // stream's busy state and a follow-up same-stream request is rejected
+    // until this one settles.
+    const auto token = ++m_channelInfoNotificationToken;
+    m_channelInfoNotificationInFlight.insert(streamUuid, token);
     m_channelInfoNotificationError.clear();
     emit stateChanged();
     // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
@@ -3156,16 +3160,14 @@ void NativeController::setChannelInfoNotificationMode(const QString &mode)
     // value then feeds the switch (store mode wins over any stale info).
     request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, streamUuid](const ApiResult &result) {
+        [this, owner, generation, streamUuid, token](const ApiResult &result) {
         if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        // The response may only release the busy state its own request set: a
-        // newer request (possibly on another stream) owns the flag once it
-        // superseded this one, and a stream switch must not leave the shared
-        // flag stuck for every later stream.
-        if (m_channelInfoNotificationBusy && m_channelInfoNotificationBusyStream == streamUuid) {
-            m_channelInfoNotificationBusy = false;
-            m_channelInfoNotificationBusyStream.clear();
-        }
+        // Only the newest in-flight request for this stream owns its busy
+        // slot: a superseded response must neither release a newer request's
+        // state nor overwrite its result, and the late response of an
+        // abandoned request may only ever release its own stream's slot.
+        if (m_channelInfoNotificationInFlight.value(streamUuid) != token) return;
+        m_channelInfoNotificationInFlight.remove(streamUuid);
         if (m_stream != streamUuid) return;
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
@@ -3255,21 +3257,21 @@ void NativeController::addChannelInfoMembers(const QStringList &userUuids)
     const auto streamUuid = stream->uuid;
     QJsonArray members;
     for (const auto &user : candidates) members.append(user);
-    m_channelInfoAddBusy = true;
-    m_channelInfoAddBusyStream = streamUuid;
+    // Per-stream in-flight tracking with a request token (round-2 review G2):
+    // the add owns its stream's slot until its own response settles it.
+    const auto token = ++m_channelInfoAddToken;
+    m_channelInfoAddInFlight.insert(streamUuid, token);
     m_channelInfoAddError.clear();
     emit stateChanged();
     request("POST", messenger + "/streams/" + streamUuid + "/actions/add_users/invoke",
         QJsonObject{{"member", members}}, {},
-        [this, owner, generation, streamUuid, candidates](const ApiResult &result) {
+        [this, owner, generation, streamUuid, token, candidates](const ApiResult &result) {
         if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        // Same request-scoped release as the notification switch: the late
-        // response of an abandoned stream may never keep channelInfoAddBusy
-        // set so that every later add request is rejected.
-        if (m_channelInfoAddBusy && m_channelInfoAddBusyStream == streamUuid) {
-            m_channelInfoAddBusy = false;
-            m_channelInfoAddBusyStream.clear();
-        }
+        // Request-token release (same shape as the notification switch): only
+        // the newest in-flight add for this stream may release its busy slot
+        // or commit rows; a superseded or abandoned response changes nothing.
+        if (m_channelInfoAddInFlight.value(streamUuid) != token) return;
+        m_channelInfoAddInFlight.remove(streamUuid);
         if (m_stream != streamUuid) {
             emit stateChanged();
             return;
