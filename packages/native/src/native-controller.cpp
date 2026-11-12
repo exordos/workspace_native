@@ -11,6 +11,9 @@
 #include "file-client.h"
 
 #include <QClipboard>
+#include <QFile>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QGuiApplication>
@@ -2213,6 +2216,8 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
 {
     UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {},
         sourceTrimmed(row.value("email").toString()), {}, {}, {}};
+    result.createdAt = sourceTrimmed(row.value("created_at").toString());
+    result.username = sourceTrimmed(row.value("username").toString());
     if (!authoritative) {
         // Source persists profiles, never live presence/status decorations.
         result.presence = "offline";
@@ -3313,6 +3318,490 @@ void NativeController::resetChannelInfoAddState()
     if (channelInfoAddBusy()) return;
     m_channelInfoAddError.clear();
     emit stateChanged();
+}
+
+// ---- Issue #134 user profile drawer content ----
+// docs/NATIVE_DESKTOP_USER_PROFILE.md. All async projections are guarded by
+// the owner key, the API generation, the verified session user and a
+// per-projection ticket, so a response can never apply after a session or
+// profile change (the #132 review pattern).
+
+namespace {
+const QString iamUsers = QStringLiteral("/api/core/v1/iam/users/");
+const QStringList profileAvatarMimes{QStringLiteral("image/png"), QStringLiteral("image/jpeg"),
+    QStringLiteral("image/gif"), QStringLiteral("image/webp")};
+constexpr qint64 profileAvatarLimitBytes = 25LL * 1024 * 1024; // settings.maxAvatarFileSizeMib = 25
+
+QString avatarFileMime(const QString &path)
+{
+    const auto suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("png")) return QStringLiteral("image/png");
+    if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")) return QStringLiteral("image/jpeg");
+    if (suffix == QLatin1String("gif")) return QStringLiteral("image/gif");
+    if (suffix == QLatin1String("webp")) return QStringLiteral("image/webp");
+    return {};
+}
+} // namespace
+
+bool NativeController::profileContext(const QString &user, quint64 ticket) const
+{
+    return ticket != 0 && authenticated() && isUuid(user) && m_session->user() == user
+        && m_api->generation() == m_profileApiGeneration && creationOwnerKey() == m_profileOwner;
+}
+
+void NativeController::copyToClipboard(const QString &text) const
+{
+    QGuiApplication::clipboard()->setText(text);
+}
+
+void NativeController::captureProfileContext()
+{
+    m_profileOwner = creationOwnerKey();
+    m_profileApiGeneration = m_api->generation();
+}
+
+QVariantMap NativeController::profileSnapshot(const QString &userUuid) const
+{
+    const auto id = userUuid.toLower();
+    if (!isUuid(id)) return {};
+    const auto presentation = m_names.value(id);
+    return {
+        {"userUuid", id},
+        {"title", userDisplayName(id, id)},
+        {"avatar", presentation.avatar},
+        {"email", presentation.email},
+        {"username", presentation.username},
+        {"status", presentation.status},
+        {"statusText", presentation.statusText},
+        {"presence", presentation.presence},
+        {"createdAt", presentation.createdAt},
+        {"isSelf", authenticated() && m_session->user() == id},
+    };
+}
+
+// createWorkspaceRightPanelUserDetails at the pinned sha: userId/email/joined
+// come from the verified user row; every other field is temporarily
+// unavailable (value = t("workspaceMessenger.temporarilyNotConnected")).
+QVariantList NativeController::profileDetails(const QString &userUuid, const QString &localeName) const
+{
+    const auto id = userUuid.toLower();
+    if (!isUuid(id)) return {};
+    const auto presentation = m_names.value(id);
+    const auto unavailable = tr("Temporarily not connected");
+    const auto detail = [](const QString &id, const QString &value, bool missing) {
+        return QVariantMap{{"id", id}, {"value", value}, {"unavailable", missing}};
+    };
+    const auto fromText = [&](const QString &rowId, const QString &raw) {
+        const auto value = raw.trimmed();
+        return value.isEmpty() ? detail(rowId, unavailable, true) : detail(rowId, value, false);
+    };
+    QString joined;
+    const auto created = QDateTime::fromString(presentation.createdAt, Qt::ISODateWithMs);
+    if (created.isValid()) {
+        const auto locale = localeName.compare(QLatin1String("ru"), Qt::CaseInsensitive) == 0
+            ? QLocale(QLocale::Russian)
+            : localeName.compare(QLatin1String("en"), Qt::CaseInsensitive) == 0
+                ? QLocale(QLocale::English)
+                : QLocale::system();
+        joined = locale.toString(created.date(),
+            locale.language() == QLocale::English ? QStringLiteral("MMM d, yyyy")
+                                                   : QStringLiteral("d MMM yyyy"));
+        if (locale.language() == QLocale::Russian) joined += QStringLiteral(" г.");
+    }
+    return {
+        fromText(QStringLiteral("userId"), id),
+        fromText(QStringLiteral("email"), presentation.email),
+        detail(QStringLiteral("phone"), unavailable, true),
+        detail(QStringLiteral("jobTitle"), unavailable, true),
+        detail(QStringLiteral("manager"), unavailable, true),
+        detail(QStringLiteral("role"), unavailable, true),
+        detail(QStringLiteral("accountType"), unavailable, true),
+        detail(QStringLiteral("accountStatus"), unavailable, true),
+        detail(QStringLiteral("timezone"), unavailable, true),
+        detail(QStringLiteral("localTime"), unavailable, true),
+        fromText(QStringLiteral("joined"), joined),
+        detail(QStringLiteral("birthday"), unavailable, true),
+    };
+}
+
+// buildWorkspaceProfileShareLink + isValidRealmUrl at the pinned sha:
+// {origin without trailing slashes}/#user/{uuid}; plain http only passes for
+// the loopback hosts the reference dev build allows.
+QString NativeController::buildProfileShareLink(const QString &userUuid) const
+{
+    const auto id = userUuid.toLower();
+    if (!isUuid(id) || !m_api) return {};
+    const auto origin = m_api->server();
+    const auto host = origin.host();
+    const bool loopback = host == QLatin1String("localhost") || host == QLatin1String("127.0.0.1")
+        || host == QLatin1String("::1");
+    if (!((origin.scheme() == QLatin1String("https")
+              || (origin.scheme() == QLatin1String("http") && loopback))
+            && !host.isEmpty() && !host.contains(QLatin1Char(' '))))
+        return {};
+    auto base = origin.toString();
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    return base + QStringLiteral("/#user/") + id;
+}
+
+QVariantMap NativeController::profileAvatarCapabilities() const
+{
+    // getOwnAvatarCapabilities() at the pinned sha is static: 25 MiB, enabled.
+    return {{"maxAvatarFileSizeMib", profileAvatarLimitBytes / (1024 * 1024)},
+        {"avatarChangesDisabled", false}};
+}
+
+// validateFileUpload + WORKSPACE_AVATAR_MIME_TYPES at the pinned sha.
+QVariantMap NativeController::validateAvatarFile(const QString &path) const
+{
+    const auto fail = [this](const QString &error) {
+        return QVariantMap{{"ok", false}, {"error", error}};
+    };
+    const auto capabilities = profileAvatarCapabilities();
+    if (capabilities.value("avatarChangesDisabled").toBool())
+        return fail(tr("Avatar changes are disabled by server settings"));
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) return fail(tr("Please choose a valid image file"));
+    const auto mime = avatarFileMime(path);
+    if (mime.isEmpty() || !profileAvatarMimes.contains(mime))
+        return fail(tr("Please choose a valid image file"));
+    const auto size = info.size();
+    if (size == 0) return fail(tr("Please choose a valid image file"));
+    if (size > profileAvatarLimitBytes)
+        return fail(tr("Image is too large (max %1 MB)")
+                        .arg(capabilities.value("maxAvatarFileSizeMib").toInt()));
+    return {{"ok", true}, {"mime", mime}, {"size", size}, {"name", info.fileName()}};
+}
+
+// parseWorkspaceIamProfile at the pinned sha: identity must match the
+// verified session user; nullable string fields; description falls back to "".
+static std::optional<QVariantMap> parseIamProfile(const QJsonObject &dto, const QString &user)
+{
+    if (dto.value("uuid").toString() != user || !dto.value("username").isString()
+        || dto.value("username").toString().trimmed().isEmpty())
+        return std::nullopt;
+    const auto nullable = [&dto](const char *key, QString &target) {
+        if (!dto.contains(QLatin1String(key)) || dto.value(QLatin1String(key)).isNull()) return true;
+        if (!dto.value(QLatin1String(key)).isString()) return false;
+        target = dto.value(QLatin1String(key)).toString();
+        return true;
+    };
+    QVariantMap profile{{"username", dto.value("username").toString()}};
+    QString first, last, email, phone, description;
+    if (!nullable("first_name", first) || !nullable("last_name", last)
+        || !nullable("email", email) || !nullable("phone", phone))
+        return std::nullopt;
+    if (dto.contains("description") && !dto.value("description").isNull()
+        && !dto.value("description").isString())
+        return std::nullopt;
+    if (dto.contains("description") && !dto.value("description").isNull())
+        description = dto.value("description").toString();
+    profile.insert("firstName", first);
+    profile.insert("lastName", last);
+    profile.insert("email", email);
+    profile.insert("phone", phone);
+    profile.insert("description", description);
+    return profile;
+}
+
+static QString profileMutationError(NativeController *controller, int status,
+    const QString &transientText)
+{
+    if (status == 401 || status == 403) return controller->tr("Your server does not allow this profile request.");
+    if (status == 404 || status == 405 || status == 501)
+        return controller->tr("Profile editing is not available yet");
+    if (status == 400 || status == 409 || status == 413 || status == 415 || status == 422)
+        return controller->tr("Check the lengths of the editable fields.");
+    return transientText;
+}
+
+void NativeController::loadOwnProfile()
+{
+    if (!authenticated()) return;
+    const auto user = m_session->user();
+    if (!isUuid(user)) return;
+    captureProfileContext();
+    const auto ticket = ++m_ownProfileTicket;
+    m_ownProfileLoading = true; m_ownProfileError.clear();
+    emit stateChanged();
+    request("GET", iamUsers + user, {}, {}, [this, user, ticket](const ApiResult &result) {
+        if (!profileContext(user, ticket)) return;
+        m_ownProfileLoading = false;
+        const auto parsed = result.ok() && result.data.isObject()
+            ? parseIamProfile(result.data.toObject(), user) : std::optional<QVariantMap>{};
+        if (!parsed) {
+            m_ownProfileError = result.status == 404 || result.status == 405 || result.status == 501
+                ? tr("Profile editing is not available yet")
+                : result.status == 401 || result.status == 403
+                    ? tr("Your server does not allow this profile request.")
+                    : tr("Could not load profile. Try again.");
+            emit stateChanged();
+            return;
+        }
+        m_ownProfileBaseline = *parsed;
+        m_ownProfileOwner = creationOwnerKey(); m_profileUser = user;
+        emit stateChanged();
+    });
+}
+
+void NativeController::refreshOwnProfileProjection(const QString &user, quint64 ticket,
+    const QVariantMap &savedProfile)
+{
+    request("GET", messenger + "/users/" + user, {}, {},
+        [this, user, ticket, savedProfile](const ApiResult &result) {
+        if (!profileContext(user, ticket)) return;
+        const auto raw = result.ok() ? result.data.toObject() : QJsonObject{};
+        const auto trimmed = [](QString value) { return value.trimmed(); };
+        const auto first = raw.value("first_name").toString();
+        const auto last = raw.value("last_name").toString();
+        const auto username = raw.value("username").toString();
+        const bool matches = result.ok() && raw.value("uuid").toString() == user
+            && username == savedProfile.value("username").toString()
+            && trimmed(first) == trimmed(savedProfile.value("firstName").toString())
+            && trimmed(last) == trimmed(savedProfile.value("lastName").toString());
+        if (matches) {
+            auto presentation = m_names.value(user);
+            presentation.name = directoryViewerName(raw);
+            presentation.email = raw.value("email").toString();
+            presentation.username = username;
+            if (raw.contains("avatar")) presentation.avatar = imageAvatarReference(raw.value("avatar"));
+            m_names.insert(user, presentation);
+            m_ownProfileRefresh = false;
+        } else {
+            // IAM has already saved the edit; a failed projection read must
+            // not report a failed save (reference refreshPending contract).
+            m_ownProfileRefresh = true;
+        }
+        emit stateChanged();
+    });
+}
+
+void NativeController::saveOwnProfile(const QVariantMap &draft, const QString &avatarAction,
+    const QString &avatarPath)
+{
+    if (!authenticated() || m_ownProfileSaving || m_ownAvatarBusy) return;
+    const auto user = m_session->user();
+    if (!isUuid(user)) return;
+    if (m_ownProfileOwner != creationOwnerKey() || m_profileUser != user || m_ownProfileBaseline.isEmpty()) {
+        m_ownProfileError = tr("Could not load profile. Try again.");
+        emit stateChanged();
+        return;
+    }
+    const auto baseline = m_ownProfileBaseline;
+    const auto field = [&draft](const QString &key, const QVariantMap &base) {
+        return draft.contains(key) ? draft.value(key).toString() : base.value(key).toString();
+    };
+    // Reference isProfileDirty/computePatch at the pinned sha: compare the raw
+    // draft against the baseline; send trimmed values, null when trimmed empty
+    // (first/last) or the trimmed string (phone); description verbatim.
+    QJsonObject patch;
+    const auto firstDraft = field(QStringLiteral("firstName"), baseline);
+    if (firstDraft != baseline.value("firstName").toString()) {
+        const auto next = firstDraft.trimmed();
+        patch.insert("first_name", next.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(next));
+    }
+    const auto lastDraft = field(QStringLiteral("lastName"), baseline);
+    if (lastDraft != baseline.value("lastName").toString()) {
+        const auto next = lastDraft.trimmed();
+        patch.insert("last_name", next.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(next));
+    }
+    const auto phoneDraft = field(QStringLiteral("phone"), baseline);
+    if (phoneDraft != baseline.value("phone").toString())
+        patch.insert("phone", phoneDraft.trimmed());
+    const auto descriptionDraft = field(QStringLiteral("description"), baseline);
+    if (descriptionDraft != baseline.value("description").toString())
+        patch.insert("description", descriptionDraft);
+    if (patch.isEmpty()) {
+        // Nothing dirty: only the pending avatar mutation runs (reference
+        // handleSaveEdit -> handleSaveAvatar shortcut).
+        if (avatarAction == QLatin1String("upload")) uploadOwnProfileAvatar(avatarPath);
+        else if (avatarAction == QLatin1String("remove")) removeOwnProfileAvatar();
+        else { m_ownProfileSettledCount++; emit stateChanged(); emit ownProfileSettledChanged(); }
+        return;
+    }
+    captureProfileContext();
+    m_ownProfileSaving = true; m_ownProfileError.clear();
+    const auto ticket = ++m_ownProfileTicket;
+    emit stateChanged();
+    const auto draftCopy = draft;
+    request("PUT", iamUsers + user, patch, {}, [this, user, ticket, draftCopy, avatarAction, avatarPath](const ApiResult &result) {
+        if (!profileContext(user, ticket)) return;
+        const auto parsed = result.ok() && result.data.isObject()
+            ? parseIamProfile(result.data.toObject(), user) : std::optional<QVariantMap>{};
+        if (!parsed) {
+            m_ownProfileSaving = false;
+            m_ownProfileError = profileMutationError(this, result.status, tr("Failed to update profile"));
+            emit stateChanged();
+            emit ownProfileSettledChanged();
+            return;
+        }
+        m_ownProfileBaseline = *parsed;
+        refreshOwnProfileProjection(user, ticket, *parsed);
+        if (avatarAction == QLatin1String("upload")) uploadOwnProfileAvatar(avatarPath);
+        else if (avatarAction == QLatin1String("remove")) removeOwnProfileAvatar();
+        m_ownProfileSaving = false;
+        m_ownProfileSettledCount++;
+        emit stateChanged();
+        emit ownProfileSettledChanged();
+        Q_UNUSED(draftCopy)
+    });
+}
+
+void NativeController::uploadOwnProfileAvatar(const QString &path)
+{
+    if (!authenticated() || m_ownAvatarBusy) return;
+    const auto user = m_session->user();
+    if (!isUuid(user)) return;
+    const auto validation = validateAvatarFile(path);
+    if (!validation.value("ok").toBool()) {
+        m_ownAvatarError = validation.value("error").toString();
+        emit stateChanged();
+        return;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_ownAvatarError = tr("Please choose a valid image file");
+        emit stateChanged();
+        return;
+    }
+    const auto bytes = file.read(profileAvatarLimitBytes + 1);
+    file.close();
+    if (bytes.isEmpty() || bytes.size() > profileAvatarLimitBytes) {
+        m_ownAvatarError = bytes.isEmpty() ? tr("Please choose a valid image file")
+            : tr("Image is too large (max %1 MB)")
+                  .arg(profileAvatarLimitBytes / (1024 * 1024));
+        emit stateChanged();
+        return;
+    }
+    captureProfileContext();
+    m_ownAvatarBusy = true; m_ownAvatarError.clear();
+    const auto ticket = ++m_ownAvatarTicket;
+    emit stateChanged();
+    auto *reply = m_api->startUserAvatarUpload(user, bytes,
+        validation.value("name").toString(), validation.value("mime").toString());
+    if (!reply) {
+        m_ownAvatarBusy = false;
+        m_ownAvatarError = tr("Failed to update avatar");
+        emit stateChanged();
+        emit ownAvatarSettledChanged();
+        return;
+    }
+    const auto generation = m_api->generation();
+    const auto owner = creationOwnerKey();
+    connect(reply, &QNetworkReply::finished, this, [this, reply, user, ticket, generation, owner] {
+        reply->deleteLater();
+        if (!profileContext(user, ticket)) return;
+        const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok = status >= 200 && status < 300
+            && reply->error() == QNetworkReply::NoError;
+        const auto document = ok ? QJsonDocument::fromJson(reply->readAll()) : QJsonDocument{};
+        const auto raw = document.isObject() ? document.object() : QJsonObject{};
+        if (!ok || raw.value("uuid").toString() != user || !isUuid(raw.value("uuid").toString())) {
+            m_ownAvatarBusy = false;
+            const QString fallback = tr("Failed to update avatar");
+            if (status == 404 || status == 405 || status == 501) m_ownAvatarError = tr("Avatar update is not supported by this server");
+            else if (status == 401 || status == 403) m_ownAvatarError = tr("Avatar changes are disabled by server settings");
+            else if (status == 400 || status == 409 || status == 413 || status == 415 || status == 422)
+                m_ownAvatarError = tr("Please choose a valid image file");
+            else m_ownAvatarError = fallback;
+            emit stateChanged();
+            emit ownAvatarSettledChanged();
+            return;
+        }
+        auto presentation = m_names.value(user);
+        presentation.avatar = imageAvatarReference(raw.value("avatar"));
+        m_names.insert(user, presentation);
+        m_ownAvatarBusy = false;
+        m_ownAvatarSettledCount++;
+        emit stateChanged();
+        emit ownAvatarSettledChanged();
+        Q_UNUSED(generation)
+        Q_UNUSED(owner)
+    });
+}
+
+void NativeController::removeOwnProfileAvatar()
+{
+    if (!authenticated() || m_ownAvatarBusy) return;
+    const auto user = m_session->user();
+    if (!isUuid(user)) return;
+    const auto capabilities = profileAvatarCapabilities();
+    if (capabilities.value("avatarChangesDisabled").toBool()) {
+        m_ownAvatarError = tr("Avatar changes are disabled by server settings");
+        emit stateChanged();
+        return;
+    }
+    captureProfileContext();
+    m_ownAvatarBusy = true; m_ownAvatarError.clear();
+    const auto ticket = ++m_ownAvatarTicket;
+    emit stateChanged();
+    request("POST", messenger + "/users/" + user + "/actions/avatar_reset/invoke",
+        QJsonObject{}, {}, [this, user, ticket](const ApiResult &result) {
+        if (!profileContext(user, ticket)) return;
+        const auto raw = result.ok() && result.data.isObject() ? result.data.toObject() : QJsonObject{};
+        if (result.ok() && raw.value("uuid").toString() == user) {
+            auto presentation = m_names.value(user);
+            presentation.avatar = imageAvatarReference(QJsonValue(QJsonValue::Null));
+            m_names.insert(user, presentation);
+            m_ownAvatarBusy = false;
+            m_ownAvatarSettledCount++;
+            emit stateChanged();
+            emit ownAvatarSettledChanged();
+            return;
+        }
+        m_ownAvatarBusy = false;
+        if (result.status == 404 || result.status == 405 || result.status == 501)
+            m_ownAvatarError = tr("Avatar update is not supported by this server");
+        else if (result.status == 401 || result.status == 403)
+            m_ownAvatarError = tr("Avatar changes are disabled by server settings");
+        else if (result.status == 400 || result.status == 409 || result.status == 413
+            || result.status == 415 || result.status == 422)
+            m_ownAvatarError = tr("Please choose a valid image file");
+        else m_ownAvatarError = tr("Failed to remove avatar");
+        emit stateChanged();
+        emit ownAvatarSettledChanged();
+    });
+}
+
+void NativeController::openDirectChatFromProfile(const QString &userUuid)
+{
+    if (!authenticated()) return;
+    const auto peer = userUuid.toLower();
+    if (!isUuid(peer) || peer == m_session->user()) return;
+    QVector<QPair<QString, QString>> directStreams;
+    QHash<QString, QString> defaultTopics;
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (!stream.privateStream || !isUuid(stream.directUser)) continue;
+        directStreams.append({stream.uuid, stream.directUser});
+        if (isUuid(stream.defaultTopic)) defaultTopics.insert(stream.uuid, stream.defaultTopic);
+    }
+    const auto navigation = workspace::resolveProfileDirectNavigation(
+        peer, directStreams, defaultTopics, m_stream);
+    switch (navigation.status) {
+    case ProfileDirectNavigation::Status::AlreadyOpen:
+        return;
+    case ProfileDirectNavigation::Status::OpenDefaultTopic:
+        selectStream(navigation.streamUuid);
+        if (m_stream == navigation.streamUuid) {
+            const bool present = std::any_of(m_topics.cbegin(), m_topics.cend(),
+                [&](const Topic &topic) { return topic.uuid == navigation.topicUuid; });
+            if (present) selectTopic(navigation.topicUuid);
+            else {
+                m_profileDirectActive = true;
+                m_profileDirectStream = navigation.streamUuid;
+                m_profileDirectTopic = navigation.topicUuid;
+            }
+        }
+        emit stateChanged();
+        return;
+    case ProfileDirectNavigation::Status::MissingDefaultTopic:
+        // Reference contract: a stream without a default topic logs an error
+        // and does nothing.
+        return;
+    case ProfileDirectNavigation::Status::StreamMissing:
+        if (canStartDirectChatWith(peer)) startDirectChat(peer);
+        return;
+    }
 }
 
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
@@ -6664,6 +7153,12 @@ void NativeController::reset()
     m_nextRowPreviewFence = 0;
     m_viewerDirectoryName.clear();
     m_viewerDirectoryOwner.clear();
+    // Issue #134: like the channel-info projections, no own-profile state
+    // survives an owner change.
+    m_ownProfileBaseline.clear(); m_ownProfileOwner.clear(); m_profileUser.clear();
+    m_ownProfileError.clear(); m_ownAvatarError.clear();
+    m_ownProfileLoading = m_ownProfileSaving = m_ownProfileRefresh = m_ownAvatarBusy = false;
+    m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
     m_channelChoices.clear();
     m_channelDirectoryOwner.clear();
     m_channelDirectoryValid = false;
@@ -8861,6 +9356,11 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
             [&id](const Stream &stream) { return stream.uuid == id; }))
         return;
     cancelConversationRestore();
+    // Issue #134: any stream navigation invalidates a parked profile Message route.
+    if (m_profileDirectActive) {
+        m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
+        emit stateChanged();
+    }
     const QPointer<NativeController> guard(this);
     const auto previousOpening = m_nextTopicOpening;
     if (openingTicket) {
@@ -8961,6 +9461,22 @@ void NativeController::loadTopics()
         emit messagesChanged();
         if (!guard) return true;
         if (authoritative) finishSnapshotPart(4);
+        // Issue #134: the profile Message action can park a default-topic
+        // open while this page is loading; resolve it against the verified
+        // page only (the selection/topicRequest guards above apply).
+        if (m_profileDirectActive && m_stream == m_profileDirectStream) {
+            auto target = m_profileDirectTopic;
+            const bool present = ids.contains(target);
+            if (!present && target.isEmpty()) {
+                int defaults = 0;
+                for (const auto &topic : std::as_const(topics))
+                    if (topic.isDefault) { target = topic.uuid; ++defaults; }
+                if (defaults != 1) target.clear();
+            }
+            m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
+            if (!target.isEmpty()) selectTopic(target);
+            else emit stateChanged();
+        }
         notifyTrustChanged();
         return true;
     }, m_topicSeedUnverified);

@@ -72,6 +72,11 @@ public:
     QNetworkReply *startFileUpload(QHttpMultiPart *body);
     QNetworkReply *startFileMetadata(const QString &uuid);
     QNetworkReply *startFileDownload(const QString &uuid);
+    // Issue #134: multipart avatar upload to the user avatar invoke endpoint.
+    // Same credential scoping as the file transfers: token and destination stay
+    // inside this transport. The caller owns the returned reply.
+    QNetworkReply *startUserAvatarUpload(const QString &userUuid, const QByteArray &bytes,
+        const QString &fileName, const QString &contentType);
 
     RequestId request(const QByteArray &method, const QString &path, const QJsonValue &body,
                  const QUrlQuery &query, Callback callback, bool isPublic = false,

@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QHttpMultiPart>
+#include <QHttpPart>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -218,6 +219,42 @@ QNetworkReply *ApiClient::startFileMetadata(const QString &uuid)
 QNetworkReply *ApiClient::startFileDownload(const QString &uuid)
 {
     return startFileRequest(uuid, nullptr, false);
+}
+
+QNetworkReply *ApiClient::startUserAvatarUpload(const QString &userUuid, const QByteArray &bytes,
+    const QString &fileName, const QString &contentType)
+{
+    static const QRegularExpression uuidPattern(
+        QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
+    if (m_server.isEmpty() || m_accessToken.isEmpty() || !uuidPattern.match(userUuid).hasMatch())
+        return nullptr;
+    for (const auto character : m_accessToken)
+        if (static_cast<unsigned char>(character) <= 0x20 || character == 0x7f)
+            return nullptr;
+    auto *body = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart part;
+    part.setHeader(QNetworkRequest::ContentDispositionHeader,
+        QStringLiteral("form-data; name=\"file\"; filename=\"%1\"").arg(fileName));
+    part.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+    part.setBody(bytes);
+    body->append(part);
+    QUrl url = m_server;
+    url.setPath(QStringLiteral("/api/workspace/v1/messenger/users/") + userUuid.toLower()
+        + QStringLiteral("/actions/avatar_upload/invoke"));
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("Accept-Encoding", "identity");
+    request.setRawHeader("Authorization", "Bearer " + m_accessToken);
+    auto *reply = m_network->post(request, body);
+    body->setParent(reply);
+    m_transfers.insert(reply);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { m_transfers.remove(reply); });
+    connect(reply, &QObject::destroyed, this, [this, reply] { m_transfers.remove(reply); });
+    return reply;
 }
 
 QNetworkReply *ApiClient::startFileRequest(const QString &uuid, QHttpMultiPart *body, bool metadata)
