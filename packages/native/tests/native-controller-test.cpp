@@ -1,5 +1,7 @@
 #include "native-controller.h"
+#include "native-auth-guard.h"
 #include "native-preferences.h"
+#include <QDateTime>
 #include <QNetworkRequest>
 #include "file-client.h"
 #include "media-viewer.h"
@@ -15329,6 +15331,74 @@ private slots:
                      QStringLiteral("https://meet.example.com/workspace-room-9")),
             QStringLiteral("https://meet.example.com/workspace-room-9"));
         QCOMPARE(configured.controller.callUrlInText(QStringLiteral("https://evil.example/r")), QString());
+    // Acceptance (6): the auth idle guard is inactive before login, armed for
+    // the live session, and cancelled by a manual sign-out.
+    void authIdleGuardFollowsTheLiveSession()
+    {
+        Fixture fixture;
+        auto &c = fixture.controller;
+        QSignalSpy changed(&c, &NativeController::authGuardActiveChanged);
+        QVERIFY(!c.isAuthGuardActive()); // inactive before login
+        QVERIFY(fixture.start());
+        QVERIFY(c.isAuthGuardActive()); // armed for the live session
+        QCOMPARE(changed.count(), 1);
+        c.logout();
+        QVERIFY(!c.isAuthGuardActive()); // cancelled by manual logout
+        QCOMPARE(changed.count(), 2);
+    }
+
+    // Acceptance (2)/(6): an unattended deadline routes through the same
+    // NativeController::logout as a manual sign-out: signedOut exactly once
+    // with the same cleared session state, and the guard disarms with it.
+    void authIdleGuardExpirySignsOutExactlyOnceLikeManualLogout()
+    {
+        Fixture fixture;
+        auto &c = fixture.controller;
+        QVERIFY(fixture.start());
+        auto *guard = c.authGuard();
+        QVERIFY(guard);
+        guard->setWindowsVisible(true);
+        guard->setPollIntervalMs(5);
+        qint64 fake = 1'000'000'000LL;
+        guard->setNowProvider([&fake] { return fake; });
+        guard->setTimeoutPreset(QStringLiteral("6h"));
+        QVERIFY(guard->active());
+        QSignalSpy signedOut(&fixture.session, &Session::signedOut);
+        fake += 21600000LL + 1; // the full idle window plus one millisecond
+        QTRY_VERIFY_WITH_TIMEOUT(signedOut.count() == 1, 2000);
+        // Same observable end state as a manual c.logout(): live credentials
+        // are gone (Session::logout also wipes the secure store) and the
+        // guard follows the signedOut signal down.
+        QVERIFY(!c.authenticated());
+        QVERIFY(c.account().isEmpty());
+        QVERIFY(!c.isAuthGuardActive());
+        fake += 7LL * 24 * 3600 * 1000;
+        QTest::qWait(80);
+        QCOMPARE(signedOut.count(), 1); // exactly once, never refires
+    }
+
+    // Live preset reaction: a preference change re-arms the running guard
+    // without any restart, mirroring the layout hook effect dependency.
+    void authIdleGuardReactsToPreferenceChangesLive()
+    {
+        Fixture fixture;
+        auto &c = fixture.controller;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        c.setPreferences(&preferences);
+        QVERIFY(fixture.start());
+        auto *guard = c.authGuard();
+        QVERIFY(guard);
+        QVERIFY(guard->active());
+        const auto threeDayDeadline = guard->expiresAtMs();
+        preferences.setAuthIdleTimeout(QStringLiteral("6h"));
+        const auto sixHours = 21600000LL;
+        const auto elapsed = QDateTime::currentMSecsSinceEpoch();
+        QVERIFY(qAbs(guard->expiresAtMs() - (elapsed + sixHours)) < 5000); // re-armed to 6h
+        preferences.setAuthIdleTimeout(QStringLiteral("never"));
+        QVERIFY(!guard->active()); // cancel-only, like the hook cleanup test
+        QVERIFY(!c.isAuthGuardActive());
+        QVERIFY(threeDayDeadline > 0);
     }
 };
 

@@ -24,6 +24,7 @@ namespace workspace {
 
 class MediaViewerModel;
 class NativePreferences;
+class NativeAuthGuard;
 class RealtimeClient;
 class FileClient;
 class NativeChatKeyVault;
@@ -151,6 +152,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(int connectionRetryInSeconds READ connectionRetryInSeconds NOTIFY stateChanged)
     Q_PROPERTY(bool bootstrapError READ bootstrapError NOTIFY stateChanged)
     Q_PROPERTY(QString ownerKey READ ownerKey NOTIFY stateChanged)
+    // Issue #165: armed state of the auth idle guard (emitted on every
+    // arm/cancel transition so QML bindings can never go stale).
+    Q_PROPERTY(bool authGuardActive READ isAuthGuardActive NOTIFY authGuardActiveChanged)
     // Issue #134: verified session user for profile self/other decisions.
     Q_PROPERTY(QString currentUserId READ currentUserId NOTIFY stateChanged)
     Q_PROPERTY(bool canAttach READ canAttach NOTIFY stateChanged)
@@ -350,6 +354,11 @@ public:
     Q_INVOKABLE void openAddServer();
     Q_INVOKABLE void publishSessionProjection(const QString &accountId, const QVariantMap &projection);
     Q_INVOKABLE void logout();
+    // Issue #165: the inactivity guard is armed only while a live session
+    // exists (docs/NATIVE_DESKTOP_AUTH_IDLE_TIMEOUT.md). The accessor is the
+    // test seam for the injected clock and the check cadence.
+    bool isAuthGuardActive() const;
+    NativeAuthGuard *authGuard() const { return m_authGuard; }
     Q_INVOKABLE void selectStream(const QString &id);
     Q_INVOKABLE void selectTopic(const QString &id);
     Q_INVOKABLE void openTopic(const QString &id, const QString &streamHint = {});
@@ -506,6 +515,7 @@ signals:
     void anchorChanged();
     void savedAccountsChanged();
     void sessionSwitcherChanged();
+    void authGuardActiveChanged();
     void draftChanged();
     void editSessionChanged();
     void replySessionChanged();
@@ -1266,6 +1276,9 @@ private:
     QString m_defaultOrganizationName;
     QVariantMap m_organizationSettings;
     QPointer<NativePreferences> m_preferences;
+    // Issue #165: inactivity guard and the preference scope it is bound to.
+    NativeAuthGuard *m_authGuard = nullptr;
+    QPointer<NativePreferences> m_authPrefsBound;
     bool m_organizationLoading = false;
     quint64 m_organizationAttempt = 0;
     QString m_syncState;
