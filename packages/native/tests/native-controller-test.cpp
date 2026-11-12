@@ -14937,9 +14937,12 @@ private slots:
         QVERIFY(c.canLoadOlder());
         const qreal viewport = 600.0;
         // At or above the reserve the note only arms: opening a tail window or
-        // scrolling down must never fetch older pages.
+        // scrolling down must never fetch older pages. One pixel above the
+        // reserve is the strict-arming case; the exact reserve boundary is
+        // the reference's inclusive arm-and-fire case proven by
+        // historyPrefetchFiresAtExactReserveBoundary.
         c.noteScrollReserve(2400, viewport);
-        c.noteScrollReserve(viewport, viewport);
+        c.noteScrollReserve(viewport + 1, viewport);
         QTest::qWait(250);
         QCOMPARE(fixture.totalHistoryGets(), baseline);
         // One pixel below the reserve: content is still above the viewport and
@@ -14961,6 +14964,74 @@ private slots:
         c.noteScrollReserve(10, viewport);
         QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
         QTRY_COMPARE(c.messages().size(), 150);
+    }
+
+    void historyPrefetchFiresAtExactReserveBoundary()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        fixture.messages = [&](const Request &request) { return historyResponse(rows, request); };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        const qreal viewport = 600.0;
+        const int baseline = fixture.totalHistoryGets();
+        // First descent starts the prefetch just below the reserve (the arm is
+        // consumed when the request begins); wait for the page so the older
+        // boundary is requestable again.
+        c.noteScrollReserve(viewport - 1, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QTRY_COMPARE(c.messages().size(), 100);
+        QTRY_VERIFY(!c.busy());
+        QVERIFY(c.canLoadOlder());
+        // Reviewer #212: the reference comparisons are both inclusive (re-arm
+        // at >= reserve, trigger at <= reserve), so a note landing exactly at
+        // the reserve must re-arm and fire in the same call - a scroll that
+        // stops right at the boundary may never leave the next page un-fetched.
+        c.noteScrollReserve(viewport, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
+        QTRY_COMPARE(c.messages().size(), 150);
+        QTRY_VERIFY(!c.busy());
+    }
+
+    void historyPrefetchRearmNoteArmsWithoutRequesting()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        fixture.messages = [&](const Request &request) { return historyResponse(rows, request); };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        const qreal viewport = 600.0;
+        const int baseline = fixture.totalHistoryGets();
+        // First descent consumes the arm; after the page lands the controller
+        // stays disarmed (an older commit is not a re-arm site), so any descent
+        // note below the reserve - the state a suppressed viewport restore can
+        // leave behind - is silently dropped.
+        c.noteScrollReserve(viewport - 1, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QTRY_COMPARE(c.messages().size(), 100);
+        QTRY_VERIFY(!c.busy());
+        c.noteScrollReserve(5, viewport);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline + 1);
+        // The view's re-arm-only note (restored geometry above the reserve)
+        // re-arms without ever starting a request.
+        c.noteScrollRearm(viewport, viewport);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline + 1);
+        // The next user-attributed descent below the reserve now starts the
+        // next page.
+        c.noteScrollReserve(viewport - 1, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
+        QTRY_COMPARE(c.messages().size(), 150);
+        QTRY_VERIFY(!c.busy());
+        // A re-arm note below the reserve keeps the policy disarmed: restored
+        // geometry inside the reserve arms nothing on its own.
+        c.noteScrollRearm(1, viewport);
+        c.noteScrollReserve(2, viewport);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline + 2);
     }
 
     void historyPrefetchCoalescesInFlight()
