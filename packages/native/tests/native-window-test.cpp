@@ -13969,7 +13969,8 @@ private:
         // The pick persists across a fresh preferences instance on the same store
         // and keeps the restart ranking order (Bix above Bob for query "b").
         NativePreferences reopened(directory.filePath("composer-mention.ini"));
-        reopened.setOwner(controller.ownerKey());
+        // Picks are scoped to the loopback-safe creation owner (drafts scope).
+        reopened.setOwner(controller.creationOwnerKey());
         QVERIFY(reopened.mentionFrecency().value(mentionBix).toDouble() >= 0.9);
         QVERIFY(!reopened.mentionFrecency().contains(mentionBob));
         controller.setPreferences(&reopened);

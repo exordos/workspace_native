@@ -14142,9 +14142,9 @@ private slots:
     {
         const auto alice = mentionUuid("0a1c"), bob = mentionUuid("0b0b"), carl = mentionUuid("0c11");
         const auto dana = mentionUuid("0d1a"), eve = mentionUuid("0e1e"), self = mentionUuid("0f");
-        const QVariantList users{mentionRow("alice", "Alice", "alice"), mentionRow("bob", "Bob", "bob"),
-            mentionRow("carl", "Carl", "carl"), mentionRow("dana", "Dana", "dana"),
-            mentionRow("eve", "Eve", "eve"), mentionRow("self", "Self", "self")};
+        const QVariantList users{mentionRow(alice, "Alice", "alice"), mentionRow(bob, "Bob", "bob"),
+            mentionRow(carl, "Carl", "carl"), mentionRow(dana, "Dana", "dana"),
+            mentionRow(eve, "Eve", "eve"), mentionRow(self, "Self", "self")};
         NativeController::MentionRankingContext context;
         context.membersKnown = true;
         context.channelMembers = {alice, carl};
@@ -14178,6 +14178,116 @@ private slots:
             (QStringList{bob}));
     }
 
+    void mentionRankTriggerRequiresBoundaryBeforeAt()
+    {
+        // ComposerMentionTrigger.REMINDER in the reference: a mention token only
+        // starts after whitespace/line start/punctuation ([ \([{,.:;!?]), not after
+        // a word character ("mail@domain" or "user@bob" must not open the popup).
+        Fixture f;
+        f.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", mentionUuid("0b0b")}, {"username", "bob"},
+                {"first_name", "Bob"}, {"last_name", "Ray"}}}}; };
+        QVERIFY(f.start());
+        QVERIFY(f.controller.composerMentionsEnabled());
+        // Empty query opens the full suggestion list (empty query = no filter);
+        // updateChannelDirectory drops the viewer, so only the peer remains.
+        QCOMPARE(f.controller.mentionSuggestions(QString{}).size(), 1);
+        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("bob"))),
+            (QStringList{mentionUuid("0b0b")}));
+    }
+
+    void mentionRankEmptyQueryOrdersMembersFrecencySelf()
+    {
+        NativeController::MentionRankingContext context;
+        context.selfUserUuid = QStringLiteral("self");
+        context.membersKnown = true;
+        context.channelMembers = {QStringLiteral("in"), QStringLiteral("self")};
+        context.frecencyByUserUuid = {{"in", 1.0}}; // FRECENCY_SCORE_WEIGHT 60
+        const QVariantList users{
+            mentionRow("self", "Sally Self", "sally"),
+            mentionRow("in", "Ivan In", "ivan"),
+            mentionRow("out", "Ola Out", "ola")};
+        // Tier 0 order: Ivan (member +1500 and frecency 60), then Ola (zero),
+        // then Sally last: member +1500 but self penalty -5000 (mention-suggest.lib.ts).
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QString{}, users, context)),
+            (QStringList{"in", "out", "self"}));
+        // Members marked: only the outsider carries the fact (applyChannelMembership).
+        const auto rows = NativeController::rankMentionSuggestions(QString{}, users, context);
+        QVERIFY(rows.at(1).toMap().value("outsideChannel").toBool());
+        QVERIFY(!rows.at(0).toMap().contains("outsideChannel"));
+    }
+
+    void mentionRankContextScoresTieNameLengthAndOrder()
+    {
+        NativeController::MentionRankingContext context;
+        // Recent author order scores 4000 - 100*i (i < 20); DM partner 1200 - 40*i.
+        context.recentAuthorUuids = {"late", "early"};
+        context.dmPartnerUuids = {"partner"};
+        const QVariantList users{
+            mentionRow("early", "Early Author", "ea"),
+            mentionRow("late", "Late Author", "la"),
+            mentionRow("partner", "Ada Partner", "ap"),
+            mentionRow("zero", "Zoe Z", "zz")};
+        // "late" is recent-author index 0 (+4000), "early" index 1 (+3900),
+        // "partner" is DM partner index 0 (+1200), "zero" carries no context.
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QString{}, users, context)),
+            (QStringList{"late", "early", "partner", "zero"}));
+        // Same tier + same score with no query: locale order of the display name
+        // decides (name length is only a tie-breaker while a query is typed).
+        const QVariantList tied{
+            mentionRow("u3", "Sam Ray", "s3"), mentionRow("u1", "Sam", "s1"),
+            mentionRow("u4", "Bob Ray", "b1"), mentionRow("u2", "Bix", "b2")};
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QString{}, tied, {})),
+            (QStringList{"u2", "u4", "u1", "u3"}));
+        // A query tie prefers the shorter display name too; without a query the
+        // name-length term is skipped (mention-suggest.lib.ts sortMentionCandidates).
+        QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("sa"), tied, {})),
+            (QStringList{"u1", "u3"}));
+    }
+
+    void mentionSerializeUrnsBeforeReplyQuote()
+    {
+        // Visible composer text stores "@DisplayName"; only the wire body carries
+        // the canonical "[Name](urn:user:uuid)" (message-composer-body.lib.ts
+        // buildOutgoingMessageBody: mentions serialize before the quote join).
+        Fixture f;
+        const auto bob = mentionUuid("0b0b"), ann = mentionUuid("0a55");
+        f.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", bob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", ann}, {"username", "ann"}, {"first_name", "Ann"}}}}; };
+        const auto quotedId = QStringLiteral("89000000-0000-4000-8000-000000000001");
+        auto note = message(QStringLiteral("Peer note"), quotedId);
+        note["author_uuid"] = ann; note["is_own"] = false;
+        QJsonObject posted, saved;
+        f.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                posted = request.body;
+                saved = message(request.body.value("payload").toObject()
+                    .value("content").toString(), QStringLiteral("89000000-0000-4000-8000-000000000002"));
+                saved["user_uuid"] = userId;
+                return Response{saved, 201};
+            }
+            if (request.method == "GET" && request.target.path()
+                .endsWith(QStringLiteral("89000000-0000-4000-8000-000000000002")) && !saved.isEmpty())
+                return Response{saved};
+            return Response{QJsonArray{note}};
+        };
+        QVERIFY(f.start());
+        QVERIFY(f.controller.beginReply(quotedId));
+        QTRY_COMPARE(f.controller.replyAuthor(), QStringLiteral("Ann"));
+        f.controller.setDraft(QStringLiteral("Hi @Bob Ray!"));
+        f.controller.send();
+        QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 4000);
+        const auto content = posted.value("payload").toObject().value("content").toString();
+        // Ann's quote line stays first, the mention URN lands in the answer part,
+        // and the draft/visible path never contains the URN.
+        QCOMPARE(content, QStringLiteral("[Ann](urn:quote:%1)\n\nHi [Bob Ray](urn:user:%2)!")
+            .arg(quotedId, bob));
+        QTRY_VERIFY_WITH_TIMEOUT(f.controller.draft().isEmpty(), 4000);
+    }
+
     void mentionRankMatchTiersAndLimit()
     {
         // Tiers from mention-suggest.lib.ts resolveMatchTier: exact 0, prefix 1,
@@ -14185,19 +14295,18 @@ private slots:
         const auto exact = mentionUuid("10"), prefix = mentionUuid("11"), word = mentionUuid("12");
         const auto substr = mentionUuid("13"), mail = mentionUuid("14");
         const QString hexUuid = QStringLiteral("deadbeef-1111-4111-8111-111111111111");
-        const auto byUuid = mentionUuid("15");
         const auto hexRow = mentionRow("uu", "Hex Person", "hp", {}, hexUuid);
         const QVariantList users{
-            mentionRow("sub", "Di", "xivanx"), mentionRow("pre", "Ivanov", "ivanov"),
-            mentionRow("word", "Pavel Ivanov", "pavel"), mentionRow("ex", "Ivan", "ivan"),
-            mentionRow("mail", "Hit", "hit", "hit@iv.example"), hexRow};
+            mentionRow(substr, "Di", "xivanx"), mentionRow(prefix, "Ivanov", "ivanov"),
+            mentionRow(word, "Pavel Ivanov", "pavel"), mentionRow(exact, "Ivan", "ivan"),
+            mentionRow(mail, "Hit", "hit", "hit@iv.example"), hexRow};
         QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("ivan"), users, {})),
             (QStringList{exact, prefix, word, substr}));
         QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("iv"), users, {})),
-            (QStringList{exact, prefix, word, mail}));
+            (QStringList{exact, prefix, word, substr, mail}));
         // A deliberate >= 4-character UUID fragment matches; a 3-character one does not.
         QCOMPARE(mentionOrder(NativeController::rankMentionSuggestions(QStringLiteral("dead"), users, {})),
-            (QStringList{byUuid}));
+            (QStringList{hexUuid}));
         QVERIFY(NativeController::rankMentionSuggestions(QStringLiteral("dea"), users, {}).isEmpty());
         // MENTION_SUGGESTION_LIMIT = 8 from mention-suggest.lib.ts.
         QVariantList many;
@@ -14238,45 +14347,52 @@ private slots:
         // Markdown-sensitive display names are escaped inside the label.
         const QVector<ComposerMention> sensitive{{bob, QStringLiteral("A]ice * Smith"), QStringLiteral("A]ice * Smith")}};
         QCOMPARE(serializeComposerMentions(QStringLiteral("@A]ice * Smith hi"), sensitive),
-            QStringLiteral("[A\\\\]ice \\\\* Smith](urn:user:%1) hi").arg(bob));
+            QStringLiteral("[A\\]ice \\* Smith](urn:user:%1) hi").arg(bob));
     }
 
     void mentionFrecencyDecaysWithinOwnerAndSurvivesReopen()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
+        // setOwner keeps only the opaque 64-hex identity scope, like every owner group.
+        const QString ownerA = QString(64, QLatin1Char('a'));
+        const QString ownerB = QString(64, QLatin1Char('b'));
+        const auto picked = mentionUuid("f1");
+        const auto foreign = mentionUuid("f2");
         qint64 now = 1'700'000'000'000LL;
         NativePreferences preferences(directory.filePath("mention-frecency.ini"));
         preferences.setNowProvider([&] { return now; });
-        preferences.setOwner(QStringLiteral("owner-a"));
-        QVERIFY(preferences.mentionFrecency().isEmpty());
-        preferences.recordMentionPick(QStringLiteral("u-one"), QStringLiteral("owner-a"));
-        preferences.recordMentionPick(QStringLiteral("u-one"), QStringLiteral("owner-a"));
-        preferences.recordMentionPick(QStringLiteral("u-two"), QStringLiteral("owner-b"));
-        QCOMPARE(preferences.mentionFrecency().size(), 1);
-        QVERIFY(qAbs(preferences.mentionFrecency().value(QStringLiteral("u-one")).toDouble() - 2.0) < 0.01);
+        QVERIFY(preferences.mentionFrecencyFor(ownerA).isEmpty());
+        preferences.recordMentionPick(picked, ownerA);
+        preferences.recordMentionPick(picked, ownerA);
+        preferences.recordMentionPick(foreign, ownerB);
+        // Stores are partitioned per owner scope: B never sees A's picks.
+        QCOMPARE(preferences.mentionFrecencyFor(ownerA).size(), 1);
+        QVERIFY(!preferences.mentionFrecencyFor(ownerA).contains(foreign));
+        QVERIFY(preferences.mentionFrecencyFor(ownerB).contains(foreign));
+        QVERIFY(qAbs(preferences.mentionFrecencyFor(ownerA).value(picked).toDouble() - 2.0) < 0.01);
         // Half-life 14 days (mention-frecency.lib.ts): after one half-life the count of 2 is 1.
         now += 14LL * 24 * 60 * 60 * 1000;
-        QVERIFY(qAbs(preferences.mentionFrecency().value(QStringLiteral("u-one")).toDouble() - 1.0) < 0.01);
+        QVERIFY(qAbs(preferences.mentionFrecencyFor(ownerA).value(picked).toDouble() - 1.0) < 0.01);
         NativePreferences reopened(directory.filePath("mention-frecency.ini"));
-        reopened.setOwner(QStringLiteral("owner-a"));
-        QVERIFY(reopened.mentionFrecency().value(QStringLiteral("u-one")).toDouble() > 0.9);
-        reopened.setOwner(QStringLiteral("owner-b"));
-        QVERIFY(reopened.mentionFrecency().isEmpty());
+        reopened.setNowProvider([&] { return now; });
+        QVERIFY(reopened.mentionFrecencyFor(ownerA).value(picked).toDouble() > 0.9);
+        QVERIFY(!reopened.mentionFrecencyFor(ownerA).contains(foreign));
         // Entries decayed below MIN_KEPT_SCORE 0.05 drop out of the ranking store.
-        reopened.setOwner(QStringLiteral("owner-a"));
         now += 400LL * 24 * 60 * 60 * 1000;
-        QVERIFY(reopened.mentionFrecency().isEmpty());
+        QVERIFY(reopened.mentionFrecencyFor(ownerA).isEmpty());
     }
 
     void mentionSuggestionsFollowLiveDirectoryAndFrecency()
     {
         Fixture f;
         const auto alice = mentionUuid("0a1c"), bob = mentionUuid("0b0b"), boba = mentionUuid("18");
-        f.users = [](const Request &) { return Response{QJsonArray{
+        const auto bea = mentionUuid("0b3a");
+        f.users = [&](const Request &) { return Response{QJsonArray{
             QJsonObject{{"uuid", userId}, {"username", "cassi"}},
             QJsonObject{{"uuid", alice}, {"username", "alice"}, {"first_name", "Alice"}},
             QJsonObject{{"uuid", bob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
-            QJsonObject{{"uuid", boba}, {"username", "boba"}, {"first_name", "Boba"}, {"last_name", "Tea"}}}}; };
+            QJsonObject{{"uuid", boba}, {"username", "boba"}, {"first_name", "Boba"}, {"last_name", "Tea"}},
+            QJsonObject{{"uuid", bea}, {"username", "bea"}, {"first_name", "Bea"}}}}; };
         f.messages = [&](const Request &request) {
             QMap<int, QJsonObject> rows;
             auto row = message(QStringLiteral("from bob"), QStringLiteral("8a000000-0000-4000-8000-000000000001"));
@@ -14293,24 +14409,27 @@ private slots:
         QVERIFY(f.controller.composerMentionsEnabled());
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("mention-live.ini"));
-        preferences.setOwner(f.controller.ownerKey());
+        // Mention frecency lives in the creation-owner scope (the loopback-safe
+        // identity the controller passes to recordMentionPick).
+        preferences.setOwner(f.controller.creationOwnerKey());
         f.controller.setPreferences(&preferences);
-        // Alice wrote the newest message, so the recent-author score orders her first;
-        // the viewer carries the self penalty (mention-suggest.lib.ts).
+        // Alice wrote the newest message (recent author +4000), Bob the older one
+        // (+3900); Bea and Boba carry no context and fall to locale order (mention-suggest.lib.ts).
         QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QString{})),
-            (QStringList{alice, bob, boba, userId}));
+            (QStringList{alice, bob, bea, boba}));
         // Membership is unknown for an ordinary channel: no outsideChannel marking.
         for (const auto &rowValue : f.controller.mentionSuggestions(QString{}))
             QVERIFY(!rowValue.toMap().contains("outsideChannel"));
-        // Two equally-ranked "B" candidates; a recorded pick lifts Boba above Bob
-        // (FRECENCY_SCORE_WEIGHT 60), and the store survives reopening the file.
-        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{bob, boba}));
+        // Bob leads on recent-author score; among the context-free "B" candidates a
+        // recorded pick lifts Boba over Bea (FRECENCY_SCORE_WEIGHT 60), and the store
+        // survives reopening the file.
+        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{bob, bea, boba}));
         f.controller.recordMentionPick(boba);
-        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{boba, bob}));
+        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{bob, boba, bea}));
         NativePreferences reopened(directory.filePath("mention-live.ini"));
-        reopened.setOwner(f.controller.ownerKey());
+        reopened.setOwner(f.controller.creationOwnerKey());
         f.controller.setPreferences(&reopened);
-        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{boba, bob}));
+        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("b"))), (QStringList{bob, boba, bea}));
         // The suggestion rows carry the dropdown fields: secondary line prefers
         // @username, presence and avatar are exposed for the row template.
         const auto rows = f.controller.mentionSuggestions(QStringLiteral("ali"));

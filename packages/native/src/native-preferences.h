@@ -59,6 +59,13 @@ public:
     QStringList loadLastConversation(const QString &owner);
     void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
     QStringList organizationHistory() const { return m_organizationHistory; }
+    // Mention frecency (mention-frecency.lib.ts): decayed pick counts per user,
+    // partitioned by the opaque caller scope (the controller's creation owner,
+    // which stays valid on loopback fixtures where the HTTPS vault owner is empty).
+    QVariantMap mentionFrecencyFor(const QString &owner);
+    Q_INVOKABLE void recordMentionPick(const QString &userUuid, const QString &owner);
+    // Test seam for the decay clock; production uses wall-clock milliseconds.
+    void setNowProvider(std::function<qint64()> nowMs);
     // Origins of successfully logged-in organizations (deduped, newest first),
     // mirroring workspace-organization-history.lib.ts.
     Q_INVOKABLE void recordOrganizationOrigin(const QString &origin);
@@ -90,6 +97,7 @@ signals:
     void cacheErrorChanged();
     void cacheStatusChanged();
     void reactionHistoryChanged();
+    void mentionFrecencyChanged();
 
 private:
     QString appearanceGroup() const;
@@ -98,6 +106,9 @@ private:
     void setError(const QString &error);
     void loadReactionHistory();
     void persistReactionHistory();
+    void ensureMentionStore(const QString &owner);
+    void persistMentionFrecency(const QString &owner);
+    qint64 nowMs() const;
     QJsonObject recentReactionUsage(const QJsonObject &days) const;
     void saveWindow();
     void saveLastConversation();
@@ -115,6 +126,10 @@ private:
     int m_cacheLimitGb = 10;
     QVariantList m_suggested;
     QJsonObject m_quickUsage;
+    QJsonObject m_mentionStore;
+    QString m_mentionStoreOwner;
+    bool m_mentionStoreLoaded = false;
+    std::function<qint64()> m_nowMs;
     std::function<QDate()> m_utcToday;
     qreal m_sidebarWidth = 299;
     // Global composer toolbar expansion, mirroring settings.model.ts
