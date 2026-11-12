@@ -5659,8 +5659,11 @@ ApplicationWindow {
                                         mutateSelection((selected) => {
                                             const template = "["
                                                 + (selected.length > 0 ? selected : qsTr("link text")) + "](https://)";
+                                            // The URL slot is the fixed tail of the template: anchor the
+                                            // selection to its end so a label containing "https://" cannot
+                                            // move the selection start into the label text.
                                             return { text: template,
-                                                selectionStart: template.indexOf("https://"),
+                                                selectionStart: template.length - 1 - "https://".length,
                                                 selectionEnd: template.length - 1 };
                                         });
                                     }
