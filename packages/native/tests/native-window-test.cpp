@@ -1179,9 +1179,15 @@ public:
     QString bobUser = extraUser(2);
     QString carolUser = extraUser(3);
     QString daveUser = extraUser(4);
+    // Second owner stream: switching here while a request for the first stream
+    // is in flight reproduces the review #186 busy-leak races (F1/F2).
+    QString secondStreamId = QStringLiteral("3e0d0000-0000-4000-8000-000000000002");
+    QString secondTopic = secondTopicId;
     QJsonObject streamRow;
+    QJsonObject secondStreamRow;
     QJsonArray members;
     QJsonArray servedMembers;
+    QJsonArray secondMembers;
     int notifPosts = 0, removeDeletes = 0, memberDelay = 120;
     int notifStatus = 200;
     QJsonObject notifBody;
@@ -1193,6 +1199,10 @@ public:
         streamRow["description"] = "Synthetic purpose.";
         streamRow["color"] = 0x4b98e6;
         streamRow["role"] = streamOwner ? "owner" : "member";
+        secondStreamRow = windowChannel(secondStreamId, "Second channel");
+        secondStreamRow["role"] = "owner";
+        secondMembers = QJsonArray{bindingRow(bindingId(11), userId, "owner", secondStreamId),
+            bindingRow(bindingId(12), channelPeer, "member", secondStreamId)};
         users = QJsonArray{
             userRow(userId, "cassi", "Cassi", "active", "cassi@example.invalid"),
             userRow(channelPeer, "alice", "Alice", "active", "alice@example.invalid"),
@@ -1209,15 +1219,25 @@ public:
         server.handler = [this, base](const Request &request) -> Response {
             const auto path = request.target.path();
             if (request.method == "GET" && path.endsWith("/streams/") && !path.contains("/messages/"))
-                return {QJsonArray{streamRow}};
+                return {QJsonArray{streamRow, secondStreamRow}};
             if (request.method == "GET" && path.endsWith("/streams/" + streamId))
                 return {streamRow};
-            if (request.method == "GET" && path.endsWith("/stream_bindings/"))
+            if (request.method == "GET" && path.endsWith("/streams/" + secondStreamId))
+                return {secondStreamRow};
+            if (request.method == "GET" && path.endsWith("/stream_bindings/")) {
+                if (QUrlQuery(request.target).queryItemValue("stream_uuid") == secondStreamId)
+                    return {secondMembers, 200, memberDelay};
                 return {servedMembers, 200, memberDelay};
+            }
+            if (request.method == "GET" && path.endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == secondStreamId)
+                return {QJsonArray{windowChannelTopic(secondTopic, secondStreamId, "General two")}};
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
                 ++notifPosts;
                 notifBody = request.body;
-                auto row = streamRow;
+                // streams/{uuid}/actions/notifications/invoke: the invoke
+                // answers with the canonical DTO of the stream it addressed.
+                auto row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
                 row["notification_mode"] = request.body.value("notification_mode");
                 return {row, notifStatus, notifStatus == 200 ? 180 : 160};
             }
@@ -1234,14 +1254,17 @@ public:
             if (request.method == "POST" && path.endsWith("/actions/add_users/invoke")) {
                 ++memberPosts;
                 memberBody = request.body;
+                // streams/{uuid}/actions/add_users/invoke binds on the stream
+                // it addressed (path field -4 = {uuid}).
+                const auto target = path.section(QLatin1Char('/'), -4, -4);
                 QJsonArray rows;
                 int number = 5;
                 for (const auto &value : request.body.value("member").toArray()) {
                     const auto row = bindingRow(QStringLiteral("83000000-0000-4000-8000-%1")
-                        .arg(number++, 12, 10, QLatin1Char('0')), value.toString(), "member");
+                        .arg(number++, 12, 10, QLatin1Char('0')), value.toString(), "member", target);
                     rows.append(row);
-                    members.append(row);
-                    servedMembers.append(row);
+                    if (target == secondStreamId) secondMembers.append(row);
+                    else { members.append(row); servedMembers.append(row); }
                 }
                 return {rows, 200, 120};
             }
@@ -1260,9 +1283,10 @@ public:
     }
     // Binding DTO fields as validated by creationBindings (native-controller.cpp)
     // and the reference WorkspaceMessengerStreamBindingDto.
-    static QJsonObject bindingRow(const QString &id, const QString &user, const QString &role)
+    static QJsonObject bindingRow(const QString &id, const QString &user, const QString &role,
+                                  const QString &stream = streamId)
     {
-        return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+        return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
             {"user_uuid", user}, {"who_uuid", userId}, {"role", role},
             {"notification_mode", "all_messages"},
             {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
@@ -1296,7 +1320,9 @@ struct ChannelInfoWindowScene {
             "synthetic-password", "");
         QTRY_COMPARE(controller.projects().size(), 1);
         controller.openProject(projectId);
-        QTRY_COMPARE(controller.streams().size(), 1);
+        // The fixture serves the info channel plus a switchable second owner
+        // stream (review #186 busy-leak races); the scene starts on the first.
+        QTRY_COMPARE(controller.streams().size(), 2);
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         controller.selectTopic(topicId);
@@ -12988,6 +13014,188 @@ mv -Tf "$root/.current-new" "$root/current"
         scene.controller.addChannelInfoMembers({scene.fixture.daveUser});       // gated no-op
         QTest::qWait(250);
         QCOMPARE(scene.fixture.memberPosts, 0);
+    }
+
+    // Issue #186 review F1: switching streams during a notification update must
+    // not permanently disable the switch. The notifications POST for the first
+    // stream is held by a defer gate; selectStream moves to the second stream
+    // (the page refreshes there); the late response may only release the busy
+    // state that belongs to its own request, so the switch on the new stream
+    // stays clickable and a follow-up update completes.
+    void windowChannelInfoNotificationBusyRecoversOnStreamSwitch()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        bool holdNotif = true;
+        std::function<void()> releaseNotif;
+        auto base = scene.fixture.server.handler;
+        // The guard restores the fixture handler and releases any held send
+        // before the scene tears down; the wrapper captures base by value so a
+        // late socket event during ~scene never touches a dead local.
+        auto gate = qScopeGuard([&]{ scene.fixture.server.handler = base;
+            if (releaseNotif) releaseNotif(); });
+        scene.fixture.server.handler = [base, &holdNotif, &releaseNotif](const Request &request) -> Response {
+            auto response = base(request);
+            if (holdNotif && request.method == "POST"
+                && request.target.path().endsWith("/actions/notifications/invoke")) {
+                holdNotif = false;
+                response.defer = [&releaseNotif](std::function<void()> send) { releaseNotif = std::move(send); };
+            }
+            return response;
+        };
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QTRY_COMPARE(scene.fixture.notifPosts, 1);
+        scene.controller.selectStream(scene.fixture.secondStreamId);
+        QTRY_COMPARE(scene.text("channelInfoTitle"), QStringLiteral("Second channel"));
+        releaseNotif(); releaseNotif = {};
+        // The abandoned request settles for a stream the user left: it must
+        // release its busy state instead of locking every later stream.
+        QTRY_VERIFY(!scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QTRY_VERIFY(visibleItem("channelInfoNotifMuted")->property("enabled").toBool());
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_COMPARE(scene.fixture.notifPosts, 2);
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("muted"));
+    }
+
+    // Issue #186 review F2: same shape as F1 for the add-members flow: the
+    // add POST for the first stream is held, the user switches streams, and
+    // the late response must not leave channelInfoAddBusy set so that later
+    // add requests are rejected on every stream.
+    void windowChannelInfoAddBusyRecoversOnStreamSwitch()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        click(scene.window, visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        QTRY_VERIFY(visibleItem("addMembersCheck-" + scene.fixture.daveUser));
+        bool holdAdd = true;
+        std::function<void()> releaseAdd;
+        auto base = scene.fixture.server.handler;
+        auto gate = qScopeGuard([&]{ scene.fixture.server.handler = base;
+            if (releaseAdd) releaseAdd(); });
+        scene.fixture.server.handler = [base, &holdAdd, &releaseAdd](const Request &request) -> Response {
+            auto response = base(request);
+            if (holdAdd && request.method == "POST"
+                && request.target.path().endsWith("/actions/add_users/invoke")) {
+                holdAdd = false;
+                response.defer = [&releaseAdd](std::function<void()> send) { releaseAdd = std::move(send); };
+            }
+            return response;
+        };
+        click(scene.window, visibleItem("addMembersAdd"));
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoAddBusy").toBool());
+        QTRY_COMPARE(scene.fixture.memberPosts, 1);
+        scene.controller.selectStream(scene.fixture.secondStreamId);
+        QTRY_COMPARE(scene.text("channelInfoTitle"), QStringLiteral("Second channel"));
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 2);
+        releaseAdd(); releaseAdd = {};
+        QTRY_VERIFY(!scene.evaluate("controller.channelInfoAddBusy").toBool());
+        // A later add request on the new stream is accepted, not rejected by
+        // the leaked busy flag.
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});
+        QTRY_COMPARE(scene.fixture.memberPosts, 2);
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 3);
+    }
+
+    // Issue #186 review F3: closing the add-members dialog must reset the
+    // dialog's own selection and search text (the old handler wrote to a
+    // non-existent page property, so both survived a reopen).
+    void windowChannelInfoAddDialogClearsSelectionOnClose()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        // The QQC2 Popup is a QObject (not a QQuickItem), so reach it through
+        // the object tree; its object survives close/open cycles.
+        auto *dialog = scene.window->findChild<QObject *>("addMembersDialog", Qt::FindChildrenRecursively);
+        QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem("addMembersSearch"); })(), 5000);
+        auto *search = visibleItem("addMembersSearch");
+        QVERIFY(search);
+        search->setProperty("text", "dav");
+        QTRY_VERIFY(visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        click(scene.window, visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        QTRY_VERIFY(visibleItem("addMembersCheck-" + scene.fixture.daveUser));
+        QCOMPARE(dialog->property("selectedUsers").toList().size(), 1);
+        click(scene.window, visibleItem("addMembersClose"));
+        QTRY_VERIFY(!scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem("addMembersSearch"); })(), 5000);
+        QVERIFY2(dialog->property("selectedUsers").toList().isEmpty(),
+            "closed dialog must clear its own selection");
+        QVERIFY2(visibleItem("addMembersSearch")->property("text").toString().isEmpty(),
+            "closed dialog must clear its search text");
+        QVERIFY(!visibleItem("addMembersAdd")->property("enabled").toBool());
+    }
+
+    // Issue #186 review F4: a members GET that is still in flight when a
+    // member mutation succeeds must not overwrite that mutation. The member
+    // load is held by a defer gate (snapshot without dave), the add POST
+    // completes, and the released stale snapshot may not remove the added row.
+    void windowChannelInfoStaleMembersLoadKeepsAddedMember()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        bool holdMembers = true;
+        std::function<void()> releaseMembers;
+        auto base = scene.fixture.server.handler;
+        auto gate = qScopeGuard([&]{ scene.fixture.server.handler = base;
+            if (releaseMembers) releaseMembers(); });
+        scene.fixture.server.handler = [base, &holdMembers, &releaseMembers](const Request &request) -> Response {
+            auto response = base(request);
+            if (holdMembers && request.method == "GET"
+                && request.target.path().endsWith("/stream_bindings/")) {
+                holdMembers = false;
+                response.defer = [&releaseMembers](std::function<void()> send) { releaseMembers = std::move(send); };
+            }
+            return response;
+        };
+        // Re-run the member load exactly like a drawer reopen would.
+        scene.controller.refreshChannelInfo();
+        QTRY_VERIFY(scene.controller.channelInfoLoading());
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});
+        QTRY_VERIFY(scene.fixture.memberPosts >= 1);
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        releaseMembers(); releaseMembers = {};
+        QTest::qWait(400);  // let the held stale snapshot arrive and settle
+        QCOMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        QVERIFY(visibleItem("channelInfoMember-83000000-0000-4000-8000-000000000005"));
+    }
+
+    // Issue #186 review F5: a selection made in the add-members dialog must
+    // not survive a stream change; reopening or keeping the dialog open on the
+    // new stream may not submit the earlier stream's user list.
+    void windowChannelInfoAddDialogClearsSelectionOnStreamSwitch()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        auto *dialog = scene.window->findChild<QObject *>("addMembersDialog", Qt::FindChildrenRecursively);
+        QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem("addMembersSearch"); })(), 5000);
+        visibleItem("addMembersSearch")->setProperty("text", "dav");
+        QTRY_VERIFY(visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        click(scene.window, visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        QTRY_VERIFY(visibleItem("addMembersCheck-" + scene.fixture.daveUser));
+        QCOMPARE(dialog->property("selectedUsers").toList().size(), 1);
+        scene.controller.selectStream(scene.fixture.secondStreamId);
+        QTRY_COMPARE(scene.text("channelInfoTitle"), QStringLiteral("Second channel"));
+        QVERIFY2(dialog->property("selectedUsers").toList().isEmpty(),
+            "stream switch must clear the dialog selection");
+        QVERIFY2(visibleItem("addMembersSearch")->property("text").toString().isEmpty(),
+            "stream switch must clear the dialog search text");
+        QVERIFY(!visibleItem("addMembersAdd")->property("enabled").toBool());
     }
 
 private:
