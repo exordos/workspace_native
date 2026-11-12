@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 
 #include <functional>
 
@@ -56,7 +57,25 @@ signals:
     void activeChanged();
 
 private:
+    bool armed() const;
+    void schedule();
+    void fire();
+    void applyWindowsVisible(bool visible);
+    void installEventFilter();
+    void removeEventFilter();
+    qint64 nowMs() const;
+
     std::function<qint64()> m_nowMs;
+    std::function<void()> m_expiryAction;
+    QTimer m_checkTimer;
+    qint64 m_timeoutMs = 0;
+    qint64 m_deadlineMs = 0;
+    int m_pollIntervalMs = 1000;
+    bool m_sessionActive = false;
+    bool m_fired = false;
+    bool m_windowsVisible = true;
+    bool m_visibilityExplicit = false;
+    bool m_filterInstalled = false;
 };
 
 } // namespace workspace
