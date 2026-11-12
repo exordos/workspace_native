@@ -1189,6 +1189,9 @@ public:
     QJsonArray servedMembers;
     QJsonArray secondMembers;
     int notifPosts = 0, removeDeletes = 0, memberDelay = 120;
+    // GET /stream_bindings/ carries page_limit=200 only for the channel info
+    // member pages; the chat-authority bootstrap query has stream_uuid alone.
+    int memberGets = 0;
     int notifStatus = 200;
     QJsonObject notifBody;
     WindowChannelInfoFixture(bool streamOwner = true)
@@ -1225,6 +1228,8 @@ public:
             if (request.method == "GET" && path.endsWith("/streams/" + secondStreamId))
                 return {secondStreamRow};
             if (request.method == "GET" && path.endsWith("/stream_bindings/")) {
+                if (QUrlQuery(request.target).queryItemValue("page_limit") == QLatin1String("200"))
+                    ++memberGets;
                 if (QUrlQuery(request.target).queryItemValue("stream_uuid") == secondStreamId)
                     return {secondMembers, 200, memberDelay};
                 return {servedMembers, 200, memberDelay};
@@ -12814,10 +12819,25 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
     }
 
+    // Mounting the chat window must not prefetch the member list: the
+    // reference info store mounts when the chat-info screen opens
+    // (docs/NATIVE_DESKTOP_CHANNEL_INFO.md). An eager fetch on the hidden
+    // layer regressed the window-lifetime stream_bindings discipline (#197).
+    void windowChannelInfoFetchesMembersOnlyWhenInfoScreenOpens()
+    {
+        ChannelInfoWindowScene scene;
+        QVERIFY(!visibleItem("channelInfoLayer"));
+        QCOMPARE(scene.fixture.memberGets, 0);
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        QCOMPARE(scene.fixture.memberGets, 1);
+    }
+
     // Issue #132: header summary (48px avatar with the stream color, title,
     // "X members, Y online" subline) plus the three blocks in reference
     // order. Oracles: right-panel-workspace-info.ui.tsx at
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af (header px-4 py-3, avatar lg
+    // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
     // and packages/web/src/shared/lib/avatar-color.lib.ts for the color.
