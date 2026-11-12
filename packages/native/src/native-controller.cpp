@@ -11485,10 +11485,17 @@ void NativeController::startCall()
             {QStringLiteral("content"), meetingUrl}}}};
     const auto owner = ownerKey();
     const auto meet = m_meetHost;
+    const auto stream = m_stream;
+    const auto topic = m_topic;
     request("POST", messenger + "/messages/", body, {},
-        [this, meetingUrl, locationName, owner, meet](const ApiResult &result) {
+        [this, meetingUrl, locationName, owner, meet, stream, topic](const ApiResult &result) {
         m_callPending = false;
-        if (!result.ok()) {
+        // Same confirmation contract as the composer send: a 2xx proves the
+        // message only when the response parses back as the sent markdown
+        // message on the target conversation.
+        const auto sent = parseMessage(result.data.toObject(), m_session->project());
+        if (!result.ok() || !sent || sent->stream != stream || sent->topic != topic
+            || sent->kind != QLatin1String("markdown") || sent->content != meetingUrl) {
             m_callError = tr("Call could not be started.");
             emit stateChanged();
             return;
@@ -11514,6 +11521,13 @@ void NativeController::joinCall(const QString &meetingUrl)
 {
     if (meetingUrl.trimmed().isEmpty())
         return;
+    if (m_callPending) {
+        // A start POST is in flight: joining another room now would open it
+        // before the posted room, leaving the sender blocked from their own
+        // invite. The pending start owns the call lane until it settles, so
+        // this click is a no-op (same busy-state rule as the reference).
+        return;
+    }
     m_callError.clear();
     QVariantMap payload;
     payload.insert(QStringLiteral("meetingUrl"), meetingUrl);
