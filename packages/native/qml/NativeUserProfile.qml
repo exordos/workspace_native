@@ -90,6 +90,12 @@ Item {
         page.pendingRemoveAvatar = false
     }
     function startEdit() {
+        // exordy #199 review 4553884671: never snapshot drafts from a baseline
+        // that has not loaded yet — those blanks become real saved changes.
+        if (!controller.ownProfileLoaded) {
+            if (!controller.ownProfileBusy) controller.loadOwnProfile()
+            return
+        }
         const baseline = controller.ownProfile
         page.draftFirst = String(baseline.firstName || "")
         page.draftLast = String(baseline.lastName || "")
@@ -98,8 +104,6 @@ Item {
         page.pendingAvatarPath = ""
         page.pendingRemoveAvatar = false
         page.editing = true
-        if (!controller.ownProfileLoaded && !controller.ownProfileBusy)
-            controller.loadOwnProfile()
     }
     function cancelEdit() {
         page.editing = false
@@ -389,6 +393,7 @@ Item {
                         clip: true
                         color: page.colors["bg-elevated"]
                         NativeAvatarImage {
+                            id: headerAvatar
                             anchors.fill: parent
                             reference: page.pendingAvatarPath.length === 0 && !page.pendingRemoveAvatar
                                 ? String(page.snapshot.avatar || "") : ""
@@ -407,7 +412,14 @@ Item {
                         Text {
                             objectName: "profileAvatarInitial"
                             anchors.centerIn: parent
+                            // exordy #199 review 4553884690: the fallback initial
+                            // renders only when neither the avatar image nor the
+                            // edit preview is displayed - never over a photo.
                             visible: text.length > 0
+                                && page.pendingAvatarPath.length === 0
+                                && (page.pendingRemoveAvatar
+                                    || (String(page.snapshot.avatar || "").length === 0
+                                        && !headerAvatar.replacesFallback))
                             text: {
                                 const title = String(page.snapshot.title || "")
                                 if (page.editing && page.isSelf)
@@ -802,7 +814,10 @@ Item {
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             height: 64
-                            TextField {
+                            // exordy #199 review 4553884709: About me is a
+                            // multiline field - a TextArea, not a single-line
+                            // TextField, so entered newlines survive the draft.
+                            TextArea {
                                 objectName: "profileDescriptionField"
                                 anchors.fill: parent
                                 text: page.draftDescription
@@ -812,8 +827,7 @@ Item {
                                 color: page.colors["text-primary"]
                                 selectByMouse: true
                                 placeholderText: detailRow.modelData.label
-                                verticalAlignment: TextInput.AlignTop
-                                wrapMode: TextField.WordWrap
+                                wrapMode: TextArea.WordWrap
                                 bottomPadding: 8
                                 topPadding: 8
                                 leftPadding: 12
@@ -893,7 +907,9 @@ Item {
         if (page.isSelf) {
             return [
                 {id: "favorites", label: qsTr("Favorites"), icon: "home.svg", glyph: 26, hug: false, disabled: false},
-                {id: "edit", label: qsTr("Edit"), icon: "border_color.svg", glyph: 30, hug: true, disabled: false},
+                // Editing needs the loaded baseline (review 4553884671).
+                {id: "edit", label: qsTr("Edit"), icon: "border_color.svg", glyph: 30, hug: true,
+                    disabled: !controller.ownProfileLoaded},
                 {id: "share", label: shareCopied ? qsTr("Copied") : qsTr("Share"),
                     icon: shareCopied ? "check.svg" : "links.svg", glyph: shareCopied ? 28 : 40,
                     hug: false, disabled: page.shareLink.length === 0},

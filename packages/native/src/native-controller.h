@@ -1018,7 +1018,7 @@ private:
     // ---- Issue #134 user profile drawer state ----
     void refreshOwnProfileProjection(const QString &user, quint64 ticket,
         const QVariantMap &savedProfile);
-    bool profileContext(const QString &user, quint64 ticket) const;
+    bool profileContext(const QString &user, quint64 ticket, quint64 currentTicket) const;
     void captureProfileContext();
     QString m_profileOwner, m_profileUser, m_ownProfileOwner, m_ownProfileError, m_ownAvatarError;
     QString m_profileDirectStream, m_profileDirectTopic;
