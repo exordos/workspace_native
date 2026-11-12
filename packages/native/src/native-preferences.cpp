@@ -109,6 +109,8 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     const auto storedWidth = m_settings.value("layout/sidebarWidth", 299).toDouble(&valid);
     if (valid && std::isfinite(storedWidth) && storedWidth >= 240 && storedWidth <= 720)
         m_sidebarWidth = std::round(storedWidth);
+    // settings.model.ts:174 parses composerToolbarExpanded strictly (=== true).
+    m_composerToolbarExpanded = m_settings.value("layout/composerToolbarExpanded", false).toBool();
     const auto cacheLimit = m_settings.value("cache/limitGb", 10).toString();
     static const QRegularExpression integer("^[0-9]{1,4}\\z");
     if (integer.match(cacheLimit).hasMatch()) {
@@ -255,6 +257,7 @@ void NativePreferences::persist()
     m_settings.setValue(group + "/mode", m_mode);
     m_settings.setValue(group + "/locale", m_locale);
     m_settings.setValue("layout/sidebarWidth", m_sidebarWidth);
+    m_settings.setValue("layout/composerToolbarExpanded", m_composerToolbarExpanded);
     m_settings.sync();
     setError(m_settings.status() == QSettings::NoError
         ? QString{} : tr("Appearance preferences could not be saved."));
@@ -287,6 +290,14 @@ void NativePreferences::setSidebarPreferredWidth(qreal width)
     m_sidebarWidth = next;
     persist();
     emit sidebarPreferredWidthChanged();
+}
+
+void NativePreferences::setComposerToolbarExpanded(bool expanded)
+{
+    if (expanded == m_composerToolbarExpanded) return;
+    m_composerToolbarExpanded = expanded;
+    persist();
+    emit composerToolbarExpandedChanged();
 }
 
 void NativePreferences::setLocale(const QString &locale)

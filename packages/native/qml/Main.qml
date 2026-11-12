@@ -5529,33 +5529,43 @@ ApplicationWindow {
                         }
                     }
                 }
-                RowLayout {
+                ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 8
                     anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
                         + (replyNotice.visible ? replyNotice.height : 0)
-                    spacing: 12
-                    Rectangle {
+                    spacing: 4
+                    RowLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        radius: 10
-                        color: root.colors.bg
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 8
-                            spacing: 8
-                            NativeIconButton {
-                                colors: root.colors
-                                asset: "composer-bottom-panel-close.svg"
-                                help: qsTr("Formatting controls are not implemented yet")
-                                enabled: false
-                                implicitWidth: 32
-                                implicitHeight: 32
-                                glyphSize: 21
-                                Layout.alignment: Qt.AlignBottom
-                            }
-                            ScrollView {
+                        spacing: 12
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: 10
+                            color: root.colors.bg
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 8
+                                NativeIconButton {
+                                    objectName: "composerToolbarExpand"
+                                    colors: root.colors
+                                    // Compact mode keeps a single expand toggle in the
+                                    // input row (message-composer.ui.tsx:1925-1939), on
+                                    // the same pl-2 axis as the toolbar collapse toggle.
+                                    asset: "composer-bottom-panel-open.svg"
+                                    help: qsTr("Show formatting tools")
+                                    enabled: composerText.enabled
+                                    visible: !root.preferences.composerToolbarExpanded
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphSize: 21
+                                    Layout.alignment: Qt.AlignBottom
+                                    onClicked: root.preferences.composerToolbarExpanded = true
+                                }
+                                ScrollView {
                                 id: composerScroll
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
@@ -5588,14 +5598,18 @@ ApplicationWindow {
                                         && !ownStatusDialog.visible && !deleteDialog.visible
                                         && !createTopicDialog.visible && !createChatDialog.visible && !referenceNotice.visible
                                         && !attachmentPicker.visible && !attachmentSaveDialog.visible
-                                    function wrapFormatting(marker) {
+                                    // message-composer-selection.lib.ts mutateSelection:
+                                    // replace the selection, restore the returned selection
+                                    // relative to it, and keep the scroll position.
+                                    function mutateSelection(mutationFor) {
                                         if (!formattingAllowed)
                                             return;
                                         const owner = root.controller.ownStatusContextKey;
                                         const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
                                         const start = selectionStart, end = selectionEnd;
                                         const current = text;
-                                        const next = current.slice(0, start) + marker + current.slice(start, end) + marker + current.slice(end);
+                                        const mutation = mutationFor(current.slice(start, end));
+                                        const next = current.slice(0, start) + mutation.text + current.slice(end);
                                         const scroll = composerScroll.contentItem;
                                         const scrollY = scroll ? scroll.contentY : 0;
                                         root.controller.draft = next;
@@ -5605,10 +5619,82 @@ ApplicationWindow {
                                             || stream !== root.controller.selectedStream || topic !== root.controller.selectedTopic
                                             || root.controller.draft !== next || text !== next)
                                             return;
-                                        const caret = start + marker.length + (end > start ? end - start + marker.length : 0);
-                                        select(caret, caret);
+                                        select(start + mutation.selectionStart, start + mutation.selectionEnd);
                                         if (scroll === composerScroll.contentItem && isFinite(scrollY))
                                             scroll.contentY = scrollY;
+                                    }
+                                    function wrapFormatting(marker) {
+                                        mutateSelection((selected) => selected.length > 0
+                                            ? { text: marker + selected + marker,
+                                                selectionStart: marker.length + selected.length + marker.length,
+                                                selectionEnd: marker.length + selected.length + marker.length }
+                                            : { text: marker + marker,
+                                                selectionStart: marker.length, selectionEnd: marker.length });
+                                    }
+                                    // Toolbar list/quote actions prefix each selected line;
+                                    // an empty selection inserts the single-line marker.
+                                    function prefixSelectedLines(prefixFor) {
+                                        mutateSelection((selected) => {
+                                            if (selected.length === 0) {
+                                                const first = prefixFor(0);
+                                                return { text: first,
+                                                    selectionStart: first.length, selectionEnd: first.length };
+                                            }
+                                            const prefixed = selected.split("\n")
+                                                .map((line, index) => prefixFor(index) + line).join("\n");
+                                            return { text: prefixed,
+                                                selectionStart: prefixed.length, selectionEnd: prefixed.length };
+                                        });
+                                    }
+                                    function insertQuote() { prefixSelectedLines((index) => "> "); }
+                                    function insertBulletedList() { prefixSelectedLines((index) => "- "); }
+                                    function insertNumberedList() { prefixSelectedLines((index) => String(index + 1) + ". "); }
+                                    function insertCodeBlock() {
+                                        mutateSelection((selected) => selected.length > 0
+                                            ? { text: "```\n" + selected + "\n```",
+                                                selectionStart: selected.length + 8, selectionEnd: selected.length + 8 }
+                                            : { text: "```\n\n```", selectionStart: 4, selectionEnd: 4 });
+                                    }
+                                    function insertLink() {
+                                        mutateSelection((selected) => {
+                                            const template = "["
+                                                + (selected.length > 0 ? selected : qsTr("link text")) + "](https://)";
+                                            return { text: template,
+                                                selectionStart: template.indexOf("https://"),
+                                                selectionEnd: template.length - 1 };
+                                        });
+                                    }
+                                    // message-composer-list-continuation.lib.ts: only with a collapsed
+                                    // caret at a line end; an empty marker line is removed instead
+                                    // of extended, ordered markers increment.
+                                    function listContinuation(current, start, end) {
+                                        if (start !== end)
+                                            return null;
+                                        const lineStart = current.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+                                        const nextNewline = current.indexOf("\n", start);
+                                        const lineEnd = nextNewline === -1 ? current.length : nextNewline;
+                                        if (start !== lineEnd)
+                                            return null;
+                                        const line = current.slice(lineStart, lineEnd);
+                                        const unordered = /^(\s*)([-*+])\s(.*)$/.exec(line);
+                                        if (unordered !== null) {
+                                            if (unordered[3].trim().length === 0)
+                                                return { text: current.slice(0, lineStart) + current.slice(lineEnd),
+                                                    caret: lineStart };
+                                            const insertion = "\n" + unordered[1] + unordered[2] + " ";
+                                            return { text: current.slice(0, start) + insertion + current.slice(end),
+                                                caret: start + insertion.length };
+                                        }
+                                        const ordered = /^(\s*)(\d+)\.\s(.*)$/.exec(line);
+                                        if (ordered !== null) {
+                                            if (ordered[3].trim().length === 0)
+                                                return { text: current.slice(0, lineStart) + current.slice(lineEnd),
+                                                    caret: lineStart };
+                                            const insertion = "\n" + ordered[1] + String(Number(ordered[2]) + 1) + ". ";
+                                            return { text: current.slice(0, start) + insertion + current.slice(end),
+                                                caret: start + insertion.length };
+                                        }
+                                        return null;
                                     }
                                     Shortcut {
                                         sequence: "Ctrl+B"; context: Qt.WindowShortcut; autoRepeat: false
@@ -5660,6 +5746,27 @@ ApplicationWindow {
                                         } else if (event.key === Qt.Key_Escape && root.controller.replyMessageId.length > 0) {
                                             // The reply banner mirrors the edit banner: Escape dismisses and is swallowed.
                                             root.controller.cancelReply();
+                                            event.accepted = true;
+                                        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                            && (event.modifiers & Qt.ShiftModifier) && !inputMethodComposing) {
+                                            // Shift+Enter continues a markdown list item per
+                                            // message-composer-list-continuation.lib.ts; a non-list
+                                            // caret gets the plain newline inserted here so exactly
+                                            // one text mutation happens per press.
+                                            const continuation = listContinuation(text, selectionStart, selectionEnd);
+                                            const nextText = continuation ? continuation.text
+                                                : text.slice(0, selectionStart) + "\n" + text.slice(selectionEnd);
+                                            const nextCaret = continuation ? continuation.caret : selectionStart + 1;
+                                            const owner = root.controller.ownStatusContextKey;
+                                            const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
+                                            root.controller.draft = nextText;
+                                            if (formattingAllowed && owner === root.controller.ownStatusContextKey
+                                                && stream === root.controller.selectedStream
+                                                && topic === root.controller.selectedTopic) {
+                                                if (text !== nextText)
+                                                    text = nextText;
+                                                select(nextCaret, nextCaret);
+                                            }
                                             event.accepted = true;
                                         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && !root.controller.busy && !inputMethodComposing) {
                                             if (editing) {
@@ -5742,6 +5849,201 @@ ApplicationWindow {
                                 root.controller.submitEditMessage();
                             else
                                 root.controller.send();
+                        }
+                    }
+                    }
+                    // Issue #122: the expandable bottom toolbar (message-composer-toolbar.ui.tsx).
+                    // COMPOSER_TOOLBAR_SEND_CLEARANCE mr-[52px] from the composer's right edge
+                    // (40px send control + 12px row gap) and the pl-2 leading inset.
+                    Item {
+                        objectName: "composerToolbarRow"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 32
+                        Layout.rightMargin: 52
+                        visible: root.preferences.composerToolbarExpanded
+                        RowLayout {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 8
+                            spacing: 8
+                            NativeIconButton {
+                                objectName: "composerToolbarCollapse"
+                                colors: root.colors
+                                asset: "composer-bottom-panel-close.svg"
+                                help: qsTr("Hide formatting tools")
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphSize: 21
+                                onClicked: root.preferences.composerToolbarExpanded = false
+                            }
+                            // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
+                            Rectangle {
+                                objectName: "composerToolbarSeparator"
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 28
+                                Layout.alignment: Qt.AlignVCenter
+                                color: root.colors["border-subtle"]
+                            }
+                            // TOOLBAR_TEXT_STYLE_GROUP: link/B/I/S sit flush (gap-0).
+                            RowLayout {
+                                spacing: 0
+                                NativeIconButton {
+                                    objectName: "composerFormatLink"
+                                    colors: root.colors
+                                    asset: "composer-add-link.svg"
+                                    help: qsTr("Link")
+                                    focusPolicy: Qt.NoFocus
+                                    enabled: composerText.enabled
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphWidth: 24
+                                    glyphHeight: 15
+                                    onClicked: { composerText.forceActiveFocus(); composerText.insertLink(); }
+                                }
+                                NativeIconButton {
+                                    objectName: "composerFormatBold"
+                                    colors: root.colors
+                                    asset: "composer-format-bold.svg"
+                                    help: qsTr("Bold")
+                                    focusPolicy: Qt.NoFocus
+                                    enabled: composerText.enabled
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphWidth: 11
+                                    glyphHeight: 17
+                                    onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("**"); }
+                                }
+                                NativeIconButton {
+                                    objectName: "composerFormatItalic"
+                                    colors: root.colors
+                                    asset: "composer-format-italic.svg"
+                                    help: qsTr("Italic")
+                                    focusPolicy: Qt.NoFocus
+                                    enabled: composerText.enabled
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphWidth: 15
+                                    glyphHeight: 17
+                                    onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("*"); }
+                                }
+                                NativeIconButton {
+                                    objectName: "composerFormatStrikethrough"
+                                    colors: root.colors
+                                    asset: "composer-strikethrough.svg"
+                                    help: qsTr("Strikethrough")
+                                    focusPolicy: Qt.NoFocus
+                                    enabled: composerText.enabled
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphWidth: 25
+                                    glyphHeight: 20
+                                    onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("~~"); }
+                                }
+                            }
+                            Rectangle {
+                                objectName: "composerToolbarSeparator"
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 28
+                                Layout.alignment: Qt.AlignVCenter
+                                color: root.colors["border-subtle"]
+                            }
+                            NativeIconButton {
+                                objectName: "composerFormatNumbered"
+                                colors: root.colors
+                                asset: "composer-list-numbered.svg"
+                                help: qsTr("Numbered list")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 21
+                                glyphHeight: 24
+                                onClicked: { composerText.forceActiveFocus(); composerText.insertNumberedList(); }
+                            }
+                            NativeIconButton {
+                                objectName: "composerFormatBulleted"
+                                colors: root.colors
+                                asset: "composer-list-bulleted.svg"
+                                help: qsTr("Bulleted list")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 21
+                                glyphHeight: 20
+                                onClicked: { composerText.forceActiveFocus(); composerText.insertBulletedList(); }
+                            }
+                            Rectangle {
+                                objectName: "composerToolbarSeparator"
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 28
+                                Layout.alignment: Qt.AlignVCenter
+                                color: root.colors["border-subtle"]
+                            }
+                            NativeIconButton {
+                                objectName: "composerFormatQuote"
+                                colors: root.colors
+                                asset: "composer-chat-dashed.svg"
+                                help: qsTr("Quote")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 24
+                                glyphHeight: 21
+                                onClicked: { composerText.forceActiveFocus(); composerText.insertQuote(); }
+                            }
+                            NativeIconButton {
+                                objectName: "composerFormatCodeBlock"
+                                colors: root.colors
+                                asset: "composer-frame-source.svg"
+                                help: qsTr("Code block")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 21
+                                glyphHeight: 21
+                                onClicked: { composerText.forceActiveFocus(); composerText.insertCodeBlock(); }
+                            }
+                            NativeIconButton {
+                                objectName: "composerFormatCode"
+                                colors: root.colors
+                                asset: "composer-inline-code.svg"
+                                help: qsTr("Code")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 22
+                                glyphHeight: 18
+                                onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("`"); }
+                            }
+                            NativeIconButton {
+                                id: composerFormatSpoilerButton
+                                objectName: "composerFormatSpoiler"
+                                colors: root.colors
+                                asset: "composer-visibility.svg"
+                                help: qsTr("Spoiler")
+                                focusPolicy: Qt.NoFocus
+                                enabled: composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 26
+                                glyphHeight: 17
+                                onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("||"); }
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 28
+                                    height: 1
+                                    rotation: -35
+                                    color: composerFormatSpoilerButton.enabled
+                                        ? composerFormatSpoilerButton.iconColor
+                                        : root.colors["icon-disable"]
+                                }
+                            }
                         }
                     }
                 }
