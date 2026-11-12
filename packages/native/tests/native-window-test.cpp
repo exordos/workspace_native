@@ -13872,18 +13872,32 @@ private:
         auto *popup = window->findChild<QObject *>("composerMentionPopup");
         return popup && popup->property("visible").toBool();
     }
+    // Popup content is parented visually (setParentItem), so C++ findChild never
+    // reaches delegate items; walk the visual tree instead.
+    static QQuickItem *mentionVisualChild(QQuickItem *root, const QString &name)
+    {
+        const auto children = root->childItems();
+        for (auto *child : children)
+        {
+            if (child->objectName() == name) return child;
+            if (auto *nested = mentionVisualChild(child, name)) return nested;
+        }
+        return nullptr;
+    }
     static QStringList mentionRowTexts(QQuickWindow *window)
     {
         QStringList rows;
+        auto *content = window->contentItem();
         for (int index = 0; index < 8; ++index)
         {
-            auto *name = window->findChild<QObject *>(QString("composerMentionName%1").arg(index));
+            auto *name = mentionVisualChild(content, QString("composerMentionName%1").arg(index));
             if (!name || !name->property("visible").toBool()) break;
             rows.append(name->property("text").toString());
         }
         return rows;
     }
 
+    private slots:
     void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart()
     {
         const QString mentionBob = QStringLiteral("52000000-0000-4000-8000-00000000000b");
@@ -13934,26 +13948,34 @@ private:
         QVERIFY(!mentionPopupVisible(window));
         // A standalone @ opens the popup; the query refines it; Escape closes it.
         QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
-        QTest::keyClick(window, Qt::Key_at); QTest::keyClick(window, Qt::Key_a);
+        QTest::keyClick(window, Qt::Key_At); QTest::keyClick(window, Qt::Key_A);
         QTRY_VERIFY(mentionPopupVisible(window));
-        QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Alice")}));
+        // "a": prefix tier (Alice) first, then substring-tier matches on the
+        // "Ray" surname (reference mention-suggest tiers).
+        QTRY_COMPARE(mentionRowTexts(window),
+            (QStringList{QString("Alice"), QString("Bix Ray"), QString("Bob Ray")}));
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!mentionPopupVisible(window));
-        // Two equal "B" matches; ArrowDown reaches the second row and Enter inserts
-        // "@Bix Ray " with the caret after the trailing space without sending.
+        // Two equal "B" matches, tied on every context score; the reference tie
+        // order is locale-aware alphabetical, so "Bix Ray" sits above "Bob Ray".
+        // ArrowDown reaches the second row and Enter inserts "@Bob Ray " with
+        // the caret after the trailing space without sending.
         QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
-        QTest::keyClick(window, Qt::Key_b);
+        QTest::keyClick(window, Qt::Key_At);
+        QTest::keyClick(window, Qt::Key_B);
         QTRY_VERIFY(mentionPopupVisible(window));
-        QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Bob Ray"), QString("Bix Ray")}));
+        QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Bix Ray"), QString("Bob Ray")}));
         QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Return);
-        QTRY_COMPARE(composer->property("text").toString(), QString("@Bix Ray "));
+        QTRY_COMPARE(composer->property("text").toString(), QString("@Bob Ray "));
         QCOMPARE(composer->property("cursorPosition").toInt(), 9);
         QVERIFY(!mentionPopupVisible(window));
         QCOMPARE(posts, 0);
-        // A no-match query shows the no-results row (search.noResults).
+        // A no-match query shows the no-results row (search.noResults). The
+        // inserted mention already ends with a trailing space, so typing
+        // continues directly after it.
         QTest::keyClick(window, Qt::Key_End);
-        for (const auto key : QByteArray(" hi @zz"))
+        for (const auto key : QByteArray("hi @zz"))
             if (key == ' ') QTest::keyClick(window, Qt::Key_Space); else QTest::keyClick(window, key);
         QTRY_VERIFY(mentionPopupVisible(window));
         QVERIFY(window->findChild<QObject *>("composerMentionNoResults"));
@@ -13965,17 +13987,16 @@ private:
         QTRY_COMPARE(posts, 1);
         QTRY_COMPARE(confirmations, 1);
         QCOMPARE(posted.value("payload").toObject().value("content").toString(),
-            QStringLiteral("[Bix Ray](urn:user:%1) hi @zz").arg(mentionBix));
+            QStringLiteral("[Bob Ray](urn:user:%1) hi @zz").arg(mentionBob));
         // The pick persists across a fresh preferences instance on the same store
-        // and keeps the restart ranking order (Bix above Bob for query "b").
+        // and keeps the restart ranking order (Bob above Bix for query "b").
         NativePreferences reopened(directory.filePath("composer-mention.ini"));
         // Picks are scoped to the loopback-safe creation owner (drafts scope).
-        reopened.setOwner(controller.creationOwnerKey());
-        QVERIFY(reopened.mentionFrecency().value(mentionBix).toDouble() >= 0.9);
-        QVERIFY(!reopened.mentionFrecency().contains(mentionBob));
+        QVERIFY(reopened.mentionFrecencyFor(controller.creationOwnerKey()).value(mentionBob).toDouble() >= 0.9);
+        QVERIFY(!reopened.mentionFrecencyFor(controller.creationOwnerKey()).contains(mentionBix));
         controller.setPreferences(&reopened);
         QCOMPARE(controller.mentionSuggestions(QStringLiteral("b")).first().toMap()
-            .value("displayName").toString(), QString("Bix Ray"));
+            .value("displayName").toString(), QString("Bob Ray"));
         QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);
