@@ -90,6 +90,20 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool channelInfoAddBusy READ channelInfoAddBusy NOTIFY stateChanged)
     Q_PROPERTY(QString channelInfoAddError READ channelInfoAddError NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoAddSettled READ channelInfoAddSettled NOTIFY channelInfoAddSettledChanged)
+    // Issue #134 user profile drawer content (docs/NATIVE_DESKTOP_USER_PROFILE.md):
+    // own IAM profile state for edit mode, own avatar mutations and the
+    // profile Message-action direct-chat open.
+    Q_PROPERTY(bool ownProfileBusy READ ownProfileBusy NOTIFY stateChanged)
+    Q_PROPERTY(bool ownProfileSaving READ ownProfileSaving NOTIFY stateChanged)
+    Q_PROPERTY(bool ownProfileLoaded READ ownProfileLoaded NOTIFY stateChanged)
+    Q_PROPERTY(bool ownProfileRefreshPending READ ownProfileRefreshPending NOTIFY stateChanged)
+    Q_PROPERTY(QString ownProfileError READ ownProfileError NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap ownProfile READ ownProfile NOTIFY stateChanged)
+    Q_PROPERTY(int ownProfileSettled READ ownProfileSettled NOTIFY ownProfileSettledChanged)
+    Q_PROPERTY(bool ownAvatarBusy READ ownAvatarBusy NOTIFY stateChanged)
+    Q_PROPERTY(QString ownAvatarError READ ownAvatarError NOTIFY stateChanged)
+    Q_PROPERTY(int ownAvatarSettled READ ownAvatarSettled NOTIFY ownAvatarSettledChanged)
+    Q_PROPERTY(bool profileDirectPending READ profileDirectPending NOTIFY stateChanged)
     Q_PROPERTY(bool topicCreationBusy READ topicCreationBusy NOTIFY stateChanged)
     Q_PROPERTY(bool topicCreationUncertain READ topicCreationUncertain NOTIFY stateChanged)
     Q_PROPERTY(bool canCheckTopicCreation READ canCheckTopicCreation NOTIFY stateChanged)
@@ -135,6 +149,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(int connectionRetryInSeconds READ connectionRetryInSeconds NOTIFY stateChanged)
     Q_PROPERTY(bool bootstrapError READ bootstrapError NOTIFY stateChanged)
     Q_PROPERTY(QString ownerKey READ ownerKey NOTIFY stateChanged)
+    // Issue #134: verified session user for profile self/other decisions.
+    Q_PROPERTY(QString currentUserId READ currentUserId NOTIFY stateChanged)
     Q_PROPERTY(bool canAttach READ canAttach NOTIFY stateChanged)
     Q_PROPERTY(MediaViewerModel *mediaViewer READ mediaViewer CONSTANT)
     Q_PROPERTY(bool topicClosed READ topicClosed NOTIFY stateChanged)
@@ -375,6 +391,35 @@ public:
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
     Q_INVOKABLE void addChannelInfoMembers(const QStringList &userUuids);
     Q_INVOKABLE void resetChannelInfoAddState();
+    // ---- Issue #134 profile drawer ----
+    Q_INVOKABLE QVariantMap profileSnapshot(const QString &userUuid) const;
+    Q_INVOKABLE QVariantList profileDetails(const QString &userUuid, const QString &localeName) const;
+    Q_INVOKABLE QString buildProfileShareLink(const QString &userUuid) const;
+    // Clipboard writes stay in C++ (message copy precedent).
+    Q_INVOKABLE void copyToClipboard(const QString &text) const;
+    Q_INVOKABLE QVariantMap profileAvatarCapabilities() const;
+    Q_INVOKABLE QVariantMap validateAvatarFile(const QString &path) const;
+    Q_INVOKABLE void loadOwnProfile();
+    // Save commits the identity patch first (only changed keys), then the
+    // optional pending avatar mutation ("upload" with path, or "remove").
+    Q_INVOKABLE void saveOwnProfile(const QVariantMap &draft, const QString &avatarAction = QString(),
+        const QString &avatarPath = QString());
+    Q_INVOKABLE void uploadOwnProfileAvatar(const QString &path);
+    Q_INVOKABLE void removeOwnProfileAvatar();
+    Q_INVOKABLE void openDirectChatFromProfile(const QString &userUuid);
+    QString currentUserId() const { return authenticated() ? m_session->user() : QString(); }
+    bool ownProfileBusy() const { return m_ownProfileLoading; }
+    bool ownProfileSaving() const { return m_ownProfileSaving; }
+    bool ownProfileLoaded() const { return !m_ownProfileBaseline.isEmpty(); }
+    bool ownProfileRefreshPending() const { return m_ownProfileRefresh; }
+    QString ownProfileError() const { return m_ownProfileError; }
+    QVariantMap ownProfile() const { return m_ownProfileBaseline; }
+    int ownProfileSettled() const { return m_ownProfileSettledCount; }
+    bool ownAvatarBusy() const { return m_ownAvatarBusy; }
+    QString ownAvatarError() const { return m_ownAvatarError; }
+    int ownAvatarSettled() const { return m_ownAvatarSettledCount; }
+    bool profileDirectPending() const { return m_profileDirectActive; }
+    QString userAvatar(const QString &id) const;
     Q_INVOKABLE bool canCreateTopicIn(const QString &stream) const;
     Q_INVOKABLE void createTopic(const QString &stream, const QString &name);
     Q_INVOKABLE void checkTopicCreation();
@@ -436,6 +481,8 @@ signals:
     void archivedChatsChanged();
     void stateChanged();
     void channelInfoAddSettledChanged();
+    void ownProfileSettledChanged();
+    void ownAvatarSettledChanged();
     void anchorChanged();
     void savedAccountsChanged();
     void sessionSwitcherChanged();
@@ -963,6 +1010,20 @@ private:
     quint64 m_channelInfoAddToken = 0;
     QString m_channelInfoAddError;
     int m_channelInfoAddSettled = 0;
+    // ---- Issue #134 user profile drawer state ----
+    void refreshOwnProfileProjection(const QString &user, quint64 ticket,
+        const QVariantMap &savedProfile);
+    bool profileContext(const QString &user, quint64 ticket) const;
+    void captureProfileContext();
+    QString m_profileOwner, m_profileUser, m_ownProfileOwner, m_ownProfileError, m_ownAvatarError;
+    QString m_profileDirectStream, m_profileDirectTopic;
+    QVariantMap m_ownProfileBaseline;
+    quint64 m_profileApiGeneration = 0;
+    quint64 m_ownProfileTicket = 0, m_ownAvatarTicket = 0;
+    quint64 m_profileDirectSelection = 0;
+    bool m_ownProfileLoading = false, m_ownProfileSaving = false, m_ownProfileRefresh = false;
+    bool m_ownAvatarBusy = false, m_profileDirectActive = false;
+    int m_ownProfileSettledCount = 0, m_ownAvatarSettledCount = 0;
     QVector<Topic> m_topics;
     NotificationService m_notifications;
     bool m_windowFocused = true;
@@ -972,6 +1033,10 @@ private:
         std::optional<qint64> presenceUpdatedAt;
         QString email;
         QString status, statusText, statusEmoji;
+        // Issue #134: raw DTO facts the profile page renders (joined date,
+        // username). Absent fields stay empty, never invented.
+        QString createdAt;
+        QString username;
     };
     static UserPresentation makeUserPresentation(const QString &name, const QJsonObject &row,
         bool authoritative, const UserPresentation &previous);
@@ -1020,7 +1085,6 @@ private:
     // canonical body the payload path wrote.
     QHash<QString, quint64> m_rowPreviewFence;
     quint64 m_nextRowPreviewFence = 0;
-    QString userAvatar(const QString &id) const;
     QString userPresence(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
     QHash<QString, UserPresentation> m_names;

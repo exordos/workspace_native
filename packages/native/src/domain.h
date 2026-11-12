@@ -62,7 +62,28 @@ struct Stream {
     qint64 updatedMicros = 0;
     std::optional<StreamCryptoMetadata> security;
     std::optional<quint32> color{};
+    // Issue #134: the stream DTO's optional default_topic_uuid, kept separate
+    // from the crypto security witness. The profile Message action opens the
+    // direct stream's default topic exactly as the reference resolver does.
+    QString defaultTopic;
 };
+
+// Issue #134 profile Message/Call target resolution, a port of
+// right-panel-user-profile-direct-navigation.lib.ts: already on this direct
+// stream (any topic) -> stay; otherwise open the stream's default topic; a
+// known stream without a valid default topic resolves as missing-default;
+// no direct stream for the peer resolves as stream-missing.
+struct ProfileDirectNavigation {
+    enum class Status { AlreadyOpen, OpenDefaultTopic, MissingDefaultTopic, StreamMissing };
+    Status status = Status::StreamMissing;
+    QString streamUuid;
+    QString topicUuid;
+};
+ProfileDirectNavigation resolveProfileDirectNavigation(
+    const QString &directUserUuid,
+    const QVector<QPair<QString, QString>> &directStreams,
+    const QHash<QString, QString> &defaultTopics,
+    const QString &currentStreamUuid);
 
 struct Topic {
     QString uuid;

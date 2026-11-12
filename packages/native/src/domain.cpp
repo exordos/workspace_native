@@ -289,7 +289,36 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
     const auto color = json.value("color").toDouble(-1);
     if (json.value("color").isDouble() && std::isfinite(color) && color >= 0 && color <= 0xffffff && std::floor(color) == color)
         stream.color = quint32(color);
+    if (json.value("default_topic_uuid").isString()) stream.defaultTopic = json.value("default_topic_uuid").toString();
     return stream;
+}
+
+ProfileDirectNavigation resolveProfileDirectNavigation(
+    const QString &directUserUuid,
+    const QVector<QPair<QString, QString>> &directStreams,
+    const QHash<QString, QString> &defaultTopics,
+    const QString &currentStreamUuid)
+{
+    ProfileDirectNavigation result;
+    for (const auto &[streamUuid, peer] : directStreams) {
+        if (peer != directUserUuid) continue;
+        result.streamUuid = streamUuid;
+        // Already on this DM stream (stream view or any topic): stay put.
+        if (!currentStreamUuid.isEmpty() && currentStreamUuid == streamUuid) {
+            result.status = ProfileDirectNavigation::Status::AlreadyOpen;
+            return result;
+        }
+        const auto defaultTopic = defaultTopics.value(streamUuid);
+        if (!isUuid(defaultTopic)) {
+            result.status = ProfileDirectNavigation::Status::MissingDefaultTopic;
+            return result;
+        }
+        result.status = ProfileDirectNavigation::Status::OpenDefaultTopic;
+        result.topicUuid = defaultTopic;
+        return result;
+    }
+    result.status = ProfileDirectNavigation::Status::StreamMissing;
+    return result;
 }
 
 std::optional<Topic> parseTopic(const QJsonObject &json, const QString &project,
