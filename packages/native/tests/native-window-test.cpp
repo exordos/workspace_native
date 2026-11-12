@@ -14606,6 +14606,198 @@ private:
             QStringLiteral("Note\nsecond"));
         QTRY_VERIFY(!visibleItem("profileEditFooter"));
     }
+
+    // docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md (issue #156): the reserve trigger
+    // issues the older-page request while content remains above the viewport,
+    // the page arrives while the user is still wheeling (a held mock response
+    // stands in for fetch+parse+layout latency), and its insertion must keep
+    // the visible message at the same screen offset and let the gesture
+    // continue across the page boundary. Fixture rows mix short rows,
+    // multi-line rows and two dates (day separators) around the anchor zone.
+    void prefetchLandsMidGestureKeepingAnchor()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        const auto uuidOf = [](int number) {
+            return QString("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+        };
+        const auto row = [&](int number) {
+            const QString body = number % 5 == 0
+                ? QString("Prefetch fixture %1\nVariable height line\nAnother line").arg(number)
+                : QString("Prefetch fixture %1").arg(number);
+            auto entry = message(body, uuidOf(number));
+            const auto date = number < 30 ? "2026-01-01T10:00:00.000Z" : "2026-01-02T10:00:00.000Z";
+            entry["created_at"] = QDateTime::fromString(date, Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        QVector<std::function<void()>> heldPage;
+        QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Prefetch fixture"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Mid-gesture prefetch"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto query = QUrlQuery(request.target);
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.queryItemValue("topic_uuid") == topicId && !marker.isEmpty())
+                    olderMarkers.append(marker);
+                // Newest-first pages over 120 rows: tail 70..119, then 20..69, then 0..19.
+                const int top = marker.isEmpty() ? 120 : marker == uuidOf(70) ? 70 : marker == uuidOf(20) ? 20 : -1;
+                if (top < 0) return Response{QJsonObject{}, 404};
+                QJsonArray page;
+                for (int number = top - 1; number >= top - 50 && number >= 0; --number)
+                    page.append(history.value(number));
+                Response response{page};
+                if (top == 120) response.headers.insert("X-Pagination-Marker", uuidOf(70).toUtf8());
+                else if (top == 70) {
+                    response.headers.insert("X-Pagination-Marker", uuidOf(20).toUtf8());
+                    // The in-flight page stands in for fetch+parse+layout latency.
+                    response.defer = [&heldPage](std::function<void()> send) { heldPage.append(send); };
+                }
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                auto boundary = std::find_if(history.begin(), history.end(), [&id](const auto &entry) {
+                    return entry.value("uuid") == id;
+                });
+                if (boundary == history.end()) return Response{QJsonObject{}, 404};
+                for (auto it = history.begin(); it.key() <= boundary.key(); ++it)
+                    it.value()["read"] = true;
+                return Response{boundary.value()};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Prefetch window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 50);
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QVERIFY(controller.canLoadOlder());
+        const auto settleWheel = [&] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto firstVisible = [&] {
+            QPair<QString, qreal> anchor;
+            for (const auto &entry : controller.messages()) {
+                const auto id = entry.toMap().value("id").toString();
+                auto *bubble = item(window->contentItem(), "message-" + id);
+                if (!bubble || !bubble->isVisible()) continue;
+                const auto point = bubble->mapToItem(list, QPointF());
+                if (point.y() < list->height() && point.y() + bubble->height() > 0) {
+                    anchor = {id, point.y()};
+                    break;
+                }
+            }
+            return anchor;
+        };
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        // Wheel up: the reserve trigger issues the older-page request with no
+        // button click, before the wheel loop could otherwise reach the top.
+        int steps = 0;
+        while (olderMarkers.isEmpty() && steps < 20) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+            ++steps;
+        }
+        QCOMPARE(olderMarkers.size(), 1);
+        QCOMPARE(olderMarkers.first(), uuidOf(70));
+        QTRY_VERIFY(!heldPage.isEmpty());
+        // The gesture continues while the page is in flight, including a
+        // direction change: coalescing must hold the single request.
+        QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
+        QTest::wheelEvent(window, center, QPoint(0, 600)); QVERIFY(settleWheel());
+        QTest::wheelEvent(window, center, QPoint(0, -400)); QVERIFY(settleWheel());
+        QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
+        QCOMPARE(olderMarkers.size(), 1);
+        QCOMPARE(controller.messages().size(), 50);
+        // The user is somewhere inside the loaded window when the page lands.
+        const auto anchor = firstVisible();
+        QVERIFY(!anchor.first.isEmpty());
+        heldPage.takeFirst()();
+        QTRY_COMPARE(controller.messages().size(), 100);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        // Past both restore passes (async rich-text row heights included).
+        QTest::qWait(400);
+        auto *preserved = item(window->contentItem(), "message-" + anchor.first);
+        QVERIFY(preserved && preserved->isVisible());
+        const auto position = preserved->mapToItem(list, QPointF()).y();
+        QVERIFY2(qAbs(position - anchor.second) <= 1,
+            qPrintable(QString("Mid-gesture prefetch moved %1: %2 -> %3")
+                .arg(anchor.first).arg(anchor.second).arg(position)));
+        // The gesture continues across the page boundary: wheeling keeps
+        // moving the content and the next descent fetches the final page.
+        const auto beforeBoundary = list->property("contentY").toReal();
+        steps = 0;
+        while (olderMarkers.size() < 2 && steps < 40) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+            ++steps;
+        }
+        QVERIFY(list->property("contentY").toReal() < beforeBoundary - 100);
+        QCOMPARE(olderMarkers.size(), 2);
+        QTRY_COMPARE(controller.messages().size(), 120);
+        QVERIFY(!controller.canLoadOlder());
+        // Direction reversal at the exhausted history end: no new requests,
+        // no loop, and scrolling stays responsive.
+        const auto atTop = list->property("contentY").toReal();
+        QTest::wheelEvent(window, center, QPoint(0, -1200)); QVERIFY(settleWheel());
+        QVERIFY(list->property("contentY").toReal() > atTop + 100);
+        QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
+        QTest::qWait(250);
+        QCOMPARE(olderMarkers.size(), 2);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
 };
 
 
