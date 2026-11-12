@@ -111,7 +111,11 @@ Semantics ported 1:1 from `right-drawer.model.ts`:
 - `closeCurrent()` (X): removes the top layer and reveals the previous one;
   removing the last layer hides the drawer and leaves an empty stack.
 - `openAccountScreen(screen)` / `openChatScreen(chatScreen)`: ensure the
-  matching layer kind is on top first, then `openScreen`. `openChatScreen`
+  matching layer kind is on top first, then `openScreen`. `openAccountScreen`
+  always applies the screen request after promoting an existing account layer
+  (so a `root` request lands on the account root instead of a stale nested
+  screen; the dedup in `openScreen` keeps fresh creation a single root
+  screen). `openChatScreen`
   additionally reuses an already-listed screen instead of adding a Back loop
   (reference "keeps local-key UUIDs distinct and returns to the existing list
   without a Back loop") and drops a `local-key` push without a `keyUuid`.

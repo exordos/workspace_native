@@ -149,12 +149,12 @@ FocusScope {
         project(true, layers);
     }
     function openAccountScreen(screen) {
-        if (drawer.topLayerKind !== "account") {
+        // A root request must select the account root even when it promotes an
+        // existing layer: openScreen dedups when the top screen already is the
+        // requested one, so applying it unconditionally keeps fresh creation
+        // and re-request identical while restoring the root after promotion.
+        if (drawer.topLayerKind !== "account")
             openLayer("account");
-            if (screen !== "root")
-                openScreen({ mode: "user-menu", accountScreen: screen });
-            return;
-        }
         openScreen({ mode: "user-menu", accountScreen: screen });
     }
     function openChatScreen(chatScreen) {
