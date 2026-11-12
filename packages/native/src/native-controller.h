@@ -377,6 +377,14 @@ public:
     Q_INVOKABLE void resolveDraft(const QString &id, const QString &action);
     Q_INVOKABLE void loadOlder();
     Q_INVOKABLE void loadNewer();
+    // Issue #156 (docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md): the view reports
+    // user-attributed scroll geometry and the controller owns the reserve
+    // policy for prefetching the next older page, so the trigger threshold,
+    // the in-flight coalescing and the end-of-history guard are observable
+    // and testable without a window. distanceFromTopPx is the reference
+    // scrollTop analogue (loaded content above the viewport top),
+    // viewportHeightPx the visible list height.
+    Q_INVOKABLE void noteScrollReserve(qreal distanceFromTopPx, qreal viewportHeightPx);
     Q_INVOKABLE void reopenTopic();
     Q_INVOKABLE bool canStartDirectChatWith(const QString &peer) const;
     Q_INVOKABLE void startDirectChat(const QString &peer);
@@ -1294,6 +1302,10 @@ private:
     quint64 m_nextReactionRefresh = 0;
     bool m_recoveringMarker = false;
     bool m_resumeOlder = false;
+    // Issue #156: prefetch arming state. Consumed only when a request starts;
+    // re-armed by a note at or above the reserve, a fresh window commit, a
+    // failed history request, and reset().
+    bool m_olderPrefetchArmed = true;
     bool m_busy = false;
     bool m_loading = false;
     bool m_sending = false;

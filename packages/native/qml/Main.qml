@@ -3228,15 +3228,19 @@ ApplicationWindow {
                 // Keep delegates stable when a verified QVariantList snapshot
                 // changes, then restore the visible UUID after layout.
                 model: renderedMessages
-                // Scroll-triggered older paging (docs/NATIVE_DESKTOP_AUTO_PAGING.md):
+                // Scroll-triggered older paging (docs/NATIVE_DESKTOP_AUTO_PAGING.md,
+                // reserve policy for #156 in docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md):
                 // reference workspace-message-list-scroll.hook.ts LOAD_MORE_THRESHOLD
                 // = 100 px (:22) with handleScroll marking trusted user scrolls
                 // (:1145-1149) and the re-arm (:1172-1174) and trigger (:1185-1197)
                 // sequence at 61dacef78dab2f5d0be76f283bebf49fe29b84af.
                 // distanceFromTop is the DOM scrollTop analogue for these margins;
-                // the reference programmaticScrollRef maps to `positioning`.
-                readonly property real loadMoreThreshold: 100
-                property bool topPaginationArmed: true
+                // the reference programmaticScrollRef maps to `positioning`. The
+                // reference fires the boundary request at 100 px; #156 keeps that
+                // floor inside NativeController::noteScrollReserve and starts the
+                // request one viewport earlier, so the view attributes user scrolling
+                // here and forwards geometry - arming, coalescing and end-of-history
+                // guards live in the controller (testable without a window).
                 property bool userScrollSeen: false
                 property bool anchorJumpPending: false
                 readonly property real distanceFromTop: contentY - originY + topMargin
@@ -3843,13 +3847,11 @@ ApplicationWindow {
                 onReadActiveChanged: scheduleVisibleRead()
                 onContentYChanged: {
                     scheduleVisibleRead(); scheduleServiceInspection();
-                    if (distanceFromTop >= loadMoreThreshold)
-                        topPaginationArmed = true
-                    if (topPaginationArmed && userScrollSeen && !positioning && !anchorJumpPending
-                        && distanceFromTop <= loadMoreThreshold && root.controller.canLoadOlder) {
-                        topPaginationArmed = false
-                        root.controller.loadOlder()
-                    }
+                    // Issue #156: user-attributed scroll passes hand the reserve
+                    // decision to the controller (reference gates preserved:
+                    // userScrollSeen, positioning, anchorJumpPending).
+                    if (userScrollSeen && !positioning && !anchorJumpPending)
+                        root.controller.noteScrollReserve(distanceFromTop, height)
                 }
                 onWidthChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
                 onHeightChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
