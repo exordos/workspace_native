@@ -10,6 +10,9 @@
 #include "avatar-images.h"
 #include "message-images.h"
 
+#include <optional>
+#include <tuple>
+
 #include <QCryptographicHash>
 #include <QColor>
 #include <QImage>
@@ -14794,6 +14797,167 @@ private:
         QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
         QTest::qWait(250);
         QCOMPARE(olderMarkers.size(), 2);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
+
+    // docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md (issue #156), reviewer #212
+    // follow-up: the viewport restore after a prepend suppresses scroll notes
+    // (the positioning gate mirrors the reference programmaticScrollRef), so
+    // the controller must learn the restored geometry through a re-arm-only
+    // path - otherwise the arm stays consumed and the single next user scroll
+    // that lands inside the reserve cannot start the following older page.
+    // Repro: trigger prefetch #1 mid-gesture, deliver the held page (anchor
+    // restored above the reserve), then one wheel event that lands inside the
+    // reserve; the second older request must go out on that scroll.
+    void prefetchRefetchesOnFirstScrollAfterRestore()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        const auto uuidOf = [](int number) {
+            return QString("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+        };
+        const auto row = [&](int number) {
+            auto entry = message(QString("Restore rearm fixture %1").arg(number), uuidOf(number));
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        QVector<std::function<void()>> heldPage;
+        QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
+        const auto streamDto = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Restore rearm"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Restore rearm"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", uuidOf(119)}};
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamDto()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto query = QUrlQuery(request.target);
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.queryItemValue("topic_uuid") == topicId && !marker.isEmpty())
+                    olderMarkers.append(marker);
+                // Newest-first pages over 120 rows: tail 70..119; the first
+                // older page is deliberately short (8 rows, ~330 px) so the
+                // anchor restores slightly above the reserve; then 12..61 and
+                // 0..11.
+                const std::optional<std::tuple<int, int, QString>> pageFor =
+                    marker.isEmpty() ? std::optional<std::tuple<int, int, QString>>{{70, 119, uuidOf(70)}}
+                    : marker == uuidOf(70) ? std::optional<std::tuple<int, int, QString>>{{62, 69, uuidOf(62)}}
+                    : marker == uuidOf(62) ? std::optional<std::tuple<int, int, QString>>{{12, 61, uuidOf(12)}}
+                    : marker == uuidOf(12) ? std::optional<std::tuple<int, int, QString>>{{0, 11, QString{}}}
+                                           : std::nullopt;
+                if (!pageFor) return Response{QJsonObject{}, 404};
+                QJsonArray page;
+                for (int number = std::get<1>(*pageFor); number >= std::get<0>(*pageFor); --number)
+                    page.append(history.value(number));
+                Response response{page};
+                if (!std::get<2>(*pageFor).isEmpty())
+                    response.headers.insert("X-Pagination-Marker", std::get<2>(*pageFor).toUtf8());
+                if (marker == uuidOf(70)) {
+                    // The first older page stands in for fetch+parse+layout latency.
+                    response.defer = [&heldPage](std::function<void()> send) { heldPage.append(send); };
+                }
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke"))
+                return Response{QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Restore rearm window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 50);
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QVERIFY(controller.canLoadOlder());
+        const auto settleWheel = [&] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto distanceFromTop = [&] {
+            return list->property("contentY").toReal() - list->property("originY").toReal()
+                + list->property("topMargin").toReal();
+        };
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        // Wheel up: the first descent below the reserve fires prefetch #1, whose
+        // response the mock holds while the gesture is still ongoing.
+        int steps = 0;
+        while (olderMarkers.isEmpty() && steps < 20) {
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QVERIFY(settleWheel());
+            ++steps;
+        }
+        QCOMPARE(olderMarkers.size(), 1);
+        QCOMPARE(olderMarkers.first(), uuidOf(70));
+        QTRY_VERIFY(!heldPage.isEmpty());
+        // Deliver the page: the commit restores the anchor just above the
+        // reserve. Every contentY change of the swap is suppressed by the
+        // positioning gate, so the controller only ever saw positions below
+        // the reserve before this point.
+        heldPage.takeFirst()();
+        QTRY_COMPARE(controller.messages().size(), 58);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTest::qWait(400); // past both restore passes, like the mid-gesture test
+        const qreal reserve = qMax<qreal>(100.0, list->height());
+        const auto restored = distanceFromTop();
+        QVERIFY2(restored >= reserve,
+            qPrintable(QString("Fixture must restore above the reserve (%1 >= %2)").arg(restored).arg(reserve)));
+        // One user wheel step crosses into the reserve: the first eased frame
+        // already lands inside it (the restored position sits less than one
+        // frame below the reserve), so no note above the reserve is ever
+        // reported - the re-arm has to come from the restored geometry.
+        QTest::wheelEvent(window, center, QPoint(0, 1200));
+        QVERIFY(settleWheel());
+        QVERIFY2(distanceFromTop() < reserve,
+            qPrintable(QString("Fixture must land inside the reserve (%1 < %2)")
+                .arg(distanceFromTop()).arg(reserve)));
+        QTRY_COMPARE_WITH_TIMEOUT(olderMarkers.size(), 2, 4000);
+        QCOMPARE(olderMarkers.at(1), uuidOf(62));
+        QTRY_COMPARE(controller.messages().size(), 108);
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) closeBeforeEngine.dismiss();
         QVERIFY(closed);
