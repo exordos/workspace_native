@@ -262,7 +262,12 @@ if(BUILD_TESTING)
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 150)
         elseif(test STREQUAL "native-window")
             # Include the direct-chat keyboard, recovery and rendering cases.
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 360)
+            # Whole-group runtime measures 365.8s solo on the GPU-less host
+            # (373 cases, 0 failed, issue #197 gate), already above the old
+            # 360s ceiling that made the group a deterministic timeout. 480s =
+            # worst measured runtime plus suite-load headroom (#16/#103: never
+            # tune a ceiling to single-digit margins of one host's runtime).
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 480)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
