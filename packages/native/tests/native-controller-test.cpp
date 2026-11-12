@@ -14729,7 +14729,7 @@ private slots:
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const auto path = directory.filePath("avatar.png");
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write("PNGBYTES-1234"); file.close();
+        file.write(QByteArray::fromHex("89504e470d0a1a0a") + "PNGBYTES-1234"); file.close();
         QCOMPARE(controller.userAvatar(userId), QString{});
         controller.uploadOwnProfileAvatar(path);
         QCOMPARE(controller.ownAvatarBusy(), true);
@@ -14787,7 +14787,7 @@ private slots:
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const auto path = directory.filePath("avatar.png");
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write("PNGBYTES"); file.close();
+        file.write(QByteArray::fromHex("89504e470d0a1a0a") + "PNGBYTES"); file.close();
         controller.uploadOwnProfileAvatar(path);
         QTRY_VERIFY(!controller.ownAvatarBusy());
         QCOMPARE(controller.ownAvatarError(), message);
@@ -14841,6 +14841,73 @@ private slots:
         QTRY_VERIFY(!controller.busy());
         QCOMPARE(controller.selectedStream(), directId);
         QCOMPARE(test.posts, 1);
+    }
+
+    // exordy #199 review 4553884681: the ticket guard must compare each callback
+    // with the current ticket for its operation. A delayed profile load response
+    // may never overwrite the baseline that a newer load has installed.
+    void ownProfileStaleLoadCannotOverwriteNewerBaseline()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        std::function<void()> releaseStale;
+        bool holdFirstIamGet = true;
+        const auto chained = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            if (holdFirstIamGet && request.method == "GET"
+                && request.target.path() == "/api/core/v1/iam/users/" + userId) {
+                holdFirstIamGet = false;
+                auto stale = test.iamResponse;
+                stale["first_name"] = QStringLiteral("Stale");
+                Response response{stale, 200};
+                response.defer = [&](std::function<void()> send) { releaseStale = std::move(send); };
+                return response;
+            }
+            return chained(request);
+        };
+        controller.loadOwnProfile(); // held response, ticket N
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseStale), 2000);
+        QVERIFY(controller.ownProfileBusy());
+        test.iamResponse["first_name"] = QStringLiteral("Fresh");
+        controller.loadOwnProfile(); // newer load completes, ticket N + 1
+        QTRY_VERIFY(controller.ownProfileLoaded());
+        QCOMPARE(controller.ownProfile().value("firstName").toString(), QStringLiteral("Fresh"));
+        // Releasing the stale response must not roll the baseline back.
+        releaseStale(); releaseStale = nullptr;
+        QTest::qWait(200);
+        QCOMPARE(controller.ownProfile().value("firstName").toString(), QStringLiteral("Fresh"));
+        // The baseline is still the fresh row: saving a matching draft has no diff.
+        controller.saveOwnProfile({{"firstName", "Fresh"}}, QString{}, QString{});
+        QTRY_VERIFY(!controller.ownProfileSaving());
+        QCOMPARE(test.iamPuts, 0);
+    }
+
+    // exordy #199 review 4553884702: validation must read the file contents,
+    // not trust the extension. A renamed text file must never hit the wire.
+    void ownProfileAvatarValidationChecksMagicBytesNotExtensions()
+    {
+        ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto fakePng = directory.filePath("fake.png");
+        QFile fake(fakePng); QVERIFY(fake.open(QIODevice::WriteOnly));
+        fake.write("this is definitely not a png"); fake.close();
+        controller.uploadOwnProfileAvatar(fakePng);
+        QCOMPARE(controller.ownAvatarError(), QStringLiteral("Please choose a valid image file"));
+        QCOMPARE(test.avatarPosts, 0);
+        // The magic bytes must also match the type the extension claims.
+        const auto gifNamedPng = directory.filePath("confused.png");
+        QFile gif(gifNamedPng); QVERIFY(gif.open(QIODevice::WriteOnly));
+        gif.write(QByteArray::fromHex("474946383961") + "more gif bytes"); gif.close();
+        controller.uploadOwnProfileAvatar(gifNamedPng);
+        QCOMPARE(controller.ownAvatarError(), QStringLiteral("Please choose a valid image file"));
+        QCOMPARE(test.avatarPosts, 0);
+        // A real PNG signature passes and uploads.
+        const auto realPng = directory.filePath("real.png");
+        QFile png(realPng); QVERIFY(png.open(QIODevice::WriteOnly));
+        png.write(QByteArray::fromHex("89504e470d0a1a0a") + "png bytes"); png.close();
+        controller.uploadOwnProfileAvatar(realPng);
+        QTRY_VERIFY(!controller.ownAvatarBusy());
+        QCOMPARE(controller.ownAvatarError(), QString{});
+        QCOMPARE(test.avatarPosts, 1);
     }
 };
 
