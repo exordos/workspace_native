@@ -379,7 +379,11 @@ Item {
                     objectName: "profileAvatarBlock"
                     width: 64; height: 64
                     Rectangle {
-                        objectName: "profileAvatar"
+                        // profileHeaderAvatar: "profileAvatar" is already the
+                        // 36 px account-menu avatar in Main.qml; window tests
+                        // resolve objectNames globally, so the page's xl
+                        // avatar keeps a unique name.
+                        objectName: "profileHeaderAvatar"
                         anchors.fill: parent
                         radius: 32
                         clip: true
@@ -931,32 +935,37 @@ Item {
             rightPadding: 12
             topPadding: 20
             bottomPadding: 20
-            ProfileDialogRow {
-                objectName: "profileAvatarChoose"
+            // Reference action row block: gap-2 (8 px) between the two rows.
+            Column {
                 width: parent.width - 24
-                label: qsTr("Choose from gallery")
-                asset: "images.svg"
-                onClicked: {
-                    page.avatarErrorLocal = ""
-                    profileFileDialog.open()
+                spacing: 8
+                ProfileDialogRow {
+                    objectName: "profileAvatarChoose"
+                    width: parent.width
+                    label: qsTr("Choose from gallery")
+                    asset: "images.svg"
+                    onClicked: {
+                        page.avatarErrorLocal = ""
+                        profileFileDialog.open()
+                    }
                 }
-            }
-            ProfileDialogRow {
-                objectName: "profileAvatarRemove"
-                width: parent.width - 24
-                label: qsTr("Delete current photo")
-                asset: "delete.svg"
-                tone: page.colors["call-red"]
-                glyphTint: page.colors["call-red"]
-                // Disabled when there is no avatar and nothing pending (reference
-                // lines 320-323).
-                enabled: String(page.snapshot.avatar || "").length > 0
-                    || page.pendingAvatarPath.length > 0
-                    || page.pendingRemoveAvatar
-                onClicked: {
-                    page.avatarErrorLocal = ""
-                    if (page.pendingAvatarPath.length > 0) page.pendingAvatarPath = ""
-                    else page.pendingRemoveAvatar = true
+                ProfileDialogRow {
+                    objectName: "profileAvatarRemove"
+                    width: parent.width
+                    label: qsTr("Delete current photo")
+                    asset: "delete.svg"
+                    tone: page.colors["call-red"]
+                    glyphTint: page.colors["call-red"]
+                    // Disabled when there is no avatar and nothing pending (reference
+                    // lines 320-323).
+                    enabled: String(page.snapshot.avatar || "").length > 0
+                        || page.pendingAvatarPath.length > 0
+                        || page.pendingRemoveAvatar
+                    onClicked: {
+                        page.avatarErrorLocal = ""
+                        if (page.pendingAvatarPath.length > 0) page.pendingAvatarPath = ""
+                        else page.pendingRemoveAvatar = true
+                    }
                 }
             }
             Text {
