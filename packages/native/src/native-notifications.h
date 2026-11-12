@@ -207,6 +207,10 @@ public:
     { return NotificationAggregateRegistry::fallbackTag(owner, messageUuid); }
 
 signals:
+    // A notification click resolved to a live tag and must bring the window
+    // back before its conversation is shown (reference focusMainWindow on
+    // notification click). Never emitted for dead or expired tags.
+    void activationRequested();
     // A notification click was routed: open the conversation (topic wins;
     // a dm falls back to the stream conversation).
     void routeRequested(const QString &streamUuid, const QString &topicUuid);

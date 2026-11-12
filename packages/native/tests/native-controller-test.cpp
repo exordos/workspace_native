@@ -12389,6 +12389,74 @@ private slots:
         service->setTransport(nullptr);
     }
 
+    void notificationClickRequestsWindowActivation()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{notificationStreamDto()}}; };
+        fixture.topics = [](const Request &) {
+            return Response{QJsonArray{notificationTopicDto(),
+                notificationTopicDto(secondTopicId, QStringLiteral("Second topic"))}};
+        };
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        openBackgroundConversation(fixture);
+        QSignalSpy activations(service, &NotificationService::activationRequested);
+        QVERIFY(activations.isValid());
+        auto arrival = incomingDto(historyMessage(500), notificationAuthor);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", arrival, 13)));
+        QCOMPARE(sent.shows.size(), 1);
+        // Delivering a banner must not activate the window by itself.
+        QCOMPARE(activations.count(), 0);
+        const auto tag = sent.lastTag();
+        // A valid aggregate click requests activation, then routes the conversation.
+        service->click(tag);
+        QCOMPARE(activations.count(), 1);
+        QVERIFY(sent.closed.contains(tag));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedStream() == streamId
+            && fixture.controller.selectedTopic() == topicId, 3000);
+        // A retired tag never requests activation again.
+        service->click(tag);
+        QCOMPARE(activations.count(), 1);
+        // An unknown tag stays a full no-op.
+        service->click(QStringLiteral("tag:never-shown"));
+        QCOMPARE(activations.count(), 1);
+        service->setTransport(nullptr);
+    }
+
+    void fallbackNotificationClickRequestsWindowActivation()
+    {
+        Fixture fixture;
+        RecordingNotifications sent;
+        QVERIFY(fixture.start());
+        auto *service = fixture.controller.notifications();
+        service->setTransport(&sent);
+        service->setMetadataGrace(120, 40);
+        QSignalSpy activations(service, &NotificationService::activationRequested);
+        QSignalSpy routes(service, &NotificationService::routeRequested);
+        QVERIFY(activations.isValid());
+        QVERIFY(routes.isValid());
+        // The candidate stream is outside the loaded catalog, so the generic
+        // msg:-scheme banner is the only live tag for this message.
+        auto stray = incomingDto(historyMessage(600), notificationAuthor);
+        stray["stream_uuid"] = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", stray, 13)));
+        QTRY_VERIFY_WITH_TIMEOUT(sent.shows.size() == 1, 3000);
+        QCOMPARE(activations.count(), 0);
+        const auto tag = sent.lastTag();
+        // A valid fallback click also requests activation before routing.
+        service->click(tag);
+        QCOMPARE(activations.count(), 1);
+        QCOMPARE(routes.count(), 1);
+        QVERIFY(sent.closed.contains(tag));
+        // The consumed fallback tag is dead: a second click changes nothing.
+        service->click(tag);
+        QCOMPARE(activations.count(), 1);
+        QCOMPARE(routes.count(), 1);
+        service->setTransport(nullptr);
+    }
+
     void dbusNotifyCallMatchesTheFreedesktopSignature()
     {
         auto bus = QDBusConnection::sessionBus();
