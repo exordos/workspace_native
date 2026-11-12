@@ -12549,6 +12549,37 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(harness.readInt("layerCount"), 0);
     }
 
+    void rightDrawerRootRequestSelectsAccountRootAfterPromotion()
+    {
+        RightDrawerHarness harness;
+        // Requesting the account root after an existing account layer is
+        // promoted must select the root screen, not keep a stale nested one.
+        harness.evaluate("rightDrawer.openUserMenu()");
+        QCOMPARE(harness.readString("topLayerKind"), QString("account"));
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
+        // Navigate the account layer into a nested settings screen.
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("settings"));
+        // Move to another layer, then request the account root again: the
+        // promoted layer must end up on the account root, not on settings.
+        harness.evaluate("rightDrawer.openInfo()");
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        harness.evaluate("rightDrawer.openAccountScreen('root')");
+        QCOMPARE(harness.readString("topLayerKind"), QString("account"));
+        QCOMPARE(harness.readInt("layerCount"), 2);
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
+        QVERIFY(harness.evaluate("rightDrawer.canGoBack").toBool());
+        // Back pops the internal history: the nested settings screen is intact.
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("settings"));
+        // A fresh account layer keeps a single root screen (no duplicate push).
+        harness.evaluate("rightDrawer.clearAll()");
+        harness.evaluate("rightDrawer.openAccountScreen('root')");
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        QCOMPARE(harness.readInt("topScreenCount"), 1);
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
+    }
+
 private:
     struct RightDrawerHarness {
         QTemporaryDir directory;
