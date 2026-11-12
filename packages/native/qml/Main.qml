@@ -93,6 +93,29 @@ ApplicationWindow {
                 && rightDrawer.currentChatScreen === ""
                 && rightDrawer.currentProfileOverride === ""
         }
+        // User profile content (issue #134, docs/NATIVE_DESKTOP_USER_PROFILE.md):
+        // the chat-info profile override for other users and the account
+        // personal-info screen for the verified session user. All loads are
+        // visibility-gated inside the page (#197 lesson: no hidden fetches).
+        NativeUserProfile {
+            id: profileLayer
+            objectName: "profileLayer"
+            colors: root.colors
+            controller: root.controller
+            locale: root.preferences.locale
+            readonly property bool selfScreen: rightDrawer.topLayerKind === "account"
+                && rightDrawer.currentAccountScreen === "personal-info"
+            readonly property string overrideUser: rightDrawer.currentProfileOverride.startsWith("workspace-user-uuid:")
+                ? rightDrawer.currentProfileOverride.substring("workspace-user-uuid:".length) : ""
+            userUuid: selfScreen ? root.controller.currentUserId : overrideUser
+            visible: rightDrawer.drawerOpen && (selfScreen
+                || (rightDrawer.topLayerKind === "chat-info" && rightDrawer.currentMode === "info"
+                    && userUuid.length > 0
+                    && rightDrawer.currentProfileOverride === "workspace-user-uuid:" + userUuid))
+        }
+        title: profileLayer.visible
+            ? (profileLayer.isSelf ? qsTr("Personal info") : qsTr("Information"))
+            : ""
     }
     // While the add-members dialog is open its Escape closes only the dialog;
     // the drawer layer shortcut must stay silent until the dialog settles.
@@ -986,6 +1009,9 @@ ApplicationWindow {
             root.controller.openMessageInChat(reference.id);
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
+        } else if (reference.kind === "user" && root.controller.authenticated) {
+            // Workspace mention links open the user profile drawer (#134).
+            rightDrawer.openWorkspaceUserProfile(reference.id);
         } else if (["file", "image", "video"].indexOf(reference.kind) >= 0 && root.controller.authenticated) {
             // Inline images open the full-size viewer whenever the clicked file
             // belongs to the conversation gallery (docs/NATIVE_DESKTOP_MEDIA_VIEWER.md);
@@ -2126,6 +2152,17 @@ ApplicationWindow {
                 onClicked: root.openOwnStatus()
             }
             NativeButton {
+                objectName: "personalInfoAction"
+                colors: root.colors
+                Layout.fillWidth: true
+                text: qsTr("Personal info")
+                enabled: root.controller.authenticated
+                onClicked: {
+                    accountPopup.close()
+                    rightDrawer.openPersonalInfo()
+                }
+            }
+            NativeButton {
                 objectName: "aboutAction"
                 colors: root.colors
                 Layout.fillWidth: true
@@ -3100,8 +3137,17 @@ ApplicationWindow {
                         colors: root.colors
                         asset: "side_panel.svg"
                         glyphSize: 20
-                        enabled: false
-                        help: qsTr("Conversation information is not implemented yet")
+                        // Issue #134: on direct chats the affordance opens the
+                        // partner profile; ordinary channels keep the placeholder.
+                        enabled: String(root.controller.directPeer.id || "").length > 0
+                        help: String(root.controller.directPeer.id || "").length > 0
+                            ? qsTr("Information")
+                            : qsTr("Conversation information is not implemented yet")
+                        onClicked: {
+                            const peer = String(root.controller.directPeer.id || "")
+                            if (peer.length > 0)
+                                rightDrawer.openWorkspaceUserProfile(peer)
+                        }
                     }
                 }
             }
