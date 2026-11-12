@@ -37,6 +37,7 @@ add_library(workspace-native-core STATIC
     src/native-drafts.cpp src/native-drafts.h
     src/native-notifications.cpp src/native-notifications.h
     src/call/jitsi-call.cpp src/call/jitsi-call.h
+    src/call/native-call-store.cpp src/call/native-call-store.h
     src/media-viewer.cpp src/media-viewer.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
