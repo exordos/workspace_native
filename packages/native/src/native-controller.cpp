@@ -6099,6 +6099,19 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // regular logout so credential wiping matches a manual sign-out exactly.
     m_authGuard = new NativeAuthGuard(this);
     m_authGuard->setExpiryAction([this] { logout(); });
+    // settings.model.ts:75 default preset until the owner's store is bound.
+    m_authGuard->setTimeoutPreset(QStringLiteral("3d"));
+    // The reference starts the guard only for a live session and tears it down
+    // with it (layout-auth-guard.hook.ts:14-30); the token-expiry timer in
+    // Session stays independent and disarms this guard through signedOut too.
+    connect(m_session, &Session::authenticated, this, [this] {
+        m_authGuard->setSessionActive(true);
+    });
+    connect(m_session, &Session::signedOut, this, [this] {
+        m_authGuard->setSessionActive(false);
+    });
+    connect(m_authGuard, &NativeAuthGuard::activeChanged,
+            this, &NativeController::authGuardActiveChanged);
     // Issue #144: the top bar switcher re-reads its rows whenever the live
     // identity or the remembered account set changes.
     connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
@@ -6637,6 +6650,18 @@ static QString resolveRealmIconUrl(const QString &origin, const QString &icon)
 void NativeController::setPreferences(NativePreferences *preferences)
 {
     m_preferences = preferences;
+    // Issue #165: the guard consumes the per-owner authIdleTimeout preset and
+    // re-arms live whenever it changes (the #135 row writes the same key).
+    if (preferences && m_authGuard && m_authPrefsBound != preferences)
+    {
+        m_authPrefsBound = preferences;
+        m_authGuard->setTimeoutPreset(preferences->authIdleTimeout());
+        connect(preferences, &NativePreferences::authIdleTimeoutChanged, this,
+                [this, preferences] {
+            if (m_preferences == preferences && m_authGuard)
+                m_authGuard->setTimeoutPreset(preferences->authIdleTimeout());
+        });
+    }
 }
 
 // ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
