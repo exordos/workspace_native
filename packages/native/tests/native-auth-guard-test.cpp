@@ -1,10 +1,12 @@
 #include "native-auth-guard.h"
 #include "native-preferences.h"
 
+#include <QCoreApplication>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWindow>
 
 #include <functional>
 
@@ -178,6 +180,70 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fired == 1, 2000);
         QCOMPARE(fired, 1); // rescheduled from the stored deadline, already elapsed
         QVERIFY(!guard.active());
+    }
+
+    // Regression (PR #226 review, IDs 4555758272/4555758307): activity that
+    // arrives after the deadline has already elapsed but before the pending
+    // timer callback runs must enforce the expiry, not extend the session.
+    // The reference's resetTimer cannot hit this because its timeout callback
+    // is synchronous with the deadline; the poll-based native timer can.
+    void activityAfterAnExpiredDeadlineSignsOutInsteadOfExtending()
+    {
+        FakeClock clock;
+        NativeAuthGuard guard(nullptr, [clockPtr = &clock] { return clockPtr->ms(); });
+        int fired = 0;
+        guard.setExpiryAction([&fired] { ++fired; });
+        guard.setPollIntervalMs(60000); // real-time poll far longer than the test
+        guard.setWindowsVisible(true);
+        guard.setSessionActive(true);
+        guard.setTimeoutPreset(QStringLiteral("6h"));
+        QVERIFY(guard.active());
+        clock.now += 21600000LL + 10; // deadline passed; the timer callback is still pending
+        QEvent mouseMove(QEvent::MouseMove);
+        QVERIFY(!guard.eventFilter(&guard, &mouseMove)); // late input on the surface
+        // The expired deadline is enforced instead of being re-armed away.
+        QCOMPARE(fired, 1);
+        QVERIFY(!guard.active());
+        QTest::qWait(60);
+        QCOMPARE(fired, 1); // exactly once, like every other expiry
+    }
+
+    // Regression (PR #226 review, ID 4555758286): a mapped window that is not
+    // yet exposed (QWindow::isExposed() is false until the platform delivers
+    // the Expose event - minimized X11 windows report the same) is not
+    // "visible/exposed", so it must not resume the deadline. Exposing it must
+    // resume from the retained deadline exactly like the hidden-window
+    // contract (auth-guard.ts:171-214).
+    void unexposedWindowsPauseTheDeadlineUntilExposedAgain()
+    {
+        FakeClock clock;
+        NativeAuthGuard guard(nullptr, [clockPtr = &clock] { return clockPtr->ms(); });
+        int fired = 0;
+        guard.setExpiryAction([&fired] { ++fired; });
+        guard.setPollIntervalMs(5);
+        guard.setSessionActive(true); // installs the filter and auto-detects visibility
+        guard.setTimeoutPreset(QStringLiteral("6h"));
+        QVERIFY(guard.active());
+        clock.now += 21600000LL + 1000; // far past the stored deadline while no window exists
+        QTest::qWait(60);
+        QCOMPARE(fired, 0); // paused: hidden time cannot sign the user out
+        QWindow window;
+        window.setVisible(true); // Show reaches the guard; Expose is still pending
+        QVERIFY(window.isVisible());
+        QVERIFY(!window.isExposed());
+        // A visible-but-unexposed window must not resume the already-elapsed deadline.
+        QCOMPARE(fired, 0);
+        QVERIFY(guard.active()); // the deadline itself is retained, not reset
+        // Flushing window-system events delivers Expose; the guard resumes and
+        // the elapsed deadline fires immediately, once.
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY_WITH_TIMEOUT(fired == 1, 2000);
+        QCOMPARE(fired, 1);
+        // Hiding pauses again: the guard already fired and stays disarmed.
+        window.setVisible(false);
+        clock.now += 21600000LL;
+        QTest::qWait(60);
+        QCOMPARE(fired, 1); // exactly once, never refires
     }
 
     // The event filter maps the Qt activity events (MouseMove/KeyPress/
