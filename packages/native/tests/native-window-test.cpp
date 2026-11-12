@@ -14267,7 +14267,7 @@ private:
         click(scene.window, visibleItem("personalInfoAction"));
         QTRY_VERIFY(visibleItem("profileLayer"));
         QTRY_COMPARE(scene.text("nativeRightDrawerTitle"), QStringLiteral("Personal info"));
-        auto *avatar = visibleItem("profileAvatar");
+        auto *avatar = visibleItem("profileHeaderAvatar");
         QVERIFY(avatar);
         QCOMPARE(avatar->width(), 64.0);   // right-panel-user-profile.ui.tsx size="xl"
         QCOMPARE(avatar->height(), 64.0);
@@ -14400,6 +14400,11 @@ private:
         auto *choose = visibleItem("profileAvatarChoose");
         QVERIFY(choose);
         QCOMPARE(choose->height(), 32.0); // rows h-8
+        auto *remove = visibleItem("profileAvatarRemove");
+        QVERIFY(remove);
+        // row block gap-2: the delete row starts 40 px below the gallery row
+        QCOMPARE(remove->mapToScene(QPointF(0, 0)).y() - choose->mapToScene(QPointF(0, 0)).y(),
+            40.0);
         QCOMPARE(visibleItem("profileAvatarCancel")->height(), 40.0); // Cancel h-10
         // no avatar on the session user -> Delete row disabled (dialog lines 320-323)
         QVERIFY(!visibleItem("profileAvatarRemove")->property("enabled").toBool());

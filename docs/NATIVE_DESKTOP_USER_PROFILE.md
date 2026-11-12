@@ -369,3 +369,8 @@ Found and fixed while wiring these cases (both reproduced RED first):
   the reference groups them in a `gap-2` (8 px) block before the 20 px gap
   to Cancel. The row block now matches, which also makes the derived dialog
   height the measured 172 px stack instead of 184 px.
+
+The page xl avatar carries objectName `profileHeaderAvatar`: `profileAvatar`
+already names the 36 px account-menu avatar in `Main.qml` and window tests
+resolve objectNames globally, so the reference xl avatar keeps a unique name
+(the hidden page instance must not shadow the header lookup).
