@@ -1,10 +1,34 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>call spike probe</title>
-<style>body{font:14px monospace;background:#111;color:#0f0;padding:8px;white-space:pre-wrap}</style>
-</head><body><div id="out"></div><video id="v" autoplay playsinline width="320" height="180"></video>
+<style>body{font:14px monospace;background:#111;color:#0f0;padding:8px;white-space:pre-wrap}button{font:14px monospace;padding:4px 8px}</style>
+</head><body><div id="out"></div>
+<button id="gdmBtn">RUN getDisplayMedia PROBE (click or press F1)</button>
+<video id="v" autoplay playsinline width="320" height="180"></video>
 <script>
 const out = document.getElementById('out');
 const log = m => { out.textContent += m + '\n'; console.log('PROBE ' + m); };
+// getDisplayMedia requires transient user activation; calling it from this
+// async startup path would reject for the wrong reason and prove nothing.
+// The probe therefore runs ONLY from a user gesture: a click on #gdmBtn or
+// an F1 keypress (sent as a real X KeyPress via xdotool in spike runs).
+let gdmRun = false;
+async function runGdmProbe(via) {
+  if (gdmRun) { log('GDM_SKIPPED already run'); return; }
+  gdmRun = true;
+  const ua = navigator.userActivation;
+  log('GDM_BEGIN via=' + via + ' hasBeenActive=' + (ua ? ua.hasBeenActive : 'n/a')
+      + ' isActive=' + (ua ? ua.isActive : 'n/a'));
+  try {
+    const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    document.getElementById('v').srcObject = s;
+    log('GDM_OK track=' + s.getVideoTracks()[0].label);
+  } catch (e) { log('GDM_ERR ' + e.name + ' ' + e.message); }
+  log('GDM_DONE');
+}
+document.getElementById('gdmBtn').addEventListener('click', () => runGdmProbe('click'));
+window.addEventListener('keydown', e => { if (e.key === 'F1') { e.preventDefault(); runGdmProbe('F1'); } });
+{ const r = document.getElementById('gdmBtn').getBoundingClientRect();
+  console.log('BTNXY x=' + Math.round(r.left + r.width / 2) + ' y=' + Math.round(r.top + r.height / 2)); }
 (async () => {
   log('secureContext=' + window.isSecureContext + ' scheme=' + location.protocol);
   try {
@@ -23,31 +47,23 @@ const log = m => { out.textContent += m + '\n'; console.log('PROBE ' + m); };
     log('VIDEO_OK settings=' + JSON.stringify(t.getSettings()));
     s.getTracks().forEach(tr => tr.stop());
   } catch (e) { log('VIDEO_ERR ' + e.name + ' ' + e.message); }
-  if (location.search.includes('gdm=1')) {
-    try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      document.getElementById('v').srcObject = s;
-      log('GDM_OK track=' + s.getVideoTracks()[0].label);
-    } catch (e) { log('GDM_ERR ' + e.name + ' ' + e.message); }
-  } else {
-    // Local loopback: canvas MediaStream into <video> proves the decode/render
-    // path in the QML-hosted view (NOT a WebRTC remote track).
-    const c = document.createElement('canvas'); c.width = 320; c.height = 180;
-    const ctx = c.getContext('2d');
-    let frames = 0;
-    const anim = () => { ctx.fillStyle = 'rgb(0,' + (frames % 255) + ',255)';
-      ctx.fillRect(0, 0, 320, 180); ctx.fillStyle = '#fff'; ctx.fillRect(10 + (frames % 100), 80, 30, 30);
-      frames++; requestAnimationFrame(anim); };
-    anim();
-    document.getElementById('v').srcObject = c.captureStream(10);
-    setTimeout(() => {
-      const v = document.getElementById('v');
-      log('LOOPBACK_VIDEO videoWidth=' + v.videoWidth + ' videoHeight=' + v.videoHeight
-          + ' readyState=' + v.readyState + ' framesDrawn=' + frames);
-      const px = ctx.getImageData(20, 95, 1, 1).data;
-      log('LOOPBACK_PIXEL r=' + px[0] + ' g=' + px[1] + ' b=' + px[2]);
-      log('PROBE_DONE');
-    }, 2500);
-  }
+  // Local loopback: canvas MediaStream into <video> proves the decode/render
+  // path in the QML-hosted view (NOT a WebRTC remote track).
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+  const ctx = c.getContext('2d');
+  let frames = 0;
+  const anim = () => { ctx.fillStyle = 'rgb(0,' + (frames % 255) + ',255)';
+    ctx.fillRect(0, 0, 320, 180); ctx.fillStyle = '#fff'; ctx.fillRect(10 + (frames % 100), 80, 30, 30);
+    frames++; requestAnimationFrame(anim); };
+  anim();
+  document.getElementById('v').srcObject = c.captureStream(10);
+  setTimeout(() => {
+    const v = document.getElementById('v');
+    log('LOOPBACK_VIDEO videoWidth=' + v.videoWidth + ' videoHeight=' + v.videoHeight
+        + ' readyState=' + v.readyState + ' framesDrawn=' + frames);
+    const px = ctx.getImageData(20, 95, 1, 1).data;
+    log('LOOPBACK_PIXEL r=' + px[0] + ' g=' + px[1] + ' b=' + px[2]);
+    log('PROBE_DONE (press F1 for the gesture-triggered getDisplayMedia probe)');
+  }, 2500);
 })();
 </script></body></html>

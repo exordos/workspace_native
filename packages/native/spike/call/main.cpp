@@ -41,9 +41,24 @@ public:
 
 int main(int argc, char *argv[])
 {
+    // Chromium sandbox: ON by default. Disabling it is an explicit,
+    // per-run opt-in for headless/CI hosts only: set
+    // WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX=1. The sandbox cannot start on
+    // this dev host (Ubuntu 26.04 sets
+    // kernel.apparmor_restrict_unprivileged_userns=1 and QtWebEngineProcess
+    // is not setuid root), which was verified empirically; see
+    // docs/NATIVE_DESKTOP_CALL_STACK.md "Spike" section for the recorded
+    // evidence. Never blanket-disable the sandbox when loading remote content.
+    if (qEnvironmentVariableIntValue("WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX") == 1)
+        qWarning("call spike: Chromium sandbox DISABLED via "
+                 "WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX=1 (opt-in override)");
+    const QString sandboxFlag =
+        qEnvironmentVariableIntValue("WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX") == 1
+            ? QStringLiteral(" --no-sandbox")
+            : QString();
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
             (qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS")
-             + QStringLiteral(" --no-sandbox --disable-gpu --disable-dev-shm-usage")).toUtf8());
+             + QStringLiteral(" --disable-gpu --disable-dev-shm-usage") + sandboxFlag).toUtf8());
     QWebEngineUrlScheme scheme(QByteArrayLiteral("app"));
     scheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
     scheme.setDefaultPort(443);
