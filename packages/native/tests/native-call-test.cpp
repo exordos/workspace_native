@@ -76,6 +76,10 @@ private slots:
             << QStringLiteral("https://meet.example.com/sub/path?q=1#f") << QStringLiteral("https://meet.example.com");
         QTest::newRow("keeps-port")
             << QStringLiteral("http://meet.example.com:8443/x") << QStringLiteral("http://meet.example.com:8443");
+        QTest::newRow("ipv6-brackets-preserved")
+            << QStringLiteral("https://[2001:db8::1]/meet") << QStringLiteral("https://[2001:db8::1]");
+        QTest::newRow("ipv6-brackets-with-port")
+            << QStringLiteral("http://[2001:db8::1]:8443/x") << QStringLiteral("http://[2001:db8::1]:8443");
         QTest::newRow("surrounding-space")
             << QStringLiteral("  https://a.b  ") << QStringLiteral("https://a.b");
         QTest::newRow("non-http-scheme") << QStringLiteral("ftp://meet.example.com") << QString();
@@ -147,6 +151,55 @@ private slots:
         QCOMPARE(getJitsiMeetingUrl(QStringLiteral("https://evil.example/r"), meet), QString());
         QCOMPARE(getJitsiMeetingUrl(QStringLiteral("see HTTPS://MEET.JIT.SI/abc here"), QString()),
             QStringLiteral("HTTPS://MEET.JIT.SI/abc"));
+    }
+
+    void prefixMeetingUrlStopsAtFirstWhitespace()
+    {
+        // A body that merely begins with a meeting URL keeps its prose: only
+        // the URL token is the meeting URL, the card must not swallow the rest
+        // and joinCall must not receive "url join now" as a URL.
+        const QString meet = QStringLiteral("https://meet.example.com");
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("https://meet.example.com/room-1 hop on when free"), meet),
+            QStringLiteral("https://meet.example.com/room-1"));
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("https://meet.example.com/room-1\nsee you there"), meet),
+            QStringLiteral("https://meet.example.com/room-1"));
+        // A pure meeting-URL body is still returned whole (reference shortcut).
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("https://meet.example.com/room-1?x=1#f"), meet),
+            QStringLiteral("https://meet.example.com/room-1?x=1#f"));
+    }
+
+    void embeddedMeetingUrlKeepsConfiguredPort()
+    {
+        // meet_url may carry a non-default port; an embedded link then reads
+        // "host:port/room" and the scan must match the configured port.
+        const QString meetPort = QStringLiteral("https://meet.example.com:8443");
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("Join https://meet.example.com:8443/r?x=1 now"), meetPort),
+            QStringLiteral("https://meet.example.com:8443/r?x=1"));
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("https://meet.example.com:8443/room-1 join now"), meetPort),
+            QStringLiteral("https://meet.example.com:8443/room-1"));
+        // A different port is a different origin: not the configured host.
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("see https://meet.example.com:9999/r now"), meetPort),
+            QString());
+        // The no-port configuration keeps matching host-only links.
+        const QString meet = QStringLiteral("https://meet.example.com");
+        QCOMPARE(getJitsiMeetingUrl(QStringLiteral("Join https://meet.example.com/r now"), meet),
+            QStringLiteral("https://meet.example.com/r"));
+    }
+
+    void ipv6MeetHostKeepsBracketsInOriginAndMeetingUrl()
+    {
+        // QUrl::host() reports an IPv6 address without its required brackets;
+        // the serialized origin must put them back or the origin is invalid.
+        QCOMPARE(effectiveMeetBase(QStringLiteral("https://[2001:db8::1]:8443/")),
+            QStringLiteral("https://[2001:db8::1]:8443"));
+        QCOMPARE(buildJitsiMeetingUrl(QStringLiteral("room-1"),
+                     QStringLiteral("https://[2001:db8::1]:8443")),
+            QStringLiteral("https://[2001:db8::1]:8443/room-1"));
+        // A meeting URL on the IPv6 host parses back on the configured host.
+        QCOMPARE(parseJitsiUrl(QStringLiteral("https://[2001:db8::1]:8443/room-1"),
+                     QStringLiteral("https://[2001:db8::1]:8443"))
+                     .value(QStringLiteral("roomName")).toString(),
+            QStringLiteral("room-1"));
     }
 
     void callKeyNormalizesUrlAndKeepsOwnerSeparation_data()

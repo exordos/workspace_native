@@ -15230,6 +15230,71 @@ private slots:
         QVERIFY(!fixture.controller.calls()->hasActiveCall());
     }
 
+    void startCallDoesNotOpenOnUnconfirmedSendBody()
+    {
+        // A 2xx response only opens the call when it confirms the posted
+        // message, same contract as the composer send (review 4555852745).
+        Fixture emptyBody;
+        emptyBody.serverSettings = [](const Request &) { return callMeetSettings(); };
+        emptyBody.messages = [](const Request &request) {
+            if (request.method == "POST")
+                return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(emptyBody.start());
+        QTRY_VERIFY(emptyBody.controller.canStartCall());
+        emptyBody.controller.startCall();
+        QTRY_VERIFY(!emptyBody.controller.callError().isEmpty());
+        QVERIFY(!emptyBody.controller.calls()->hasActiveCall());
+
+        // A well-formed message that is not what we sent confirms nothing.
+        Fixture mismatch;
+        mismatch.serverSettings = [](const Request &) { return callMeetSettings(); };
+        mismatch.messages = [](const Request &request) {
+            if (request.method == "POST")
+                return Response{message(QStringLiteral("totally different text"), returnedId)};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(mismatch.start());
+        QTRY_VERIFY(mismatch.controller.canStartCall());
+        mismatch.controller.startCall();
+        QTRY_VERIFY(!mismatch.controller.callError().isEmpty());
+        QVERIFY(!mismatch.controller.calls()->hasActiveCall());
+    }
+
+    void joinCallDuringPendingStartIsSerialized()
+    {
+        // While the start POST is in flight a join click on another room must
+        // not open that room: it would leave the posted room blocked-active
+        // behind a call the sender cannot open (review 4555852758).
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        std::function<void()> releasePost;
+        QString postedMeetingUrl;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                postedMeetingUrl = request.body.value("payload").toObject()
+                    .value("content").toString();
+                Response response{message(postedMeetingUrl, returnedId)};
+                response.defer = [&releasePost](std::function<void()> send) { releasePost = std::move(send); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        fixture.controller.startCall();
+        QTRY_VERIFY(static_cast<bool>(releasePost)); // The POST is in flight.
+        fixture.controller.joinCall(QStringLiteral("https://meet.example.com/rush-room"));
+        QTest::qWait(200);
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        releasePost();
+        QTRY_VERIFY(fixture.controller.calls()->hasActiveCall());
+        QCOMPARE(fixture.controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
+            postedMeetingUrl);
+        QVERIFY(fixture.controller.callError().isEmpty());
+    }
+
     void encryptedStreamSendsNoPlaintextCallUrl()
     {
         Fixture fixture;
