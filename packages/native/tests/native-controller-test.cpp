@@ -14909,6 +14909,152 @@ private slots:
         QCOMPARE(controller.ownAvatarError(), QString{});
         QCOMPARE(test.avatarPosts, 1);
     }
+
+    // Issue #156 (docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md): the reserve-based
+    // prefetch trigger lives in the controller so the trigger threshold, the
+    // in-flight coalescing and the end-of-history guard are testable without
+    // a window. Reserve policy: max(100 px reference LOAD_MORE_THRESHOLD
+    // boundary floor, viewport height); arm at >= reserve, fire at <= reserve
+    // (inclusive comparisons mirror workspace-message-list-scroll.hook.ts
+    // :1172-1197 at 61dacef78dab2f5d0be76f283bebf49fe29b84af).
+    void historyPrefetchFiresWhileReserveRemains()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        QVector<QByteArray> olderMarkers;
+        fixture.messages = [&](const Request &request) {
+            const auto response = historyResponse(rows, request);
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("topic_uuid") && query.hasQueryItem("page_marker"))
+                olderMarkers.append(query.queryItemValue("page_marker").toUtf8());
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        QCOMPARE(c.messages().size(), 50);
+        const int baseline = fixture.totalHistoryGets();
+        QVERIFY(c.canLoadOlder());
+        const qreal viewport = 600.0;
+        // At or above the reserve the note only arms: opening a tail window or
+        // scrolling down must never fetch older pages.
+        c.noteScrollReserve(2400, viewport);
+        c.noteScrollReserve(viewport, viewport);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline);
+        // One pixel below the reserve: content is still above the viewport and
+        // the request has to start now, not when the boundary is reached.
+        const auto oldestBeforePrefetch = c.messages().first().toMap().value("id").toString().toUtf8();
+        c.noteScrollReserve(viewport - 1, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QCOMPARE(olderMarkers.at(0), oldestBeforePrefetch);
+        QTRY_COMPARE(c.messages().size(), 100);
+        QTRY_VERIFY(!c.busy());
+        // One request per descent: the page that just landed does not chain a
+        // second fetch while the viewport stays below the reserve.
+        c.noteScrollReserve(0, viewport);
+        c.noteScrollReserve(1, viewport);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline + 1);
+        // A direction change back below the reserve fetches the next page.
+        c.noteScrollReserve(3000, viewport);
+        c.noteScrollReserve(10, viewport);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
+        QTRY_COMPARE(c.messages().size(), 150);
+    }
+
+    void historyPrefetchCoalescesInFlight()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        bool holdNext = true;
+        std::function<void()> releaseOld;
+        auto releaseOnExit = qScopeGuard([&] { if (releaseOld) releaseOld(); });
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            if (!QUrlQuery(request.target).queryItemValue("page_marker").isEmpty() && holdNext) {
+                holdNext = false;
+                response.defer = [&](std::function<void()> send) { releaseOld = std::move(send); };
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        const int baseline = fixture.totalHistoryGets();
+        c.noteScrollReserve(300, 600.0);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QTRY_VERIFY(bool(releaseOld)); // the response is held by the test gate
+        // In flight and still below the reserve: descents and re-arm-plus-
+        // descent cycles must coalesce onto the one held request.
+        c.noteScrollReserve(0, 600.0);
+        c.noteScrollReserve(700, 600.0);
+        c.noteScrollReserve(0, 600.0);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QCOMPARE(c.messages().size(), 50);
+        QVERIFY(!c.canLoadOlder()); // the in-flight guard is observable and stable
+        auto send = std::move(releaseOld); releaseOld = {};
+        send(); // release the held older page
+        QTRY_COMPARE(c.messages().size(), 100);
+        QVERIFY(c.canLoadOlder());
+        // After the release the traversal continues: one request per descent.
+        c.noteScrollReserve(5000, 600.0);
+        c.noteScrollReserve(1, 600.0);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
+        QTRY_COMPARE(c.messages().size(), 150);
+    }
+
+    void historyPrefetchStopsAtEndOfHistory()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 60; ++n) rows.insert(n, historyMessage(n));
+        fixture.messages = [&](const Request &request) { return historyResponse(rows, request); };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        const int baseline = fixture.totalHistoryGets();
+        QVERIFY(c.canLoadOlder());
+        // The reference boundary case still fires at the very top (distance 0).
+        c.noteScrollReserve(0, 600.0);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        QTRY_COMPARE(c.messages().size(), 60);
+        QTRY_VERIFY(!c.canLoadOlder()); // the final page carried no older marker
+        const int gets = fixture.totalHistoryGets();
+        for (int i = 0; i < 5; ++i)
+            c.noteScrollReserve(0, 600.0);
+        QTest::qWait(250);
+        QCOMPARE(fixture.totalHistoryGets(), gets); // end of history never loops
+    }
+
+    void historyPrefetchFailedPageStaysRetryable()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        bool failOlder = true;
+        fixture.messages = [&](const Request &request) {
+            if (!QUrlQuery(request.target).queryItemValue("page_marker").isEmpty() && failOlder)
+                return Response{QJsonObject{}, 500};
+            return historyResponse(rows, request);
+        };
+        QVERIFY(fixture.start());
+        auto &c = fixture.controller;
+        const int baseline = fixture.totalHistoryGets();
+        c.noteScrollReserve(50, 600.0);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 1);
+        // A failed page leaves the loaded chat usable: nothing committed, the
+        // busy state released, the older boundary kept for a retry.
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.messages().size(), 50);
+        QVERIFY(c.canLoadOlder());
+        // The failure re-armed the prefetch; the next descent retries once -
+        // and with the server healthy the page lands.
+        failOlder = false;
+        c.noteScrollReserve(30, 600.0);
+        QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
+        QTRY_COMPARE(c.messages().size(), 100);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

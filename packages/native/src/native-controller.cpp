@@ -7224,6 +7224,7 @@ void NativeController::reset()
     m_topicChanging = false;
     ++m_topicMutation;
     m_recoveringMarker = m_resumeOlder = false;
+    m_olderPrefetchArmed = true;
     m_snapshotActive = false;
     m_snapshotParts = 0;
     emit draftChanged();
@@ -9793,6 +9794,31 @@ void NativeController::loadOlder()
     loadMessages(true);
 }
 
+// Issue #156 (docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md): reserve-based older
+// page prefetch. The 100 px floor is the measured reference boundary trigger
+// (LOAD_MORE_THRESHOLD, workspace-message-list-scroll.hook.ts:22 at
+// 61dacef78dab2f5d0be76f283bebf49fe29b84af); the viewport-height headroom is
+// the prefetch buffer that covers fetch+parse+layout latency under continuous
+// scrolling. Comparisons mirror the reference: arm at >= reserve, trigger at
+// <= reserve, both inclusive. In-flight coalescing and the end-of-history
+// guard come from canLoadOlder(); the arm is consumed only when a request
+// actually starts, so failed pages re-arm for the next user descent instead
+// of looping.
+void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewportHeightPx)
+{
+    if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
+        return;
+    const qreal reserve = qMax<qreal>(100.0, viewportHeightPx);
+    if (distanceFromTopPx >= reserve) {
+        m_olderPrefetchArmed = true;
+        return;
+    }
+    if (!m_olderPrefetchArmed || !canLoadOlder())
+        return;
+    m_olderPrefetchArmed = false;
+    loadOlder();
+}
+
 void NativeController::loadMessages(bool older)
 {
     if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
@@ -9843,6 +9869,7 @@ void NativeController::loadMessages(bool older)
                     pruneMessageFields();
                     m_before = entry->nextMarker;
                     if (!older) m_after.clear();
+                    if (!older) m_olderPrefetchArmed = true;
                     m_historyVerified = true;
                     m_loading = false;
                     ++m_historyCommitRevision;
@@ -9920,6 +9947,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
                 return;
             }
             m_recoveringMarker = m_resumeOlder = false;
+            // Issue #156: a failed page keeps the older boundary; allow the
+            // next user-attributed descent below the reserve to retry once.
+            m_olderPrefetchArmed = true;
             report(tr("Could not load messages. %1").arg(result.error));
             return;
         }
@@ -9970,6 +10000,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         pruneMessageFields();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
+        // Issue #156: a freshly established window starts from a known
+        // position; the next user-attributed descent re-evaluates the reserve.
+        if (!older) m_olderPrefetchArmed = true;
         m_loading = false;
         m_historyVerified = true;
         const bool resumeOlder = m_resumeOlder && !m_before.isEmpty();

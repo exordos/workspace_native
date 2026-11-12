@@ -9687,12 +9687,15 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed=closeIncubatedTestWindow(engine,window);if(closed)closeBeforeEngine.dismiss();QVERIFY(closed);
     }
 
-    // docs/NATIVE_DESKTOP_AUTO_PAGING.md: a wheel that brings the viewport within
-    // LOAD_MORE_THRESHOLD = 100 px of the loaded top (workspace-message-list-scroll
-    // .hook.ts:22,1185-1197 at 61dacef78dab2f5d0be76f283bebf49fe29b84af) issues the
-    // older-page request with no button click; it never fires before the user
-    // scrolls, never re-fires while the viewport stays inside the zone, and re-arms
-    // only after the viewport returns past 100 px (:1172-1174).
+    // docs/NATIVE_DESKTOP_AUTO_PAGING.md + docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md:
+    // a wheel approaching the loaded top issues the older-page request with no
+    // button click. The reference boundary is LOAD_MORE_THRESHOLD = 100 px
+    // (workspace-message-list-scroll.hook.ts:22,1185-1197 at
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af); #156 starts the request at the
+    // controller reserve max(100 px, viewport height) - earlier than the
+    // boundary, never later. It never fires before the user scrolls, never
+    // re-fires while the viewport stays below the reserve, and re-arms only
+    // after the viewport returns past it (:1172-1174).
     void scrollNearTopAutoLoadsOlderPages()
     {
         QTemporaryDir preferencesDirectory;
@@ -9821,7 +9824,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(pageGets.size(), 2); // scrolling alone requested the older page, no button click
         QCOMPARE(pageGets.at(1).first, uuidOf(70));
         QCOMPARE(pageGets.at(1).second, QString("desc"));
-        QVERIFY(distanceFromTop() <= 100);
+        // #156: the request may begin anywhere inside the reserve (the reference
+        // 100 px boundary is the floor), never later than the boundary itself.
+        QVERIFY(distanceFromTop() <= qMax<qreal>(100.0, list->height()));
         // The held page is still in flight while the viewport stays inside the
         // trigger zone: extra wheel input must not fire a second request.
         for (int extra = 0; extra < 3; ++extra) {
