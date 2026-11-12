@@ -230,15 +230,17 @@ public:
     bool channelInfoIsOwner() const;
     bool channelInfoLoading() const { return m_channelInfoLoading; }
     QString channelInfoNotificationMode() const;
-    // Busy state is scoped to the stream its request was sent for, so an
-    // abandoned request can never disable the controls of another stream.
+    // Busy state is tracked per stream by the in-flight request token: each
+    // request owns its stream's slot from issue time, and only that request's
+    // own response may commit or release it, so neither an abandoned stream
+    // nor a superseded response can disable or overwrite a newer request.
     bool channelInfoNotificationBusy() const
-    { return m_channelInfoNotificationBusy && m_channelInfoNotificationBusyStream == m_stream; }
+    { return m_channelInfoNotificationInFlight.contains(m_stream); }
     QString channelInfoNotificationError() const { return m_channelInfoNotificationError; }
     QStringList channelInfoRemovingMembers() const { return m_channelInfoRemoving; }
     QString channelInfoMemberError() const { return m_channelInfoMemberError; }
     bool channelInfoAddBusy() const
-    { return m_channelInfoAddBusy && m_channelInfoAddBusyStream == m_stream; }
+    { return m_channelInfoAddInFlight.contains(m_stream); }
     QString channelInfoAddError() const { return m_channelInfoAddError; }
     int channelInfoAddSettled() const { return m_channelInfoAddSettled; }
     bool topicCreationBusy() const;
@@ -922,13 +924,13 @@ private:
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;
-    bool m_channelInfoNotificationBusy = false;
-    QString m_channelInfoNotificationBusyStream;
+    QHash<QString, quint64> m_channelInfoNotificationInFlight;
+    quint64 m_channelInfoNotificationToken = 0;
     QString m_channelInfoNotificationError;
     QStringList m_channelInfoRemoving;
     QString m_channelInfoMemberError;
-    bool m_channelInfoAddBusy = false;
-    QString m_channelInfoAddBusyStream;
+    QHash<QString, quint64> m_channelInfoAddInFlight;
+    quint64 m_channelInfoAddToken = 0;
     QString m_channelInfoAddError;
     int m_channelInfoAddSettled = 0;
     QVector<Topic> m_topics;
