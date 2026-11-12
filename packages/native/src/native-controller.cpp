@@ -3,6 +3,7 @@
 #include "native-deeplink.h"
 #include "workspace-reference.h"
 #include "native-preferences.h"
+#include "native-auth-guard.h"
 #include "native-markdown.h"
 #include "native-chat-key-vault.h"
 #include "native-chat-crypto.h"
@@ -6094,6 +6095,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // Issue #165: the inactivity guard signs out through this controller's
+    // regular logout so credential wiping matches a manual sign-out exactly.
+    m_authGuard = new NativeAuthGuard(this);
+    m_authGuard->setExpiryAction([this] { logout(); });
     // Issue #144: the top bar switcher re-reads its rows whenever the live
     // identity or the remembered account set changes.
     connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
@@ -7120,6 +7125,11 @@ void NativeController::forgetSavedAccountWithFollowUp(const QString &id, std::fu
     if (!tailGuard) return;
     m_sessionProjections.remove(id);
     emit stateChanged();
+}
+
+bool NativeController::isAuthGuardActive() const
+{
+    return m_authGuard && m_authGuard->active();
 }
 
 void NativeController::logout()
