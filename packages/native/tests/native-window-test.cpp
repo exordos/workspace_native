@@ -16,6 +16,7 @@
 #include <QInputMethodEvent>
 #include <QtMath>
 #include <QApplication>
+#include <QClipboard>
 #include <QAccessible>
 #include <QDateTime>
 #include <QDir>
@@ -1360,6 +1361,159 @@ struct ChannelInfoWindowScene {
         auto *entry = visibleItem(objectName);
         return entry ? entry->property("text").toString() : QString();
     }
+};
+
+// ---- Issue #134: user profile drawer window scene ----
+// Reference oracle: workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af,
+// packages/web/src/widgets/right-panel/right-panel-user-profile.ui.tsx plus
+// its -actions, -details, -edit-avatar-dialog and -direct-navigation siblings
+// (docs/NATIVE_DESKTOP_USER_PROFILE.md). On top of the window channel catalog
+// this fixture serves the IAM profile endpoints the drawer consumes:
+// GET|PUT /api/core/v1/iam/users/{uuid} (workspace-iam-profile.api.ts), the
+// messenger projection read used by the refresh-pending contract, and the
+// avatar_reset action (workspace-client.ts). The DM with the channel peer is
+// pre-seeded so the Message action resolves as OpenDefaultTopic per the
+// direct-navigation contract.
+class WindowProfileFixture : public WindowDirectFixture {
+public:
+    QJsonObject iamRow;
+    int iamGets = 0, iamPuts = 0, projectionGets = 0, avatarResets = 0, avatarUploadPosts = 0;
+    QJsonObject lastPatch;
+    WindowProfileFixture()
+    {
+        seed();
+        // Avatars stay null in window fixtures (channel info precedent): the
+        // image pipeline would fetch urn:image references from the mock.
+        users = QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}, {"first_name", "Cassi"},
+                {"last_name", "Volkova"}, {"source", "iam"}, {"avatar", QJsonValue::Null},
+                {"email", "cassi@example.invalid"}, {"status", "active"},
+                {"last_ping_at", "2026-01-02T10:00:00Z"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid", channelPeer}, {"username", "alice"}, {"first_name", "Alice"},
+                {"source", "iam"}, {"avatar", QJsonValue::Null},
+                {"email", "alice@example.invalid"}, {"status", "active"},
+                {"created_at", "2026-01-03T09:00:00Z"}, {"updated_at", "2026-01-03T09:00:00Z"}}};
+        iamRow = QJsonObject{{"uuid", userId}, {"username", "cassi"}, {"first_name", "Cassi"},
+            {"last_name", "Volkova"}, {"email", "cassi@example.invalid"},
+            {"phone", QJsonValue::Null}, {"description", "Founder"},
+            {"created_at", "2026-01-02T10:00:00Z"}};
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto iamPath = QStringLiteral("/api/core/v1/iam/users/") + userId;
+            const auto projectionPath = QStringLiteral("/api/workspace/v1/messenger/users/") + userId;
+            if (request.method == "GET" && path == iamPath) { ++iamGets; return {iamRow}; }
+            if (request.method == "PUT" && path == iamPath) {
+                ++iamPuts;
+                lastPatch = request.body;
+                for (auto it = lastPatch.constBegin(); it != lastPatch.constEnd(); ++it)
+                    iamRow[it.key()] = it.value();
+                return {iamRow};
+            }
+            if (request.method == "GET" && path == projectionPath) {
+                ++projectionGets;
+                // The directory projection read must echo the saved identity,
+                // otherwise the controller keeps refreshOwnProfilePending set.
+                return {QJsonObject{{"uuid", userId}, {"username", iamRow.value("username")},
+                    {"first_name", iamRow.value("first_name")},
+                    {"last_name", iamRow.value("last_name")},
+                    {"email", iamRow.value("email")}, {"avatar", QJsonValue::Null}}};
+            }
+            if (request.method == "POST" && path.endsWith("/actions/avatar_upload/invoke")) {
+                ++avatarUploadPosts;
+                return {QJsonObject{}, 501}; // window tests only cover client-side rejection
+            }
+            if (request.method == "POST" && path.endsWith("/actions/avatar_reset/invoke")) {
+                ++avatarResets;
+                return {QJsonObject{{"uuid", userId}, {"avatar", QJsonValue::Null}}};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Live window scene: signed in, on the info channel, drawer closed. Opening
+// the own profile mirrors the account-menu route (openPersonalInfo); opening
+// a peer profile mirrors the mention/direct-header route (openWorkspaceUserProfile).
+struct ProfileWindowScene {
+    WindowProfileFixture fixture;
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    ApiClient api{nullptr, true};
+    Session session;
+    NativeController controller;
+    QQmlApplicationEngine engine;
+    QPointer<QQuickWindow> window;
+    ProfileWindowScene()
+        : preferences(directory.filePath("profile.ini")), session(&api), controller(&api, &session)
+    {
+        QVERIFY(directory.isValid());
+        preferences.setLocale("en");
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        // The fixture catalog carries the info channel plus the seeded DM with
+        // the channel peer (Message action -> OpenDefaultTopic).
+        QTRY_COMPARE(controller.streams().size(), 2);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+    }
+    ~ProfileWindowScene()
+    {
+        if (window && !closeIncubatedTestWindow(engine, window))
+            QTest::qFail("profile scene teardown", __FILE__, __LINE__);
+    }
+    QVariant evaluate(const QString &script)
+    {
+        QQmlExpression expression(qmlContext(window), window, script);
+        auto value = expression.evaluate();
+        if (expression.hasError())
+            QTest::qFail(qPrintable("QML: " + expression.error().toString()), __FILE__, __LINE__);
+        if (value.metaType() == QMetaType::fromType<QJSValue>())
+            value = value.value<QJSValue>().toVariant();
+        return value;
+    }
+    QString text(const QString &objectName)
+    {
+        auto *entry = visibleItem(objectName);
+        return entry ? entry->property("text").toString() : QString();
+    }
+    QObject *named(const QString &objectName)
+    {
+        return window ? window->findChild<QObject *>(objectName) : nullptr;
+    }
+    void openOwnProfile()
+    {
+        evaluate("rightDrawer.openPersonalInfo()");
+        QTRY_VERIFY(visibleItem("profileLayer"));
+        QTRY_VERIFY(layer()->property("isSelf").toBool());
+    }
+    void openPeerProfile(const QString &userUuid)
+    {
+        evaluate("rightDrawer.openWorkspaceUserProfile('" + userUuid + "')");
+        QTRY_VERIFY(visibleItem("profileLayer"));
+        QTRY_VERIFY(layer()->property("isSelf").toBool() == false);
+    }
+    QQuickItem *layer()
+    {
+        auto *entry = visibleItem("profileLayer");
+        if (!entry)
+            QTest::qFail("profile layer not visible", __FILE__, __LINE__);
+        return entry;
+    }
+    void setPendingAvatar(const QString &path) { layer()->setProperty("pendingAvatarPath", path); }
+    void setPendingRemove(bool value) { layer()->setProperty("pendingRemoveAvatar", value); }
+    void saveEdit() { QMetaObject::invokeMethod(layer(), "saveEdit"); }
 };
 
 class NativeWindowTest final : public QObject {
@@ -14090,6 +14244,244 @@ private:
         QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    // ---- Issue #134: user profile drawer content ----
+    // Window-level acceptance cases for docs/NATIVE_DESKTOP_USER_PROFILE.md.
+    // Geometry cites workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af:
+    // right-panel-user-profile.ui.tsx (header), -actions.ui.tsx (chips),
+    // -details.ui.tsx (rows + Copyable), -edit-avatar-dialog.ui.tsx (dialog),
+    // -direct-navigation.lib.ts (Message target resolution).
+
+    // Own profile from the account menu: shell title "Personal info", xl
+    // avatar (avatar.tsx SIZE_CLASS.xl = h-16 w-16 = 64px), presence dot sm
+    // 8px in indicator-green for active (presence-indicator + tokens.ts),
+    // name text-xl and presence label "online" (presence-status-text.lib.ts),
+    // the self chip row Favorites/Edit/Share and detail rows with the
+    // temporarily-unavailable placeholder.
+    void windowProfileOwnScreenHeaderChipsAndDetails()
+    {
+        ProfileWindowScene scene;
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("personalInfoAction"));
+        click(scene.window, visibleItem("personalInfoAction"));
+        QTRY_VERIFY(visibleItem("profileLayer"));
+        QTRY_COMPARE(scene.text("nativeRightDrawerTitle"), QStringLiteral("Personal info"));
+        auto *avatar = visibleItem("profileAvatar");
+        QVERIFY(avatar);
+        QCOMPARE(avatar->width(), 64.0);   // right-panel-user-profile.ui.tsx size="xl"
+        QCOMPARE(avatar->height(), 64.0);
+        auto *dot = visibleItem("profilePresenceDot");
+        QVERIFY(dot);                       // status active -> presence dot
+        QCOMPARE(dot->width(), 8.0);        // presence-indicator sm = 8px core
+        QCOMPARE(dot->property("color").value<QColor>(), QColor("#26c038"));
+        QTRY_COMPARE(scene.text("profileTitle"), QStringLiteral("Cassi Volkova"));
+        QTRY_COMPARE(scene.text("profilePresenceLine"), QStringLiteral("online"));
+        // self chips: Favorites / Edit / Share (actions tsx self variant)
+        QVERIFY(visibleItem("profileAction-favorites"));
+        QVERIFY(visibleItem("profileAction-edit"));
+        QVERIFY(visibleItem("profileAction-share"));
+        QCOMPARE(scene.text("profileActionLabel-share"), QStringLiteral("Share"));
+        QVERIFY(!visibleItem("profileAction-message"));
+        // detail rows: userId/email/joined carry values, everything else is
+        // the temporarily-unavailable label (messenger-right-panel.lib.ts)
+        QTRY_VERIFY(visibleItem("profileDetailValue-email"));
+        QCOMPARE(scene.text("profileDetailValue-email"), QStringLiteral("cassi@example.invalid"));
+        QCOMPARE(scene.text("profileDetailValue-userId"), userId);
+        QCOMPARE(scene.text("profileDetailValue-joined"), QStringLiteral("Jan 2, 2026"));
+        QCOMPARE(scene.text("profileDetailValue-phone"), QStringLiteral("Temporarily not connected"));
+        // Copyable sits on value rows only (details tsx trailing Copyable)
+        QVERIFY(visibleItem("profileDetailCopy-email"));
+        QVERIFY(!visibleItem("profileDetailCopy-phone"));
+        // the page fetched the IAM profile exactly once for the mount
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        QCOMPARE(scene.fixture.iamGets, 1);
+    }
+
+    // Other-user profile from the mention/direct-header entry: shell title
+    // "Information", Message/Call/Share chips with Call disabled until the
+    // calls epic #33 lands (issue body). Message resolves per the
+    // direct-navigation contract: DM stream exists -> open its default
+    // topic; already on that DM -> stay put.
+    void windowProfileOtherUserMessageOpensDirectDefaultTopic()
+    {
+        ProfileWindowScene scene;
+        scene.openPeerProfile(channelPeer);
+        QTRY_COMPARE(scene.text("nativeRightDrawerTitle"), QStringLiteral("Information"));
+        QTRY_COMPARE(scene.text("profileTitle"), QStringLiteral("Alice"));
+        QVERIFY(visibleItem("profileAction-message"));
+        QVERIFY(visibleItem("profileAction-call"));
+        QVERIFY(visibleItem("profileAction-share"));
+        auto *call = visibleItem("profileAction-call");
+        QVERIFY(!call->property("enabled").toBool());
+        QVERIFY(qAbs(call->property("opacity").toReal() - 0.5) < 0.01); // disabled:opacity-50
+        QTRY_COMPARE(scene.text("profileDetailValue-email"), QStringLiteral("alice@example.invalid"));
+        click(scene.window, visibleItem("profileAction-message"));
+        QTRY_COMPARE(scene.evaluate("controller.selectedStream").toString(), windowDirectId());
+        QTest::qWait(250);
+        QTRY_VERIFY(!scene.evaluate("controller.profileDirectPending").toBool());
+        QTRY_COMPARE(scene.evaluate("controller.selectedTopic").toString(), channelDefault);
+        // Already on the DM stream (any topic): the click keeps the position
+        // (resolveProfileDirectNavigation AlreadyOpen).
+        click(scene.window, visibleItem("profileAction-message"));
+        QTest::qWait(250);
+        QCOMPARE(scene.evaluate("controller.selectedStream").toString(), windowDirectId());
+        QVERIFY(visibleItem("profileLayer")); // the drawer keeps showing the profile
+    }
+
+    // Edit mode: the chip row swaps for the footer (Cancel fixed 110x40,
+    // Save fills 40px), the display-name preview tracks the draft live, and
+    // Save sends a diff-only PUT (user-profile-editor.lib.ts computePatch:
+    // only first_name changes here) then exits edit with the new name shown.
+    void windowProfileEditModeSavesDiffOnlyAndSyncsPreview()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        click(scene.window, visibleItem("profileAction-edit"));
+        QVERIFY(visibleItem("profileEditFooter"));
+        QVERIFY(!visibleItem("profileAction-edit")); // chips hidden while editing
+        auto *cancel = visibleItem("profileCancelButton");
+        QVERIFY(cancel);
+        QCOMPARE(cancel->width(), 110.0);   // footer Cancel fixed w-[110px] h-10
+        QCOMPARE(cancel->height(), 40.0);
+        QCOMPARE(visibleItem("profileSaveButton")->height(), 40.0);
+        // display name preview mirrors the identity draft (profileDisplayName)
+        QVERIFY(hasVisibleText(scene.window->contentItem(), QStringLiteral("Cassi Volkova")));
+        auto *field = visibleItem("profileField-firstName");
+        QVERIFY(field);
+        click(scene.window, field);
+        QTest::keyClick(scene.window, Qt::Key_A, Qt::ControlModifier);
+        for (const auto key : QByteArray("Kassi"))
+            QTest::keyClick(scene.window, key);
+        QVERIFY(hasVisibleText(scene.window->contentItem(), QStringLiteral("Kassi Volkova")));
+        QSignalSpy settled(&scene.controller, &NativeController::ownProfileSettledChanged);
+        // the footer sits under the fold in edit mode: scroll the drawer to it
+        auto *scroll = visibleItem("profileScroll");
+        QVERIFY(scroll);
+        scroll->setProperty("contentY",
+            qMax(0.0, scroll->property("contentHeight").toReal() - scroll->property("height").toReal()));
+        QTest::qWait(150);
+        click(scene.window, visibleItem("profileSaveButton"));
+        QVERIFY(settled.wait(5000));
+        QCOMPARE(scene.fixture.iamPuts, 1);
+        const QJsonObject expectedPatch{{"first_name", "Kassi"}};
+        QCOMPARE(scene.fixture.lastPatch, expectedPatch);
+        QTRY_VERIFY(!scene.evaluate("controller.ownProfileSaving").toBool());
+        // refresh projection follows the saved identity (profileRefreshPending contract)
+        QTRY_COMPARE(scene.fixture.projectionGets, 1);
+        QTRY_VERIFY(!scene.evaluate("controller.ownProfileRefreshPending").toBool());
+        QTRY_VERIFY(!visibleItem("profileEditFooter")); // edit mode exits after settle
+        QTRY_COMPARE(scene.text("profileTitle"), QStringLiteral("Kassi Volkova"));
+        QTRY_VERIFY(visibleItem("profileAction-edit")); // chips return in view mode
+    }
+
+    // Edit avatar dialog: opens from the 20x20 badge, fixed 323px width with
+    // 32px rows and a 40px Cancel (the reference 212px height included the
+    // camera row, hidden at this sha - see the design doc deviation note).
+    // Gallery opens the file picker; Delete stays disabled without an avatar.
+    void windowProfileAvatarDialogGeometryAndDisabledRemove()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        click(scene.window, visibleItem("profileAction-edit"));
+        auto *badge = visibleItem("profileAvatarBadge");
+        QVERIFY(badge);
+        QCOMPARE(badge->width(), 20.0);   // 20x20 round stylus badge bottom-right
+        QCOMPARE(badge->height(), 20.0);
+        click(scene.window, badge);
+        auto *dialog = scene.named("profileAvatarDialog");
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        // reference -edit-avatar-dialog.ui.tsx: w-[323px]; height derives from
+        // the gallery + remove rows (camera row hidden at this sha)
+        QCOMPARE(dialog->property("width").toDouble(), 323.0);
+        auto *choose = visibleItem("profileAvatarChoose");
+        QVERIFY(choose);
+        QCOMPARE(choose->height(), 32.0); // rows h-8
+        QCOMPARE(visibleItem("profileAvatarCancel")->height(), 40.0); // Cancel h-10
+        // no avatar on the session user -> Delete row disabled (dialog lines 320-323)
+        QVERIFY(!visibleItem("profileAvatarRemove")->property("enabled").toBool());
+        click(scene.window, choose);
+        auto *picker = scene.named("profileFileDialog");
+        QVERIFY(picker);
+        QTRY_VERIFY(picker->property("visible").toBool());
+        QMetaObject::invokeMethod(picker, "reject");
+        QTRY_VERIFY(!picker->property("visible").toBool());
+        click(scene.window, visibleItem("profileAvatarCancel"));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+    }
+
+    // Avatar file validation runs client-side before any request: an
+    // oversized image gets the capability-sized message (settings.avatarTooLarge,
+    // capabilities.maxAvatarFileSizeMib = 25) and a wrong mime the invalid-file
+    // message; either failure reopens the dialog with the error line
+    // (settings.avatarUpdateError contract).
+    void windowProfileAvatarFileValidationReopensDialogWithError()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        click(scene.window, visibleItem("profileAction-edit"));
+        {
+            QFile file(scene.directory.filePath("big.png"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QVERIFY(file.resize(26LL * 1024 * 1024)); // > 25 MiB capability
+        }
+        scene.setPendingAvatar(scene.directory.filePath("big.png"));
+        scene.saveEdit();
+        QTRY_VERIFY(!scene.evaluate("controller.ownAvatarBusy").toBool());
+        QTRY_VERIFY(scene.named("profileAvatarDialog")->property("visible").toBool());
+        QTRY_COMPARE(scene.text("profileAvatarError"),
+            QStringLiteral("Image is too large (max 25 MB)"));
+        {
+            QFile file(scene.directory.filePath("photo.txt"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("not an image");
+        }
+        scene.setPendingAvatar(scene.directory.filePath("photo.txt"));
+        scene.saveEdit();
+        QTRY_COMPARE(scene.text("profileAvatarError"),
+            QStringLiteral("Please choose a valid image file"));
+        QCOMPARE(scene.fixture.avatarUploadPosts, 0); // rejected before the wire
+        QVERIFY(visibleItem("profileEditFooter"));    // still in edit mode
+    }
+
+    // Save commits a pending avatar removal through
+    // POST messenger users/{uuid}/actions/avatar_reset/invoke (empty patch
+    // shortcut: handleSaveEdit -> handleSaveAvatar) and the settle exits the
+    // edit mode.
+    void windowProfileAvatarResetCommittedOnSave()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        click(scene.window, visibleItem("profileAction-edit"));
+        scene.setPendingRemove(true);
+        scene.saveEdit();
+        QTRY_COMPARE(scene.fixture.avatarResets, 1);
+        QTRY_VERIFY(!scene.evaluate("controller.ownAvatarBusy").toBool());
+        QTRY_VERIFY(!visibleItem("profileEditFooter"));
+        QCOMPARE(scene.fixture.iamPuts, 0); // nothing dirty: identity PUT is skipped
+        QVERIFY(scene.layer()->property("pendingRemoveAvatar").toBool() == false);
+    }
+
+    // Share copies {origin}/#user/{uuid} (buildWorkspaceProfileShareLink) and
+    // flips the chip to "Copied" with the check glyph for 2000 ms
+    // (copyable.tsx flip-back), then reverts to "Share".
+    void windowProfileShareCopiesLinkAndFlipsToCopied()
+    {
+        ProfileWindowScene scene;
+        scene.openPeerProfile(channelPeer);
+        QTRY_VERIFY(visibleItem("profileAction-share"));
+        click(scene.window, visibleItem("profileAction-share"));
+        const auto expected = scene.fixture.server.origin().toString()
+            + QStringLiteral("/#user/") + channelPeer;
+        QCOMPARE(QGuiApplication::clipboard()->text(), expected);
+        QTRY_COMPARE(scene.text("profileActionLabel-share"), QStringLiteral("Copied"));
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("profileActionLabel-share"),
+            QStringLiteral("Share"), 4000);
     }
 };
 
