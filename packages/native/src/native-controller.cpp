@@ -3341,11 +3341,37 @@ QString avatarFileMime(const QString &path)
     if (suffix == QLatin1String("webp")) return QStringLiteral("image/webp");
     return {};
 }
+
+// exordy #199 review 4553884702: the upload contract is content-based — the
+// leading bytes must carry the signature of the type the suffix claims, so a
+// renamed text file can never travel as an image.
+bool avatarContentMatchesMime(const QString &path, const QString &mime)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const auto head = file.read(12);
+    file.close();
+    const auto startsWith = [&head](const char *hex, qsizetype offset = 0) {
+        const auto signature = QByteArray::fromHex(QByteArray(hex));
+        return head.size() >= offset + signature.size()
+            && head.mid(offset, signature.size()) == signature;
+    };
+    if (mime == QLatin1String("image/png")) return startsWith("89504e47");
+    if (mime == QLatin1String("image/jpeg")) return startsWith("ffd8ff");
+    if (mime == QLatin1String("image/gif")) return startsWith("47494638");
+    if (mime == QLatin1String("image/webp"))
+        return startsWith("52494646") && startsWith("57454250", 8);
+    return false;
+}
 } // namespace
 
-bool NativeController::profileContext(const QString &user, quint64 ticket) const
+// Per-operation tickets (exordy #199 review 4553884681): a callback is live
+// only while its ticket is the current ticket for its own operation, so a
+// delayed load/refresh can never overwrite state installed by a newer one.
+bool NativeController::profileContext(const QString &user, quint64 ticket, quint64 currentTicket) const
 {
-    return ticket != 0 && authenticated() && isUuid(user) && m_session->user() == user
+    return ticket != 0 && ticket == currentTicket && authenticated() && isUuid(user)
+        && m_session->user() == user
         && m_api->generation() == m_profileApiGeneration && creationOwnerKey() == m_profileOwner;
 }
 
@@ -3470,6 +3496,8 @@ QVariantMap NativeController::validateAvatarFile(const QString &path) const
     if (size > profileAvatarLimitBytes)
         return fail(tr("Image is too large (max %1 MB)")
                         .arg(capabilities.value("maxAvatarFileSizeMib").toInt()));
+    if (!avatarContentMatchesMime(path, mime))
+        return fail(tr("Please choose a valid image file"));
     return {{"ok", true}, {"mime", mime}, {"size", size}, {"name", info.fileName()}};
 }
 
@@ -3525,7 +3553,7 @@ void NativeController::loadOwnProfile()
     m_ownProfileLoading = true; m_ownProfileError.clear();
     emit stateChanged();
     request("GET", iamUsers + user, {}, {}, [this, user, ticket](const ApiResult &result) {
-        if (!profileContext(user, ticket)) return;
+        if (!profileContext(user, ticket, m_ownProfileTicket)) return;
         m_ownProfileLoading = false;
         const auto parsed = result.ok() && result.data.isObject()
             ? parseIamProfile(result.data.toObject(), user) : std::optional<QVariantMap>{};
@@ -3549,7 +3577,7 @@ void NativeController::refreshOwnProfileProjection(const QString &user, quint64 
 {
     request("GET", messenger + "/users/" + user, {}, {},
         [this, user, ticket, savedProfile](const ApiResult &result) {
-        if (!profileContext(user, ticket)) return;
+        if (!profileContext(user, ticket, m_ownProfileTicket)) return;
         const auto raw = result.ok() ? result.data.toObject() : QJsonObject{};
         const auto trimmed = [](QString value) { return value.trimmed(); };
         const auto first = raw.value("first_name").toString();
@@ -3625,7 +3653,7 @@ void NativeController::saveOwnProfile(const QVariantMap &draft, const QString &a
     emit stateChanged();
     const auto draftCopy = draft;
     request("PUT", iamUsers + user, patch, {}, [this, user, ticket, draftCopy, avatarAction, avatarPath](const ApiResult &result) {
-        if (!profileContext(user, ticket)) return;
+        if (!profileContext(user, ticket, m_ownProfileTicket)) return;
         const auto parsed = result.ok() && result.data.isObject()
             ? parseIamProfile(result.data.toObject(), user) : std::optional<QVariantMap>{};
         if (!parsed) {
@@ -3695,7 +3723,7 @@ void NativeController::uploadOwnProfileAvatar(const QString &path)
     const auto owner = creationOwnerKey();
     connect(reply, &QNetworkReply::finished, this, [this, reply, user, ticket, generation, owner] {
         reply->deleteLater();
-        if (!profileContext(user, ticket)) return;
+        if (!profileContext(user, ticket, m_ownAvatarTicket)) return;
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok = status >= 200 && status < 300
             && reply->error() == QNetworkReply::NoError;
@@ -3745,7 +3773,7 @@ void NativeController::removeOwnProfileAvatar()
     emit ownAvatarErrorChanged();
     request("POST", messenger + "/users/" + user + "/actions/avatar_reset/invoke",
         QJsonObject{}, {}, [this, user, ticket](const ApiResult &result) {
-        if (!profileContext(user, ticket)) return;
+        if (!profileContext(user, ticket, m_ownAvatarTicket)) return;
         const auto raw = result.ok() && result.data.isObject() ? result.data.toObject() : QJsonObject{};
         if (result.ok() && raw.value("uuid").toString() == user) {
             auto presentation = m_names.value(user);
