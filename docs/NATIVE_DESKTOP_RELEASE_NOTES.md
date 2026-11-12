@@ -1,3 +1,27 @@
+# Workspace Native 0.14.0 - Linux development preview
+
+Three features ported from the reference desktop:
+
+- The top bar now hosts the workspace session switcher: quick buttons for up
+  to three remembered sessions with unread dots and a "+N" overflow chip, and
+  a dropdown listing every remembered account (login plus host and project)
+  with a per-organization logout confirmation and an "Add server" row.
+- The composer gained the reference formatting toolbar: a collapsible 32px
+  action row (link, bold, italic, strikethrough, numbered and bulleted lists,
+  quote, code block, inline code, spoiler) with the reference insets and
+  separators; the expanded state persists across sessions.
+- The right drawer shell matches the reference: a 315px right-docked rounded
+  panel with close and back chrome and a layer/screen navigation stack that
+  keeps its history across collapse, expansion and stream switches.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.13.2...0.14.0](https://github.com/exordos/workspace_native/compare/0.13.2...0.14.0)
+
+---
+
 # Workspace Native 0.13.2 - Linux development preview
 
 One fix for existing behavior:
