@@ -111,19 +111,25 @@ void Session::resumeSavedAccount(const QString &id)
     });
 }
 
-void Session::forgetSavedAccount(const QString &id)
+void Session::forgetSavedAccount(const QString &id, std::function<void(QString error)> done)
 {
     if (!m_vault) {
-        emit error(tr("Saved sessions are unavailable."));
+        const auto message = tr("Saved sessions are unavailable.");
+        if (done) done(message);
+        else emit error(message);
         return;
     }
     if (id == m_savedAccountId) {
-        logout();
+        // Signing out the live identity also removes its credential; route
+        // through logout so one removal answers exactly once.
+        logout(std::move(done));
         return;
     }
     const QPointer<Session> guard(this);
-    m_vault->forget(id, [guard](QString error) {
-        if (guard && !error.isEmpty())
+    m_vault->forget(id, [guard, done = std::move(done)](QString error) {
+        if (!guard) return;
+        if (done) { done(error); return; }
+        if (!error.isEmpty())
             emit guard->error(tr("The saved credential could not be removed. %1").arg(error));
     });
 }
@@ -160,16 +166,23 @@ void Session::clearMemory()
     emit signedOut();
 }
 
-void Session::logout()
+void Session::logout(std::function<void(QString error)> done)
 {
     const auto id = m_savedAccountId;
     const auto vault = m_vault;
     clearMemory();
-    if (!vault || id.isEmpty()) return;
-    const auto attempt = m_attempt;
+    if (!vault || id.isEmpty()) {
+        if (done) done({});
+        return;
+    }
     const QPointer<Session> guard(this);
-    vault->forget(id, [guard, attempt](QString error) {
-        if (guard && attempt == guard->m_attempt && !error.isEmpty())
+    vault->forget(id, [guard, done = std::move(done)](QString error) mutable {
+        if (!guard) return;
+        // The removal belongs to this sign-out, not to whatever session
+        // attempt follows: a successor resume must never suppress it, so no
+        // attempt guard sits in front of the report or the completion.
+        if (done) { done(error); return; }
+        if (!error.isEmpty())
             emit guard->error(tr("Signed out, but the saved credential could not be removed. %1").arg(error));
     });
 }
