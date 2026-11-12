@@ -14001,6 +14001,76 @@ private:
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);
     }
+
+    void composerMentionPopupInsertsDisambiguatedDuplicateNames()
+    {
+        // Review PR #195 (M1): two users share the display name "Bob Ray", so
+        // the serializer only converts the "Name (username)" visible form. The
+        // popup row text and the inserted text must be exactly that form.
+        const QString bobOne = QStringLiteral("52000000-0000-4000-8000-000000000b01");
+        const QString bobTwo = QStringLiteral("52000000-0000-4000-8000-000000000b02");
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        fixture.users = {QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", bobOne}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", bobTwo}, {"username", "bob2"}, {"first_name", "Bob"}, {"last_name", "Ray"}}};
+        int posts = 0, confirmations = 0;
+        QJsonObject posted, saved;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path == "/api/workspace/v1/messenger/messages/") {
+                ++posts; posted = request.body;
+                const auto content = request.body.value("payload").toObject().value("content").toString();
+                saved = message(content, QStringLiteral("8c000000-0000-4000-8000-000000000002"));
+                saved["user_uuid"] = userId; saved["updated_at"] = saved.value("created_at");
+                return {saved, 201};
+            }
+            if (request.method == "GET" && !saved.isEmpty()
+                && path == "/api/workspace/v1/messenger/messages/" + saved.value("uuid").toString()) {
+                ++confirmations; return {saved};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("composer-mention-duplicate.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Duplicate-name mention teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isEnabled());
+        click(window, composer);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_At);
+        QTest::keyClick(window, Qt::Key_B);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        // Both rows carry the disambiguated name; the secondary line keeps the
+        // plain "@username" chip. Tie order: identical name, userUuid ascending.
+        const QStringList rows = mentionRowTexts(window);
+        QTRY_COMPARE(rows, (QStringList{QString("Bob Ray (bob)"), QString("Bob Ray (bob2)")}) );
+        // Enter inserts exactly the row text: "@Bob Ray (bob) ".
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(composer->property("text").toString(), QString("@Bob Ray (bob) "));
+        QCOMPARE(composer->property("text").toString(), QString("@") + rows.first() + QString(" "));
+        QVERIFY(!mentionPopupVisible(window));
+        QCOMPARE(posts, 0);
+        // Send: the disambiguated visible text converts to the canonical URN
+        // instead of staying literal text on the wire.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(posts, 1);
+        QTRY_COMPARE(confirmations, 1);
+        QCOMPARE(posted.value("payload").toObject().value("content").toString(),
+            QStringLiteral("[Bob Ray](urn:user:%1) ").arg(bobOne));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss(); QVERIFY(closed);
+    }
 };
 
 
