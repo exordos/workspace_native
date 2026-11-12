@@ -1,3 +1,27 @@
+# Workspace Native 0.16.0 - Linux development preview
+
+Two features ported from the reference desktop:
+
+- The right drawer now opens the full user profile: avatar, name, username and
+  role chips with the About-me text; an edit mode for the display name, About me
+  and email that saves only changed fields; an avatar change dialog with upload
+  preview and reset (image content is validated, not just the file name); and
+  direct actions to message the person or copy their share link. Editing is
+  unavailable until the profile has loaded so a slow response can never wipe
+  existing values.
+- Chat history now prefetches older messages before you reach the top: one
+  viewport of pages is requested while scrolling, delivered pages insert at
+  their anchor without moving the visible message, and repeated gestures never
+  queue duplicate requests - reaching the top continues seamlessly.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.15.0...0.16.0](https://github.com/exordos/workspace_native/compare/0.15.0...0.16.0)
+
+---
+
 # Workspace Native 0.15.0 - Linux development preview
 
 Two features ported from the reference desktop:
