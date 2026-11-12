@@ -6100,13 +6100,19 @@ void NativeController::setPreferences(NativePreferences *preferences)
 // ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
 
 namespace {
-// mention-suggest.lib.ts normalizeMentionText: fold case and combining marks.
-// Qt strings arrive precomposed (QTextCursor composes), so the documented
-// combining-mark removal only has to cover the explicit Cyrillic yo fold.
+// mention-suggest.lib.ts normalizeMentionText: fold case, then NFD-decompose and
+// drop the combining marks. Qt strings can arrive precomposed (QTextCursor
+// composes), so decomposition is what exposes each accent as its own mark:
+// ё (U+0451) decomposes to е (U+0435) + U+0301 and folds onto the plain е key,
+// and "José" folds onto "jose" the same way.
 QString mentionNormalize(const QString &value)
 {
-    auto folded = value.toLower();
-    folded.replace(QChar(0x0451), QChar(0x0455));
+    const auto decomposed = value.toLower().normalized(QString::NormalizationForm_D);
+    QString folded;
+    folded.reserve(decomposed.size());
+    for (const auto character : decomposed)
+        if (!character.isMark())
+            folded.append(character);
     return sourceTrimmed(folded);
 }
 
