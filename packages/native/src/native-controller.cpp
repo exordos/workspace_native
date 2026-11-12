@@ -6652,15 +6652,24 @@ void NativeController::setPreferences(NativePreferences *preferences)
     m_preferences = preferences;
     // Issue #165: the guard consumes the per-owner authIdleTimeout preset and
     // re-arms live whenever it changes (the #135 row writes the same key).
-    if (preferences && m_authGuard && m_authPrefsBound != preferences)
+    if (preferences && m_authGuard)
     {
-        m_authPrefsBound = preferences;
+        // PR #226 review (4555758295): changes made while this object was
+        // detached never reach the guard through the connection below (it
+        // ignores signals while m_preferences points elsewhere), so the
+        // current preset is re-read on every attachment.
         m_authGuard->setTimeoutPreset(preferences->authIdleTimeout());
-        connect(preferences, &NativePreferences::authIdleTimeoutChanged, this,
-                [this, preferences] {
-            if (m_preferences == preferences && m_authGuard)
-                m_authGuard->setTimeoutPreset(preferences->authIdleTimeout());
-        });
+        if (m_authPrefsBound != preferences)
+        {
+            // Connect once per object; reattaching the same object must not
+            // stack duplicate signal connections.
+            m_authPrefsBound = preferences;
+            connect(preferences, &NativePreferences::authIdleTimeoutChanged, this,
+                    [this, preferences] {
+                if (m_preferences == preferences && m_authGuard)
+                    m_authGuard->setTimeoutPreset(preferences->authIdleTimeout());
+            });
+        }
     }
 }
 
