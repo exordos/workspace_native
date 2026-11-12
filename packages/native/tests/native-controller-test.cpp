@@ -15126,6 +15126,145 @@ private slots:
         QTRY_COMPARE(fixture.totalHistoryGets(), baseline + 2);
         QTRY_COMPARE(c.messages().size(), 100);
     }
+
+    // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
+
+    static Response callMeetSettings(const Request & = {})
+    {
+        return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+            {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+    }
+
+    void headerCallGateFollowsWorkspaceMeetHost()
+    {
+        Fixture plain;
+        QVERIFY(plain.start());
+        // No server meet_url: the reference renders no header call action
+        // (chat-page-workspace.ui.tsx:4100), so the native gate stays closed.
+        QCOMPARE(plain.controller.meetHost(), QString());
+        QVERIFY(!plain.controller.canStartCall());
+
+        Fixture configured;
+        configured.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(configured.start());
+        // Origin-only normalization of server_settings.meet_url.
+        QTRY_COMPARE(configured.controller.meetHost(), QStringLiteral("https://meet.example.com"));
+        QVERIFY(configured.controller.canStartCall());
+    }
+
+    void startCallPostsMeetingUrlBeforeOpening()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        auto saved = message();
+        QJsonObject posted;
+        fixture.messages = [&saved, &posted](const Request &request) {
+            if (request.method == "POST") {
+                posted = request.body;
+                saved = message(request.body.value("payload").toObject()
+                    .value("content").toString(), returnedId);
+                return Response{saved};
+            }
+            if (request.target.path().endsWith(returnedId))
+                return Response{saved, 200, 200};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        fixture.controller.startCall();
+        QTRY_VERIFY(fixture.controller.calls()->hasActiveCall());
+
+        QCOMPARE(posted.value("stream_uuid").toString(), streamId);
+        QCOMPARE(posted.value("topic_uuid").toString(), topicId);
+        const auto payload = posted.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), QStringLiteral("markdown"));
+        const auto meetingUrl = payload.value("content").toString();
+        QVERIFY2(meetingUrl.startsWith(QStringLiteral("https://meet.example.com/workspace-")),
+            qPrintable(meetingUrl));
+        // workspace-{orgHost}-{project}-{stream}-{topic}-{nowMs}; the mock
+        // server host normalizes to 127-0-0-1.
+        QVERIFY(meetingUrl.contains(QStringLiteral("workspace-127-0-0-1-")));
+        const auto active = fixture.controller.calls()->activeCall();
+        QCOMPARE(active.value(QStringLiteral("meetingUrl")).toString(), meetingUrl);
+        QCOMPARE(active.value(QStringLiteral("startWithVideoMuted")).toBool(), true);
+        QVERIFY(fixture.controller.callError().isEmpty());
+    }
+
+    void startCallRefusesDifferentActiveCallBeforeSending()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        QVariantMap other;
+        other.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.example.com/other-room"));
+        other.insert(QStringLiteral("locationName"), QStringLiteral("Other"));
+        other.insert(QStringLiteral("ownerKey"), fixture.controller.ownerKey());
+        fixture.controller.calls()->requestOpenCall(other);
+        const int postsBefore = std::count_if(fixture.server.requests.begin(), fixture.server.requests.end(),
+            [](const Request &request) { return request.method == "POST" && request.target.path().contains("/messages/"); });
+
+        fixture.controller.startCall();
+        QTest::qWait(300);
+        QVERIFY(!fixture.controller.callError().isEmpty());
+        QCOMPARE(fixture.controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.example.com/other-room"));
+        const int postsAfter = std::count_if(fixture.server.requests.begin(), fixture.server.requests.end(),
+            [](const Request &request) { return request.method == "POST" && request.target.path().contains("/messages/"); });
+        QCOMPARE(postsAfter, postsBefore);
+    }
+
+    void startCallNeedsConfirmedSend()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        fixture.messages = [](const Request &request) {
+            if (request.method == "POST")
+                return Response{QJsonObject{}, 500};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        fixture.controller.startCall();
+        QTRY_VERIFY(!fixture.controller.callError().isEmpty());
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+    }
+
+    void encryptedStreamSendsNoPlaintextCallUrl()
+    {
+        Fixture fixture;
+        fixture.encrypted = true;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        fixture.controller.startCall();
+        QTest::qWait(300);
+        // Recorded deviation: the encrypted path is deferred; nothing may go
+        // out as plaintext and the store stays closed.
+        QVERIFY(std::none_of(fixture.server.requests.begin(), fixture.server.requests.end(),
+            [](const Request &request) { return request.method == "POST" && request.target.path().contains("/messages/"); }));
+        QVERIFY(!fixture.controller.callError().isEmpty());
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+    }
+
+    void callUrlRecognitionUsesEffectiveMeetHost()
+    {
+        Fixture plain;
+        QVERIFY(plain.start());
+        QCOMPARE(plain.controller.callUrlInText(QStringLiteral("hello")), QString());
+        // Without the Workspace setting the build-time host still recognizes.
+        QCOMPARE(plain.controller.callUrlInText(QStringLiteral("see https://meet.jit.si/RoomA")),
+            QStringLiteral("https://meet.jit.si/RoomA"));
+
+        Fixture configured;
+        configured.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(configured.start());
+        QTRY_VERIFY(!configured.controller.meetHost().isEmpty());
+        QCOMPARE(configured.controller.callUrlInText(
+                     QStringLiteral("https://meet.example.com/workspace-room-9")),
+            QStringLiteral("https://meet.example.com/workspace-room-9"));
+        QCOMPARE(configured.controller.callUrlInText(QStringLiteral("https://evil.example/r")), QString());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

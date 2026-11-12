@@ -85,8 +85,9 @@ set_source_files_properties("${native_ru_qm}" PROPERTIES GENERATED TRUE)
 qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
     BASE "${CMAKE_CURRENT_BINARY_DIR}/translations" FILES "${native_ru_qm}")
 set(native_qml_files
-    qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-    qml/SessionSwitcher.qml
+qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
+qml/NativeJitsiCard.qml
+qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeUserProfile.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)

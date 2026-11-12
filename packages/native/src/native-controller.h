@@ -9,6 +9,8 @@
 #include "native-chat-key-vault.h"
 #include "native-drafts.h"
 #include "native-notifications.h"
+#include "call/jitsi-call.h"
+#include "call/native-call-store.h"
 
 #include <QHash>
 #include <QLocale>
@@ -1319,6 +1321,39 @@ private:
     unsigned m_snapshotParts = 0;
     quint64 m_snapshotSelection = 0;
     quint64 m_snapshotCatalog = 0;
+
+public:
+    // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
+    // Per-workspace meet host (server_settings.meet_url, origin-only, cleared
+    // with the session), the single-active-call store, and the header start
+    // flow that posts the meeting URL before opening the call.
+    Q_PROPERTY(JitsiCallStore *calls READ calls CONSTANT)
+    Q_PROPERTY(QString meetHost READ meetHost NOTIFY stateChanged)
+    Q_PROPERTY(bool canStartCall READ canStartCall NOTIFY stateChanged)
+    Q_PROPERTY(QString callError READ callError NOTIFY stateChanged)
+    JitsiCallStore *calls() { return &m_callStore; }
+    QString meetHost() const { return m_meetHost; }
+    QString callError() const { return m_callError; }
+    // The reference renders the header call action only when the Workspace
+    // meet host is configured (chat-page-workspace.ui.tsx:4100).
+    bool canStartCall() const
+    { return authenticated() && hasConversation() && !topicClosed() && !m_meetHost.isEmpty(); }
+    Q_INVOKABLE void startCall();
+    // Card join: mirrors the reference join path - opening a different room
+    // while a call is active is refused with the generic inline error.
+    Q_INVOKABLE void joinCall(const QString &meetingUrl);
+    // Bubble helpers: recognition uses the effective host (Workspace meet
+    // host, else the build-time default) exactly like the reference card.
+    Q_INVOKABLE QString callUrlInText(const QString &text) const;
+    Q_INVOKABLE QString callRoomName(const QString &url) const;
+
+private:
+    void fetchCallMeetHost();
+    JitsiCallStore m_callStore;
+    QString m_meetHost;
+    QString m_callError;
+    bool m_callPending = false;
+    quint64 m_callMeetAttempt = 0;
 };
 
 }

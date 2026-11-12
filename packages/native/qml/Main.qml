@@ -3133,6 +3133,27 @@ ApplicationWindow {
                     anchors.rightMargin: 20
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
+                    Text {
+                        objectName: "callError"
+                        visible: root.controller.callError.length > 0
+                        text: root.controller.callError
+                        textFormat: Text.PlainText
+                        color: root.colors.danger
+                        font.pixelSize: 13
+                        anchors.verticalCenter: parent.verticalCenter
+                        Accessible.role: Accessible.AlertMessage
+                    }
+                    NativeIconButton {
+                        objectName: "headerCallButton"
+                        // Reference: rendered only when the Workspace meet host
+                        // is configured (chat-page-workspace.ui.tsx:4100).
+                        visible: root.controller.canStartCall
+                        colors: root.colors
+                        asset: "phone.svg"
+                        glyphSize: 20
+                        help: qsTr("Call")
+                        onClicked: root.controller.startCall()
+                    }
                     NativeIconButton {
                         colors: root.colors
                         asset: "side_panel.svg"
@@ -4112,6 +4133,11 @@ ApplicationWindow {
                     // desktop paragraph leading only to renderer-owned p styles.
                     readonly property string bodyHtml: String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
                     readonly property string displayHtml: inlineMeta ? root.reserveMessageTime(bodyHtml, modelData.time) : bodyHtml
+                    readonly property string callUrl: !keyControl && !encryptedLocked
+                        && modelData.kind === "markdown" && !hasInlineImages
+                        ? String(root.controller.callUrlInText(String(modelData.displayContent !== undefined
+                            ? modelData.displayContent : modelData.content))) : ""
+                    readonly property bool isCallCard: callUrl.length > 0
                     FontMetrics {
                         id: reactionNameMetrics
                         font.pixelSize: 14
@@ -4296,6 +4322,22 @@ ApplicationWindow {
                             y: messageRow.keyControl ? 4 : 8
                             width: parent.width - 24
                             spacing: 4
+                            // Meeting-URL messages render as the call card in
+                            // place of the text body (issue #161, reference
+                            // workspace-message-bubble-presentation.ui.tsx:543+906).
+                            NativeJitsiCard {
+                                objectName: "call-card-" + messageRow.modelData.id
+                                visible: messageRow.isCallCard && !messageRow.keyControl
+                                width: parent.width
+                                colors: root.colors
+                                own: messageRow.own
+                                callUrl: messageRow.callUrl
+                                roomName: root.controller.callRoomName(messageRow.callUrl)
+                                locationName: ""
+                                authorName: String(messageRow.modelData.author || "")
+                                timeText: String(messageRow.modelData.time || "")
+                                onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
+                            }
                             // Quote frame (docs/NATIVE_DESKTOP_REPLIES.md). Source message-surface
                             // frame (workspace_ui 61dacef workspace-message-quote.ui.tsx + frame.ui.tsx:8-18):
                             // bg at 35 % alpha, radius 6 px, 2 px accent left bar, vertical margin
@@ -4795,6 +4837,7 @@ ApplicationWindow {
                             Text {
                                 id: messageBody
                                 visible: !messageRow.hasInlineImages && !messageRow.encryptedLocked && messageRow.incomingKeyRequest === null && !messageRow.keyResponse && messageRow.modelData.kind !== "key_announced"
+                                    && !messageRow.isCallCard
                                 horizontalAlignment: messageRow.keyControl ? Text.AlignHCenter : Text.AlignLeft
                                 objectName: messageRow.hasInlineImages ? "" : "message-content-" + messageRow.modelData.id
                                 width: parent.width
