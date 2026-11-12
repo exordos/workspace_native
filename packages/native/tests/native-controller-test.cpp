@@ -15400,6 +15400,37 @@ private slots:
         QVERIFY(!c.isAuthGuardActive());
         QVERIFY(threeDayDeadline > 0);
     }
+
+    // Regression (PR #226 review, ID 4555758295): detaching the preferences
+    // object, changing the preset on it while detached (the change signal is
+    // ignored then), and reattaching the very same object must re-read the
+    // current preset - skipping init on reattach would leave the guard armed
+    // with the stale deadline from before the detach.
+    void authIdleGuardReadoptsPresetChangedWhilePreferencesDetached()
+    {
+        Fixture fixture;
+        auto &c = fixture.controller;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        c.setPreferences(&preferences);
+        QVERIFY(fixture.start());
+        auto *guard = c.authGuard();
+        QVERIFY(guard);
+        QVERIFY(guard->active());
+        preferences.setAuthIdleTimeout(QStringLiteral("6h"));
+        c.setPreferences(nullptr); // detach: signal changes from here on are missed
+        preferences.setAuthIdleTimeout(QStringLiteral("24h")); // the missed change
+        c.setPreferences(&preferences); // reattach the same object
+        QVERIFY(guard->active());
+        const auto twentyFourHours = 86400000LL;
+        const auto elapsed = QDateTime::currentMSecsSinceEpoch();
+        QVERIFY(qAbs(guard->expiresAtMs() - (elapsed + twentyFourHours)) < 5000); // fresh 24h, not stale 6h
+        // Live reaction still works after the reattachment, with exactly one
+        // signal connection (no duplicate re-arm through the old binding).
+        preferences.setAuthIdleTimeout(QStringLiteral("never"));
+        QVERIFY(!guard->active());
+        QVERIFY(!c.isAuthGuardActive());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
