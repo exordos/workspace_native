@@ -132,8 +132,10 @@ already-existing members before the POST (reference lines 509-523).
   `chat-info` with the root info screen (no `chatScreen`, no profile
   override). Layer promotion/dedup/scope reset stay 1:1 with the shell doc.
 - `NativeController` gains a channel-info projection for the selected stream,
-  re-requested by the page via `refreshChannelInfo()` on mount and on stream
-  change: `channelInfoMembers` (binding rows joined with the directory),
+  re-requested by the page via `refreshChannelInfo()` when the info screen
+  becomes visible and on stream change while it is visible (an eager fetch on
+  the hidden layer broke the window-lifetime `stream_bindings` discipline,
+  #197): `channelInfoMembers` (binding rows joined with the directory),
   `channelInfoMemberCount`, `channelInfoOnlineCount`, `channelInfoIsOwner`,
   `channelInfoNotificationMode` (store value wins over any stale info, per
   the reference store rule), `channelInfoNotificationBusy/Error`,

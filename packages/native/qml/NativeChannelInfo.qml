@@ -18,11 +18,17 @@ Item {
     objectName: "channelInfoPage"
     anchors.fill: parent
     clip: true
-    // The drawer shell never auto-loads content; refresh on mount and on any
-    // stream change while this page is on screen.
-    Component.onCompleted: controller.refreshChannelInfo()
+    // The shell instantiates this layer at window start but reveals it only
+    // when the chat-info root screen is on top; the reference mounts the info
+    // store when that screen opens, so the hidden layer must not fetch.
+    // Refresh on every reveal (fresh-mount semantics) - a member GET issued
+    // while hidden also breaks the window-lifetime stream_bindings
+    // discipline the e2ee ui cases pin (#197).
+    Component.onCompleted: if (page.visible) controller.refreshChannelInfo()
+    onVisibleChanged: if (visible) controller.refreshChannelInfo()
     // Reference store mounts per channel: switching channels re-runs the
-    // members load exactly like a fresh mount of the info screen.
+    // members load exactly like a fresh mount of the info screen, but only
+    // while the screen is actually on top.
     property string watchedStream: ""
     Connections {
         target: page.controller
@@ -38,7 +44,7 @@ Item {
             addMembersDialog.selectedUsers = [];
             if (addMembersDialog.visible)
                 addMembersSearch.text = "";
-            if (id.length > 0)
+            if (id.length > 0 && page.visible)
                 page.controller.refreshChannelInfo()
         }
     }
