@@ -13028,6 +13028,118 @@ private:
             return !rows.isEmpty() && rows.first().toMap().value("id").toString() == ids[3]
                 && rows.first().toMap().value("isCurrent").toBool(); })(), 10000);
     }
+
+    void sessionSwitcherFocusedRowScrollsIntoView()
+    {
+        // exo-review #170 round 2: keyboard focus must never land on a row
+        // clipped outside the menu viewport; focusing such a row scrolls it
+        // into view instead of leaving the focus ring offscreen.
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities;
+        for (int index = 0; index < 16; ++index)
+            identities.append({QStringLiteral("66666666-6666-4666-8666-6666666666%1")
+                    .arg(index, 2, 10, QLatin1Char('0')),
+                QStringLiteral("77777777-7777-4777-8777-7777777777%1")
+                    .arg(index, 2, 10, QLatin1Char('0'))});
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 16);
+        QStringList ids;
+        for (const auto &row : order) ids.append(row.toMap().value("id").toString());
+        controller.resumeSavedAccount(ids.first());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        auto *content = window->contentItem();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(visibleItem("topBar"));
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        auto *scroll = item(content, "sessionSwitcherScroll");
+        QVERIFY(scroll);
+        const auto rowTop = [&](QQuickItem *r) { return r->mapToItem(scroll, QPointF{}).y(); };
+        const auto rowBottom = [&](QQuickItem *r) {
+            return r->mapToItem(scroll, QPointF(0, r->height())).y();
+        };
+        const auto rowInViewport = [&](QQuickItem *r) {
+            return rowTop(r) >= -0.5 && rowBottom(r) <= scroll->height() + 0.5;
+        };
+        // The last row sits below the clipped viewport while the menu is at
+        // its natural scroll position.
+        const QString lastRowName = QStringLiteral("sessionRow-") + ids.last();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *r = item(content, lastRowName);
+            return r && rowTop(r) > scroll->height(); })(), 5000);
+        // Keyboard focus enters that offscreen row (Tab reaches it: the rows
+        // are tab-chain controls, so setFocus models the same focus move).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *r = item(content, lastRowName);
+            if (!r) return false;
+            r->setFocus(true);
+            return r->hasActiveFocus();
+        })(), 8000);
+        auto *focused = item(content, lastRowName);
+        QVERIFY(focused);
+        QVERIFY2(focused->hasActiveFocus(), "the offscreen row must hold active focus");
+        QVERIFY2(!rowInViewport(focused) || scroll->property("contentY").toReal() > 0.5,
+            qPrintable(QStringLiteral("viewport must move for a focused row (contentY=%1, rowTop=%2, viewport=%3)")
+                .arg(scroll->property("contentY").toReal()).arg(rowTop(focused)).arg(scroll->height())));
+        // The focused row is now inside the clipped viewport.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *r = item(content, lastRowName);
+            return r && rowInViewport(r); })(), 5000);
+        // The viewport actually scrolled.
+        QVERIFY(scroll->property("contentY").toReal() > 0.5);
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {
