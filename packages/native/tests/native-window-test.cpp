@@ -12250,6 +12250,351 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
         QTRY_COMPARE(composer->property("text").toString(), QString("- \nitem"));
     }
+
+    // ---- Issue #129 right drawer shell ----
+    // Geometry and chrome contract: workspace_ui right-drawer.ui.tsx and
+    // packages/web/tailwind.config.ts:84 (w-panel-right 315 px) at
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af. Stack contract:
+    // right-drawer.model.ts and right-drawer.model.test.ts at the same sha.
+
+    void rightDrawerShellMatchesReferenceGeometry_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void rightDrawerShellMatchesReferenceGeometry()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        RightDrawerHarness harness(locale, mode);
+        // Reference aside: `w-panel-right ... rounded-lg bg-bg-elevated px-2 pb-5 pt-2`
+        // (right-drawer.ui.tsx:17).
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        auto *drawer = visibleItem("nativeRightDrawer");
+        QVERIFY2(drawer, "right-drawer.ui.tsx aside frame is required");
+        QCOMPARE(drawer->width(), qreal(315)); // tailwind.config.ts:84 w-panel-right 315 px
+        QCOMPARE(drawer->mapToScene(QPointF{}).x(), harness.window->width() - 315);
+        QCOMPARE(qRound(drawer->height()), harness.window->height() - 8);
+        auto *shell = visibleItem("nativeRightDrawerShell"); QVERIFY(shell);
+        QCOMPARE(shell->property("radius").toReal(), qreal(6)); // rounded-lg aligned with the left sidebar
+        QCOMPARE(shell->property("color").value<QColor>(),
+            harness.window->property("colors").toMap().value("bg-elevated").value<QColor>());
+        auto *header = visibleItem("nativeRightDrawerHeader"); QVERIFY(header);
+        QCOMPARE(qRound(header->height()), 40);
+        auto *body = visibleItem("nativeRightDrawerBody"); QVERIFY(body);
+        QVERIFY(body->property("clip").toBool()); // flex-col overflow-hidden content slot
+        const auto bodyTopLeft = body->mapToItem(drawer, QPointF(0, 0));
+        QCOMPARE(qRound(bodyTopLeft.x()), 8); // px-2
+        QCOMPARE(qRound(body->width()), 299); // 315 - 2*8
+        QCOMPARE(qRound(bodyTopLeft.y()), 48); // pt-2 above the 40 px header
+        QCOMPARE(qRound(drawer->height() - bodyTopLeft.y() - body->height()), 20); // pb-5
+        // contentFlush cancels the shell px-2 on the direct body child (right-drawer.types.ts).
+        harness.evaluate("rightDrawer.contentFlush = true");
+        auto *flushedBody = visibleItem("nativeRightDrawerBody");
+        QCOMPARE(qRound(flushedBody->mapToItem(drawer, QPointF(0, 0)).x()), 0);
+        QCOMPARE(qRound(flushedBody->width()), 315);
+        // aria label via the info panel key (a11y.infoPanel: "Info panel").
+        auto *drawerAccessible = QAccessible::queryAccessibleInterface(drawer); QVERIFY(drawerAccessible);
+        QCOMPARE(drawerAccessible->role(), QAccessible::ComplementaryContent);
+        QCOMPARE(drawerAccessible->text(QAccessible::Name),
+            locale == "ru" ? QString::fromUtf8("Панель информации") : QString("Info panel"));
+    }
+
+    void rightDrawerHeaderKeepsCloseAlwaysAndBackOnlyForDeeperScreens_data()
+    {
+        rightDrawerShellMatchesReferenceGeometry_data();
+    }
+    void rightDrawerHeaderKeepsCloseAlwaysAndBackOnlyForDeeperScreens()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        RightDrawerHarness harness(locale, mode);
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // Reference "keeps close button when title is omitted".
+        QVERIFY(!visibleItem("nativeRightDrawerTitle"));
+        auto *closeButton = visibleItem("nativeRightDrawerClose"); QVERIFY(closeButton);
+        QCOMPARE(qRound(closeButton->width()), 32); QCOMPARE(qRound(closeButton->height()), 32);
+        QCOMPARE(QQmlProperty(closeButton, "icon.width").read().toInt(), 16); // Icon size 16
+        QVERIFY(!visibleItem("nativeRightDrawerBack")); // no deeper screen yet
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        auto *backButton = visibleItem("nativeRightDrawerBack"); QVERIFY(backButton);
+        QCOMPARE(qRound(backButton->width()), 32); QCOMPARE(qRound(backButton->height()), 32);
+        QCOMPARE(QQmlProperty(backButton, "icon.width").read().toInt(), 16);
+        // aria labels via common.close / common.back.
+        auto *closeAccessible = QAccessible::queryAccessibleInterface(closeButton); QVERIFY(closeAccessible);
+        auto *backAccessible = QAccessible::queryAccessibleInterface(backButton); QVERIFY(backAccessible);
+        QCOMPARE(closeAccessible->text(QAccessible::Name),
+            locale == "ru" ? QString::fromUtf8("Закрыть") : QString("Close"));
+        QCOMPARE(backAccessible->text(QAccessible::Name),
+            locale == "ru" ? QString::fromUtf8("Назад") : QString("Back"));
+        // The title shares the header row and truncates (truncate text-base h2).
+        harness.evaluate("rightDrawer.title = 'Partner information for the current conversation'");
+        auto *title = visibleItem("nativeRightDrawerTitle"); QVERIFY(title);
+        QCOMPARE(QQmlProperty(title, "elide").read().toInt(), harness.evaluate("Text.ElideRight").toInt());
+        QCOMPARE(title->width() < harness.window->width(), true);
+        // Back pops only the internal screen: settings -> account root, back hidden again.
+        click(harness.window, backButton);
+        QTRY_VERIFY(!visibleItem("nativeRightDrawerBack"));
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
+    }
+
+    void rightDrawerPromotesExistingLayersInsteadOfDuplicating()
+    {
+        RightDrawerHarness harness;
+        // Reference "promotes an existing account layer instead of duplicating it".
+        harness.evaluate("rightDrawer.openUserMenu()");
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        QCOMPARE(harness.readString("topLayerKind"), QString("account"));
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QCOMPARE(harness.readInt("topScreenCount"), 2);
+        harness.evaluate("rightDrawer.openInfo()");
+        QCOMPARE(harness.readInt("layerCount"), 2);
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        // Promotion keeps a single chat-info layer: kinds stay [chat-info, account].
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QCOMPARE(harness.readInt("layerCount"), 2);
+        QCOMPARE(harness.readString("topLayerKind"), QString("account"));
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("settings"));
+        harness.evaluate("rightDrawer.openInfo()");
+        QCOMPARE(harness.readInt("layerCount"), 2);
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // "X closes the active layer and reveals the previous one".
+        harness.evaluate("rightDrawer.closeCurrent()");
+        QCOMPARE(harness.readString("topLayerKind"), QString("account"));
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("settings"));
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // "Closing the last layer hides the drawer and leaves an empty stack".
+        harness.evaluate("rightDrawer.closeCurrent()");
+        QVERIFY(!visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 0);
+        QCOMPARE(harness.evaluate("rightDrawer.drawerOpen").toBool(), false);
+    }
+
+    void rightDrawerBackPopsNestedScreensOnly()
+    {
+        RightDrawerHarness harness;
+        // "Back pops only internal screen history".
+        harness.evaluate("rightDrawer.openUserMenu()");
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        harness.evaluate("rightDrawer.back()"); // root screen: back must not close the layer
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // Encrypted chat three-screen flow walks back without loops.
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        const auto scope = [&](const QString &screen) { return drawerChatScope("o1", 1, "s1", screen); };
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("settings") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("key") + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        QCOMPARE(harness.readString("currentChatScreen"), QString("key"));
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentChatScreen"), QString("settings"));
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentChatScreen"), QString(""));
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readInt("topScreenCount"), 1);
+        QCOMPARE(harness.readInt("layerCount"), 2); // both layers survive; only screens pop
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // "keeps local-key UUIDs distinct and returns to the existing list without a Back loop".
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("settings") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("key") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope("o1", 1, "s1", "local-key", "historical-a") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope("o1", 1, "s1", "local-key", "historical-b") + ")");
+        QCOMPARE(harness.readString("currentChatKeyUuid"), QString("historical-b"));
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentChatKeyUuid"), QString("historical-a"));
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("key") + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), 3); // reuses the list position, no loop
+        harness.evaluate("rightDrawer.back()");
+        QCOMPARE(harness.readString("currentChatScreen"), QString("settings"));
+        // A runtime generation change drops the chat screens back to the root.
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope("o1", 1, "s1", "local-key", "historical-a") + ")");
+        harness.evaluate("rightDrawer.resetChatScreens({ownerKey:'o1',runtimeGeneration:2,streamUuid:'s1'})");
+        QCOMPARE(harness.readString("currentChatScreen"), QString(""));
+        QCOMPARE(harness.readInt("topScreenCount"), 1);
+    }
+
+    void rightDrawerIgnoresDuplicateTopScreenPush()
+    {
+        RightDrawerHarness harness;
+        // "does not duplicate the active account screen".
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QCOMPARE(harness.readInt("topScreenCount"), 2);
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QCOMPARE(harness.readInt("topScreenCount"), 2);
+        // An identical chat scope/screen is a no-op.
+        const QString scope = drawerChatScope("o1", 1, "s1", "settings");
+        harness.evaluate("rightDrawer.openChatScreen(" + scope + ")");
+        const int chatScreens = harness.readInt("topScreenCount");
+        harness.evaluate("rightDrawer.openChatScreen(" + scope + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), chatScreens);
+        // A repeated profile override is a no-op; openInfo resets the nested profile.
+        harness.evaluate("rightDrawer.openUserProfile(42)");
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        QCOMPARE(harness.readString("currentProfileOverride"), QString("legacy-user-id:42"));
+        harness.evaluate("rightDrawer.openUserProfile(42)");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        harness.evaluate("rightDrawer.openInfo()");
+        QCOMPARE(harness.readInt("topScreenCount"), 1);
+        QCOMPARE(harness.readString("currentProfileOverride"), QString(""));
+    }
+
+    void rightDrawerCollapsesWithoutDeletingHistory()
+    {
+        RightDrawerHarness harness;
+        // "collapses and expands without deleting layer or screen history".
+        harness.evaluate("rightDrawer.openUserMenu()");
+        harness.evaluate("rightDrawer.openAccountScreen('appearance')");
+        harness.evaluate("rightDrawer.toggleVisibility()");
+        QVERIFY(!visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        QCOMPARE(harness.readInt("topScreenCount"), 2);
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("appearance"));
+        harness.evaluate("rightDrawer.toggleVisibility()");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readString("currentAccountScreen"), QString("appearance"));
+        // Chat header toggle: opens chat-info, clicking again collapses, history intact.
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        QVERIFY(!visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 2);
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        // An empty stack seeds the chat-info root on expand (setOpen contract).
+        harness.evaluate("rightDrawer.clearAll()");
+        QVERIFY(!visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 0);
+        harness.evaluate("rightDrawer.toggleVisibility()");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 1);
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+    }
+
+    void rightDrawerConversationSwitchDropsNestedChatScreens()
+    {
+        const QString betaId = "9d000000-0000-4000-8000-000000000001";
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/"))
+                return {QJsonArray{windowChannel(streamId, "Alpha"), windowChannel(betaId, "Beta")}};
+            if (path.endsWith("/streams/" + streamId)) return {windowChannel(streamId, "Alpha")};
+            if (path.endsWith("/streams/" + betaId)) return {windowChannel(betaId, "Beta")};
+            if (path.endsWith("/users/"))
+                return {QJsonArray{QJsonObject{{"uuid", userId}, {"username", "cassi"}}}};
+            if (path.endsWith("/stream_topics/")) {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == betaId) return {QJsonArray{windowChannelTopic(topicId, betaId, "Beta General")}};
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Alpha General")}};
+            }
+            if (path.endsWith("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        RightDrawerHarness harness;
+        harness.controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&]{ return harness.controller.projects().size() == 1; }, 3000))
+            QFAIL("Right drawer mock session did not sign in");
+        harness.controller.openProject(projectId);
+        QTRY_COMPARE(harness.controller.streams().size(), 2);
+        harness.controller.selectStream(streamId);
+        QTRY_COMPARE(harness.controller.selectedStream(), streamId);
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        const int generation = harness.window->property("rightDrawerRuntimeGeneration").toInt();
+        QVERIFY2(generation >= 1, "login must advance the right drawer runtime generation");
+        const auto ownerKey = harness.evaluate("root.rightDrawerChatScope.ownerKey").toString();
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope(ownerKey, generation, streamId, "settings") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope(ownerKey, generation, streamId, "key") + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        // The same stream retains navigation.
+        harness.evaluate("root.resetRightDrawerChatScreens()");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        // A conversation switch drops the other conversation's screens and keeps the root.
+        harness.controller.selectStream(betaId);
+        QTRY_COMPARE(harness.controller.selectedStream(), betaId);
+        QTRY_COMPARE(harness.readInt("topScreenCount"), 1);
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        QCOMPARE(harness.readString("currentChatScreen"), QString(""));
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        harness.controller.selectStream(streamId);
+        QTRY_COMPARE(harness.controller.selectedStream(), streamId);
+        QCOMPARE(harness.readInt("topScreenCount"), 1); // dropped screens are not restored
+        // A runtime generation change resets hidden chat screens the same way.
+        harness.evaluate("rightDrawer.openChatScreen(" + drawerChatScope(ownerKey, generation, streamId, "key") + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), 2);
+        QVERIFY(harness.window->setProperty("rightDrawerRuntimeGeneration", generation + 1));
+        QTRY_COMPARE(harness.readInt("topScreenCount"), 1);
+        // Signing out clears the drawer entirely.
+        harness.controller.logout();
+        QTRY_VERIFY(!harness.controller.authenticated());
+        QTRY_COMPARE(harness.readInt("layerCount"), 0);
+        QVERIFY(!visibleItem("nativeRightDrawer"));
+    }
+
+    void rightDrawerEscapeClosesTopLayerThenHidesDrawer()
+    {
+        RightDrawerHarness harness;
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        harness.evaluate("rightDrawer.openAccountScreen('settings')");
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        QTest::keyClick(harness.window, Qt::Key_Escape);
+        QCOMPARE(harness.readString("topLayerKind"), QString("chat-info"));
+        QVERIFY(visibleItem("nativeRightDrawer"));
+        QTest::keyClick(harness.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("nativeRightDrawer"));
+        QCOMPARE(harness.readInt("layerCount"), 0);
+    }
+
+private:
+    struct RightDrawerHarness {
+        QTemporaryDir directory;
+        NativePreferences preferences;
+        ApiClient api{nullptr, true};
+        Session session;
+        NativeController controller;
+        QQmlApplicationEngine engine;
+        QPointer<QQuickWindow> window;
+        explicit RightDrawerHarness(const QString &locale = QString(), const QString &mode = QString())
+            : preferences(directory.filePath("preferences.ini")), session(&api), controller(&api, &session)
+        {
+            QVERIFY(directory.isValid());
+            if (!locale.isEmpty()) preferences.setLocale(locale);
+            if (!mode.isEmpty()) preferences.setMode(mode);
+            loadNativeUi(engine, &controller, &preferences);
+            window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+            QVERIFY(window);
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            window->requestActivate();
+            QVERIFY(QTest::qWaitForWindowActive(window));
+        }
+        ~RightDrawerHarness()
+        {
+            if (window && !closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Right drawer shell teardown", __FILE__, __LINE__);
+        }
+        QVariant evaluate(const QString &script)
+        {
+            QQmlExpression expression(qmlContext(window), window, script);
+            auto value = expression.evaluate();
+            if (expression.hasError())
+                QTest::qFail(qPrintable(QString("QML: ") + expression.error().toString()), __FILE__, __LINE__);
+            if (value.metaType() == QMetaType::fromType<QJSValue>()) value = value.value<QJSValue>().toVariant();
+            return value;
+        }
+        int readInt(const QString &name) { return evaluate("rightDrawer." + name).toInt(); }
+        QString readString(const QString &name) { return evaluate("rightDrawer." + name).toString(); }
+    };
+    static QString drawerChatScope(const QString &ownerKey, int runtimeGeneration,
+        const QString &streamUuid, const QString &screen, const QString &keyUuid = QString())
+    {
+        return QString("({ownerKey:'%1',runtimeGeneration:%2,streamUuid:'%3',screen:'%4'%5})")
+            .arg(ownerKey).arg(runtimeGeneration).arg(streamUuid).arg(screen)
+            .arg(keyUuid.isEmpty() ? QString() : QString(",keyUuid:'%1'").arg(keyUuid));
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {
