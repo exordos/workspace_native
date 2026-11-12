@@ -11,6 +11,7 @@ constexpr auto kPublicHost = "meet.jit.si";
 struct EffectiveBase {
     QString baseUrl;
     QString domain;
+    int port = -1;
 };
 
 EffectiveBase effective(const QString &meetUrl)
@@ -18,9 +19,9 @@ EffectiveBase effective(const QString &meetUrl)
     const auto fromSettings = normalizeMeetOrigin(meetUrl);
     if (!fromSettings.isEmpty()) {
         const QUrl url(fromSettings);
-        return {fromSettings, url.host().toLower()};
+        return {fromSettings, url.host().toLower(), url.port()};
     }
-    return {QString::fromLatin1(kDefaultJitsiMeetBase), QString::fromLatin1(kPublicHost)};
+    return {QString::fromLatin1(kDefaultJitsiMeetBase), QString::fromLatin1(kPublicHost), -1};
 }
 
 QString normalizedUrl(const QString &meetingUrl)
@@ -92,7 +93,12 @@ QString normalizeMeetOrigin(const QString &value)
     const auto scheme = parsed.scheme().toLower();
     if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
         return QString();
-    QString origin = scheme + QLatin1String("://") + parsed.host().toLower();
+    // QUrl::host() reports an IPv6 address without its required brackets;
+    // put them back so the serialized origin stays a valid authority.
+    QString host = parsed.host().toLower();
+    if (host.contains(QLatin1Char(':')))
+        host = QLatin1Char('[') + host + QLatin1Char(']');
+    QString origin = scheme + QLatin1String("://") + host;
     if (parsed.port() != -1)
         origin += QLatin1Char(':') + QString::number(parsed.port());
     return origin;
@@ -143,13 +149,23 @@ QString getJitsiMeetingUrl(const QString &content, const QString &meetUrl)
     const auto eff = effective(meetUrl);
     const auto trimmed = content.trimmed();
     if (!eff.baseUrl.isEmpty()) {
-        if (trimmed.startsWith(eff.baseUrl + QLatin1Char('/')))
-            return trimmed;
+        if (trimmed.startsWith(eff.baseUrl + QLatin1Char('/'))) {
+            // The prefix shortcut must stop at the first whitespace: prose
+            // after a leading meeting link is not part of the URL.
+            auto end = 0;
+            while (end < trimmed.size() && !trimmed.at(end).isSpace())
+                ++end;
+            return trimmed.left(end);
+        }
         if (trimmed == eff.baseUrl)
             return QString();
     }
-    const auto domain = QRegularExpression::escape(eff.domain);
-    const QRegularExpression pattern(QStringLiteral("https?://(%1|meet\\.jit\\.si)/[^\\s<>\"']+").arg(domain),
+    // An embedded link on the configured host may carry the configured port;
+    // a different port is a different origin and must not match.
+    auto hostPattern = QRegularExpression::escape(eff.domain);
+    if (eff.port != -1)
+        hostPattern += QStringLiteral("(:%1)?").arg(eff.port);
+    const QRegularExpression pattern(QStringLiteral("https?://(%1|meet\\.jit\\.si)/[^\\s<>\"']+").arg(hostPattern),
         QRegularExpression::CaseInsensitiveOption);
     const auto match = pattern.match(trimmed);
     return match.hasMatch() ? match.captured(0) : QString();
