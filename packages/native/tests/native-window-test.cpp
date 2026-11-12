@@ -10236,8 +10236,19 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(header->mapToScene(QPointF()).y(), qreal(69 + (QOperatingSystemVersion::currentType() == QOperatingSystemVersion::MacOS ? 28 : 0)));
         } else if (check == "composer") {
             auto *send = item(content, "sendButton");
-            QVERIFY(send && send->parentItem() && send->parentItem()->parentItem());
-            QCOMPARE(send->parentItem()->parentItem()->height(), qreal(57));
+            QVERIFY(send);
+            // Padded composer region per the reference at workspace_ui 61dacef:
+            // message-composer.ui.tsx:2040 `relative flex min-h-0 flex-1 flex-col p-2`
+            // wrapping the :2119-2121 input row `flex min-h-0 flex-1 items-end gap-3`
+            // whose input box is `min-h-10` (40px). Border-box height of the region:
+            // 1px composer rule + p-2 (8x2) + 40 = 57. The #122 restructure inserted
+            // the toolbar row and an inner row wrapper, so the old send grandparent
+            // now lands on the 40px input row; anchor to the stable objectNames.
+            auto *region = item(content, "messageComposerShell");
+            auto *inputColumn = item(content, "composerInputColumn");
+            QVERIFY(region && inputColumn);
+            QCOMPARE(region->height(), qreal(57));
+            QCOMPARE(inputColumn->height(), qreal(40));
             QCOMPARE(send->width(), qreal(40));
             QCOMPARE(send->height(), qreal(40));
         } else if (check == "rail") {

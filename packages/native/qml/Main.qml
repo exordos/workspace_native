@@ -5527,6 +5527,10 @@ ApplicationWindow {
                     }
                 }
                 ColumnLayout {
+                    // Padded composer column: message-composer.ui.tsx:2040
+                    // (workspace_ui 61dacef) `relative flex min-h-0 flex-1 flex-col p-2`;
+                    // the shell's border-box plus the top rule makes the region 57 px.
+                    objectName: "composerInputColumn"
                     anchors.fill: parent
                     anchors.margins: 8
                     anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
