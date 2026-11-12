@@ -1,6 +1,9 @@
 #include "native-auth-guard.h"
+#include "native-preferences.h"
 
+#include <QSettings>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <functional>
@@ -211,6 +214,75 @@ private slots:
         QEvent showRequest(QEvent::Show);
         QVERIFY(!guard.eventFilter(&guard, &showRequest));
         QCOMPARE(guard.expiresAtMs(), deadlineAfterActivity);
+    }
+
+    // Acceptance (5): settings.model.ts:75,94 - absent preset means "3d".
+    void authIdleTimeoutDefaultsToThreeDays()
+    {
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("3d"));
+    }
+
+    // Acceptance (5): settings.model.ts:175-178 - invalid persisted values
+    // sanitize to "3d" on load, in both anonymous and owner scopes.
+    void invalidStoredAuthIdleTimeoutSanitizesToThreeDays()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        {
+            QSettings settings(path, QSettings::IniFormat);
+            settings.setValue("settings/anonymous/authIdleTimeout", "13h");
+            settings.setValue("settings/owners/" + QString(64, 'a') + "/authIdleTimeout", QString{});
+            settings.sync();
+        }
+        NativePreferences preferences(path);
+        QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("3d"));
+        preferences.setOwner(QString(64, 'a'));
+        QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("3d"));
+    }
+
+    // Acceptance (7): settings.model.ts:289-293 - the chosen preset persists
+    // in the current owner's scope and survives a settings restart.
+    void authIdleTimeoutSurvivesRestartPerOwner()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        {
+            NativePreferences preferences(path);
+            preferences.setOwner(QString(64, 'a'));
+            preferences.setAuthIdleTimeout(QStringLiteral("24h"));
+            QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("24h"));
+        }
+        NativePreferences restarted(path);
+        QCOMPARE(restarted.authIdleTimeout(), QStringLiteral("3d")); // anonymous scope untouched
+        restarted.setOwner(QString(64, 'a'));
+        QCOMPARE(restarted.authIdleTimeout(), QStringLiteral("24h"));
+        restarted.setOwner(QString(64, 'b'));
+        QCOMPARE(restarted.authIdleTimeout(), QStringLiteral("3d")); // owners are isolated
+        restarted.setOwner(QString(64, 'a'));
+        QCOMPARE(restarted.authIdleTimeout(), QStringLiteral("24h"));
+    }
+
+    // The setter is the future #135 row surface: it stores the sanitized
+    // preset immediately and notifies exactly once per effective change.
+    void authIdleTimeoutSetterSanitizesPersistsAndNotifies()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QSignalSpy changed(&preferences, &NativePreferences::authIdleTimeoutChanged);
+        preferences.setAuthIdleTimeout(QStringLiteral("6h"));
+        QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("6h"));
+        QCOMPARE(changed.count(), 1);
+        preferences.setAuthIdleTimeout(QStringLiteral("6h"));
+        QCOMPARE(changed.count(), 1); // no duplicate notification
+        preferences.setAuthIdleTimeout(QStringLiteral("8h")); // not a preset
+        QCOMPARE(preferences.authIdleTimeout(), QStringLiteral("3d"));
+        QCOMPARE(changed.count(), 2);
+        NativePreferences restarted(path);
+        restarted.setOwner(QString(64, 'c'));
+        QCOMPARE(restarted.authIdleTimeout(), QStringLiteral("3d")); // invalid value was not stored
     }
 };
 
