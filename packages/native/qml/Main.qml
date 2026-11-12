@@ -5520,6 +5520,7 @@ ApplicationWindow {
                 // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
                 Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
+                    + replyTabStrip.height
                     + (replyNotice.visible ? replyNotice.height : 0)
                 color: root.colors["composer-outer"]
                 radius: 10
@@ -5586,6 +5587,129 @@ ApplicationWindow {
                         }
                     }
                 }
+                // Multi-reply tab strip (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md).
+                // Source measures (workspace_ui 61dacef workspace-reply.ui.tsx +
+                // message-composer-preface.ui.tsx:231-243): visible only when more
+                // than one tab exists (chat-page-composer-section.ui.tsx:135-142);
+                // row insets 8 px with top 8 / bottom 4, pills spaced 6 px; each pill
+                // is 32 px tall, rounded-xl (12 px) with a 1 px border, sender label
+                // px-3 capped at 184 px of elided text-sm (14 px) medium text; the
+                // active pill fills accent/15 with text-primary, the rest stay muted;
+                // the close button is 32 x 32 with a 14 px icon; the dismiss moves
+                // into this row while the strip is visible.
+                Rectangle {
+                    id: replyTabStrip
+                    objectName: "replyTabStrip"
+                    y: editMessageNotice.visible ? editMessageNotice.height : 0
+                    width: parent.width
+                    // Height-collapsed rather than visible-toggled: a hidden view never
+                    // materializes its delegates, so the strip collapses to 0 px instead
+                    // (reference overflow-x-auto scroll row).
+                    height: replyTabRow.count > 1 ? 44 : 0
+                    clip: true
+                    color: root.colors["composer-outer"]
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        anchors.topMargin: 8
+                        anchors.bottomMargin: 4
+                        spacing: 6
+                        ListView {
+                            id: replyTabRow
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 32
+                            height: 32
+                            orientation: ListView.Horizontal
+                            boundsBehavior: Flickable.StopAtBounds
+                            spacing: 6
+                            clip: true
+                            model: root.controller.replyTabs
+                            delegate: Rectangle {
+                                    required property var modelData
+                                    objectName: "replyTab-" + modelData.id
+                                        width: replyTabContents.implicitWidth
+                                        height: 32
+                                        radius: 12
+                                        border.width: 1
+                                        border.color: root.colors["border-subtle"]
+                                        color: modelData.active
+                                            ? Qt.alpha(root.colors.accent, 0.15)
+                                            : Qt.alpha(root.colors["bg-elevated"], 0.5)
+                                        Accessible.role: Accessible.PageTab
+                                        Accessible.name: modelData.label + ": " + qsTr("Reply")
+                                        RowLayout {
+                                            id: replyTabContents
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            spacing: 0
+                                            Text {
+                                                Layout.maximumWidth: 184
+                                                Layout.preferredWidth: Math.min(implicitWidth, 184)
+                                                Layout.alignment: Qt.AlignVCenter
+                                                text: modelData.author
+                                                textFormat: Text.PlainText
+                                                font.pixelSize: 14
+                                                font.weight: Font.Medium
+                                                elide: Text.ElideRight
+                                                color: modelData.active
+                                                    ? root.colors["text-primary"]
+                                                    : root.colors["text-muted"]
+                                            }
+                                            NativeIconButton {
+                                                objectName: "replyTabClose-" + modelData.id
+                                                Layout.preferredWidth: 32
+                                                Layout.preferredHeight: 32
+                                                implicitWidth: 32
+                                                implicitHeight: 32
+                                                colors: root.colors
+                                                asset: "close.svg"
+                                                glyphSize: 14
+                                                cornerRadius: 12
+                                                help: qsTr("Close: %1").arg(modelData.author)
+                                                onClicked: root.controller.removeReplyTab(modelData.id)
+                                            }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            // The 32 px close button starts at x = width - 32;
+                                            // leave 1 px of overlap so the pill centre (and the
+                                            // author text) always selects the tab.
+                                            anchors.rightMargin: 31
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.controller.selectReplyTab(modelData.id)
+                                        }
+                                    }
+                            }
+                        Rectangle {
+                            // The dismiss shares the tab row while tabs are visible
+                            // (clearReplyOnTabsRow, message-composer-preface.ui.tsx:237-241).
+                            visible: replyTabStrip.height > 0
+                            objectName: replyTabStrip.height > 0 ? "cancelReplyButton" : ""
+                            Layout.alignment: Qt.AlignTop
+                            Layout.preferredWidth: Math.max(40, cancelReplyStripText.implicitWidth + 24)
+                            Layout.preferredHeight: 28
+                            radius: 8
+                            color: cancelReplyStripArea.containsMouse ? Qt.alpha(root.colors["text-primary"], 0.08) : "transparent"
+                            Text {
+                                id: cancelReplyStripText
+                                anchors.centerIn: parent
+                                text: qsTr("Cancel")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                color: root.colors["text-muted"]
+                            }
+                            MouseArea {
+                                id: cancelReplyStripArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.controller.cancelReply()
+                            }
+                        }
+                    }
+                }
                 // Reply preview (docs/NATIVE_DESKTOP_REPLIES.md). Source measures
                 // (workspace_ui 61dacef message-composer-reply-quote-preview.ui.tsx +
                 // shared/ui/workspace-message-quote-frame + message-composer-preface.ui.tsx:222-262):
@@ -5596,7 +5720,8 @@ ApplicationWindow {
                 Rectangle {
                     id: replyNotice
                     objectName: "replyNotice"
-                    y: editMessageNotice.visible ? editMessageNotice.height : 0
+                    y: (editMessageNotice.visible ? editMessageNotice.height : 0)
+                        + replyTabStrip.height
                     width: parent.width
                     height: 12 + replyQuoteFrame.height
                     color: root.colors["composer-outer"]
@@ -5669,7 +5794,7 @@ ApplicationWindow {
                             color: cancelReplyArea.containsMouse ? Qt.alpha(root.colors["text-primary"], 0.08) : "transparent"
                             Text {
                                 id: cancelReplyText
-                                objectName: "cancelReplyButton"
+                                objectName: replyTabStrip.height > 0 ? "" : "cancelReplyButton"
                                 anchors.centerIn: parent
                                 text: qsTr("Cancel")
                                 textFormat: Text.PlainText
@@ -5694,6 +5819,7 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 8
                     anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
+                        + replyTabStrip.height
                         + (replyNotice.visible ? replyNotice.height : 0)
                     spacing: 4
                     RowLayout {

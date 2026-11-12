@@ -147,6 +147,14 @@ All store work lands in `packages/native/src/native-controller.cpp/.h`
   acceptance case "reorder changes block order"; the drop-indicator geometry is
   documented above for the follow-up that adds the gesture. Keyboard tab
   navigation follows the roving model through strip clicks only.
+- Rendering notes for the strip (not behaviour deviations): the strip collapses
+  to `height: 0` instead of toggling `visible`, because a view with `visible:
+  false` never materializes its ListView delegates; the horizontal overflow is
+  a `ListView.Horizontal` (the reference `overflow-x-auto` equivalent); delegate
+  items attach to the visual (item) tree asynchronously after the model change,
+  so window tests walk `childItems()` until pills appear; the pill hit-test
+  excludes the close button with a 1 px overlap so the geometric centre always
+  selects rather than closes.
 
 ## Tests
 

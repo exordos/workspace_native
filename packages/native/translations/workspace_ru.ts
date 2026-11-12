@@ -170,6 +170,10 @@
             <translation>Ответить: %1</translation>
         </message>
         <message>
+            <source>Close: %1</source>
+            <translation>Закрыть: %1</translation>
+        </message>
+        <message>
             <source>Quote</source>
             <translation>Цитата</translation>
         </message>

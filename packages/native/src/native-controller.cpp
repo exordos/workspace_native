@@ -9197,6 +9197,14 @@ void NativeController::setDraft(const QString &text)
     } else {
         m_drafts.insert(conversationKey(), text); ++m_draftRevisions[conversationKey()];
     }
+    // Draft lockstep (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md): while a reply
+    // session is open the composer value *is* the active tab's answer
+    // (chat-page-workspace.ui.tsx:3085-3097 routes value changes to
+    // setWorkspaceReplyAnswer instead of the plain text).
+    if (!m_replyTabs.isEmpty()) {
+        for (auto &tab : m_replyTabs)
+            if (tab.id == m_replyActiveTab && tab.answer != text) tab.answer = text;
+    }
     if (!guard) return;
     emit draftChanged();
     emit stateChanged();
@@ -10105,20 +10113,34 @@ void NativeController::send()
     if (!canSend())
         return;
     const auto text = draft();
-    // Reply composition contract (workspace_ui 61dacef workspace-reply.lib.ts:190-212):
-    // "[Name](urn:quote:uuid)" + blank line + answer, trailing whitespace trimmed.
-    const auto replyId = m_replyMessage;
+    // Reply composition contract (workspace_ui 61dacef workspace-reply.lib.ts:190-211):
+    // every reply tab serializes as "[Name](urn:quote:uuid)" + blank line + answer,
+    // blocks joined by blank lines in tab order with trailing whitespace trimmed.
+    const auto replyActive = m_replyActiveTab;
+    QStringList replySnapshot;
+    for (const auto &tab : std::as_const(m_replyTabs)) replySnapshot << tab.id;
     // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
     // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
     // mention serialization happens before the reply quote prefix join).
     auto wire = serializeComposerMentions(text, composerMentionEntries());
-    if (!replyId.isEmpty()) {
-        const auto quoteLine = workspace::buildWorkspaceQuoteReference(replyAuthor(), replyId);
-        if (quoteLine.isEmpty()) {
-            report(tr("This message can no longer be replied to."));
-            return;
+    if (!m_replyTabs.isEmpty()) {
+        QStringList blocks;
+        for (const auto &tab : std::as_const(m_replyTabs)) {
+            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
+                replyAuthorFor(tab.message), tab.message);
+            if (quoteLine.isEmpty()) {
+                report(tr("This message can no longer be replied to."));
+                return;
+            }
+            // The active tab answers with the live composer text (mention-serialized
+            // like the single-slot flow); the others carry the answer captured while
+            // they were active.
+            const auto answer = (tab.id == m_replyActiveTab ? wire : tab.answer).trimmed();
+            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
-        wire = (quoteLine + QStringLiteral("\n\n") + wire).trimmed();
+        auto body = blocks.join(QStringLiteral("\n\n"));
+        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
+        wire = body;
     }
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
@@ -10143,7 +10165,7 @@ void NativeController::send()
     const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", stream}, {"topic_uuid", topic},
         {"payload", QJsonObject{{"kind", "markdown"}, {"content", intent.wire}}}};
     request("POST", messenger + "/messages/", body, {},
-        [this, stream, topic, text, conversation, intent, context, replyId](const ApiResult &result) {
+        [this, stream, topic, text, conversation, intent, context, replyActive, replySnapshot](const ApiResult &result) {
         staleConversation(stream, topic);
         const auto sent = parseMessage(result.data.toObject(), m_session->project());
         if (!result.ok() || !sent || sent->stream != stream || sent->topic != topic
@@ -10159,7 +10181,7 @@ void NativeController::send()
             finishMessageIntent(intent.uuid);
         }
         request("GET", messenger + "/messages/" + canonicalId, {}, {},
-            [this, stream, topic, text, conversation, intent, context, canonicalId, replyId](const ApiResult &confirmation) {
+            [this, stream, topic, text, conversation, intent, context, canonicalId, replyActive, replySnapshot](const ApiResult &confirmation) {
             staleConversation(stream, topic);
             m_sending = false;
             const bool deleted = m_messageFields.value(canonicalId).deleted;
@@ -10190,7 +10212,12 @@ void NativeController::send()
             }
             finishMessageIntent(canonicalId);
             m_error.clear();
-            if (!replyId.isEmpty() && m_replyMessage == replyId) closeReplySession();
+            // Close the session only if no tab was added, removed or switched while
+            // the send was in flight (single-slot precedent generalized to the tab set).
+            QStringList replyNow;
+            for (const auto &tab : std::as_const(m_replyTabs)) replyNow << tab.id;
+            if (!replySnapshot.isEmpty() && m_replyActiveTab == replyActive && replyNow == replySnapshot)
+                closeReplySession();
             const QPointer<NativeController> guard(this);
             emit draftChanged();
             if (!guard) return;
@@ -10850,11 +10877,112 @@ bool NativeController::beginReply(const QString &id)
         return false;
     }
     if (!m_editingMessage.isEmpty()) closeEditSession();
-    if (m_replyMessage != id) {
-        m_replyMessage = id;
+    // replyToWorkspaceReply (workspace-reply.lib.ts:26-57): an empty session gets a
+    // first tab that inherits the composer text; otherwise only the active tab's
+    // quote is replaced, keeping its id and answer (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md).
+    if (m_replyTabs.isEmpty()) {
+        ReplyTab tab;
+        tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tab.message = id;
+        tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+        tab.answer = draft();
+        m_replyTabs.append(tab);
+        m_replyActiveTab = tab.id;
         m_replyRoute = conversationKey();
         emit replySessionChanged();
+        return true;
     }
+    for (auto &tab : m_replyTabs) {
+        if (tab.id != m_replyActiveTab) continue;
+        if (tab.message != id) {
+            tab.message = id;
+            m_replyRoute = conversationKey();
+            emit replySessionChanged();
+        }
+        return true;
+    }
+    return true;
+}
+
+bool NativeController::addReplyTab(const QString &id)
+{
+    const auto *stream = currentStream();
+    const auto *message = findMessage(id);
+    if (!authoritativeRoute() || !stream || stream->encrypted || !message
+        || message->kind != "markdown"
+        || message->stream != m_stream || message->topic != m_topic) {
+        report(tr("This message can no longer be replied to."));
+        return false;
+    }
+    if (!m_editingMessage.isEmpty()) closeEditSession();
+    // addWorkspaceReplyTab (workspace-reply.lib.ts:59-79) via the page wiring
+    // (chat-page-workspace.ui.tsx:4166-4181): append a fresh blank-answer tab and
+    // activate it; on an empty session the first tab inherits the composer text.
+    if (m_replyTabs.isEmpty()) return beginReply(id);
+    ReplyTab tab;
+    tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    tab.message = id;
+    tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    m_replyTabs.append(tab);
+    m_replyActiveTab = tab.id;
+    m_replyRoute = conversationKey();
+    emit replySessionChanged();
+    // The composer mirrors the active tab's (empty) answer from now on.
+    setDraft(QString());
+    return true;
+}
+
+bool NativeController::selectReplyTab(const QString &tabId)
+{
+    for (const auto &tab : std::as_const(m_replyTabs)) {
+        if (tab.id != tabId) continue;
+        if (m_replyActiveTab == tabId) return false;
+        m_replyActiveTab = tabId;
+        emit replySessionChanged();
+        setDraft(tab.answer);
+        return true;
+    }
+    return false; // selectWorkspaceReplyTab is a no-op for unknown ids
+}
+
+void NativeController::removeReplyTab(const QString &tabId)
+{
+    // removeWorkspaceReplyTab (workspace-reply.lib.ts:136-153) plus the page-side
+    // draft rule (chat-page-workspace.ui.tsx:3030-3041): closing the last tab leaves
+    // the answer in the composer; closing the active tab points the composer at the
+    // following tab, then the previous one.
+    const auto removedIndex = std::find_if(m_replyTabs.cbegin(), m_replyTabs.cend(),
+        [&](const ReplyTab &tab) { return tab.id == tabId; }) - m_replyTabs.cbegin();
+    if (removedIndex >= m_replyTabs.size()) return;
+    const auto wasActive = m_replyActiveTab == tabId;
+    m_replyTabs.removeAt(removedIndex);
+    if (m_replyTabs.isEmpty()) { m_replyActiveTab.clear(); m_replyRoute.clear(); emit replySessionChanged(); return; }
+    if (!wasActive) { emit replySessionChanged(); return; }
+    // Active-tab fallback: the tab at the old index, then the previous one.
+    const auto fallback = m_replyTabs.value(std::min(removedIndex,
+        static_cast<qsizetype>(m_replyTabs.size()) - 1));
+    m_replyActiveTab = fallback.id;
+    emit replySessionChanged();
+    setDraft(fallback.answer);
+}
+
+bool NativeController::reorderReplyTab(const QString &tabId, int destinationIndex)
+{
+    // reorderWorkspaceReplyTab (workspace-reply.lib.ts:159-192): destination is an
+    // insertion index in the list before removal, clamped to [0, count]; the active
+    // tab is untouched and a no-op move reports false.
+    if (m_replyTabs.size() < 2) return false;
+    const auto sourceIt = std::find_if(m_replyTabs.cbegin(), m_replyTabs.cend(),
+        [&](const ReplyTab &tab) { return tab.id == tabId; });
+    if (sourceIt == m_replyTabs.cend()) return false;
+    const auto sourceIndex = sourceIt - m_replyTabs.cbegin();
+    const auto bounded = qBound(0, destinationIndex, static_cast<int>(m_replyTabs.size()));
+    const auto adjusted = bounded > sourceIndex ? bounded - 1 : bounded;
+    if (adjusted == sourceIndex) return false;
+    const auto moved = m_replyTabs.at(sourceIndex);
+    m_replyTabs.removeAt(sourceIndex);
+    m_replyTabs.insert(adjusted, moved);
+    emit replySessionChanged();
     return true;
 }
 
@@ -10865,23 +10993,37 @@ void NativeController::cancelReply()
 
 void NativeController::closeReplySession()
 {
-    if (m_replyMessage.isEmpty()) return;
-    m_replyMessage.clear();
+    if (m_replyTabs.isEmpty()) return;
+    m_replyTabs.clear();
+    m_replyActiveTab.clear();
     m_replyRoute.clear();
     emit replySessionChanged();
 }
 
-QString NativeController::replyAuthor() const
+QString NativeController::replyMessageId() const
 {
-    const auto *message = m_replyMessage.isEmpty() ? nullptr : findMessage(m_replyMessage);
+    for (const auto &tab : m_replyTabs)
+        if (tab.id == m_replyActiveTab) return tab.message;
+    return {};
+}
+
+QString NativeController::replyAuthorFor(const QString &id) const
+{
+    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
     if (!message) return {};
     const bool own = message->own || message->author == m_session->user();
     return userDisplayName(message->author, own ? tr("You") : QStringLiteral("#") + message->author.left(8));
 }
 
+QString NativeController::replyAuthor() const
+{
+    return replyAuthorFor(replyMessageId());
+}
+
 QString NativeController::replyExcerpt() const
 {
-    const auto *message = m_replyMessage.isEmpty() ? nullptr : findMessage(m_replyMessage);
+    const auto id = replyMessageId();
+    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
     if (!message) return {};
     // QUOTE_PREVIEW_MAX = 80 (workspace_ui 61dacef message-composer-constants.lib.ts:3):
     // whitespace-collapsed summary truncated with the ASCII "..." marker.
@@ -10891,6 +11033,28 @@ QString NativeController::replyExcerpt() const
     const auto text = previewCache.render(message->content).value("plain").toString().simplified();
     if (text.size() <= maximumCharacters) return text;
     return text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
+}
+
+QVariantList NativeController::replyTabs() const
+{
+    // Strip model rows (workspace-reply.ui.tsx getTabLabel): "Name: <excerpt>"
+    // with a 36-char whitespace-collapsed excerpt, or the bare name when empty.
+    QVariantList rows;
+    for (const auto &tab : m_replyTabs) {
+        const auto author = replyAuthorFor(tab.message);
+        const auto *message = findMessage(tab.message);
+        auto excerpt = message
+            ? NativeMarkdown().render(message->content).value("plain").toString().simplified()
+            : QString();
+        if (excerpt.size() > 36) excerpt = excerpt.left(36).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+        rows.append(QVariantMap{
+            {"id", tab.id}, {"message", tab.message}, {"author", author},
+            {"excerpt", excerpt}, {"answer", tab.answer},
+            {"label", excerpt.isEmpty() ? author : author + QStringLiteral(": ") + excerpt},
+            {"active", tab.id == m_replyActiveTab},
+        });
+    }
+    return rows;
 }
 
 void NativeController::openMessageInChat(const QString &id)
@@ -11378,7 +11542,7 @@ void NativeController::settleEditRouteChange()
         closeEditSession();
     // The reply slot belongs to the conversation that started it
     // (docs/NATIVE_DESKTOP_REPLIES.md); leaving the conversation ends the session.
-    if (!m_replyMessage.isEmpty() && conversationKey() != m_replyRoute)
+    if (!m_replyTabs.isEmpty() && conversationKey() != m_replyRoute)
         closeReplySession();
 }
 
