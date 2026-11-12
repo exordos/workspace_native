@@ -7019,19 +7019,34 @@ void NativeController::selectWorkspaceSession(const QString &id)
 void NativeController::logoutWorkspaceSession(const QString &id)
 {
     if (busy() || id.isEmpty()) return;
-    const bool current = id == m_session->currentSavedAccountId();
+    // The switcher renders the live identity as current even when the session
+    // has no saved-account binding: sessionSwitcherSessions() synthesizes the
+    // row id from server, project and user. Logging out that row must clear
+    // the live session, not try to forget a row the vault never remembered.
+    const auto liveId = authenticated() ? SessionVault::accountId(m_api->server(),
+        m_session->project(), m_session->user()) : QString();
+    const bool current = id == m_session->currentSavedAccountId()
+        || (!liveId.isEmpty() && id == liveId);
     if (!current) { forgetSavedAccount(id); return; }
+    QString nextId;
+    bool remembered = false;
+    for (const auto &account : m_session->savedAccounts()) {
+        if (account.id == id) { remembered = true; continue; }
+        if (nextId.isEmpty()) nextId = account.id;
+    }
+    if (!remembered) {
+        // Synthesized live identity: there is no durable entry to erase, so
+        // sign the live session out (standard teardown path) and hand the
+        // window to the next remembered inbox.
+        m_session->logout();
+        if (!nextId.isEmpty()) m_session->resumeSavedAccount(nextId);
+        return;
+    }
     // Removing the active session detaches the live identity, removes the
     // remembered account through the same durable-cache path, then activates
     // the next remembered inbox (resolveWorkspacePostLogoutRoute). The
     // successor must be chosen before the removal, because the vault list
     // drops the entry synchronously.
-    QString nextId;
-    for (const auto &account : m_session->savedAccounts()) {
-        if (account.id == id) continue;
-        nextId = account.id;
-        break;
-    }
     forgetSavedAccountWithFollowUp(id, [this, nextId] {
         if (!nextId.isEmpty()) m_session->resumeSavedAccount(nextId);
     });
