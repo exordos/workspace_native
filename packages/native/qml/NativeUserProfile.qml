@@ -637,9 +637,22 @@ Item {
                 spacing: 8
                 Repeater {
                     model: page.chipModel()
-                    delegate: ProfileChip {
+                    // With ComponentBehavior: Bound the view context injection
+                    // can only satisfy required properties declared on the
+                    // inline delegate root (the detail rows rely on that);
+                    // a separate component root such as ProfileChip must be
+                    // fed explicitly, or delegate creation fails at runtime.
+                    delegate: Item {
+                        id: chipHost
                         required property var modelData
-                        Layout.fillWidth: !modelData.hug
+                        Layout.fillWidth: !chipHost.modelData.hug
+                        Layout.preferredWidth: profileChip.implicitWidth
+                        Layout.preferredHeight: profileChip.implicitHeight
+                        ProfileChip {
+                            id: profileChip
+                            anchors.fill: parent
+                            modelData: chipHost.modelData
+                        }
                     }
                 }
             }
