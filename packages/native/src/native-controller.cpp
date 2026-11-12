@@ -9809,14 +9809,31 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
     const qreal reserve = qMax<qreal>(100.0, viewportHeightPx);
-    if (distanceFromTopPx >= reserve) {
+    // Reference parity (hook :1172-1197): both comparisons are inclusive, so
+    // a note exactly at the reserve arms and proceeds to the trigger check in
+    // the same call; a note strictly above the reserve only re-arms.
+    if (distanceFromTopPx >= reserve)
         m_olderPrefetchArmed = true;
-        return;
-    }
-    if (!m_olderPrefetchArmed || !canLoadOlder())
+    if (distanceFromTopPx > reserve || !m_olderPrefetchArmed || !canLoadOlder())
         return;
     m_olderPrefetchArmed = false;
     loadOlder();
+}
+
+// Issue #212 review: the viewport swap after an older-page commit runs with
+// the view's positioning gate raised, mirroring the reference
+// programmaticScrollRef, so the controller never sees the restored geometry
+// and could stay disarmed above the reserve. The view calls this with the
+// restored geometry once the swap settles. It only re-arms when the restored
+// position is at or above the reserve and never calls loadOlder(): a
+// programmatic restore alone can start no request, preserving the reference
+// user-attribution gate.
+void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHeightPx)
+{
+    if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
+        return;
+    if (distanceFromTopPx >= qMax<qreal>(100.0, viewportHeightPx))
+        m_olderPrefetchArmed = true;
 }
 
 void NativeController::loadMessages(bool older)

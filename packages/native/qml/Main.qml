@@ -3752,6 +3752,12 @@ ApplicationWindow {
                     }
                     pendingViewport = null;
                     positioning = false;
+                    // Issue #212 review: the swap suppressed every scroll note
+                    // (positioning gate), so re-arm the controller's prefetch
+                    // from the restored geometry - re-arm only; this call can
+                    // never start a request, keeping programmatic movement
+                    // unattributed as user scrolling.
+                    root.controller.noteScrollRearm(distanceFromTop, height)
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                     maybeAdvanceHiddenWindow();

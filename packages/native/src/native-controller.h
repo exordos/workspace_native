@@ -385,6 +385,11 @@ public:
     // scrollTop analogue (loaded content above the viewport top),
     // viewportHeightPx the visible list height.
     Q_INVOKABLE void noteScrollReserve(qreal distanceFromTopPx, qreal viewportHeightPx);
+    // Issue #212 review: re-arm-only variant of noteScrollReserve, called by
+    // the view after a programmatic viewport restore (the positioning gate
+    // suppresses regular notes during the swap). It can arm but never starts
+    // a request, so programmatic movement alone keeps user attribution.
+    Q_INVOKABLE void noteScrollRearm(qreal distanceFromTopPx, qreal viewportHeightPx);
     Q_INVOKABLE void reopenTopic();
     Q_INVOKABLE bool canStartDirectChatWith(const QString &peer) const;
     Q_INVOKABLE void startDirectChat(const QString &peer);
