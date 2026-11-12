@@ -1007,6 +1007,36 @@ Development stops after acceptance of this feature, at the user's request.
 Subsequent rows below are deferred planning, not scheduled or authorized ongoing
 work after the pause.
 
+## Notification-click window activation (issue #117)
+
+A desktop-notification click previously only routed the conversation: the
+banner was consumed and the topic opened, but a minimized or tray-hidden
+window stayed invisible. The click now also requests window activation
+through the existing guarded activation path.
+
+Reference measurements (workspace_ui, read-only): the Electron main process
+handles `notification.on("click")` by forwarding `notifications:click` to
+the renderer and then calling `dispatchInternalNavigation(clickRoute)` or
+`showMainWindow()` (packages/electron/src/main.ts:1170-1179). Both reach
+`focusMainWindow` (main.ts:516-572): `restore()` when minimized, `show()`
+when hidden, then `win.focus()` plus `app.focus({steal: true})`, with queued
+route delivery released after focus or a 400 ms fallback (main.ts:124). Tray
+menu entries and second-instance/deep-link activation use the same path
+(main.ts:582-589, 627-635). The `powerMonitor` and unread-indicator code does
+not participate in the click-activation path.
+
+In the native client `NotificationService::click()` now emits a dedicated
+`activationRequested` signal, and only when the tag resolves to a live
+aggregate entry or a live generic fallback route; expired, retired or
+unknown tags keep the full no-op, so a signed-out owner's stale click cannot
+activate anything. `main.cpp` connects the signal to the same `activate`
+lambda used by tray activation and second-instance deep links, keeping the
+shutdown guard and `NativePreferences::activateWindow()` (show, raise and
+requestActivate with maximized/full-screen normalization). Controller
+tests cover activation requests for valid aggregate and fallback clicks and
+the dead-tag no-op. The production signal/callback chain was inspected; a
+live desktop-daemon reproduction has not been run.
+
 ## Next ten Linux releases
 
 The following is the current delivery order requested by the user, starting
