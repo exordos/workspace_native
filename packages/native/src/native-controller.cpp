@@ -3142,12 +3142,13 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
 void NativeController::setChannelInfoNotificationMode(const QString &mode)
 {
     const auto *stream = channelInfoStreamRow();
-    if (!stream || m_channelInfoNotificationBusy || stream->notificationMode.isEmpty()
+    if (!stream || channelInfoNotificationBusy() || stream->notificationMode.isEmpty()
         || stream->notificationMode == mode || !channelModes.contains(mode)) return;
     const auto owner = ownerKey();
     const auto generation = m_api->generation();
     const auto streamUuid = stream->uuid;
     m_channelInfoNotificationBusy = true;
+    m_channelInfoNotificationBusyStream = streamUuid;
     m_channelInfoNotificationError.clear();
     emit stateChanged();
     // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
@@ -3217,6 +3218,10 @@ void NativeController::removeChannelInfoMember(const QString &bindingUuid)
         m_channelInfoMembers.erase(std::remove_if(m_channelInfoMembers.begin(), m_channelInfoMembers.end(),
             [binding](const ChannelInfoMember &row) { return row.bindingUuid == binding; }),
             m_channelInfoMembers.end());
+        // A successful mutation invalidates member loads still in flight: a
+        // response fetched before this change may not overwrite its result.
+        ++m_channelInfoTicket;
+        m_channelInfoLoading = false;
         emit stateChanged();
     });
 }
@@ -3290,6 +3295,10 @@ void NativeController::addChannelInfoMembers(const QStringList &userUuids)
                 continue;
             m_channelInfoMembers.append(ChannelInfoMember{binding, user, raw.value("role").toString()});
         }
+        // The mutation wins over any member load still in flight: bumping the
+        // ticket drops the stale page instead of letting it replace this row.
+        ++m_channelInfoTicket;
+        m_channelInfoLoading = false;
         ++m_channelInfoAddSettled;
         emit channelInfoAddSettledChanged();
         emit stateChanged();
