@@ -5971,10 +5971,19 @@ void NativeController::forgetSavedAccountWithFollowUp(const QString &id, std::fu
                 report(tr("The local cache could not be cleared. The saved account was kept."));
                 return;
             }
-            m_session->forgetSavedAccount(id);
+            // Wait for the secure-store removal and only then hand over: the
+            // successor resume advances the session attempt and its sign-out
+            // reset would otherwise swallow (or pre-empt) the removal result.
+            m_session->forgetSavedAccount(id, [this, guard, done = std::move(done)](const QString &removalError) {
+                if (!guard) return;
+                // The successor's reset clears m_error, so re-report the
+                // removal failure afterwards to keep it visible to the user.
+                if (done) done();
+                if (!removalError.isEmpty())
+                    report(tr("The saved credential could not be removed. %1").arg(removalError));
+            });
             m_sessionProjections.remove(id);
             if (guard) emit stateChanged();
-            if (done) done();
         });
         if (!guard) return;
         if (!accepted) {
@@ -5983,10 +5992,19 @@ void NativeController::forgetSavedAccountWithFollowUp(const QString &id, std::fu
         }
         return;
     }
-    m_session->forgetSavedAccount(id);
+    const QPointer<NativeController> tailGuard(this);
+    m_session->forgetSavedAccount(id, [this, tailGuard, done = std::move(done)](const QString &removalError) {
+        if (!tailGuard) return;
+        // The successor's reset clears m_error, so re-report the removal
+        // failure afterwards: the failure must outlive the handover, not be
+        // discarded by it (review on PR #170).
+        if (done) done();
+        if (!removalError.isEmpty())
+            report(tr("The saved credential could not be removed. %1").arg(removalError));
+    });
+    if (!tailGuard) return;
     m_sessionProjections.remove(id);
     emit stateChanged();
-    if (done) done();
 }
 
 void NativeController::logout()

@@ -30,7 +30,11 @@ public:
     void detach();
     void resumeSavedAccount(const QString &id);
     void resumeCurrentAccount();
-    void forgetSavedAccount(const QString &id);
+    // Removing a saved identity is asynchronous. The optional completion is
+    // invoked with the secure-store error (empty on success) once the vault
+    // answers, independent of any newer session attempt, so callers can wait
+    // for the removal result before they start the next session.
+    void forgetSavedAccount(const QString &id, std::function<void(QString error)> done = {});
     void login(const QUrl &server, const QString &login, const QString &password,
                const QString &otp = {});
     // Public organization discovery for the login wizard (no bearer auth). The
@@ -39,7 +43,10 @@ public:
         std::function<void(bool ok, QVariantMap settings, QString error)> done);
     void selectProject(const QString &uuid);
     void requestRefresh();
-    void logout();
+    // Signs out the live identity and removes its saved credential. The
+    // optional completion receives the secure-store error (empty on success)
+    // regardless of any session attempt advanced afterwards.
+    void logout(std::function<void(QString error)> done = {});
     QString project() const { return m_project; }
     QString user() const { return m_user; }
     bool ready() const { return m_ready; }
