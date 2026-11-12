@@ -5765,16 +5765,20 @@ ApplicationWindow {
                                         }
                                         return null;
                                     }
-                                    // Insert the highlighted "@DisplayName " in place of the
-                                    // mention token and record the pick for frecency ranking;
-                                    // the draft keeps the visible name (URNs only appear on the wire).
+                                    // Insert the highlighted visible form in place of
+                                    // the mention token and record the pick for frecency
+                                    // ranking; the draft keeps the visible name (URNs only
+                                    // appear on the wire). visibleText is the serializer's
+                                    // key: the bare name for a unique display name, the
+                                    // disambiguated "Name (username)" for a shared one.
                                     function insertComposerMention(row) {
                                         const start = composerMentionPopup.tokenStart;
                                         if (start < 0 || !row || typeof row !== "object")
                                             return;
-                                        const next = text.slice(0, start) + "@" + String(row.displayName)
+                                        const visible = String(row.visibleText || row.displayName);
+                                        const next = text.slice(0, start) + "@" + visible
                                             + " " + text.slice(selectionEnd);
-                                        const caret = start + 1 + String(row.displayName).length + 1;
+                                        const caret = start + 1 + visible.length + 1;
                                         root.controller.recordMentionPick(String(row.userUuid));
                                         const owner = root.controller.ownStatusContextKey;
                                         const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
@@ -6357,7 +6361,10 @@ ApplicationWindow {
                                     Text {
                                         objectName: "composerMentionName" + index
                                         Layout.fillWidth: true
-                                        text: String(mentionRow.displayName || "")
+                                        // visibleText matches what Enter inserts and what
+                                        // the send serializer converts: duplicated display
+                                        // names show the "(username)" disambiguation here.
+                                        text: String(mentionRow.visibleText || mentionRow.displayName || "")
                                         elide: Text.ElideRight
                                         font.pixelSize: 14
                                         color: root.colors["text-primary"]
