@@ -2591,4 +2591,19 @@
             <translation>Медиа %1</translation>
         </message>
     </context>
+    <context>
+        <name>NativeRightDrawer</name>
+        <message>
+            <source>Info panel</source>
+            <translation>Панель информации</translation>
+        </message>
+        <message>
+            <source>Back</source>
+            <translation>Назад</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+    </context>
 </TS>
