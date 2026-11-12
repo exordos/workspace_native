@@ -33,6 +33,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QVariantList suggestedReactions READ suggestedReactions NOTIFY reactionHistoryChanged)
     Q_PROPERTY(QVariantMap quickReactionUsage READ quickReactionUsage NOTIFY reactionHistoryChanged)
     Q_PROPERTY(QStringList organizationHistory READ organizationHistory NOTIFY organizationHistoryChanged)
+    Q_PROPERTY(QString authIdleTimeout READ authIdleTimeout WRITE setAuthIdleTimeout NOTIFY authIdleTimeoutChanged)
 public:
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
@@ -59,6 +60,11 @@ public:
     QStringList loadLastConversation(const QString &owner);
     void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
     QStringList organizationHistory() const { return m_organizationHistory; }
+    // Issue #165: the reference authIdleTimeout setting (enforced by
+    // NativeAuthGuard; the settings row itself is issue #135). Absent or
+    // invalid values resolve to "3d" like settings.model.ts:75,175-178.
+    QString authIdleTimeout() const { return m_authIdleTimeout; }
+    void setAuthIdleTimeout(const QString &preset);
     // Mention frecency (mention-frecency.lib.ts): decayed pick counts per user,
     // partitioned by the opaque caller scope (the controller's creation owner,
     // which stays valid on loopback fixtures where the HTTPS vault owner is empty).
@@ -98,9 +104,12 @@ signals:
     void cacheStatusChanged();
     void reactionHistoryChanged();
     void mentionFrecencyChanged();
+    void authIdleTimeoutChanged();
 
 private:
     QString appearanceGroup() const;
+    QString settingsGroup() const;
+    void loadAuthIdleTimeout();
     void loadAppearance();
     void persist();
     void setError(const QString &error);
@@ -142,6 +151,7 @@ private:
     QString m_pendingConversationOwner;
     QStringList m_pendingConversation;
     QStringList m_organizationHistory;
+    QString m_authIdleTimeout = QStringLiteral("3d");
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
 };

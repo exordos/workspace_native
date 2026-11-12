@@ -1,4 +1,5 @@
 #include "native-preferences.h"
+#include "native-auth-guard.h"
 #include "domain.h"
 
 #include <QGuiApplication>
@@ -118,6 +119,7 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
         if (storedLimit >= 1 && storedLimit <= 1000) m_cacheLimitGb = storedLimit;
     }
     loadAppearance();
+    loadAuthIdleTimeout();
 }
 
 NativePreferences::~NativePreferences()
@@ -230,6 +232,7 @@ void NativePreferences::setOwner(const QString &owner)
         // owner's history, including while the language/theme is changing.
         loadReactionHistory();
         loadAppearance();
+        loadAuthIdleTimeout();
     }
     if (!valid) setError(tr("The appearance preference scope is invalid."));
 }
@@ -248,6 +251,32 @@ void NativePreferences::recordOwnStatusAway(const QString &owner, bool away)
     const auto key = "presence/owners/" + owner + "/manualAway";
     if (away) m_settings.setValue(key, true); else m_settings.remove(key);
     m_settings.sync(); // Source writeManualStatus is best effort after a successful response.
+}
+
+QString NativePreferences::settingsGroup() const
+{
+    return m_owner.isEmpty() ? QStringLiteral("settings/anonymous")
+                             : QStringLiteral("settings/owners/") + m_owner;
+}
+
+void NativePreferences::loadAuthIdleTimeout()
+{
+    const auto old = m_authIdleTimeout;
+    // settings.model.ts:175-178: an invalid persisted value loads as "3d".
+    m_authIdleTimeout = NativeAuthGuard::sanitizePreset(
+        m_settings.value(settingsGroup() + "/authIdleTimeout", QStringLiteral("3d")).toString());
+    if (m_authIdleTimeout != old)
+        emit authIdleTimeoutChanged();
+}
+
+void NativePreferences::setAuthIdleTimeout(const QString &preset)
+{
+    const auto next = NativeAuthGuard::sanitizePreset(preset);
+    if (next == m_authIdleTimeout) return;
+    m_authIdleTimeout = next;
+    m_settings.setValue(settingsGroup() + "/authIdleTimeout", next);
+    m_settings.sync();
+    emit authIdleTimeoutChanged();
 }
 
 void NativePreferences::persist()
