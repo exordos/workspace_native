@@ -6116,6 +6116,26 @@ QString mentionNormalize(const QString &value)
     return sourceTrimmed(folded);
 }
 
+// message-composer.ui.tsx displayNameCounts: users sharing a display name carry
+// the disambiguated "Name (username)" visible form. The ranked suggestion rows
+// (what the popup shows and inserts) and the composerMentionEntries serializer
+// input both derive it here, so the two sides can never diverge.
+QMap<QString, int> mentionDisplayNameCounts(const QVariantList &candidates)
+{
+    QMap<QString, int> counts;
+    for (const auto &value : candidates)
+        counts[value.toMap().value("displayName").toString()] += 1;
+    return counts;
+}
+
+QString mentionVisibleText(const QMap<QString, int> &counts, const QVariantMap &row)
+{
+    const auto displayName = row.value("displayName").toString();
+    return counts.value(displayName) > 1
+        ? displayName + QStringLiteral(" (") + row.value("username").toString() + QLatin1Char(')')
+        : displayName;
+}
+
 // mention-suggest.lib.ts WORD_SEPARATOR.
 QStringList mentionWords(const QString &folded)
 {
@@ -6171,6 +6191,7 @@ QVariantList NativeController::rankMentionSuggestions(const QString &query,
 {
     const auto normalizedQuery = mentionNormalize(query);
     const auto tokens = mentionWords(normalizedQuery);
+    const auto nameCounts = mentionDisplayNameCounts(candidates);
     struct Scored { QVariantMap row; int tier; int score; };
     QVector<Scored> scored;
     for (const auto &value : candidates)
@@ -6217,6 +6238,9 @@ QVariantList NativeController::rankMentionSuggestions(const QString &query,
         // applyChannelMembership: only known non-members carry the chip fact.
         if (context.membersKnown && !context.channelMembers.contains(uuid))
             row.insert("outsideChannel", true);
+        // The exact visible string the composer inserts and the send serializer
+        // matches; duplicated display names carry the "(username)" disambiguation.
+        row.insert("visibleText", mentionVisibleText(nameCounts, row));
         rows.append(row);
     }
     return rows;
@@ -6325,20 +6349,16 @@ void NativeController::recordMentionPick(const QString &userUuid)
 QVector<ComposerMention> NativeController::composerMentionEntries() const
 {
     // message-composer.ui.tsx displayNameCounts: users sharing a display name
-    // serialize as "Name (username)" so the bare name stays ambiguous.
+    // serialize as "Name (username)" so the bare name stays ambiguous. The same
+    // helper fills the ranked rows, so insert and serialization agree exactly.
     QVector<ComposerMention> entries;
     const auto candidates = mentionCandidates();
-    QMap<QString, int> nameCounts;
-    for (const auto &value : candidates)
-        nameCounts[value.toMap().value("displayName").toString()] += 1;
+    const auto nameCounts = mentionDisplayNameCounts(candidates);
     for (const auto &value : candidates)
     {
         const auto row = value.toMap();
-        const auto displayName = row.value("displayName").toString();
-        const auto visibleText = nameCounts.value(displayName) > 1
-            ? displayName + QStringLiteral(" (") + row.value("username").toString() + QLatin1Char(')')
-            : displayName;
-        entries.append({row.value("userUuid").toString(), displayName, visibleText});
+        entries.append({row.value("userUuid").toString(), row.value("displayName").toString(),
+            mentionVisibleText(nameCounts, row)});
     }
     return entries;
 }
