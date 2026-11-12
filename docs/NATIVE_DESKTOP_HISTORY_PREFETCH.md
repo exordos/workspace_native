@@ -99,9 +99,15 @@ before the boundary is reached.
   cache-verification) returns without consuming it, so end of history neither
   loops nor storms: further notes are no-ops while `m_before` is empty.
 - Re-arm sites: any note at or above the reserve; a fresh window commit
-  (`!older` success in `historyPage`); `reset()`; and a failed history request
+  (`!older` success in `historyPage`); `reset()`; a failed history request
   (the `!result.ok()` branch), so a failed prefetch becomes retryable on the
-  next user scroll instead of silently disarming forever.
+  next user scroll instead of silently disarming forever; and the settled
+  viewport restore - `restoreViewport()` ends with a re-arm-only
+  `noteScrollRearm(distanceFromTop, height)` call because the `positioning`
+  gate suppressed every note during the swap and the controller would
+  otherwise keep a consumed arm above the restored reserve. `noteScrollRearm`
+  can only arm (at or above the reserve) and can never start a request, so
+  programmatic movement keeps its lack of user attribution (PR #212 review).
 - Non-finite inputs are ignored (defensive against mid-layout NaN geometry).
 
 This placement makes the acceptance-critical trigger semantics (fires while
