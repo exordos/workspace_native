@@ -1156,6 +1156,181 @@ public:
     }
 };
 
+// Issue #132: channel info drawer content on the ordinary channel scene.
+// Serves a stream with four members (one online twin pair), a user directory
+// with presence statuses and emails, one addable stranger (dave), plus the
+// notification invoke, add_users and stream binding DELETE endpoints.
+// Geometry oracles live in the test cases and cite
+// packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx and
+// packages/web/src/shared/ui/notification-level-switch/
+// notification-level-switch.lib.ts at 61dacef78dab2f5d0be76f283bebf49fe29b84af.
+class WindowChannelInfoFixture : public WindowChannelFixture {
+public:
+    static QString bindingId(int number)
+    {
+        return QStringLiteral("83000000-0000-4000-8000-%1")
+            .arg(number, 12, 10, QLatin1Char('0'));
+    }
+    static QString extraUser(int number)
+    {
+        return QStringLiteral("9a000000-0000-4000-8000-%1")
+            .arg(number, 12, 10, QLatin1Char('0'));
+    }
+    QString bobUser = extraUser(2);
+    QString carolUser = extraUser(3);
+    QString daveUser = extraUser(4);
+    QJsonObject streamRow;
+    QJsonArray members;
+    QJsonArray servedMembers;
+    int notifPosts = 0, removeDeletes = 0, memberDelay = 120;
+    int notifStatus = 200;
+    QJsonObject notifBody;
+    WindowChannelInfoFixture(bool streamOwner = true)
+    {
+        streamRow = windowChannel(streamId, "Info channel");
+        // color oracle: resolveAvatarBackgroundColor(0x4b98e6) -> #4b98e6
+        // (packages/web/src/shared/lib/avatar-color.lib.ts).
+        streamRow["description"] = "Synthetic purpose.";
+        streamRow["color"] = 0x4b98e6;
+        streamRow["role"] = streamOwner ? "owner" : "member";
+        users = QJsonArray{
+            userRow(userId, "cassi", "Cassi", "active", "cassi@example.invalid"),
+            userRow(channelPeer, "alice", "Alice", "active", "alice@example.invalid"),
+            userRow(bobUser, "bob", "Bob", "idle", "bob@example.invalid"),
+            userRow(carolUser, "carol", "Carol", QJsonValue(), "carol@example.invalid"),
+            userRow(daveUser, "dave", "Dave", "offline", "dave@example.invalid")};
+        members = QJsonArray{
+            bindingRow(bindingId(1), userId, streamOwner ? "owner" : "member"),
+            bindingRow(bindingId(2), channelPeer, "member"),
+            bindingRow(bindingId(3), bobUser, "administrator"),
+            bindingRow(bindingId(4), carolUser, "member")};
+        servedMembers = members;
+        auto base = server.handler;
+        server.handler = [this, base](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/") && !path.contains("/messages/"))
+                return {QJsonArray{streamRow}};
+            if (request.method == "GET" && path.endsWith("/streams/" + streamId))
+                return {streamRow};
+            if (request.method == "GET" && path.endsWith("/stream_bindings/"))
+                return {servedMembers, 200, memberDelay};
+            if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
+                ++notifPosts;
+                notifBody = request.body;
+                auto row = streamRow;
+                row["notification_mode"] = request.body.value("notification_mode");
+                return {row, notifStatus, notifStatus == 200 ? 180 : 160};
+            }
+            if (request.method == "DELETE" && path.contains("/stream_bindings/")) {
+                ++removeDeletes;
+                const auto uuid = path.section(QLatin1Char('/'), -1);
+                QJsonArray rest;
+                for (const auto &value : members)
+                    if (value.toObject().value("uuid").toString() != uuid) rest.append(value);
+                members = rest;
+                servedMembers = rest;
+                return {QJsonObject{}, 200};
+            }
+            if (request.method == "POST" && path.endsWith("/actions/add_users/invoke")) {
+                ++memberPosts;
+                memberBody = request.body;
+                QJsonArray rows;
+                int number = 5;
+                for (const auto &value : request.body.value("member").toArray()) {
+                    const auto row = bindingRow(QStringLiteral("83000000-0000-4000-8000-%1")
+                        .arg(number++, 12, 10, QLatin1Char('0')), value.toString(), "member");
+                    rows.append(row);
+                    members.append(row);
+                    servedMembers.append(row);
+                }
+                return {rows, 200, 120};
+            }
+            return base(request);
+        };
+    }
+    static QJsonObject userRow(const QString &id, const QString &username, const QString &name,
+                               const QJsonValue &status, const QString &email)
+    {
+        QJsonObject row{{"uuid", id}, {"username", username}, {"first_name", name},
+            {"source", "iam"}, {"avatar", QJsonValue::Null}, {"email", email},
+            {"last_ping_at", "2026-01-02T10:00:00Z"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        if (!status.isNull()) row["status"] = status;
+        return row;
+    }
+    // Binding DTO fields as validated by creationBindings (native-controller.cpp)
+    // and the reference WorkspaceMessengerStreamBindingDto.
+    static QJsonObject bindingRow(const QString &id, const QString &user, const QString &role)
+    {
+        return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"user_uuid", user}, {"who_uuid", userId}, {"role", role},
+            {"notification_mode", "all_messages"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+    }
+};
+
+// Shared live window scene: sign in, select the channel and open the drawer's
+// chat-info root screen where the channel info layer mounts.
+struct ChannelInfoWindowScene {
+    WindowChannelInfoFixture fixture;
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    ApiClient api{nullptr, true};
+    Session session;
+    NativeController controller;
+    QQmlApplicationEngine engine;
+    QPointer<QQuickWindow> window;
+    explicit ChannelInfoWindowScene(bool streamOwner = true)
+        : fixture(streamOwner), preferences(directory.filePath("channel-info.ini")),
+          session(&api), controller(&api, &session)
+    {
+        QVERIFY(directory.isValid());
+        preferences.setLocale("en");
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+    }
+    ~ChannelInfoWindowScene()
+    {
+        if (window && !closeIncubatedTestWindow(engine, window))
+            QTest::qFail("channel info scene teardown", __FILE__, __LINE__);
+    }
+    QVariant evaluate(const QString &script)
+    {
+        QQmlExpression expression(qmlContext(window), window, script);
+        auto value = expression.evaluate();
+        if (expression.hasError())
+            QTest::qFail(qPrintable("QML: " + expression.error().toString()), __FILE__, __LINE__);
+        if (value.metaType() == QMetaType::fromType<QJSValue>())
+            value = value.value<QJSValue>().toVariant();
+        return value;
+    }
+    void openChannelInfo()
+    {
+        // chat-info seeds a single info screen (NativeRightDrawer.screensFor),
+        // so openInfo lands directly on the channel info root screen.
+        evaluate("rightDrawer.openInfo()");
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+    }
+    QString text(const QString &objectName)
+    {
+        auto *entry = visibleItem(objectName);
+        return entry ? entry->property("text").toString() : QString();
+    }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -12613,6 +12788,208 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(harness.readString("currentAccountScreen"), QString("root"));
     }
 
+    // Issue #132: header summary (48px avatar with the stream color, title,
+    // "X members, Y online" subline) plus the three blocks in reference
+    // order. Oracles: right-panel-workspace-info.ui.tsx at
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af (header px-4 py-3, avatar lg
+    // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
+    // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
+    // and packages/web/src/shared/lib/avatar-color.lib.ts for the color.
+    void windowChannelInfoHeaderSummary()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoHeader"));
+        auto *avatar = visibleItem("channelInfoAvatar");
+        QVERIFY(avatar);
+        QCOMPARE(avatar->width(), 48.0);   // avatar.tsx SIZE_CLASS.lg h-12 w-12
+        QCOMPARE(avatar->height(), 48.0);
+        // color oracle: resolveAvatarBackgroundColor(0x4b98e6) -> #4b98e6
+        QCOMPARE(avatar->property("color").value<QColor>(), QColor("#4b98e6"));
+        auto *title = visibleItem("channelInfoTitle");
+        QVERIFY(title);
+        QCOMPARE(title->property("text").toString(), QStringLiteral("Info channel"));
+        // subline is `${count} members, ${online} online`; counts wait on the
+        // members page (messenger-chat-header.lib.ts XChatOnlineCountPair).
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("channelInfoSubline"),
+            QStringLiteral("4 members, 2 online"), 5000);
+        auto *content = scene.window->contentItem();
+        QVERIFY(hasVisibleText(content, QStringLiteral("Notifications")));
+        QVERIFY(hasVisibleText(content, QStringLiteral(" (For entire chat)")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Description")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Synthetic purpose.")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Members")));
+        QVERIFY(visibleItem("channelInfoNotificationSwitch"));
+        QVERIFY(!visibleItem("channelInfoNotificationUnsupported"));
+        // block order follows the reference: notifications, description, members
+        const auto switchY = visibleItem("channelInfoNotificationSwitch")
+            ->mapToScene(QPointF(0, 0)).y();
+        const auto descY = visibleItem("channelInfoDescriptionHeading")
+            ->mapToScene(QPointF(0, 0)).y();
+        const auto membersY = visibleItem("channelInfoMembersHeading")
+            ->mapToScene(QPointF(0, 0)).y();
+        QVERIFY(switchY < descY);
+        QVERIFY(descY < membersY);
+        // title column starts after the 48px avatar plus the gap-4 (16px) gap
+        const auto avatarPos = avatar->mapToScene(QPointF(0, 0));
+        const auto titlePos = title->mapToScene(QPointF(0, 0));
+        QVERIFY(titlePos.x() >= avatarPos.x() + 48.0 + 16.0 - 1.0);
+    }
+
+    // Issue #132: the notification switch (notification-level-switch.lib.ts:
+    // subscribed=all_messages bell, mentions_only at, muted bell_off; the whole
+    // switch is disabled while the update POST runs; the request body is
+    // {notification_mode} against streams/{id}/actions/notifications/invoke,
+    // and a click on the current level sends nothing).
+    void windowChannelInfoNotificationSwitchPersists()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("all_messages"));
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        // the whole switch is disabled during the in-flight update (isDisabled)
+        QVERIFY(!visibleItem("channelInfoNotifSubscribed")->property("enabled").toBool());
+        QVERIFY(!visibleItem("channelInfoNotifDefault")->property("enabled").toBool());
+        QTRY_VERIFY(!scene.fixture.notifBody.isEmpty());
+        QCOMPARE(scene.fixture.notifBody.value("notification_mode").toString(),
+            QStringLiteral("muted"));
+        QTRY_VERIFY(!scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("muted"));
+        QVERIFY(scene.text("channelInfoNotificationError").isEmpty());
+        QVERIFY(visibleItem("channelInfoNotifMuted")->property("enabled").toBool());
+        click(scene.window, visibleItem("channelInfoNotifMuted"));  // same level: no request
+        QTest::qWait(250);
+        QCOMPARE(scene.fixture.notifPosts, 1);
+        QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("muted"));
+    }
+
+    // Issue #132: a failed level update keeps the previous mode and surfaces
+    // the reference failure text (t("app.error") -> "Something went wrong",
+    // notification-level-switch.lib.ts), under the switch, and a later
+    // success recovers and clears it.
+    void windowChannelInfoNotificationSwitchFailureKeepsError()
+    {
+        ChannelInfoWindowScene scene;
+        scene.fixture.notifStatus = 500;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_COMPARE(scene.text("channelInfoNotificationError"), QStringLiteral("Something went wrong"));
+        QVERIFY(!scene.evaluate("controller.channelInfoNotificationBusy").toBool());
+        QVERIFY(visibleItem("channelInfoNotifMuted")->property("enabled").toBool());
+        QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("all_messages"));  // failed update keeps the old level
+        scene.fixture.notifStatus = 200;
+        click(scene.window, visibleItem("channelInfoNotifMuted"));
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
+            QStringLiteral("muted"));
+        QTRY_VERIFY(visibleItem("channelInfoNotificationError") == nullptr);
+    }
+
+    // Issue #132: member rows (WorkspaceMemberCard: sm avatar with presence
+    // dot, name text-sm, role chip text-[10px], secondary text-[11px] with
+    // resolveWorkspaceStatusLabel(status) ?? email fallback) plus the self
+    // removal affordance against DELETE /stream_bindings/{uuid}; the owner
+    // sees removal on every row (canRemove = own || stream owner).
+    void windowChannelInfoMemberRowsAndSelfRemoval()
+    {
+        ChannelInfoWindowScene scene;
+        const auto selfBinding = scene.fixture.bindingId(1);
+        scene.openChannelInfo();
+        QTRY_VERIFY(visibleItem("channelInfoMember-" + selfBinding));
+        QVERIFY(visibleItem("channelInfoMember-" + scene.fixture.bindingId(2)));
+        QVERIFY(visibleItem("channelInfoMember-" + scene.fixture.bindingId(4)));
+        // role chip labels (roleLabel): Owner on the own row, Administrator
+        // on the moderator twin row
+        QCOMPARE(scene.text("channelInfoMemberRole-" + selfBinding), QStringLiteral("Owner"));
+        QCOMPARE(scene.text("channelInfoMemberRole-" + scene.fixture.bindingId(3)),
+            QStringLiteral("Administrator"));
+        // display names come from the verified user directory
+        QCOMPARE(scene.text("channelInfoMemberName-" + scene.fixture.bindingId(2)),
+            QStringLiteral("Alice"));
+        // presence line: active renders the online status label
+        QCOMPARE(scene.text("channelInfoMemberSecondary-" + selfBinding), QStringLiteral("online"));
+        // unknown presence falls back to the email (status ?? email oracle)
+        QCOMPARE(scene.text("channelInfoMemberSecondary-" + scene.fixture.bindingId(4)),
+            QStringLiteral("carol@example.invalid"));
+        // the stream owner can ask removal on foreign rows and on the own row
+        QVERIFY(visibleItem("channelInfoRemove-" + scene.fixture.bindingId(2)));
+        QVERIFY(visibleItem("channelInfoRemove-" + selfBinding));
+        click(scene.window, visibleItem("channelInfoRemove-" + selfBinding));
+        QTRY_COMPARE(scene.fixture.removeDeletes, 1);
+        QTRY_VERIFY(!visibleItem("channelInfoMember-" + selfBinding));
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 3);
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("3 members, 1 online"));
+        QVERIFY(scene.text("channelInfoMemberError").isEmpty());
+    }
+
+    // Issue #132: the owner-only Add members dialog (reference lines 99-246):
+    // the picker is the user directory minus current members, filtering by
+    // name/username/email, single selection posts exactly {member:[uuid]} to
+    // streams/{id}/actions/add_users/invoke and the response bindings append
+    // to the member list before the dialog closes.
+    void windowChannelInfoAddMemberFlow()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        QVERIFY(visibleItem("channelInfoAddButton"));   // owner gate (ShowAddUsersModal)
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        // current members never appear in the picker
+        QVERIFY(!visibleItem("addMembersOption-" + channelPeer));
+        QVERIFY(!visibleItem("addMembersOption-" + scene.fixture.bobUser));
+        // the stranger dave is available and matches by name/email
+        QVERIFY(visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        auto *search = visibleItem("addMembersSearch");
+        QVERIFY(search);
+        search->setProperty("text", "zzz");
+        QTRY_VERIFY(!visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        QTRY_VERIFY(visibleItem("addMembersEmpty"));
+        search->setProperty("text", "dav");
+        QTRY_VERIFY(visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        auto *addButton = visibleItem("addMembersAdd");
+        QVERIFY(addButton);
+        QVERIFY(!addButton->property("enabled").toBool());  // nothing selected yet
+        click(scene.window, visibleItem("addMembersOption-" + scene.fixture.daveUser));
+        QTRY_VERIFY(visibleItem("addMembersCheck-" + scene.fixture.daveUser));
+        QTRY_VERIFY(addButton->property("enabled").toBool());
+        click(scene.window, addButton);
+        QTRY_VERIFY(!scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        QTRY_VERIFY(scene.fixture.memberBody.value("member").toArray().size() == 1);
+        QCOMPARE(scene.fixture.memberBody.value("member").toArray().at(0).toString(),
+            scene.fixture.daveUser);
+        QTRY_VERIFY(scene.evaluate("controller.channelInfoAddSettled").toInt() > 0);
+        QTRY_COMPARE(scene.evaluate("controller.channelInfoMemberCount").toInt(), 5);
+        QVERIFY(scene.text("addMembersError").isEmpty());
+        QVERIFY(visibleItem("channelInfoMember-83000000-0000-4000-8000-000000000005"));
+    }
+
+    // Issue #132: non-owner gating: no Add affordance and no removal controls
+    // on foreign rows; the controller also refuses remove/add mutations for a
+    // stream whose role is not owner (server gate mirrored client-side).
+    void windowChannelInfoNonOwnerMemberGates()
+    {
+        ChannelInfoWindowScene scene(false);
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        QVERIFY(!visibleItem("channelInfoAddButton"));
+        QVERIFY(!visibleItem("channelInfoRemove-" + scene.fixture.bindingId(2)));
+        QVERIFY(!visibleItem("channelInfoRemove-" + scene.fixture.bindingId(4)));
+        QVERIFY(visibleItem("channelInfoRemove-" + scene.fixture.bindingId(1)));  // leave channel
+        scene.controller.removeChannelInfoMember(scene.fixture.bindingId(2));  // gated no-op
+        QTest::qWait(250);
+        QCOMPARE(scene.fixture.removeDeletes, 0);
+        scene.controller.addChannelInfoMembers({scene.fixture.daveUser});       // gated no-op
+        QTest::qWait(250);
+        QCOMPARE(scene.fixture.memberPosts, 0);
+    }
+
 private:
     struct RightDrawerHarness {
         QTemporaryDir directory;
@@ -13151,7 +13528,9 @@ private:
         // The viewport actually scrolled.
         QVERIFY(scroll->property("contentY").toReal() > 0.5);
     }
+
 };
+
 
 class NativeCacheWindowWorker final : public QObject {
     Q_OBJECT
