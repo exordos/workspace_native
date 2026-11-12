@@ -1041,6 +1041,14 @@
             <source>Reconnecting...</source>
             <translation>Переподключение...</translation>
         </message>
+        <message>
+            <source>No results found</source>
+            <translation>Ничего не найдено</translation>
+        </message>
+        <message>
+            <source>not in channel</source>
+            <translation>не в канале</translation>
+        </message>
     </context>
     <context>
         <name>NativeQuickReactions</name>

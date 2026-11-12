@@ -329,6 +329,50 @@ ApplicationWindow {
         const above = point.y - height - 8;
         composerEmojiPicker.y = above >= 8 ? above : Math.max(8, Math.min(root.height - height - 8, point.y + composerEmojiButton.height + 8));
     }
+    // ---- Issue #123 composer @mention popup (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
+    // ComposerMentionTrigger.REMINDER: "@query" only counts as a mention token at
+    // a line start or after whitespace/punctuation, never inside "name@example".
+    function composerMentionTokenBefore(caretText) {
+        return /(?:^|[\s([{,.:;!?])(@)(\S*)$/.exec(caretText);
+    }
+    // WorkspaceAvatar fallback: first character of the display name, then of
+    // the username, then "?" (message-composer-mention-dropdown.ui.tsx:78).
+    function composerMentionInitials(row) {
+        if (!row)
+            return "?";
+        const name = String(row.displayName || "").trim();
+        if (name.length)
+            return name.slice(0, 1);
+        const username = String(row.username || "").trim();
+        return username.length ? username.slice(0, 1) : "?";
+    }
+    function detectComposerMentions() {
+        const match = root.composerMentionTokenBefore(composerText.text.slice(0, composerText.selectionStart));
+        if (!match || !composerText.activeFocus || !composerText.enabled
+            || !root.controller.composerMentionsEnabled()
+            || ownStatusDialog.visible || deleteDialog.visible || createTopicDialog.visible
+            || createChatDialog.visible || referenceNotice.visible || attachmentPicker.visible
+            || attachmentSaveDialog.visible) {
+            composerMentionPopup.close();
+            return;
+        }
+        composerMentionPopup.query = match[2];
+        composerMentionPopup.tokenStart = composerText.selectionStart - match[2].length - 1;
+        // Positional snapshot: each keystroke replaces the whole array so no
+        // delegate can dangle over a refreshed C++ candidate list.
+        composerMentionPopup.rows = root.controller.mentionSuggestions(match[2]);
+        composerMentionPopup.activeIndex = 0;
+        root.positionComposerMentionPopup();
+        composerMentionPopup.open();
+    }
+    function positionComposerMentionPopup() {
+        const point = composerText.mapToItem(root.contentItem, 0, 0);
+        const width = composerMentionPopup.width, height = composerMentionPopup.height;
+        composerMentionPopup.x = Math.max(8, Math.min(root.width - width - 8, point.x));
+        const above = point.y - height - 6;
+        composerMentionPopup.y = above >= 8 ? above
+            : Math.max(8, Math.min(root.height - height - 8, point.y + composerText.height + 6));
+    }
     function toggleComposerEmojiPicker() {
         if (composerEmojiPicker.visible) {
             composerEmojiPicker.close();
@@ -5598,7 +5642,9 @@ ApplicationWindow {
                                     onTextChanged: {
                                         if (root.composerAvailable && root.controller.draft !== text)
                                             root.controller.draft = text;
+                                        Qt.callLater(root.detectComposerMentions);
                                     }
+                                    onCursorPositionChanged: Qt.callLater(root.detectComposerMentions)
                                     placeholderText: root.composerAvailable || root.encryptedComposerHasKey ? qsTr("Write a message…") : qsTr("Choose a topic to write a message")
                                     placeholderTextColor: root.colors["composer-icon"]
                                     color: root.colors["text-primary"]
@@ -5719,6 +5765,30 @@ ApplicationWindow {
                                         }
                                         return null;
                                     }
+                                    // Insert the highlighted "@DisplayName " in place of the
+                                    // mention token and record the pick for frecency ranking;
+                                    // the draft keeps the visible name (URNs only appear on the wire).
+                                    function insertComposerMention(row) {
+                                        const start = composerMentionPopup.tokenStart;
+                                        if (start < 0 || !row || typeof row !== "object")
+                                            return;
+                                        const next = text.slice(0, start) + "@" + String(row.displayName)
+                                            + " " + text.slice(selectionEnd);
+                                        const caret = start + 1 + String(row.displayName).length + 1;
+                                        root.controller.recordMentionPick(String(row.userUuid));
+                                        const owner = root.controller.ownStatusContextKey;
+                                        const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
+                                        root.controller.draft = next;
+                                        // Keep the draft binding alive across a subscriber navigation.
+                                        if (formattingAllowed && owner === root.controller.ownStatusContextKey
+                                            && stream === root.controller.selectedStream
+                                            && topic === root.controller.selectedTopic) {
+                                            if (text !== next)
+                                                text = next;
+                                            select(caret, caret);
+                                        }
+                                        composerMentionPopup.close();
+                                    }
                                     Shortcut {
                                         sequence: "Ctrl+B"; context: Qt.WindowShortcut; autoRepeat: false
                                         enabled: composerText.formattingAllowed
@@ -5759,7 +5829,26 @@ ApplicationWindow {
                                     }
                                     Keys.onPressed: event => {
                                         const editing = root.controller.editingMessageId.length > 0;
-                                        if (event.key === Qt.Key_Escape && composerEmojiPicker.visible) {
+                                        if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
+                                            // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
+                                            composerMentionPopup.close();
+                                            event.accepted = true;
+                                        } else if (composerMentionPopup.visible && event.key === Qt.Key_Down) {
+                                            composerMentionPopup.activeIndex = Math.min(
+                                                Math.max(0, composerMentionPopup.rows.length - 1),
+                                                composerMentionPopup.activeIndex + 1);
+                                            event.accepted = true;
+                                        } else if (composerMentionPopup.visible && event.key === Qt.Key_Up) {
+                                            composerMentionPopup.activeIndex = Math.max(0, composerMentionPopup.activeIndex - 1);
+                                            event.accepted = true;
+                                        } else if (composerMentionPopup.visible
+                                                   && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                                   && !(event.modifiers & Qt.ShiftModifier) && !inputMethodComposing
+                                                   && composerMentionPopup.rows.length > 0) {
+                                            composerText.insertComposerMention(composerMentionPopup.rows[
+                                                Math.min(composerMentionPopup.activeIndex, composerMentionPopup.rows.length - 1)]);
+                                            event.accepted = true;
+                                        } else if (event.key === Qt.Key_Escape && composerEmojiPicker.visible) {
                                             composerEmojiPicker.close();
                                             event.accepted = true;
                                         } else if (event.key === Qt.Key_Escape && editing) {
@@ -6181,6 +6270,146 @@ ApplicationWindow {
         target: root
         function onWidthChanged() { if (composerEmojiPicker.visible) root.positionComposerEmojiPicker(); }
         function onHeightChanged() { if (composerEmojiPicker.visible) root.positionComposerEmojiPicker(); }
+    }
+
+    // Issue #123: @mention suggestion dropdown above the composer. The composer
+    // keeps keyboard focus (focus: false) so caret and typing drive navigation.
+    Popup {
+        id: composerMentionPopup
+        objectName: "composerMentionPopup"
+        property var rows: []
+        property int activeIndex: 0
+        property string query: ""
+        property int tokenStart: -1
+        parent: Overlay.overlay
+        width: Math.min(320, root.width - 16)
+        height: 8 + Math.min(52 * Math.max(rows.length, 1), 192)
+        padding: 4
+        modal: false
+        dim: false
+        focus: false
+        closePolicy: Popup.CloseOnPressOutside
+        onClosed: {
+            composerMentionPopup.rows = [];
+            composerMentionPopup.activeIndex = 0;
+            composerMentionPopup.query = "";
+            composerMentionPopup.tokenStart = -1;
+        }
+        background: Rectangle {
+            color: root.colors["bg-elevated"]
+            radius: 12
+            border.color: root.colors["border-subtle"]
+        }
+        contentItem: Flickable {
+            id: composerMentionList
+            objectName: "composerMentionList"
+            // Positional Repeater over a Column (the SessionSwitcher popup
+            // pattern): delegates stay stable while the candidate list refreshes
+            // and always read live candidates through the popup id.
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            contentHeight: composerMentionPopup.rows.length * 52
+            Column {
+                id: composerMentionRows
+                objectName: "composerMentionRows"
+                width: composerMentionList.width
+                Repeater {
+                    model: composerMentionPopup.rows.length
+                    delegate: Rectangle {
+                        required property int index
+                        readonly property var mentionRow: composerMentionPopup.rows[index]
+                        objectName: "composerMentionRow" + index
+                        width: parent.width
+                        height: 52
+                        color: index === composerMentionPopup.activeIndex ? root.colors["bg"] : "transparent"
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            spacing: 8
+                            // WorkspaceAvatar size="sm": 32px circle, 12px initials,
+                            // first character of the display name (username fallback).
+                            Rectangle {
+                                Layout.preferredWidth: 32
+                                Layout.preferredHeight: 32
+                                Layout.alignment: Qt.AlignVCenter
+                                radius: 16
+                                color: root.colors["bg"]
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: String(root.composerMentionInitials(mentionRow))
+                                    font.pixelSize: 12
+                                    color: root.colors["text-primary"]
+                                }
+                                PresenceBadge {
+                                    presence: String(mentionRow.status || "")
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 36
+                                spacing: 0
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text {
+                                        objectName: "composerMentionName" + index
+                                        Layout.fillWidth: true
+                                        text: String(mentionRow.displayName || "")
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 14
+                                        color: root.colors["text-primary"]
+                                    }
+                                    // `outside channel` chip (text-[10px], px-1.5 py-0.5,
+                                    // rounded): rendered only when the fact is known.
+                                    Rectangle {
+                                        visible: mentionRow.outsideChannel === true
+                                        Layout.preferredWidth: mentionOutsideLabel.implicitWidth + 12
+                                        Layout.preferredHeight: mentionOutsideLabel.implicitHeight + 4
+                                        Layout.alignment: Qt.AlignVCenter
+                                        radius: 4
+                                        color: root.colors["bg"]
+                                        Text {
+                                            id: mentionOutsideLabel
+                                            anchors.centerIn: parent
+                                            text: qsTr("not in channel")
+                                            font.pixelSize: 10
+                                            color: root.colors["text-muted"]
+                                        }
+                                    }
+                                }
+                                // Secondary line: @username when present, else the email.
+                                Text {
+                                    objectName: "composerMentionSecondary" + index
+                                    Layout.fillWidth: true
+                                    text: mentionRow.username ? "@" + String(mentionRow.username)
+                                        : String(mentionRow.email || "")
+                                    visible: text.length > 0
+                                    elide: Text.ElideRight
+                                    font.pixelSize: 11
+                                    color: root.colors["text-secondary"]
+                                }
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton
+                            onClicked: composerText.insertComposerMention(mentionRow)
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            objectName: "composerMentionNoResults"
+            anchors.centerIn: parent
+            visible: composerMentionPopup.rows.length === 0
+            text: qsTr("No results found")
+            font.pixelSize: 12
+            color: root.colors["text-muted"]
+        }
     }
 
     Popup {
