@@ -131,10 +131,15 @@ At send time the visible draft converts to canonical mention URNs:
   `count * 2^(-ageMs / HALF_LIFE)` (HALF_LIFE = 14 days) and adds 1.
 - Reads expose per-user decayed scores; entries decayed below 0.05 drop; at
   most 200 entries kept (sorted by decayed score).
-- Native stores this in `NativePreferences` scoped to the same opaque owner as
-  the reaction history (`mentions/owners/<owner>` group), so it survives
-  restarts and never leaks across owners. Losing the store only costs ranking
-  quality.
+- Native stores this in `NativePreferences` scoped to the controller's
+  `creationOwnerKey()` (the opaque 64-hex account identity that also scopes the
+  draft store). It is deliberately not `ownerKey()`: that HTTPS-vault identity
+  is empty on loopback deployments and test fixtures, and the reference store
+  is origin+account scoped regardless of transport. The controller passes the
+  scope per call (`recordMentionPick(uuid, creationOwnerKey())`), so ranking
+  reads and writes always partition by the same key. Stored under the
+  `mentions/owners/<owner>` settings group, so it survives restarts and never
+  leaks across owners. Losing the store only costs ranking quality.
 
 ## Native surface
 
@@ -146,13 +151,18 @@ At send time the visible draft converts to canonical mention URNs:
   (self, recent authors from the loaded window, DM partners from the stream
   catalog, membership when known, frecency from preferences).
 - `NativeController::recordMentionPick(userUuid)`: owner-guarded pick write.
-- `NativePreferences::recordMentionPick(userUuid, expectedOwner)` and
-  `mentionFrecency()`.
+- `NativePreferences::recordMentionPick(userUuid, owner)` and
+  `mentionFrecencyFor(owner)`.
 - `workspace::serializeComposerMentions(value, mentions)` and
   `workspace::buildWorkspaceUserMention(name, uuid)` in `src/domain.cpp`
   used by the ordinary send path.
 - QML: `composerMentionPopup` in `Main.qml`, positioned above the composer
-  input with the `composerEmojiPicker` pattern.
+  input with the `composerEmojiPicker` pattern. The rows are a positional
+  `Repeater` over a `Column` inside the popup's `Flickable` (the session
+  switcher pattern): delegates read live candidates through the popup id, so
+  a refreshed suggestion list can never dangle a delegate. Popup content is
+  parented visually only, so window tests walk the visual tree
+  (`childItems()`) instead of `findChild` to assert rows.
 
 ## Test mapping
 
