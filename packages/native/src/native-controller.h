@@ -483,6 +483,11 @@ signals:
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
     void ownAvatarSettledChanged();
+    // Issue #134: the profile page reopens the avatar dialog when a mutation
+    // fails (reference edit-avatar-dialog contract); every mutation of
+    // m_ownAvatarError must announce itself so the QML Connections handler
+    // sees it (stateChanged alone does not name this transition).
+    void ownAvatarErrorChanged();
     void anchorChanged();
     void savedAccountsChanged();
     void sessionSwitcherChanged();

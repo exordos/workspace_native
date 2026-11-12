@@ -3656,12 +3656,14 @@ void NativeController::uploadOwnProfileAvatar(const QString &path)
     if (!validation.value("ok").toBool()) {
         m_ownAvatarError = validation.value("error").toString();
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         return;
     }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         m_ownAvatarError = tr("Please choose a valid image file");
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         return;
     }
     const auto bytes = file.read(profileAvatarLimitBytes + 1);
@@ -3671,18 +3673,21 @@ void NativeController::uploadOwnProfileAvatar(const QString &path)
             : tr("Image is too large (max %1 MB)")
                   .arg(profileAvatarLimitBytes / (1024 * 1024));
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         return;
     }
     captureProfileContext();
     m_ownAvatarBusy = true; m_ownAvatarError.clear();
     const auto ticket = ++m_ownAvatarTicket;
     emit stateChanged();
+    emit ownAvatarErrorChanged();
     auto *reply = m_api->startUserAvatarUpload(user, bytes,
         validation.value("name").toString(), validation.value("mime").toString());
     if (!reply) {
         m_ownAvatarBusy = false;
         m_ownAvatarError = tr("Failed to update avatar");
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         emit ownAvatarSettledChanged();
         return;
     }
@@ -3705,6 +3710,7 @@ void NativeController::uploadOwnProfileAvatar(const QString &path)
                 m_ownAvatarError = tr("Please choose a valid image file");
             else m_ownAvatarError = fallback;
             emit stateChanged();
+            emit ownAvatarErrorChanged();
             emit ownAvatarSettledChanged();
             return;
         }
@@ -3729,12 +3735,14 @@ void NativeController::removeOwnProfileAvatar()
     if (capabilities.value("avatarChangesDisabled").toBool()) {
         m_ownAvatarError = tr("Avatar changes are disabled by server settings");
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         return;
     }
     captureProfileContext();
     m_ownAvatarBusy = true; m_ownAvatarError.clear();
     const auto ticket = ++m_ownAvatarTicket;
     emit stateChanged();
+    emit ownAvatarErrorChanged();
     request("POST", messenger + "/users/" + user + "/actions/avatar_reset/invoke",
         QJsonObject{}, {}, [this, user, ticket](const ApiResult &result) {
         if (!profileContext(user, ticket)) return;
@@ -3759,6 +3767,7 @@ void NativeController::removeOwnProfileAvatar()
             m_ownAvatarError = tr("Please choose a valid image file");
         else m_ownAvatarError = tr("Failed to remove avatar");
         emit stateChanged();
+        emit ownAvatarErrorChanged();
         emit ownAvatarSettledChanged();
     });
 }
