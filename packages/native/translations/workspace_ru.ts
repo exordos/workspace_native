@@ -1049,7 +1049,15 @@
             <source>not in channel</source>
             <translation>не в канале</translation>
         </message>
-    </context>
+            <message>
+            <source>Information</source>
+            <translation>Информация</translation>
+        </message>
+        <message>
+            <source>Personal info</source>
+            <translation>Личная информация</translation>
+        </message>
+</context>
     <context>
         <name>NativeQuickReactions</name>
         <message>
@@ -1952,6 +1960,54 @@
         <source>Something went wrong</source>
         <translation>Что-то пошло не так</translation>
     </message>
+        <message>
+            <source>Could not load profile. Try again.</source>
+            <translation>Не удалось загрузить профиль. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Failed to update profile</source>
+            <translation>Не удалось обновить профиль</translation>
+        </message>
+        <message>
+            <source>Profile editing is not available yet</source>
+            <translation>Редактирование профиля пока недоступно</translation>
+        </message>
+        <message>
+            <source>Your server does not allow this profile request.</source>
+            <translation>Сервер не разрешает этот запрос к профилю.</translation>
+        </message>
+        <message>
+            <source>Check the lengths of the editable fields.</source>
+            <translation>Проверьте длину редактируемых полей.</translation>
+        </message>
+        <message>
+            <source>Temporarily not connected</source>
+            <translation>Временно не подключено</translation>
+        </message>
+        <message>
+            <source>Failed to update avatar</source>
+            <translation>Не удалось обновить аватар</translation>
+        </message>
+        <message>
+            <source>Failed to remove avatar</source>
+            <translation>Не удалось удалить аватар</translation>
+        </message>
+        <message>
+            <source>Avatar update is not supported by this server</source>
+            <translation>Обновление аватара не поддерживается этим сервером</translation>
+        </message>
+        <message>
+            <source>Avatar changes are disabled by server settings</source>
+            <translation>Изменение аватара запрещено настройками сервера</translation>
+        </message>
+        <message>
+            <source>Please choose a valid image file</source>
+            <translation>Выберите корректный файл изображения</translation>
+        </message>
+        <message>
+            <source>Image is too large (max %1 MB)</source>
+            <translation>Изображение слишком большое (макс. %1 МБ)</translation>
+        </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
@@ -2778,6 +2834,157 @@
         <message>
             <source>Add</source>
             <translation>Добавить</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeUserProfile</name>
+        <message>
+            <source>About me</source>
+            <translation>О себе</translation>
+        </message>
+        <message>
+            <source>Account status</source>
+            <translation>Статус аккаунта</translation>
+        </message>
+        <message>
+            <source>Account type</source>
+            <translation>Тип аккаунта</translation>
+        </message>
+        <message>
+            <source>Birthday</source>
+            <translation>День рождения</translation>
+        </message>
+        <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Change avatar</source>
+            <translation>Изменить аватар</translation>
+        </message>
+        <message>
+            <source>Check the lengths of the editable fields.</source>
+            <translation>Проверьте длину редактируемых полей.</translation>
+        </message>
+        <message>
+            <source>Choose from gallery</source>
+            <translation>Выбрать из галереи</translation>
+        </message>
+        <message>
+            <source>Copied</source>
+            <translation>Скопировано</translation>
+        </message>
+        <message>
+            <source>Delete current photo</source>
+            <translation>Удалить текущее фото</translation>
+        </message>
+        <message>
+            <source>Display name</source>
+            <translation>Отображаемое имя</translation>
+        </message>
+        <message>
+            <source>Edit</source>
+            <translation>Редактировать</translation>
+        </message>
+        <message>
+            <source>Edit avatar</source>
+            <translation>Изменить аватар</translation>
+        </message>
+        <message>
+            <source>Email</source>
+            <translation>Email</translation>
+        </message>
+        <message>
+            <source>Favorites</source>
+            <translation>Избранное</translation>
+        </message>
+        <message>
+            <source>First name</source>
+            <translation>Имя</translation>
+        </message>
+        <message>
+            <source>Joined</source>
+            <translation>Дата регистрации</translation>
+        </message>
+        <message>
+            <source>Last name</source>
+            <translation>Фамилия</translation>
+        </message>
+        <message>
+            <source>Loading profile…</source>
+            <translation>Загрузка профиля…</translation>
+        </message>
+        <message>
+            <source>Local time</source>
+            <translation>Местное время</translation>
+        </message>
+        <message>
+            <source>Manager</source>
+            <translation>Руководитель</translation>
+        </message>
+        <message>
+            <source>Message</source>
+            <translation>Написать</translation>
+        </message>
+        <message>
+            <source>Phone</source>
+            <translation>Телефон</translation>
+        </message>
+        <message>
+            <source>Profile saved. Workspace could not refresh it yet.</source>
+            <translation>Профиль сохранён. Пока не удалось обновить его в Workspace.</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>Role</source>
+            <translation>Роль</translation>
+        </message>
+        <message>
+            <source>Save changes</source>
+            <translation>Сохранить изменения</translation>
+        </message>
+        <message>
+            <source>Share</source>
+            <translation>Поделиться</translation>
+        </message>
+        <message>
+            <source>Team > Job title</source>
+            <translation>Команда > Должность</translation>
+        </message>
+        <message>
+            <source>Timezone</source>
+            <translation>Часовой пояс</translation>
+        </message>
+        <message>
+            <source>User ID</source>
+            <translation>ID пользователя</translation>
+        </message>
+        <message>
+            <source>Username</source>
+            <translation>Имя пользователя</translation>
+        </message>
+        <message>
+            <source>away</source>
+            <translation>Отошёл</translation>
+        </message>
+        <message>
+            <source>do not disturb</source>
+            <translation>Не беспокоить</translation>
+        </message>
+        <message>
+            <source>offline</source>
+            <translation>Не в сети</translation>
+        </message>
+        <message>
+            <source>online</source>
+            <translation>В сети</translation>
         </message>
     </context>
 </TS>
