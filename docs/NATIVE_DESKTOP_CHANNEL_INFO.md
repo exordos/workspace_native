@@ -147,6 +147,15 @@ already-existing members before the POST (reference lines 509-523).
   keeps the previous list. `addChannelInfoMembers` re-filters members that
   joined meanwhile and closes without a POST when nothing new remains, so a
   parallel refresh cannot send duplicates.
+- Review #186 corrections: `channelInfoNotificationBusy` and
+  `channelInfoAddBusy` are scoped to the stream their request was sent for;
+  a late response only releases the busy state its own request set, so
+  switching streams mid-request re-enables the new stream's controls instead
+  of locking every later stream. A successful member mutation (add or remove)
+  invalidates member loads still in flight, so a stale `stream_bindings`
+  response can never overwrite the mutation result. The add-members dialog
+  clears its own selection and search text when it closes and whenever the
+  watched stream changes.
 - Icons `at.svg`, `bell.svg`, `bell_off.svg`, `person_add.svg` are added to
   the pinned reference icon resource set (already vendored under
   `packages/web/src/shared/assets/icons`).
