@@ -14488,6 +14488,119 @@ private:
         QTRY_COMPARE_WITH_TIMEOUT(scene.text("profileActionLabel-share"),
             QStringLiteral("Share"), 4000);
     }
+
+    // exordy #199 review 4553884671: the editor must not open while the profile
+    // load is still in flight. An editor snapshotted from an empty baseline
+    // would save those blanks as changes once the load lands, wiping existing
+    // fields. The Edit chip stays disabled until ownProfileLoaded flips.
+    void windowProfileEditingWaitsForProfileLoadBeforeFields()
+    {
+        ProfileWindowScene scene;
+        std::function<void()> releaseLoad;
+        const auto chained = scene.fixture.server.handler;
+        const auto iamPath = QStringLiteral("/api/core/v1/iam/users/") + userId;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == iamPath) {
+                Response response{scene.fixture.iamRow};
+                response.defer = [&](std::function<void()> send) { releaseLoad = std::move(send); };
+                return response;
+            }
+            return chained(request);
+        };
+        scene.openOwnProfile();
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseLoad), 5000); // load held in flight
+        QVERIFY(scene.evaluate("controller.ownProfileBusy").toBool());
+        auto *editChip = visibleItem("profileAction-edit"); QVERIFY(editChip);
+        QVERIFY2(!editChip->property("enabled").toBool(),
+            "the Edit action must stay disabled until the profile load completes");
+        click(scene.window, editChip);
+        QTest::qWait(250);
+        QVERIFY2(!scene.layer()->property("editing").toBool(),
+            "editing must not start from an empty pre-load baseline");
+        releaseLoad(); releaseLoad = nullptr;
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        QTRY_VERIFY(visibleItem("profileAction-edit")->property("enabled").toBool());
+        // The late edit seeds its drafts from the loaded row, so saving is a no-op.
+        click(scene.window, visibleItem("profileAction-edit"));
+        QVERIFY(visibleItem("profileEditFooter"));
+        auto *scroll = visibleItem("profileScroll"); QVERIFY(scroll);
+        scroll->setProperty("contentY",
+            qMax(0.0, scroll->property("contentHeight").toReal() - scroll->property("height").toReal()));
+        QTest::qWait(150);
+        QSignalSpy settled(&scene.controller, &NativeController::ownProfileSettledChanged);
+        QVERIFY(settled.isValid());
+        click(scene.window, visibleItem("profileSaveButton"));
+        // A no-diff save settles synchronously inside the click: count first.
+        QVERIFY2(settled.count() > 0 || settled.wait(5000), "save did not settle");
+        QCOMPARE(scene.fixture.iamPuts, 0); // no diff: drafts equal the loaded baseline
+        QTRY_VERIFY(!visibleItem("profileEditFooter"));
+        QCOMPARE(scene.text("profileTitle"), QStringLiteral("Cassi Volkova")); // values intact
+    }
+
+    // exordy #199 review 4553884690: the fallback initial must sit behind both
+    // the edit preview and a resolved avatar image instead of drawing over them.
+    void windowProfileAvatarInitialHidesBehindAvatarAndPreview()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        auto *initial = scene.named("profileAvatarInitial");
+        QVERIFY(initial);
+        QTRY_VERIFY(initial->property("visible").toBool()); // no avatar: the initial shows
+        click(scene.window, visibleItem("profileAction-edit"));
+        QVERIFY(visibleItem("profileAvatarBadge"));
+        const auto pngPath = scene.directory.filePath("preview.png");
+        QFile png(pngPath); QVERIFY(png.open(QIODevice::WriteOnly));
+        png.write(avatarProbePng(false)); png.close();
+        scene.setPendingAvatar(pngPath);
+        QVERIFY(visibleItem("profileAvatarPreview"));
+        QTRY_VERIFY(!initial->property("visible").toBool()); // preview replaces the initial
+        scene.setPendingAvatar(QString{});
+        // A set avatar source replaces the initial even while editing.
+        scene.layer()->setProperty("snapshot", QVariantMap{{"title", QStringLiteral("Cassi Volkova")},
+            {"avatar", QStringLiteral("urn:image:11111111-2222-4333-8444-555555555555")}});
+        QTRY_VERIFY(!initial->property("visible").toBool());
+        // A pending removal restores the initial (the photo goes away on save).
+        scene.setPendingRemove(true);
+        QTRY_VERIFY(initial->property("visible").toBool());
+    }
+
+    // exordy #199 review 4553884709: About me must be a multiline editing
+    // control, and its content must round-trip newlines through the save patch.
+    void windowProfileAboutMeFieldAcceptsMultilineDescription()
+    {
+        ProfileWindowScene scene;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.evaluate("controller.ownProfileLoaded").toBool());
+        click(scene.window, visibleItem("profileAction-edit"));
+        auto *field = visibleItem("profileDescriptionField");
+        QVERIFY(field);
+        QVERIFY2(QString::fromLatin1(field->metaObject()->className()).contains(QStringLiteral("TextArea")),
+            qPrintable(QStringLiteral("About me must use a multiline editing control, got ")
+                + QString::fromLatin1(field->metaObject()->className())));
+        auto *scroll = visibleItem("profileScroll"); QVERIFY(scroll);
+        const auto maximumScroll = qMax(0.0,
+            scroll->property("contentHeight").toReal() - scroll->property("height").toReal());
+        // The description row sits under the fold: reveal it before clicking.
+        const auto centerY = field->mapToItem(scroll, QPointF(0, field->height() / 2)).y();
+        scroll->setProperty("contentY", qBound(0.0, centerY - scroll->height() / 2, maximumScroll));
+        QTest::qWait(150);
+        click(scene.window, field);
+        QTest::keyClick(scene.window, Qt::Key_A, Qt::ControlModifier); // replace the baseline text
+        for (const auto key : QByteArray("Note")) QTest::keyClick(scene.window, key);
+        QTest::keyClick(scene.window, Qt::Key_Return);
+        for (const auto key : QByteArray("second")) QTest::keyClick(scene.window, key);
+        QCOMPARE(field->property("text").toString(), QStringLiteral("Note\nsecond"));
+        QSignalSpy settled(&scene.controller, &NativeController::ownProfileSettledChanged);
+        QVERIFY(settled.isValid());
+        scroll->setProperty("contentY", maximumScroll);
+        QTest::qWait(150);
+        click(scene.window, visibleItem("profileSaveButton"));
+        QVERIFY2(settled.count() > 0 || settled.wait(5000), "save did not settle");
+        QCOMPARE(scene.fixture.lastPatch.value("description").toString(),
+            QStringLiteral("Note\nsecond"));
+        QTRY_VERIFY(!visibleItem("profileEditFooter"));
+    }
 };
 
 
