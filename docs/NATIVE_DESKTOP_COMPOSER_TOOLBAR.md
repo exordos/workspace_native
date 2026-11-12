@@ -53,7 +53,10 @@ separator layout with the available actions.
   (`https://`, without the closing paren) selected
   (`selectionStartOffset = indexOf("https://")`, end = `length - 1`). Empty ->
   the localized template `[<composer.linkText>](https://)` with the URL part
-  selected.
+  selected. Native pins `selectionStart` to the fixed URL tail of the template
+  (`length - 1 - "https://".length`) instead of a raw `indexOf` scan, so a
+  label that itself contains `https://` cannot move the selection into the
+  label (exo-review finding on PR #173; regression row `link-label-contains-url`).
 - All mutations run through the existing native route/focus guard pattern
   (`wrapFormatting`: draft rebind, owner/stream/topic identity, scroll restore)
   extended to selection restoration for the whole action set.
