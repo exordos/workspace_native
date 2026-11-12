@@ -59,6 +59,21 @@ int main(int argc, char *argv[])
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
             (qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS")
              + QStringLiteral(" --disable-gpu --disable-dev-shm-usage") + sandboxFlag).toUtf8());
+    // Capture-permission consent: the default (and ONLY interactive) path is
+    // the in-app confirmation overlay in CallSpike.qml: every capture-type
+    // request from an allowlisted origin waits for an explicit Allow click.
+    // WORKSPACE_NATIVE_SPIKE_AUTOGRANT=1 is a separate explicit per-run
+    // opt-in for headless/automated probe runs only: it skips that dialog
+    // and grants immediately. It warns once here so any log proves whether
+    // a run used real user consent or the autogrant override. Never rely on
+    // it when loading remote content.
+    const bool permissionAutoGrant =
+        qEnvironmentVariableIntValue("WORKSPACE_NATIVE_SPIKE_AUTOGRANT") == 1;
+    if (permissionAutoGrant)
+        qWarning("call spike: capture-permission AUTOGRANT ACTIVE via "
+                 "WORKSPACE_NATIVE_SPIKE_AUTOGRANT=1 - capture requests from "
+                 "allowlisted origins are granted WITHOUT user confirmation "
+                 "(headless probe runs only)");
     QWebEngineUrlScheme scheme(QByteArrayLiteral("app"));
     scheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
     scheme.setDefaultPort(443);
@@ -88,6 +103,7 @@ int main(int argc, char *argv[])
         ? QUrl(page)
         : QUrl(QStringLiteral("app://spike/%1").arg(page));
     engine.rootContext()->setContextProperty(QStringLiteral("spikeStartUrl"), startUrl);
+    engine.rootContext()->setContextProperty(QStringLiteral("spikeAutoGrant"), permissionAutoGrant);
     engine.load(QUrl(QStringLiteral("qrc:/spike/call/CallSpike.qml")));
     if (engine.rootObjects().isEmpty())
         return 2;

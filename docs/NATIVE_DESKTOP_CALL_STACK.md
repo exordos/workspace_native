@@ -126,8 +126,14 @@ frame inside the hosted page; under QtWebEngine the authoritative gate is the
 permission signal. Qt 6.10 uses `WebEngineView::permissionRequested`
 (`QWebEnginePermission` with `permissionType`, `origin`, `grant()`/`deny()` —
 the legacy `featurePermissionRequested` is notification-only); the spike used
-the 6.10 API. It exposes the requesting origin and frame context — enough to
-implement the reference's "Jitsi child frame only" rule. The legacy signal
+the 6.10 API. Verified against the installed Qt 6.10.2 headers
+(`qwebenginepermission.h`): the object exposes the requesting **origin** and
+**permission type** (plus `state`/`isValid`) and **nothing frame-level** —
+no frame id, no main-frame flag — so the reference's exact "non-main child
+frame" predicate is NOT implementable 1:1 with this API; the closest native
+approximation is origin allowlisting plus explicit user consent (what the
+spike does), and a true frame rule needs an upstream Qt addition (recorded
+under the Spike findings below). The legacy signal
 name remains in the earlier prose as the family term for the gate.
 
 ## Audio device routing
@@ -187,7 +193,14 @@ active seccomp filter (`Seccomp: 2`, `Seccomp_filters: 1` in
 `/proc/<renderer>/status`). Extra flags: `--disable-gpu
 --disable-dev-shm-usage` (headless VM; recorded). Sandbox-off is only possible
 as an explicit per-run opt-in (`WORKSPACE_NATIVE_SPIKE_DISABLE_SANDBOX=1`,
-see `spike/call/main.cpp`) and was not needed on this host.
+see `spike/call/main.cpp`) and was not needed on this host. Capture-permission
+auto-grant is a separate per-run opt-in (`WORKSPACE_NATIVE_SPIKE_AUTOGRANT=1`,
+see `spike/call/main.cpp`): by default the spike never grants a capture
+request automatically — a capture request from an allowlisted origin surfaces
+the in-app confirmation overlay (Deny has the default focus, keyboard or
+click resolution) and is only granted on an explicit Allow click; the env
+override skips that dialog for headless probe automation and emits a startup
+`qWarning` line so every run's log states which path it used.
 
 **Proven on this host** (stdout logs + `import -window root` screenshots):
 
@@ -197,14 +210,29 @@ see `spike/call/main.cpp`) and was not needed on this host.
 - Audio capture end to end through the app gate: the page's
   `getUserMedia({audio:true})` raised Qt 6.10's
   `WebEngineView::permissionRequested` (`QWebEnginePermission`,
-  `type=1` = MediaAudioCapture) from origin `app://spike/`; the spike granted
-  it (native counterpart of Electron's `setPermissionRequestHandler`,
-  reference main.ts:978; the spike's handler is deny-by-default:
-  it grants only media capture from its own `app://spike` origin or the Jitsi
-  origins it loads, and display capture from `app://spike` only), and the
+  `type=1` = MediaAudioCapture) from origin `app://spike/`; after explicit
+  user approval in the confirmation overlay (see next bullet) the spike
+  granted it (native counterpart of Electron's `setPermissionRequestHandler`,
+  reference main.ts:978; the spike's handler is deny-by-default + explicit
+  consent: it only ever offers approval for media capture from its own
+  `app://spike` origin or the Jitsi origins it loads, and display capture
+  from `app://spike` only; everything else is denied without a dialog), and the
   returned track was `state=live`,
   `sampleRate=48000`, default PipeWire device — a live capture track existed
   (content is the host's emulated silent ALSA source; see non-claims).
+- Explicit user consent on the app gate (added after re-review; re-run under
+  `Xvnc :35`): allowlisted capture requests now wait on an in-UI confirmation
+  (`Allow microphone access for app://spike?` with Allow/Deny, Deny default
+  focus) instead of being granted silently. Clicking Allow logged
+  `PERM_REQUEST type=1 origin=app://spike` -> `PERM_DIALOG_SHOWN type=1
+  origin=app://spike` -> `PERM_USER_GRANT type=1 origin=app://spike`, followed
+  by `AUDIO_OK track= state=live` (live PipeWire capture track); clicking Deny
+  logged `PERM_USER_DENY type=1 origin=app://spike` and the page received
+  `AUDIO_ERR AbortError Invalid state` with no track. With
+  `WORKSPACE_NATIVE_SPIKE_AUTOGRANT=1` the same request granted immediately
+  (`PERM_AUTOGRANT type=1 origin=app://spike` -> `AUDIO_OK`) right after the
+  startup warning `call spike: capture-permission AUTOGRANT ACTIVE via
+  WORKSPACE_NATIVE_SPIKE_AUTOGRANT=1 ...`.
 - Device enumeration: `enumerateDevices()` reported 1 audioinput + 1
   audiooutput; inside the real meet.jit.si page Jitsi's `RTCUtils` logged the
   same 2-device list and ran `configureInitialDevices`.
@@ -245,6 +273,13 @@ see `spike/call/main.cpp`) and was not needed on this host.
   xdg-desktop-portal ScreenCast (reference), or an upstream/patched capture
   path; treat X11 screen share as unsupported by QtWebEngine as packaged on
   Ubuntu 26.04.
+- `QWebEnginePermission` frame identity (verified against the installed Qt
+  6.10.2 `qwebenginepermission.h` and from the live spike handler): the object
+  carries only `origin`, `permissionType`, `state`, `isValid` — **no frame
+  identity** (no frame id, no main-frame flag). The reference "non-main
+  child frame only" rule (main.ts:996-1020) therefore cannot be evaluated
+  per-frame with this Qt build; the native gate approximates it with origin
+  allowlisting + explicit user consent until Qt exposes frame context.
 - A custom **local** scheme page (`app://` registered with
   `LocalScheme | SecureScheme | CorsEnabled | LocalAccessAllowed`, default
   port 443) can host a *vendored* script (loader proof above) but a *remote*
