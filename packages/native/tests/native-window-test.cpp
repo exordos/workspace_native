@@ -12817,6 +12817,217 @@ private:
         QCOMPARE(controller.savedAccounts().size(), 4);
         QTRY_VERIFY(item(content, "resume-" + ids[2]));
     }
+
+    void sessionSwitcherPopupKeepsActionsInsideTheWindow()
+    {
+        // exo-review #170: with enough remembered accounts the dropdown must
+        // stay bounded by the window and scroll, so "Add server" remains
+        // reachable instead of being pushed outside the visible window.
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities;
+        for (int index = 0; index < 16; ++index)
+            identities.append({QStringLiteral("66666666-6666-4666-8666-6666666666%1")
+                    .arg(index, 2, 10, QLatin1Char('0')),
+                QStringLiteral("77777777-7777-4777-8777-7777777777%1")
+                    .arg(index, 2, 10, QLatin1Char('0'))});
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 16);
+        controller.resumeSavedAccount(order.first().toMap().value("id").toString());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        auto *content = window->contentItem();
+        // Sixteen account rows (~56 px each) exceed any legal window height
+        // (Main.qml starts at 900 and cannot grow the menu beyond the window),
+        // so the menu has to bound itself to the window and scroll.
+        QVERIFY(window->height() < 16 * 56 + 45);
+        QVERIFY(visibleItem("topBar"));
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        QCOMPARE(itemCountWithPrefix(content, "sessionRow-"), 16);
+        auto *scroll = item(content, "sessionSwitcherScroll");
+        QVERIFY2(scroll, "menu contents must live in a scrollable viewport (sessionSwitcherScroll)");
+        const auto sceneTop = [](QQuickItem *it) { return it->mapToScene(QPointF{}).y(); };
+        const auto sceneBottom = [&](QQuickItem *it) {
+            return it->mapToScene(QPointF(0, it->height())).y();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(sceneTop(scroll) >= 0.
+            && sceneBottom(scroll) <= window->height() + 0.5, 5000);
+        // The content is taller than the bounded viewport, and scrolling the
+        // viewport moves the content (review #170: the menu must scroll).
+        QVERIFY2(scroll->property("contentHeight").toReal() > scroll->height() + 0.5,
+            "menu content taller than the window must be scrollable");
+        scroll->setProperty("contentY", 200);
+        auto *addServer = item(content, "sessionAddServer");
+        QVERIFY(addServer);
+        // After scrolling to the bottom the Add server action sits inside the
+        // visible menu viewport (and therefore inside the window).
+        QTRY_VERIFY_WITH_TIMEOUT(sceneTop(addServer) >= sceneTop(scroll) - 0.5
+            && sceneBottom(addServer) <= sceneBottom(scroll) + 0.5, 5000);
+        QVERIFY2(sceneBottom(addServer) <= window->height() + 0.5,
+            "Add server must stay inside the window bounds");
+    }
+
+    void sessionSwitcherRowsActivateFromKeyboard()
+    {
+        // exo-review #170: account rows are selectable controls; keyboard
+        // users must be able to reach and activate them (Enter and Space).
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities{
+            {userId, projectId},
+            {"66666666-6666-4666-8666-666666666661", "77777777-7777-4777-8777-777777777771"},
+            {"66666666-6666-4666-8666-666666666662", "77777777-7777-4777-8777-777777777772"},
+            {"66666666-6666-4666-8666-666666666663", "77777777-7777-4777-8777-777777777773"},
+            {"66666666-6666-4666-8666-666666666664", "77777777-7777-4777-8777-777777777774"}};
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 5);
+        QStringList ids;
+        for (const auto &row : order) ids.append(row.toMap().value("id").toString());
+        controller.resumeSavedAccount(ids.first());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        auto *content = window->contentItem();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(visibleItem("topBar"));
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        // The row past the visible quick buttons is keyboard reachable.
+        // The switcher's delegates are recreated whenever the controller
+        // re-emits its rows, so grab focus on whichever live instance exists
+        // and activate it immediately.
+        const auto focusRowAndPress = [&](const QString &rowName, Qt::Key key) {
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                auto *r = item(content, rowName);
+                if (!r) return false;
+                r->setFocus(true);
+                return r->hasActiveFocus();
+            })(), 8000);
+            QTest::keyClick(window, key);
+        };
+        auto *row = item(content, "sessionRow-" + ids[4]);
+        QVERIFY(row);
+        QVERIFY2(row->property("activeFocusOnTab").toBool(),
+            "account rows must participate in the tab chain");
+        focusRowAndPress("sessionRow-" + ids[4], Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ const auto rows = controller.sessionSwitcherSessions();
+            return !rows.isEmpty() && rows.first().toMap().value("id").toString() == ids[4]
+                && rows.first().toMap().value("isCurrent").toBool(); })(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return !m || !m->isVisible(); })(), 5000);
+        // Space activates too (button semantics).
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        auto *otherRow = item(content, "sessionRow-" + ids[3]);
+        QVERIFY(otherRow);
+        focusRowAndPress("sessionRow-" + ids[3], Qt::Key_Space);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ const auto rows = controller.sessionSwitcherSessions();
+            return !rows.isEmpty() && rows.first().toMap().value("id").toString() == ids[3]
+                && rows.first().toMap().value("isCurrent").toBool(); })(), 10000);
+    }
 };
 
 class NativeCacheWindowWorker final : public QObject {

@@ -132,6 +132,23 @@ public:
     }
 };
 
+// Secure store that rejects removals: writes and reads behave like
+// ControllerMemorySecrets, but a forget leaves the credential on disk.
+class ControllerFailingRemovalSecrets final : public SessionSecretStore {
+public:
+    QMap<QString, QByteArray> values;
+    void write(const QString &key, const QByteArray &secret, Completion done) override {
+        values.insert(key, secret); QTimer::singleShot(0, this, [done] { done(Error::None); });
+    }
+    void read(const QString &key, Loaded done) override {
+        const auto value = values.value(key);
+        QTimer::singleShot(0, this, [done, value] { done(value, value.isEmpty() ? Error::NotFound : Error::None); });
+    }
+    void remove(const QString &, Completion done) override {
+        QTimer::singleShot(0, this, [done] { done(Error::Failed); });
+    }
+};
+
 class RealtimeGateway final : public QTcpServer {
 public:
     QWebSocketServer websocket{"Controller integration", QWebSocketServer::NonSecureMode};
@@ -13858,6 +13875,138 @@ private slots:
         QTRY_VERIFY(!controller.authenticated());
         QCOMPARE(controller.savedAccounts().size(), 0);
         QVERIFY(secrets.values.isEmpty());
+    }
+
+    void sessionSwitcherLogoutReportsFailedCredentialRemoval()
+    {
+        // exo-review #170: resuming the successor must not swallow a failed
+        // secure-store removal of the logged-out credential. The successor's
+        // attempt may no longer discard the removal error, and the error has
+        // to reach the user before the successor finishes taking over.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ControllerFailingRemovalSecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const QUrl server("https://switcher.invalid");
+        const QString userB{"66666666-6666-4666-8666-666666666666"};
+        const QString projectB{"77777777-7777-4777-8777-777777777777"};
+        SavedAccount a{SessionVault::accountId(server, projectId, userId), server, projectId, userId, "alice", "Alpha"};
+        SavedAccount b{SessionVault::accountId(server, projectB, userB), server, projectB, userB, "bob", "Beta"};
+        bool savedA = false;
+        bool savedB = false;
+        vault.save(a, "switch-refresh-a", [&](const QString &error) { QVERIFY(error.isEmpty()); savedA = true; });
+        vault.save(b, "switch-refresh-b", [&](const QString &error) { QVERIFY(error.isEmpty()); savedB = true; });
+        QTRY_VERIFY(savedA && savedB);
+        auto transport = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        auto current = std::make_shared<QPair<QString, QString>>();
+        transport->insert("switch-refresh-a", {userId, projectId});
+        transport->insert("switch-refresh-b", {userB, projectB});
+        ApiClient api;
+        Session session(&api, nullptr, [transport, current, &api](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            QJsonValue data; int status = 404; QString error{"not found"};
+            if (path.endsWith("/actions/get_token/invoke")) {
+                *current = transport->value(body.toObject().value("refresh_token").toString());
+                data = QJsonObject{{"access_token", "synthetic-token"}, {"refresh_token",
+                    body.toObject().value("refresh_token").toString()}, {"expires_in", 3600}};
+                status = 200; error.clear();
+            } else if (path.endsWith("/actions/introspect")) {
+                data = QJsonObject{{"user_info", QJsonObject{{"uuid", current->first}}},
+                    {"project_id", current->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                status = 200; error.clear();
+            } else if (path == "/api/core/v1/iam/projects/") {
+                data = QJsonArray{QJsonObject{{"uuid", current->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                status = 200; error.clear();
+            }
+            const ApiResult result{data, status, {}, error};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.resumeSavedAccount(a.id);
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        bool removalErrorSeen = false;
+        bool removalBeforeSuccessor = false;
+        bool loggedOut = false;
+        bool successorReady = false;
+        connect(&controller, &NativeController::stateChanged, &controller, [&] {
+            if (!removalErrorSeen && controller.error().contains("could not be removed")) {
+                removalErrorSeen = true;
+                removalBeforeSuccessor = !successorReady;
+            }
+            if (!loggedOut && !controller.authenticated()) loggedOut = true;
+            if (loggedOut && !successorReady && controller.authenticated() && !controller.busy())
+                successorReady = true;
+        });
+        controller.logoutWorkspaceSession(a.id);
+        // The successor promise still holds: the next remembered inbox wins.
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(successorReady);
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        QCOMPARE(controller.sessionSwitcherSessions().first().toMap().value("id").toString(), b.id);
+        // The failed vault removal must surface, not be discarded by the
+        // successor's advanced attempt, and it must precede the handover.
+        QVERIFY2(removalErrorSeen, qPrintable(QStringLiteral("error=%1").arg(controller.error())));
+        QVERIFY(removalBeforeSuccessor);
+        // The credential genuinely survived the failed removal - which is
+        // exactly why the user was told about it.
+        QVERIFY(secrets.values.contains(a.id));
+        QVERIFY(secrets.values.contains(b.id));
+    }
+
+    void sessionSwitcherLogoutClearsSynthesizedLiveSession()
+    {
+        // exo-review #170: while the live session has no saved-account
+        // binding, the switcher renders a row with a synthesized id. Logging
+        // out that row must clear the live session, not try to forget a row
+        // that was never remembered.
+        const QUrl server("https://switcher.invalid");
+        ApiClient api;
+        Session session(&api, nullptr, [&api](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            QJsonValue data; int status = 404; QString error{"not found"};
+            const auto grant = body.toObject().value("grant_type").toString();
+            if (path.endsWith("/actions/get_token/invoke")
+                && (grant == "login+password" || grant == "refresh_token")) {
+                data = QJsonObject{{"access_token", "synthetic-token"},
+                    {"refresh_token", "synthetic-refresh"}, {"expires_in", 3600}};
+                status = 200; error.clear();
+            } else if (path.endsWith("/actions/introspect")) {
+                data = QJsonObject{{"user_info", QJsonObject{{"uuid", userId}}},
+                    {"project_id", projectId}, {"otp_verified", true}, {"permissions", QJsonArray{}}};
+                status = 200; error.clear();
+            } else if (path == "/api/core/v1/iam/projects/") {
+                data = QJsonArray{QJsonObject{{"uuid", projectId},
+                    {"name", "Live project"}, {"status", "ACTIVE"}}};
+                status = 200; error.clear();
+            }
+            const ApiResult result{data, status, {}, error};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeController controller(&api, &session);   // No vault: the live identity stays unsaved.
+        controller.login(server.toString(), "alice", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(session.currentSavedAccountId().isEmpty());
+        const auto rows = controller.sessionSwitcherSessions();
+        QCOMPARE(rows.size(), 1);
+        const auto liveId = SessionVault::accountId(server, projectId, userId);
+        QVERIFY(!liveId.isEmpty());
+        QCOMPARE(rows.first().toMap().value("id").toString(), liveId);
+        QCOMPARE(rows.first().toMap().value("isCurrent").toBool(), true);
+        // Logging out the synthesized live row clears the live session and
+        // lands back on the sign-in step instead of "forgetting" an unknown row.
+        controller.logoutWorkspaceSession(liveId);
+        QTRY_VERIFY(!controller.authenticated());
+        QCOMPARE(controller.loginStep(), QString("organization"));
+        QVERIFY(controller.error().isEmpty());
     }
 };
 
