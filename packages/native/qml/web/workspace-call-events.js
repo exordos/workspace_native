@@ -28,6 +28,16 @@
 //   external_api.getParticipantsInfo()      -> bridge.reportRoster (take)
 //   on("participantJoined") -> bridge.handleParticipantsJoined()
 //   on("participantLeft")   -> bridge.handleParticipantsLeft()
+//
+// #261 review hardening: because this window is BOTH sides of the transport
+// (the frame sends to window.parent, which here is this very window), a raw
+// echo of an unfamiliar readiness ID returns to us, looks unfamiliar again
+// and would be echoed forever - so each foreign readiness ID is answered at
+// most once (ids already answered, including our own posts, are remembered).
+// And because shape+scope validation let ANY frame forge events, every
+// transport message is now bound to the expected meeting window
+// (event.source) and the loaded meeting origin (event.origin); everything
+// else is dropped silently.
 (function () {
     "use strict";
     if (window.__workspaceCallEventsGlue)
@@ -53,7 +63,25 @@
         else if (wireBuffer.length < 500) wireBuffer.push(params);
     }
     var readyTimer = window.setInterval(function () { wire("__ready__", myId); }, 50);
+    // (#261 echo loop) This window is both sides of the transport: an echo of
+    // an unfamiliar readiness ID comes back to us and looks unfamiliar again.
+    // Remember every readiness ID already answered - a foreign ID gets at
+    // most ONE answer, and an ID we posted ourselves (our own echo, or the
+    // periodic myId handshake) is never re-answered.
+    var answeredReady = Object.create(null);
+    // (#261 forgeable events) The glue is a main-world DocumentCreation script
+    // with runsOnSubFrames false (NativeCallWebEngineView.qml), so the only
+    // legitimate transport peer is this very window - the meeting document is
+    // the top-level document and external_api.js sends to window.parent,
+    // which here is window itself - speaking from this document's own origin.
+    // Any other source (a child frame) or origin is dropped silently.
+    var trustedSource = window.parent || window;
+    var trustedOrigin = window.location.origin;
     window.addEventListener("message", function (event) {
+        if (event.source !== window && event.source !== trustedSource)
+            return;
+        if (event.origin !== trustedOrigin)
+            return;
         if (typeof event.data !== "string")
             return;
         var data;
@@ -66,9 +94,12 @@
                 wireReady = true;
                 for (var i = 0; i < wireBuffer.length; ++i) wire("message", wireBuffer[i]);
                 wireBuffer = [];
-            } else {
-                wire("__ready__", data.params);
+                return;
             }
+            if (answeredReady[data.params])
+                return;
+            answeredReady[data.params] = true;
+            wire("__ready__", data.params);
             return;
         }
         if (data.method === "message" && data.params && data.params.type === "event")
