@@ -1360,6 +1360,33 @@ private slots:
             "the glue must speak the pinned external-API postMessage wire contract (#252)");
     }
 
+    void shippedCallEventGlueBindsTransportEventsToTrustedSourceAndOrigin()
+    {
+        // Issue #261 review: shape+scope validation let any child frame post
+        // a matching event and corrupt the roster/count or fire join/leave
+        // handlers. The listener must bind every transport event to the
+        // expected meeting window (event.source) AND the loaded meeting
+        // origin (event.origin), and drop everything else.
+        const auto src = readEmbedSource(QStringLiteral("web/workspace-call-events.js"));
+        QVERIFY2(!src.isEmpty(), "the shipped call-event glue must be locatable");
+        QVERIFY2(src.contains(QStringLiteral("event.source")),
+            "transport events must be bound to the expected meeting window (#261)");
+        QVERIFY2(src.contains(QStringLiteral("event.origin")),
+            "transport events must be bound to the meeting origin (#261)");
+    }
+
+    void shippedCallEventGlueAnswersEachForeignReadyIdAtMostOnce()
+    {
+        // Issue #261 review: the ready handler echoed every unfamiliar
+        // readiness ID with postMessage to the SAME window, received its own
+        // echo, and echoed again - an endless self-posting loop. The listener
+        // must only answer readiness IDs it has not answered yet.
+        const auto src = readEmbedSource(QStringLiteral("web/workspace-call-events.js"));
+        QVERIFY2(!src.isEmpty(), "the shipped call-event glue must be locatable");
+        QVERIFY2(!src.contains(QStringLiteral("else {\n                wire(\"__ready__\", data.params);\n            }")),
+            "an unfamiliar ready ID must never be echoed unconditionally (#261 echo loop)");
+    }
+
 private:
     static QString readEmbedSource(const QString &name)
     {

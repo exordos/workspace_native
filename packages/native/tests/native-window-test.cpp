@@ -1719,6 +1719,113 @@ inline QByteArray embedMeetingPage()
 </body></html>)HTML");
 }
 
+// Issue #261 review (ready-echo loop): the glue answered EVERY unfamiliar
+// readiness ID by posting __ready__ back to the SAME window, then received
+// its own echo, still unfamiliar, and answered again - an endless self-posting
+// loop. This probe page acts as a dumb peer: it posts ONE unfamiliar ready ID
+// (no interval, no echo handler of its own) and counts every __ready__
+// envelope that crosses the window afterwards by wrapping window.postMessage
+// (the glue resolves window.postMessage at call time, so the wrapper sees
+// its echoes too). A correct parent-side peer answers a foreign ID at most
+// once; the raw count is reported back through the meeting server.
+inline QByteArray embedReadyEchoProbePage()
+{
+    return QByteArray(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Call ready-echo probe</title></head><body>
+<script>
+(function () {
+    "use strict";
+    var scope;
+    var idMatch = /jitsi_meet_external_api_id=(\d+)/.exec(window.location.hash || "");
+    if (idMatch)
+        scope = "jitsi_meet_external_api_" + idMatch[1];
+    window.__readyPosts = 0;
+    var nativePost = window.postMessage;
+    window.postMessage = function (payload) {
+        if (typeof payload === "string" && payload.indexOf("\"__ready__\"") !== -1)
+            ++window.__readyPosts;
+        return nativePost.apply(window, arguments);
+    };
+    window.postMessage(JSON.stringify({ postis: true, scope: scope,
+        method: "__ready__", params: "probe-ready-once" }), "*");
+    setTimeout(function () {
+        fetch("/ready-echo?count=" + window.__readyPosts).catch(function () {});
+    }, 1200);
+})();
+</script>
+</body></html>)HTML");
+}
+
+// Issue #261 review (forgeable transport events): the glue validated only the
+// envelope shape and the scope string, never event.source or event.origin, so
+// ANY frame in the document could post a matching event and corrupt the
+// participant count/roster or fire the join/leave handlers. This probe page
+// joins through the genuine same-window path, then appends a SAME-ORIGIN
+// child frame (so the origin check alone would not discriminate: the forged
+// event carries the parent's very own scope and origin) that posts a forged
+// participant-joined to its parent. A genuine join follows after the spoof
+// so the case also proves the trusted path still works after hardening.
+inline QByteArray embedFrameSpoofProbePage()
+{
+    return QByteArray(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Call frame spoof probe</title></head><body>
+<script>
+(function () {
+    "use strict";
+    var scope;
+    var idMatch = /jitsi_meet_external_api_id=(\d+)/.exec(window.location.hash || "");
+    if (idMatch)
+        scope = "jitsi_meet_external_api_" + idMatch[1];
+    function sendEvent(fields) {
+        window.postMessage(JSON.stringify({ postis: true, scope: scope,
+            method: "message", params: { type: "event", data: fields } }), "*");
+    }
+    setTimeout(function () {
+        sendEvent({ name: "video-conference-joined", id: "self-1",
+            displayName: "Self", formattedDisplayName: "Self" });
+    }, 400);
+    setTimeout(function () {
+        var frame = document.createElement("iframe");
+        frame.style.display = "none";
+        frame.src = "/spoof-frame.html";
+        frame.onload = function () {
+            fetch("/spoof-ack?attempted=1").catch(function () {});
+        };
+        document.body.appendChild(frame);
+    }, 800);
+    setTimeout(function () {
+        sendEvent({ name: "participant-joined", id: "grace",
+            displayName: "Grace", formattedDisplayName: "Grace" });
+    }, 2200);
+})();
+</script>
+</body></html>)HTML");
+}
+
+// The same-origin forger: reads the embed scope off the (same-origin) parent
+// hash and posts a participant-joined for "Mallory" straight at the parent.
+inline QByteArray embedFrameSpoofFramePage()
+{
+    return QByteArray(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Spoof frame</title></head><body>
+<script>
+(function () {
+    "use strict";
+    var scope;
+    try {
+        var idMatch = /jitsi_meet_external_api_id=(\d+)/.exec(parent.location.hash || "");
+        if (idMatch)
+            scope = "jitsi_meet_external_api_" + idMatch[1];
+    } catch (e) {}
+    parent.postMessage(JSON.stringify({ postis: true, scope: scope,
+        method: "message", params: { type: "event", data: {
+            name: "participant-joined", id: "mallory",
+            displayName: "Mallory", formattedDisplayName: "Mallory" } } }), "*");
+})();
+</script>
+</body></html>)HTML");
+}
+
 // Issue #251: the trusted meeting origin asks Qt for a microphone and a
 // camera, and a genuinely foreign-origin frame (a second loopback server on
 // its own port) asks for a microphone too - an about:srcdoc frame would just
@@ -1787,6 +1894,10 @@ public:
     // Issue #251: serve the capture-permission probe page instead of the
     // participant-timeline page, and record the reported probe outcomes.
     bool permissionProbe = false;
+    // Issue #261 review: serve the ready-echo loop probe / the frame-spoof
+    // probe instead of the participant-timeline page.
+    bool readyEchoProbe = false;
+    bool frameSpoofProbe = false;
     QString untrustedFrameUrl;
     QMap<QString, QString> probeResults;
     // Issue #250: the next N requests for the meeting page get their socket
@@ -1801,11 +1912,17 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
-            if (path == "/perm-probe") {
+            if (path == "/perm-probe" || path == "/ready-echo" || path == "/spoof-ack") {
                 const auto items = QUrlQuery(request.target.query()).queryItems();
                 for (const auto &item : items)
                     probeResults.insert(item.first, item.second);
                 return {QJsonObject{{QStringLiteral("ok"), true}}};
+            }
+            if (frameSpoofProbe && request.method == "GET" && path == "/spoof-frame.html") {
+                Response frame;
+                frame.rawBody = embedFrameSpoofFramePage();
+                frame.rawContentType = "text/html; charset=utf-8";
+                return frame;
             }
             if (localMeeting && request.method == "GET" && path == "/workspace-call-room") {
                 if (breakMeetingLoads > 0) {
@@ -1816,7 +1933,10 @@ public:
                 }
                 Response page;
                 page.rawBody = permissionProbe
-                    ? embedPermissionProbePage(untrustedFrameUrl) : embedMeetingPage();
+                    ? embedPermissionProbePage(untrustedFrameUrl)
+                    : readyEchoProbe ? embedReadyEchoProbePage()
+                    : frameSpoofProbe ? embedFrameSpoofProbePage()
+                    : embedMeetingPage();
                 page.rawContentType = "text/html; charset=utf-8";
                 return page;
             }
@@ -16538,6 +16658,112 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.embedBridge()->liveParticipantCount(), -1);
         QVERIFY(controller.embedBridge()->liveRoster().isEmpty());
+    }
+
+    // Issue #261 review (threads 4563829451 / 4563829481): the ready handler
+    // echoed an unfamiliar readiness ID with postMessage into the SAME window,
+    // then received its own echo, still unfamiliar, and posted again - an
+    // endless self-posting loop saturating the embed. The probe page posts
+    // exactly one unfamiliar ready ID and reports how many __ready__ envelopes
+    // crossed the window in the following 1.2s; a correct parent-side peer
+    // answers a foreign ID at most once (it never echoes an ID it posted
+    // itself), so the count stays tiny and bounded.
+    void callWindowEmbedReadyEchoStaysBoundedForForeignReadyId()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        fixture.readyEchoProbe = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Ready-echo probe teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        QVERIFY2(QTest::qWaitFor(
+            [&] { return fixture.probeResults.contains(QStringLiteral("count")); }, 20000),
+            "the ready-echo probe never reported back");
+        const int readyPosts = fixture.probeResults.value(QStringLiteral("count")).toInt();
+        // Genuine traffic in the window: the probe's single foreign ID plus
+        // the glue's own handshake (posted at most a couple of times until
+        // self-satisfied) plus the single echo answer per foreign ID.
+        QVERIFY2(readyPosts <= 10, qPrintable(QStringLiteral(
+            "ready echo loop: %1 __ready__ envelopes posted through the window in 1.2s")
+            .arg(readyPosts)));
+    }
+
+    // Issue #261 review (threads 4563829468 / 4563829475): the message
+    // listener validated only the envelope shape and the scope string, never
+    // event.source or event.origin - any child frame could post a matching
+    // event and corrupt the roster/count or fire join/leave handlers. The
+    // probe page first joins through the genuine same-window transport, then
+    // lets a same-origin CHILD FRAME (identical origin, identical scope -
+    // only the source differs) forge a participant-joined at its parent. The
+    // forged participant must never reach the bridge; a genuine same-window
+    // event afterwards still must.
+    void callWindowEmbedIgnoresTransportEventsFromChildFrames()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        fixture.frameSpoofProbe = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Frame-spoof probe teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // The genuine same-window join lands (proves the glue is listening).
+        QTRY_VERIFY_WITH_TIMEOUT(controller.embedBridge()->liveParticipantCount() == 1, 20000);
+        // The forged child-frame event has been posted by now...
+        QVERIFY2(QTest::qWaitFor(
+            [&] { return fixture.probeResults.contains(QStringLiteral("attempted")); }, 20000),
+            "the spoof frame never posted its forged event");
+        QTest::qWait(700); // grace for any wrongly-accepted forgery to apply
+        // ...and it must NOT have touched the bridge state.
+        QCOMPARE(controller.embedBridge()->liveParticipantCount(), 1);
+        QCOMPARE(controller.embedBridge()->liveRoster(),
+            QStringList({QStringLiteral("Self")}));
+        // A genuine same-window event still flows after the rejection.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.embedBridge()->liveRoster() ==
+            QStringList({QStringLiteral("Self"), QStringLiteral("Grace")}), 8000);
+        QCOMPARE(controller.embedBridge()->liveParticipantCount(), 2);
     }
 
     void callWindowFullscreenControlDrivesTheWindow()
