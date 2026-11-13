@@ -1,3 +1,24 @@
+# Workspace Native 0.18.0 - Linux development preview
+
+One feature ported from the reference desktop:
+
+- The composer can now answer several messages at once. While a reply is open,
+  choosing Reply on another message stacks a second quote tab instead of
+  replacing the first: each tab holds its own answer, tabs switch and close
+  individually, and sending posts one message that answers every tab in tab
+  order. Mentions typed into any tab stay real mentions, and each saved answer
+  is checked against the same size and protected-content rules as an ordinary
+  draft. A quote re-pointed while a send is in flight no longer closes the
+  reply session.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.17.0...0.18.0](https://github.com/exordos/workspace_native/compare/0.17.0...0.18.0)
+
+---
+
 # Workspace Native 0.17.0 - Linux development preview
 
 Two features ported from the reference desktop:
