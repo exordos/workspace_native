@@ -263,6 +263,12 @@ if(BUILD_TESTING)
             target_compile_definitions(${test}-test PRIVATE
                 WORKSPACE_NATIVE_CRYPTO_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/tests/workspace-chat-crypto-v1-vectors.json")
         endif()
+        if(test STREQUAL "native-call")
+            # #250/#251/#252 source-contract guards read the shipped embed
+            # sources from the source tree (the same files qrc embeds).
+            target_compile_definitions(${test}-test PRIVATE
+                WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+        endif()
         # Only the window harness loads the scene; the production executable embeds
         # the same sources as a QML module so deployment scans its actual imports.
         if(test STREQUAL "native-window")
