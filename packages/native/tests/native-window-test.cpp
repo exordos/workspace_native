@@ -2021,6 +2021,67 @@ public:
     }
 };
 
+// Issue #253 shared fixture: one topic of synthetic variable-height
+// markdown rows whose last message wraps to many lines only at the
+// narrow width, so a normal -> maximized -> normal cycle reflows the
+// whole conversation (the reporter's measured 126px -> 186px growth).
+struct WindowRestoreFixture {
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    MockServer server;
+    ApiClient api{nullptr, true};
+    Session session;
+    NativeController controller;
+    QString lastUuid;
+    QJsonArray history;
+    QJsonObject streamBody;
+    QJsonObject topicBody;
+    WindowRestoreFixture()
+        : preferences(directory.filePath("window-restore.ini")), session(&api), controller(&api, &session)
+    {
+        preferences.setLocale("en"); preferences.setMode("light");
+        const QString longTail = QStringLiteral(
+            "Final long wrapped tail message: every re-wrapped line must stay inside the "
+            "message viewport across the resize cycle because the reader opened the "
+            "conversation at its latest message and the web reference re-pins the tail "
+            "after each viewport reflow instead of leaving it below the fold.");
+        for (int i = 0; i < 32; ++i) {
+            QString content = QStringLiteral("Restore fixture row %1.").arg(i);
+            for (int line = 0; line <= i % 3; ++line)
+                content += QStringLiteral(
+                    " Long filler sentence %1 that re-wraps into several lines when the "
+                    "conversation column is narrow, so the viewport reflow is significant.")
+                    .arg(line);
+            if (i == 31) content = longTail;
+            auto entry = message(content,
+                QString("83000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')));
+            entry["is_own"] = false;
+            entry["author_uuid"] = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(i * 60).toString(Qt::ISODateWithMs);
+            history.append(entry);
+        }
+        lastUuid = history.last().toObject().value("uuid").toString();
+        streamBody = {{"uuid", streamId}, {"project_id", projectId}, {"name", "Restore fixture"},
+            {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}};
+        topicBody = {{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Resize cycles"}, {"unread_count", 0}, {"active_unread_count", 0},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}};
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{streamBody}};
+            if (path.endsWith("/streams/" + streamId)) return Response{streamBody};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicBody}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicBody};
+            if (path.endsWith("/messages/")) return Response{history};
+            return sessionResponse(request);
+        };
+    }
+};
+
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -17277,6 +17338,175 @@ private:
             == int(JitsiCallWindowController::Ready), 20000);
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
+
+    void windowRestoreKeepsTheConversationTailVisible()
+    {
+        WindowRestoreFixture fixture;
+        QQmlApplicationEngine engine; loadNativeUi(engine, &fixture.controller, &fixture.preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Window-restore tail window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        fixture.session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(fixture.session.projects().size(), 1); fixture.session.selectProject(projectId);
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+        fixture.controller.selectStream(streamId);
+        QTRY_COMPARE(fixture.controller.topics().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 32);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        const auto lastId = fixture.controller.messages().last().toMap().value("id").toString();
+        QCOMPARE(lastId, fixture.lastUuid);
+        const auto rowGeometry = [&](const QString &id) {
+            auto *row = item(window->contentItem(), "message-" + id);
+            if (!row || row->window() != window) return QRectF();
+            return QRectF(row->mapToItem(list, QPointF()), QSizeF(row->width(), row->height()));
+        };
+        const auto fullyVisible = [&](const QRectF &rect) {
+            return !rect.isNull() && rect.top() >= -1.0 && rect.bottom() <= list->height() + 1.0; };
+        const auto settle = [&](const QString &id) {
+            // Window resize reflows wrapped rows asynchronously and the list
+            // restore runs on the existing callLater chain; require the row's
+            // measured geometry and the list offset to stop moving.
+            QElapsedTimer stable; qreal previousY = -1.0; QRectF previous;
+            stable.start();
+            return QTest::qWaitFor([&] {
+                const auto rect = rowGeometry(id);
+                const qreal contentY = list->property("contentY").toReal();
+                if (list->property("positioning").toBool()
+                    || rect != previous || qAbs(contentY - previousY) > 0.01) {
+                    previous = rect; previousY = contentY; stable.restart();
+                    return false;
+                }
+                return stable.elapsed() >= 120;
+            }, 6000);
+        };
+        QVERIFY2(settle(lastId), "Initial tail placement never settled");
+        QVERIFY2(fullyVisible(rowGeometry(lastId)),
+            "The latest message must be fully visible at the normal size before any resize");
+        QVector<qreal> restoredTops, restoredHeights;
+        for (int cycle = 1; cycle <= 3; ++cycle) {
+            window->resize(2400, 1050);
+            QTRY_COMPARE_WITH_TIMEOUT(window->width(), 2400, 4000);
+            QTRY_COMPARE_WITH_TIMEOUT(window->height(), 1050, 4000);
+            QVERIFY2(settle(lastId), qPrintable(QStringLiteral("cycle %1: no settle while maximized").arg(cycle)));
+            QVERIFY2(fullyVisible(rowGeometry(lastId)),
+                qPrintable(QStringLiteral("cycle %1: latest row lost while maximized").arg(cycle)));
+            window->resize(1440, 900);
+            QTRY_COMPARE_WITH_TIMEOUT(window->width(), 1440, 4000);
+            QTRY_COMPARE_WITH_TIMEOUT(window->height(), 900, 4000);
+            QVERIFY2(settle(lastId), qPrintable(QStringLiteral("cycle %1: no settle after restore").arg(cycle)));
+            const auto restored = rowGeometry(lastId);
+            QVERIFY2(fullyVisible(restored), qPrintable(QStringLiteral("cycle %1: latest row [%2 %3 %4 %5] lost the viewport %6x%7")
+                .arg(cycle).arg(restored.x()).arg(restored.y()).arg(restored.width()).arg(restored.height())
+                .arg(list->width()).arg(list->height())));
+            restoredTops.append(restored.top()); restoredHeights.append(restored.height());
+        }
+        for (int cycle = 1; cycle < restoredTops.size(); ++cycle) {
+            QVERIFY2(qAbs(restoredTops[cycle] - restoredTops[0]) <= 4.0,
+                qPrintable(QStringLiteral("cycle %1 drifted %2 px from the first restore")
+                    .arg(cycle + 1).arg(restoredTops[cycle] - restoredTops[0])));
+            QVERIFY2(qAbs(restoredHeights[cycle] - restoredHeights[0]) <= 1.0,
+                qPrintable(QStringLiteral("cycle %1 changed the settled tail row height").arg(cycle + 1)));
+        }
+    }
+
+    void windowRestoreKeepsAnOlderHistoryReaderAnchored()
+    {
+        WindowRestoreFixture fixture;
+        QQmlApplicationEngine engine; loadNativeUi(engine, &fixture.controller, &fixture.preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Window-restore anchor window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        fixture.session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(fixture.session.projects().size(), 1); fixture.session.selectProject(projectId);
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+        fixture.controller.selectStream(streamId);
+        QTRY_COMPARE(fixture.controller.topics().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 32);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        const auto rowGeometry = [&](const QString &id) {
+            auto *row = item(window->contentItem(), "message-" + id);
+            if (!row || row->window() != window) return QRectF();
+            return QRectF(row->mapToItem(list, QPointF()), QSizeF(row->width(), row->height()));
+        };
+        const auto settle = [&](const QString &id) {
+            QElapsedTimer stable; qreal previousY = -1.0; QRectF previous;
+            stable.start();
+            return QTest::qWaitFor([&] {
+                const auto rect = rowGeometry(id);
+                const qreal contentY = list->property("contentY").toReal();
+                if (list->property("positioning").toBool()
+                    || rect != previous || qAbs(contentY - previousY) > 0.01) {
+                    previous = rect; previousY = contentY; stable.restart();
+                    return false;
+                }
+                return stable.elapsed() >= 120;
+            }, 6000);
+        };
+        const auto distanceFromBottom = [&] {
+            return list->property("originY").toReal() + list->property("contentHeight").toReal()
+                + list->property("bottomMargin").toReal() - list->property("contentY").toReal() - list->height();
+        };
+        // Real wheel input parks the reader at the middle of the loaded
+        // history: far from the tail so viewport growth alone can never pin
+        // it, and far from the top so several rows sit above the anchor.
+        const auto scrollSpan = [&] {
+            return list->property("contentHeight").toReal() - list->height(); };
+        const qreal parkTarget = scrollSpan() * 0.5;
+        QVERIFY2(parkTarget >= 300.0, "the fixture history is too short to park mid-history");
+        for (int step = 0; step < 60 && distanceFromBottom() < parkTarget; ++step) {
+            const auto center = list->mapToScene(QPointF(list->width() / 2.0, list->height() / 2.0));
+            QTest::mouseMove(window, center.toPoint());
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QTest::qWait(25);
+        }
+        QVERIFY2(distanceFromBottom() >= parkTarget * 0.8, "the reader never got far enough above the tail");
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QPair<QString, qreal> anchor;
+        for (const auto &entry : fixture.controller.messages()) {
+            const auto id = entry.toMap().value("id").toString();
+            const auto rect = rowGeometry(id);
+            if (rect.isNull() || rect.bottom() <= 0 || rect.top() >= list->height()) continue;
+            anchor = {id, rect.top()};
+            break;
+        }
+        QVERIFY(!anchor.first.isEmpty());
+        QVERIFY(anchor.first != fixture.lastUuid);
+        const auto anchorPlaced = [&] {
+            const auto rect = rowGeometry(anchor.first);
+            return !rect.isNull() && rect.bottom() > 0 && rect.top() < list->height(); };
+        for (int cycle = 1; cycle <= 2; ++cycle) {
+            window->resize(2400, 1050);
+            QTRY_COMPARE_WITH_TIMEOUT(window->width(), 2400, 4000);
+            QTRY_COMPARE_WITH_TIMEOUT(window->height(), 1050, 4000);
+            QVERIFY2(settle(anchor.first), qPrintable(QStringLiteral("cycle %1: no settle while maximized").arg(cycle)));
+            QVERIFY2(anchorPlaced(), qPrintable(QStringLiteral("cycle %1: anchor left the view while maximized").arg(cycle)));
+            const auto wide = rowGeometry(anchor.first);
+            QVERIFY2(qAbs(wide.top() - anchor.second) <= 24.0, qPrintable(QStringLiteral(
+                "cycle %1: maximized reflow displaced the anchor from %2 to %3").arg(cycle).arg(anchor.second).arg(wide.top())));
+            window->resize(1440, 900);
+            QTRY_COMPARE_WITH_TIMEOUT(window->width(), 1440, 4000);
+            QTRY_COMPARE_WITH_TIMEOUT(window->height(), 900, 4000);
+            QVERIFY2(settle(anchor.first), qPrintable(QStringLiteral("cycle %1: no settle after restore").arg(cycle)));
+            QVERIFY2(anchorPlaced(), qPrintable(QStringLiteral("cycle %1: anchor left the view after restore").arg(cycle)));
+            const auto normal = rowGeometry(anchor.first);
+            QVERIFY2(qAbs(normal.top() - anchor.second) <= 24.0, qPrintable(QStringLiteral(
+                "cycle %1: restored reflow displaced the anchor from %2 to %3").arg(cycle).arg(anchor.second).arg(normal.top())));
+            QVERIFY2(!list->property("atYEnd").toBool(), "the parked reader was dragged to the tail");
+            QVERIFY2(distanceFromBottom() >= 400.0, "the parked reader slid toward the tail");
+        }
     }
 };
 
