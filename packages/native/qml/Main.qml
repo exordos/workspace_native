@@ -3293,10 +3293,18 @@ ApplicationWindow {
                 // here and forwards geometry - arming, coalescing and end-of-history
                 // guards live in the controller (testable without a window).
                 property bool userScrollSeen: false
+                // Issue #253 review: followSentMessage arms the persistent
+                // intent too, so a resize capture can already hold
+                // userScrollSeen=true and a later wheel has no false-to-true
+                // edge left to make. Every intent writer bumps this counter,
+                // every viewport snapshot records it (captureViewport), and
+                // the resize hand-off compares captured vs current instead
+                // of the boolean edge.
+                property int userScrollGeneration: 0
                 property bool anchorJumpPending: false
                 readonly property real distanceFromTop: contentY - originY + topMargin
                 // Drag/fling is user scrolling too (handleTouchMove analogue).
-                onMovementStarted: userScrollSeen = true
+                onMovementStarted: { userScrollSeen = true; ++userScrollGeneration }
                 MouseArea {
                     // Wheel observer mirroring the reference handleWheel: it
                     // marks the scroll intent, then propagates the event so the
@@ -3308,6 +3316,7 @@ ApplicationWindow {
                     propagateComposedEvents: true
                     onWheel: {
                         messageList.userScrollSeen = true
+                        ++messageList.userScrollGeneration
                         wheel.accepted = false
                     }
                 }
@@ -3682,6 +3691,11 @@ ApplicationWindow {
                         anchorId: "",
                         offset: 0,
                         scrollY: contentY,
+                        // Issue #253 review: stamp the wheel-intent
+                        // generation with the geometry so the hand-off gate
+                        // can tell intent that arrived after this capture
+                        // from intent that predates it.
+                        userGenerationAtCapture: userScrollGeneration,
                         followTail: count === 0 || atYEnd || originY + contentHeight + bottomMargin - contentY - height <= 80
                     };
                     for (let i = 0; i < count; ++i) {
@@ -3784,9 +3798,12 @@ ApplicationWindow {
                     // Reference analogue: pinTailToBottom's requestAnimationFrame
                     // pass returns when userScrolledAwayFromBottomRef fired
                     // (hook :294-307). Hand the chain over instead of
-                    // overwriting the user's movement.
-                    if (pendingViewport.followTail && pendingViewport.userSeenAtCapture === false
-                        && userScrollSeen) {
+                    // overwriting the user's movement. Issue #253 review:
+                    // compare the captured wheel generation with the current
+                    // one - the boolean cannot express "new intent" once
+                    // followSentMessage has already armed it pre-capture.
+                    if (pendingViewport.followTail
+                        && userScrollGeneration > pendingViewport.userGenerationAtCapture) {
                         pendingViewport = null;
                         positioning = false;
                         tailFollow = originY + contentHeight + bottomMargin - contentY - height <= 80
@@ -3873,9 +3890,14 @@ ApplicationWindow {
                         // Reference pinTailToBottom-on-send marks the scroll
                         // intent unconditionally (hook :573-584).
                         userScrollSeen = true
+                        ++userScrollGeneration
                         tailFollow = true
                         const snapshot = pendingViewport || captureViewport();
                         snapshot.followTail = true;
+                        // The send's own intent bump must not re-arm the
+                        // hand-off against this very pin: record the
+                        // generation this pin was posted from.
+                        snapshot.userGenerationAtCapture = userScrollGeneration;
                         pendingViewport = snapshot;
                         positioning = true;
                         const ticket = ++layoutTicket;
@@ -3969,9 +3991,10 @@ ApplicationWindow {
                     snapshot.followTail = tailFollow;
                     // The reference pinTailToBottom second pass re-checks
                     // userScrolledAwayFromBottomRef before re-pinning; the
-                    // wheel observer moving userScrollSeen during this chain
-                    // is the native wheel-intent analogue of that check.
-                    snapshot.userSeenAtCapture = userScrollSeen;
+                    // wheel observer moving userScrollSeen/userScrollGeneration
+                    // during this chain is the native wheel-intent analogue
+                    // of that check. captureViewport stamped the generation
+                    // this snapshot must be compared against.
                     if (!snapshot.followTail && !snapshot.anchorId.length)
                         return;
                     positioning = true;
