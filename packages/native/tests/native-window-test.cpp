@@ -389,6 +389,16 @@ public:
                         row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs).addSecs(index * 60).toString(Qt::ISODateWithMs);
                         rows.append(row);
                     }
+                    // A topic-scoped history page (the client always sends
+                    // topic_uuid once a topic is selected) only carries that
+                    // topic's rows; foreign rows would poison the page.
+                    const auto wanted = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                    if (!wanted.isEmpty()) {
+                        QJsonArray scoped;
+                        for (const auto &value : rows)
+                            if (value.toObject().value("topic_uuid").toString() == wanted) scoped.append(value);
+                        rows = scoped;
+                    }
                 }
                 return {rows};
             }
@@ -17734,7 +17744,39 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
 QTRY_VERIFY(create->property("enabled").toBool());
         click(window, window->findChild<QQuickItem *>("pollSettingsButton"));
-        click(window, window->findChild<QQuickItem *>("pollDeadlineAction"));
+        // The settings section flows below the form fold. Two harness traps:
+        // mapToScene on items inside a Popup answers in popup-local space
+        // (deprecated API), and static contentY writes are not clamped to the
+        // Flickable bounds here, so an unclamped write scrolls the action out
+        // through the top. Scroll to a computed max offset and dispatch against
+        // window-root coordinates only after the layout stops changing.
+        auto *flick = window->findChild<QQuickItem *>("pollFormFlickable"); QVERIFY(flick);
+        auto *deadlineAction = window->findChild<QQuickItem *>("pollDeadlineAction"); QVERIFY(deadlineAction);
+        const auto clickInRoot = [window](QQuickItem *target) {
+            const QPointF center = target->mapToItem(window->contentItem(),
+                QPointF(target->width() / 2, target->height() / 2));
+            QTest::mouseClick(window, Qt::LeftButton, {}, center.toPoint());
+        };
+        const auto bringIntoView = [flick, deadlineAction, window]() {
+            qreal lastHeight = -1.0;
+            for (int pass = 0; pass < 60; ++pass) {
+                QTest::qWait(50);
+                const qreal contentH = flick->property("contentHeight").toReal();
+                const qreal maxScroll = qMax(0.0, contentH - flick->height());
+                const qreal centerY = deadlineAction->mapToItem(window->contentItem(),
+                    QPointF(0, deadlineAction->height() / 2)).y();
+                const qreal viewTop = flick->mapToItem(window->contentItem(), QPointF(0, 0)).y();
+                const qreal viewBottom = viewTop + flick->height();
+                if (contentH == lastHeight && deadlineAction->isVisible()
+                    && centerY > viewTop + 4.0 && centerY < viewBottom - 4.0)
+                    return;
+                lastHeight = contentH;
+                flick->setProperty("contentY", maxScroll);
+            }
+            QFAIL("the deadline action never stayed inside the form viewport");
+        };
+        bringIntoView();
+        clickInRoot(deadlineAction);
         auto *dateField = window->findChild<QObject *>("pollDeadlineDateField"); QVERIFY(dateField);
         QTRY_VERIFY(dateField->property("visible").toBool());
         dateField->setProperty("text", "2020-01-01");
@@ -17747,7 +17789,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!invalid->property("visible").toBool());
         // Removing the deadline returns to the no-deadline state.
-        click(window, window->findChild<QQuickItem *>("pollDeadlineAction"));
+        bringIntoView();
+        clickInRoot(deadlineAction);
         QTRY_VERIFY(!dateField->property("visible").toBool());
         QVERIFY(create->property("enabled").toBool());
     }
@@ -17773,11 +17816,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey());
         click(window, visibleItem(window->contentItem(), "stream-" + streamId));
-        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
         QTRY_VERIFY(controller.messages().size() >= 2);
         QVERIFY(visibleItem(window->contentItem(), "pollButton"));
-        QVERIFY(controller.beginEditMessage(QStringLiteral("81000000-0000-4000-8000-000000000001")));
+        // Editing is restricted to own messages; the Planning topic carries
+        // one (index 3 of the source scene).
+        QVERIFY(controller.beginEditMessage(QStringLiteral("81000000-0000-4000-8000-000000000004")));
         // Reference message-composer.ui.tsx:471 hides the trigger while editing.
         QTRY_VERIFY(!visibleItem(window->contentItem(), "pollButton"));
         controller.cancelEditMessage();

@@ -63,6 +63,9 @@ Popup {
         open()
     }
     function resetAll() {
+        // Surviving section delegates hold typed drafts in their own state; a
+        // count reset alone leaves the previous text visible on reopen.
+        for (const section of sectionsInOrder()) section.clearDraft()
         sectionCount = 1
         settingsOpen = false
         pending = false
@@ -191,6 +194,7 @@ Popup {
         }
         Item { Layout.preferredHeight: 8 }
         Flickable {
+            objectName: "pollFormFlickable"
             Layout.fillWidth: true
             Layout.preferredHeight: Math.max(200,
                 Math.min(formBody.implicitHeight, dialog.formBudget - 170))
@@ -536,6 +540,11 @@ Popup {
             if (allFilled) rows.push({text: "", correct: false})
             section.rebuild(rows)
         }
+        function clearDraft() {
+            section.questionText = ""
+            questionField.text = ""
+            section.rebuild([{text: "", correct: false}])
+        }
         function snapshot() {
             return {text: section.questionText, rows: section.rowsArray()}
         }
@@ -594,6 +603,7 @@ Popup {
                 font.weight: Font.DemiBold
             }
             TextField {
+                id: questionField
                 objectName: "pollQuestionField"
                 Layout.fillWidth: true
                 placeholderText: qsTr("Enter a question")
@@ -651,7 +661,7 @@ Popup {
                 CheckBox {
                     objectName: "pollAnswerCorrectCheck"
                     visible: answerInput.text.trim().length > 0
-                    checked: section.optionsVersion, optionModel.get(index).correct
+                    checked: section.optionsVersion, !!optionModel.get(index) && optionModel.get(index).correct
                     Accessible.name: qsTr("Mark as correct")
                     onToggled: {
                         optionModel.set(index, {text: answerInput.text, correct: checked})
