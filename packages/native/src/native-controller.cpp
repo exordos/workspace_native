@@ -11052,6 +11052,10 @@ void NativeController::parkReplySession()
     // move the whole state (tabs, order, active pointer, answers) under the
     // conversationKey() that started it instead of dropping it on navigation.
     if (m_replyTabs.isEmpty()) return;
+    // The quoted messages are still in memory at this moment (the route commit
+    // clears them right after), so any memo a getter never filled is primed
+    // now - the restored banner needs it while history reloads.
+    primeReplyTabMemos(m_replyTabs);
     m_replySessions.insert(m_replyRoute, ParkedReplySession{m_replyTabs, m_replyActiveTab});
     m_replyTabs.clear();
     m_replyActiveTab.clear();
@@ -11089,13 +11093,32 @@ QString NativeController::replyTabAuthor(const ReplyTab &tab) const
     return tab.authorMemo;
 }
 
+QString NativeController::replyPlainFor(const QString &id) const
+{
+    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
+    if (!message) return {};
+    static NativeMarkdown previewCache;
+    return previewCache.render(message->content).value("plain").toString().simplified();
+}
+
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
 {
-    const auto *message = tab.message.isEmpty() ? nullptr : findMessage(tab.message);
-    if (!message) return tab.plainMemo;
-    static NativeMarkdown previewCache;
-    tab.plainMemo = previewCache.render(message->content).value("plain").toString().simplified();
+    const auto live = replyPlainFor(tab.message);
+    if (!live.isEmpty()) { tab.plainMemo = live; return live; }
     return tab.plainMemo;
+}
+
+void NativeController::primeReplyTabMemos(QList<ReplyTab> &tabs) const
+{
+    // The memos are filled lazily by the display getters, so a session parked
+    // before anything ever read the banner would restore without a fallback
+    // and stay unreadable until its quoted messages are in memory again. Fill
+    // each empty memo from the very source the getters resolve live from;
+    // live resolution still wins on every read after the restore.
+    for (auto &tab : tabs) {
+        if (tab.authorMemo.isEmpty()) tab.authorMemo = replyAuthorFor(tab.message);
+        if (tab.plainMemo.isEmpty()) tab.plainMemo = replyPlainFor(tab.message);
+    }
 }
 
 QString NativeController::replyMessageId() const

@@ -1195,6 +1195,10 @@ private:
     const ReplyTab *activeReplyTab() const;
     QString replyTabAuthor(const ReplyTab &tab) const;
     QString replyTabPlain(const ReplyTab &tab) const;
+    // The getters' shared live-resolution sources, reused by the park path so
+    // parked memos come from exactly the same data the banner renders from.
+    QString replyPlainFor(const QString &id) const;
+    void primeReplyTabMemos(QList<ReplyTab> &tabs) const;
     struct QuoteRecord { QString authorId, content; bool missing = false; };
     mutable QHash<QString, QuoteRecord> m_quotes;
     // Transport failures stay retriable (reference loader keeps "stale" out of
