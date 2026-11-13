@@ -77,6 +77,13 @@ handlers, mirroring the reference observer:
   captured state instead of capturing the transient clamped geometry, and
   the #141 layout-freeze safeguards (single restore chain, virtual
   delegates, `settleGeometry` measurement passes) are unchanged.
+- The reference `pinTailToBottom` second pass returns when
+  `userScrolledAwayFromBottomRef` fired while its `requestAnimationFrame`
+  pass was pending. The native restore applies the same hand-off gate: a
+  snapshot captures the wheel-observer state (`userScrollSeen`) when the
+  chain is scheduled, and if the observer fires before a queued tail-pinning
+  pass runs, the pass abandons the restore instead of overwriting the user's
+  movement, re-deriving `tailFollow` from where the user landed.
 
 The #141 event-loop safeguards stay intact: no new timers or spin loops are
 added; the restore stays on `Qt.callLater` and only measures instantiated
