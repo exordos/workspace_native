@@ -16002,6 +16002,23 @@ private:
             QStringLiteral("aaaa0000-0000-4000-8000-000000000009")));
         QCOMPARE(toggle->property("color").value<QColor>(),
             QColor(QStringLiteral("#e4ecf3"))); // blue-cold light "bg" token
+        // PR #257 finding 4: the 40 px video icon sits inside the toggle's
+        // icon slot (it never escapes the button box) and the label starts
+        // after the icon, so icon and label cannot overlap.
+        auto *videoIcon = visibleItem(content, QStringLiteral("incomingCallVideoIcon")); QVERIFY(videoIcon);
+        const qreal iconLeftInCard = videoIcon->mapToItem(card, QPointF(0, 0)).x();
+        const qreal iconRightInCard = videoIcon->mapToItem(card, QPointF(videoIcon->width(), 0)).x();
+        const qreal toggleLeftInCard = toggle->mapToItem(card, QPointF(0, 0)).x();
+        const qreal toggleRightInCard = toggleLeftInCard + toggle->width();
+        QVERIFY2(iconLeftInCard >= toggleLeftInCard - 0.5
+                && iconRightInCard <= toggleRightInCard + 0.5,
+            qPrintable(QStringLiteral("video icon spans %1..%2 but the toggle spans %3..%4")
+                .arg(iconLeftInCard).arg(iconRightInCard)
+                .arg(toggleLeftInCard).arg(toggleRightInCard)));
+        auto *videoToggleText = item(content, QStringLiteral("incomingCallVideoToggleText")); QVERIFY(videoToggleText);
+        const qreal iconRightInToggle = toggle->mapFromItem(videoIcon, QPointF(videoIcon->width(), 0)).x();
+        QVERIFY2(videoToggleText->x() >= iconRightInToggle - 0.5,
+            "the toggle label must start after the icon slot, not under it");
         click(window, toggle);
         QVERIFY(controller.incomingCall()->videoEnabled(
             QStringLiteral("aaaa0000-0000-4000-8000-000000000009")));
@@ -16071,6 +16088,140 @@ private:
         QCOMPARE(controller.calls()->activeCall()
             .value(QStringLiteral("startWithVideoMuted")).toBool(), true);
         QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(content, QStringLiteral("incomingCallToast")), 2000);
+    }
+
+    // Shared standalone harness for the PR #257 presenter cases: the invite
+    // presenter is instantiated directly at an exact 400 x 400 viewport, so
+    // no window-manager geometry can shift the measurements. The QML source
+    // is an escaped string (not a raw string): this toolchain's moc mis-lexes
+    // raw strings that contain brace-heavy quoted content in this TU.
+    static QQuickItem *createInvitePresenter(QQmlEngine &engine, QQmlComponent &component)
+    {
+        static const char kPresenterQml[] =
+            "import QtQuick\n"
+            "import \"qrc:/workspace/qml\"\n"
+            "NativeIncomingCallWindow {\n"
+            "    width: 400\n"
+            "    height: 400\n"
+            "    colors: ({\n"
+            "        \"call-green\": \"#26c038\", \"call-red\": \"#e43535\", \"bg\": \"#e4ecf3\",\n"
+            "        \"bg-elevated\": \"#ffffff\", \"border-subtle\": \"#d3dde7\",\n"
+            "        \"text-primary\": \"#11181f\", \"text-muted\": \"#6b7785\",\n"
+            "        \"accent\": \"#2f6fed\", \"on-accent\": \"#ffffff\"\n"
+            "    })\n"
+            "    invite: ({\n"
+            "        messageId: \"aaaa0000-0000-4000-8000-000000000009\",\n"
+            "        meetingUrl: \"https://meet.example.com/workspace-call-room\",\n"
+            "        callerName: \"Slon\", locationName: \"Slon Direct\",\n"
+            "        avatarUrl: avatarUrlProbe.value\n"
+            "    })\n"
+            "    variant: \"large\"\n"
+            "    videoEnabled: false\n"
+            "}\n";
+        component.setData(QString::fromLatin1(kPresenterQml).toUtf8(),
+            QUrl("qrc:/native-incoming-call-presenter-test.qml"));
+        if (!component.isReady())
+            QTest::qFail(qPrintable(component.errorString()), __FILE__, __LINE__);
+        return qobject_cast<QQuickItem *>(component.create());
+    }
+
+    void incomingCallInviteAvatarPhotoReplacesFallbacks()
+    {
+        // PR #257 finding 2: invite.avatarUrl must reach the avatar image in
+        // both variants (the readonly property bound to itself made every
+        // invite fall back to the letter/phone placeholder).
+        QQmlEngine engine;
+        QVariantMap avatarUrlProbe;
+        avatarUrlProbe.insert(QStringLiteral("value"), QStringLiteral("urn:avatar:slon"));
+        engine.rootContext()->setContextProperty("nativeAvatars", nullptr);
+        engine.rootContext()->setContextProperty("avatarUrlProbe", avatarUrlProbe);
+        QQmlComponent component(&engine);
+        QScopedPointer<QQuickItem> presenter(createInvitePresenter(engine, component));
+        QVERIFY(presenter);
+        QQuickWindow window;
+        window.resize(400, 400);
+        presenter->setParentItem(window.contentItem());
+        auto close = qScopeGuard([&window, presenter = QPointer<QQuickItem>(presenter.data())] {
+            const bool closed = closeObservedTestWindow(&window);
+            presenter->setParentItem(nullptr);
+            if (!closed)
+                QTest::qFail("Invite avatar presenter teardown", __FILE__, __LINE__);
+        });
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const QString photo = QStringLiteral("urn:avatar:slon");
+        auto photoLoader = [](QQuickItem *holder) -> QQuickItem * {
+            const auto children = holder->childItems();
+            for (auto *child : children)
+                if (child->property("reference").isValid())
+                    return child;
+            return nullptr;
+        };
+        auto letterFallbackShown = [](QQuickItem *holder, const QString &letter) {
+            const auto children = holder->childItems();
+            for (auto *child : children)
+                if (child->property("text").toString() == letter && child->isVisible())
+                    return true;
+            return false;
+        };
+        // Large variant: the loader binds the invite photo and activates; the
+        // letter fallback stays hidden.
+        auto *avatar = visibleItem(presenter.data(), QStringLiteral("incomingCallAvatar")); QVERIFY(avatar);
+        auto *loader = photoLoader(avatar); QVERIFY(loader);
+        QCOMPARE(loader->property("reference").toString(), photo);
+        QVERIFY(loader->property("loadActive").toBool());
+        QVERIFY2(!letterFallbackShown(avatar, QStringLiteral("S")),
+            "the letter fallback must stay hidden while an avatarUrl is present");
+        // Compact variant shares the same binding (compact.ui.tsx:33-40).
+        presenter->setProperty("variant", QStringLiteral("compact"));
+        auto *toast = visibleItem(presenter.data(), QStringLiteral("incomingCallToast")); QVERIFY(toast);
+        auto *toastAvatar = visibleItem(presenter.data(), QStringLiteral("incomingCallToastAvatar")); QVERIFY(toastAvatar);
+        auto *toastLoader = photoLoader(toastAvatar); QVERIFY(toastLoader);
+        QCOMPARE(toastLoader->property("reference").toString(), photo);
+        QVERIFY(toastLoader->property("loadActive").toBool());
+        QVERIFY(!visibleItem(presenter.data(), QStringLiteral("incomingCallToastPhoneGlyph")));
+    }
+
+    void incomingCallLargeButtonsFitNarrowViewport()
+    {
+        // PR #257 finding 3: the fixed 514 px button row overflowed a narrow
+        // viewport; at a 400 x 400 presenter the whole group must stay inside
+        // the card and Accept must still receive clicks.
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("nativeAvatars", nullptr);
+        engine.rootContext()->setContextProperty("avatarUrlProbe", QVariantMap{});
+        QQmlComponent component(&engine);
+        QScopedPointer<QQuickItem> presenter(createInvitePresenter(engine, component));
+        QVERIFY(presenter);
+        QQuickWindow window;
+        window.resize(400, 400);
+        presenter->setParentItem(window.contentItem());
+        auto close = qScopeGuard([&window, presenter = QPointer<QQuickItem>(presenter.data())] {
+            const bool closed = closeObservedTestWindow(&window);
+            presenter->setParentItem(nullptr);
+            if (!closed)
+                QTest::qFail("Invite narrow presenter teardown", __FILE__, __LINE__);
+        });
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *card = visibleItem(presenter.data(), QStringLiteral("incomingCallCard")); QVERIFY(card);
+        QVERIFY(card->width() < 610); // below the width where the row clamps to 514
+        auto *row = visibleItem(presenter.data(), QStringLiteral("incomingCallButtonRow")); QVERIFY(row);
+        auto *accept = visibleItem(presenter.data(), QStringLiteral("incomingCallAcceptButton")); QVERIFY(accept);
+        const qreal rowRightInCard = card->mapFromItem(row, QPointF(row->width(), 0)).x();
+        QVERIFY2(rowRightInCard <= card->width() + 0.5,
+            qPrintable(QStringLiteral("button row right edge %1 exceeds card width %2")
+                .arg(rowRightInCard).arg(card->width())));
+        const qreal acceptRightInCard = card->mapFromItem(accept, QPointF(accept->width(), 0)).x();
+        QVERIFY2(acceptRightInCard <= card->width() + 0.5,
+            qPrintable(QStringLiteral("Accept right edge %1 exceeds card width %2")
+                .arg(acceptRightInCard).arg(card->width())));
+        // Accept is still reachable: a pointer click on its centre fires the
+        // accept signal.
+        QSignalSpy accepted(presenter.data(), "acceptRequested()");
+        QVERIFY(accepted.isValid());
+        click(&window, accept);
+        QCOMPARE(accepted.count(), 1);
     }
 
     // --- Review findings (#162 re-review) ---

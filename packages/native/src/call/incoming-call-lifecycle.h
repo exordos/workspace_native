@@ -45,6 +45,13 @@ public:
     // target; false when no invite is present).
     bool currentVideoEnabled() const { return videoEnabled(currentInviteMessageId()); }
 
+    // Observable surface for the auto-decline timer contract (PR #257
+    // finding 5): the 45 s deadline must not drift with Qt's default coarse
+    // timer, so the decline timer must run Precise and its armed interval
+    // mirrors autoDeclineMs.
+    Qt::TimerType declineTimerType() const { return m_declineTimer.timerType(); }
+    int declineTimerInterval() const { return m_declineTimer.interval(); }
+
     Q_INVOKABLE bool videoEnabled(const QString &messageId) const;
     Q_INVOKABLE void toggleVideoEnabled(const QString &messageId);
     Q_INVOKABLE void accept();
