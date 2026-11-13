@@ -497,6 +497,9 @@ public:
     // only emit pollActionFailed with a technical detail - user-visible strings
     // arrive with the UI tickets.
     Q_INVOKABLE bool canCreatePoll() const;
+    // Issue #215: reactive QML gate for the composer poll trigger; same rule as
+    // the invokable, exposed so bindings re-evaluate with the selection.
+    Q_PROPERTY(bool pollCreationAllowed READ canCreatePoll NOTIFY stateChanged)
     Q_INVOKABLE void sendPoll(const QVariantList &questions, bool multipleAnswers, bool isAnonymous,
         bool allowRevote, const QString &resultsVisibility, bool allowAddingOptions,
         const QString &closesAt = QString());
@@ -928,6 +931,16 @@ private:
     void pruneMessageFields();
     void finishMessageIntent(const QString &id);
     // ---- Issue #214 polls foundation internals ----
+    // Issue #215: one in-flight poll creation attempt per conversation. The
+    // reference keeps the submitted attempt (chat-page-workspace pollAttemptRef):
+    // retrying an unchanged draft must replay the identical canonical client
+    // UUIDs, while any content change rotates the attempt.
+    struct PollSendAttempt {
+        QString signature; // canonical JSON of the submitted draft identity
+        QString messageUuid; // client message uuid carried by the create body
+        QStringList questionUuids;
+        QList<QStringList> optionUuids;
+    };
     void invokePollAction(const QString &messageUuid, const QString &action, const QJsonObject &body);
     bool applyPollMutation(const QString &messageUuid, const QString &action,
         const ApiResult &result, const ProjectionContext &context);
@@ -1340,6 +1353,7 @@ private:
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
+    QHash<QString, PollSendAttempt> m_pollSendAttempts; // Issue #215 idempotent poll creates
     QHash<QString, int> m_pendingUploads;
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;

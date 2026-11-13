@@ -17060,6 +17060,86 @@ private slots:
             QVERIFY(!(request.method == "POST" && request.target.path().endsWith("/messages/")));
     }
 
+    void sendPollIdenticalRetryReusesCanonicalUuidsUntilConfirmed()
+    {
+        Fixture fixture;
+        const auto created = pollFixtureUuid(18);
+        QVector<QJsonObject> bodies;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                bodies.append(request.body);
+                // The first create is an uncertain 5xx; every later create confirms.
+                if (bodies.size() == 1) return Response{QJsonObject{}, 503, 0, {}};
+                return Response{pollMessageDto(created, 1, false), 200, 0, {}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.canCreatePoll());
+        QSignalSpy failed(&fixture.controller, &NativeController::pollActionFailed);
+        const QVariantList questions{
+            QVariantMap{{QString("text"), QStringLiteral("Which day?")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}, {QString("correct"), true}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        const auto payloadOf = [](const QJsonObject &body) {
+            return body.value(QStringLiteral("payload")).toObject();
+        };
+        const auto questionUuidOf = [&](const QJsonObject &body) {
+            return payloadOf(body).value(QStringLiteral("questions")).toArray().at(0).toObject()
+                .value(QStringLiteral("uuid")).toString();
+        };
+        const auto optionUuidsOf = [&](const QJsonObject &body) {
+            QStringList uuids;
+            const auto options = payloadOf(body).value(QStringLiteral("questions")).toArray()
+                .at(0).toObject().value(QStringLiteral("options")).toArray();
+            for (const auto &option : options)
+                uuids << option.toObject().value(QStringLiteral("uuid")).toString();
+            return uuids;
+        };
+        fixture.controller.sendPoll(questions, false, false, false,
+            QStringLiteral("after_vote"), false, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(bodies.size() == 1, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 2000);
+        QCOMPARE(failed.at(0).at(1).toString(), QStringLiteral("create"));
+        QCOMPARE(failed.at(0).at(2).toString(), QStringLiteral("http-503"));
+        const auto messageUuid = bodies.first().value(QStringLiteral("uuid")).toString();
+        QVERIFY(isUuid(messageUuid));
+        const auto firstQuestionUuid = questionUuidOf(bodies.first());
+        QVERIFY(isUuid(firstQuestionUuid));
+        const auto firstOptionUuids = optionUuidsOf(bodies.first());
+        QCOMPARE(firstOptionUuids.size(), 2);
+        // The marked-correct answer travels as the client option uuid.
+        const QStringList correct{payloadOf(bodies.first()).value(QStringLiteral("questions"))
+            .toArray().at(0).toObject().value(QStringLiteral("correct_option_uuids")).toArray().at(0)
+            .toString()};
+        QCOMPARE(correct, QStringList{firstOptionUuids.first()});
+        // An identical retry replays the same attempt: identical client UUIDs.
+        fixture.controller.sendPoll(questions, false, false, false,
+            QStringLiteral("after_vote"), false, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(bodies.size() == 2, 2000);
+        QCOMPARE(bodies.at(1).value(QStringLiteral("uuid")).toString(), messageUuid);
+        QCOMPARE(questionUuidOf(bodies.at(1)), firstQuestionUuid);
+        QCOMPARE(optionUuidsOf(bodies.at(1)), firstOptionUuids);
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, created).isEmpty(), 2000);
+        QCOMPARE(failed.count(), 1);
+        // The confirmed attempt is retired: the next identical submit is a new one.
+        fixture.controller.sendPoll(questions, false, false, false,
+            QStringLiteral("after_vote"), false, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(bodies.size() == 3, 2000);
+        QVERIFY(bodies.at(2).value(QStringLiteral("uuid")).toString() != messageUuid);
+        QVERIFY(questionUuidOf(bodies.at(2)) != firstQuestionUuid);
+        // Content changes always rotate the attempt (new canonical UUIDs).
+        const QVariantList edited{
+            QVariantMap{{QString("text"), QStringLiteral("Which day??")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        fixture.controller.sendPoll(edited, false, false, false,
+            QStringLiteral("after_vote"), false, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(bodies.size() == 4, 2000);
+        QVERIFY(bodies.at(3).value(QStringLiteral("uuid")).toString()
+            != bodies.at(2).value(QStringLiteral("uuid")).toString());
+    }
+
     void pollVotersPageParsesStrictlyWithPositionalMarker()
     {
         Fixture fixture;
