@@ -80,10 +80,16 @@ handlers, mirroring the reference observer:
 - The reference `pinTailToBottom` second pass returns when
   `userScrolledAwayFromBottomRef` fired while its `requestAnimationFrame`
   pass was pending. The native restore applies the same hand-off gate: a
-  snapshot captures the wheel-observer state (`userScrollSeen`) when the
-  chain is scheduled, and if the observer fires before a queued tail-pinning
-  pass runs, the pass abandons the restore instead of overwriting the user's
-  movement, re-deriving `tailFollow` from where the user landed.
+  snapshot stamps the wheel-intent generation (`userScrollGeneration`) when
+  the chain is scheduled, and if any intent writer (wheel observer,
+  `movementStarted`) bumps that generation before a queued tail-pinning pass
+  runs, the pass abandons the restore instead of overwriting the user's
+  movement, re-deriving `tailFollow` from where the user landed. The gate
+  compares captured vs current generation instead of a `false -> true` edge
+  of `userScrollSeen`, because `followSentMessage` arms that boolean
+  unconditionally - a send-pinned tail would otherwise never see a later
+  wheel. `followSentMessage` records the generation its own pin was posted
+  from, so the send itself cannot re-arm the hand-off against its pin.
 
 The #141 event-loop safeguards stay intact: no new timers or spin loops are
 added; the restore stays on `Qt.callLater` and only measures instantiated
@@ -91,7 +97,7 @@ rows.
 
 ## Regression coverage
 
-`native-window-test.cpp` gains two visible-window cases with synthetic
+`native-window-test.cpp` gains three visible-window cases with synthetic
 variable-height markdown rows and a long wrapped latest message:
 
 - `windowRestoreKeepsTheConversationTailVisible`: three
@@ -103,6 +109,19 @@ variable-height markdown rows and a long wrapped latest message:
   same cycles the first visible message must stay visible at approximately
   its captured offset in both window sizes, and the view must never jump to
   the tail.
+- `windowResizeHandOffReArmsForWheelAfterSendCapture` (issue #253 review):
+  a real send arms `userScrollSeen` and pins the tail; the capture is then
+  armed synchronously through the same `resizeViewport()` the size-change
+  handlers call, and the wheel observer's intent writes plus one wheel step
+  of movement land strictly between the capture and the queued restore
+  passes - the reviewer's exact race, driven deterministically. On the
+  boolean-edge gate the queued pin dragged `contentY` 1523 -> 2141 (back to
+  the tail); with the generation counter the parked 1523 survives. A
+  real-resize/real-wheel end-to-end variant was probed too (pre-fix final
+  distance 0, post-fix 234 px) but left out of the suite: X11 geometry
+  delivery is not synchronously ordered under suite load, so its outcome
+  depends on event ordering rather than on the code under test.
 
-Both cases failed before the fix because the reflow left `contentY` behind
-(tail fully below the fold; anchor offset displaced), and pass after it.
+The first two cases failed before the fix because the reflow left `contentY`
+behind (tail fully below the fold; anchor offset displaced), and pass after
+it.
