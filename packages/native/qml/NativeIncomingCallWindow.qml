@@ -136,7 +136,11 @@ Item {
         Row {
             id: largeButtons
             objectName: "incomingCallButtonRow"
-            width: Math.min(514, parent.width - 96)
+            // The reference section is px-6 (48 px total) below the sm (640)
+            // breakpoint and sm:px-12 above it (large.ui.tsx:48, 85); the row
+            // inherits that inset, so a narrow card gives the padding back to
+            // the buttons instead of squeezing them further.
+            width: Math.min(514, parent.width - (parent.width >= 640 ? 96 : 48))
             height: 52
             spacing: 8
             anchors.bottom: parent.bottom
@@ -144,6 +148,24 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             readonly property real baseWidthSum: 498 // 169 + 160 + 169
             readonly property real innerWidth: Math.max(0, width - spacing * 2)
+            // Review finding 4561759278: once the row is narrower than the
+            // reference's full-size 514 px group, proportional shrinking
+            // alone leaves ~9 px of label per button and every label elides.
+            // The reference keeps `truncate` there (large.ui.tsx:105,122,139)
+            // because its dialog is designed for the 918 px card; the native
+            // overlay must stay readable down to a 400 px window, so below
+            // this threshold the icon slot drops 40->20, horizontal padding
+            // 16->6, inner gap 6->4 and the label font 16->12. Worst case
+            // (400 px window): buttons 103.1/97.6/103.1 px, labels
+            // 103.1-36=67.1 / 97.6-36=61.6 / 67.1 px against measured advances
+            // 59.7/37.3/37.6 px (QFontMetricsF, Sans 12 px) - every label
+            // keeps >= 7.4 px of slack and paints without eliding. Deviation
+            // documented in docs/NATIVE_DESKTOP_INCOMING_CALL_UI.md.
+            readonly property bool narrowLayout: innerWidth < baseWidthSum
+            readonly property real buttonPad: narrowLayout ? 6 : 16 // px-4
+            readonly property real iconSlot: narrowLayout ? 20 : 40 // INCOMING_CALL_ICON_SLOT_PX
+            readonly property real innerGap: narrowLayout ? 4 : 6 // gap-1.5
+            readonly property int labelPixelSize: narrowLayout ? 12 : 16 // text-base
 
             // "With video" checkbox-role toggle.
             Rectangle {
@@ -164,27 +186,28 @@ Item {
                     objectName: "incomingCallVideoToggleText"
                     text: qsTr("With video")
                     color: presence.videoEnabled ? "black" : presence.colors["text-muted"]
-                    font.pixelSize: 16 // text-base
+                    font.pixelSize: largeButtons.labelPixelSize // text-base
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16 + 40 + 6 // px-4 + icon slot + gap-1.5
+                    anchors.leftMargin: largeButtons.buttonPad
+                        + largeButtons.iconSlot + largeButtons.innerGap // pad + slot + gap
                     elide: Text.ElideRight
-                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
+                    width: Math.max(0, parent.width - 2 * largeButtons.buttonPad
+                        - largeButtons.iconSlot - largeButtons.innerGap)
                 }
                 Image {
-                    // call_incoming_video_toggle.svg renders at the full
-                    // 40 px icon slot inside the button, matching the
-                    // Cancel/Accept icon slots (large.ui.tsx:99-103;
-                    // PR #257 finding 4).
+                    // The video icon renders at the full icon slot inside the
+                    // button, matching the Cancel/Accept icon slots
+                    // (large.ui.tsx:99-103; PR #257 finding 4).
                     objectName: "incomingCallVideoIcon"
                     source: "qrc:/workspace/icons/call_incoming_video_toggle.svg"
-                    sourceSize.width: 40
-                    sourceSize.height: 40
-                    width: 40
-                    height: 40
+                    sourceSize.width: largeButtons.iconSlot
+                    sourceSize.height: largeButtons.iconSlot
+                    width: largeButtons.iconSlot
+                    height: largeButtons.iconSlot
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16 // px-4
+                    anchors.leftMargin: largeButtons.buttonPad
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -206,27 +229,30 @@ Item {
                     objectName: "incomingCallDeclineText"
                     text: qsTr("Cancel")
                     color: "white"
-                    font.pixelSize: 16
+                    font.pixelSize: largeButtons.labelPixelSize
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16 + 40 + 6 // px-4 + slot + gap-1.5
+                    anchors.leftMargin: largeButtons.buttonPad
+                        + largeButtons.iconSlot + largeButtons.innerGap // pad + slot + gap
                     elide: Text.ElideRight
-                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
+                    width: Math.max(0, parent.width - 2 * largeButtons.buttonPad
+                        - largeButtons.iconSlot - largeButtons.innerGap)
                 }
                 Item {
-                    // 40 px icon slot (INCOMING_CALL_ICON_SLOT_PX, :13).
+                    // 40 px icon slot (INCOMING_CALL_ICON_SLOT_PX, :13);
+                    // shrinks to 20 in the narrow layout above.
                     objectName: "incomingCallDeclineIconSlot"
-                    width: 40
-                    height: 40
+                    width: largeButtons.iconSlot
+                    height: largeButtons.iconSlot
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16 // px-4
+                    anchors.leftMargin: largeButtons.buttonPad // px-4
                     Image {
                         objectName: "incomingCallCloseGlyph"
                         anchors.centerIn: parent
                         source: "qrc:/workspace/icons/close.svg"
-                        sourceSize.width: 20 // INCOMING_CALL_CLOSE_GLYPH_PX
-                        sourceSize.height: 20
+                        sourceSize.width: Math.min(20, largeButtons.iconSlot) // INCOMING_CALL_CLOSE_GLYPH_PX
+                        sourceSize.height: Math.min(20, largeButtons.iconSlot)
                         layer.enabled: true
                         layer.effect: MultiEffect {
                             colorization: 1.0
@@ -254,26 +280,28 @@ Item {
                     objectName: "incomingCallAcceptText"
                     text: qsTr("Accept")
                     color: "black"
-                    font.pixelSize: 16
+                    font.pixelSize: largeButtons.labelPixelSize
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16 + 40 + 6
+                    anchors.leftMargin: largeButtons.buttonPad
+                        + largeButtons.iconSlot + largeButtons.innerGap // pad + slot + gap
                     elide: Text.ElideRight
-                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
+                    width: Math.max(0, parent.width - 2 * largeButtons.buttonPad
+                        - largeButtons.iconSlot - largeButtons.innerGap)
                 }
                 Item {
                     objectName: "incomingCallAcceptIconSlot"
-                    width: 40
-                    height: 40
+                    width: largeButtons.iconSlot
+                    height: largeButtons.iconSlot
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
-                    anchors.leftMargin: 16
+                    anchors.leftMargin: largeButtons.buttonPad
                     Image {
                         objectName: "incomingCallPhoneGlyph"
                         anchors.centerIn: parent
                         source: "qrc:/workspace/icons/phone.svg"
-                        sourceSize.width: 27 // INCOMING_CALL_PHONE_GLYPH_PX
-                        sourceSize.height: 27
+                        sourceSize.width: Math.min(27, largeButtons.iconSlot) // INCOMING_CALL_PHONE_GLYPH_PX
+                        sourceSize.height: Math.min(27, largeButtons.iconSlot)
                         layer.enabled: true
                         layer.effect: MultiEffect {
                             colorization: 1.0
