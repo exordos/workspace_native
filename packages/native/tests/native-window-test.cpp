@@ -16983,6 +16983,8 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
         click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         std::function<int(QQuickItem *)> activeEmbedLoaders =
