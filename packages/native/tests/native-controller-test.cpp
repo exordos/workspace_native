@@ -9231,16 +9231,13 @@ private slots:
         QTRY_VERIFY(fixture.controller.replyTabs().isEmpty());
         QTRY_VERIFY(fixture.controller.draft().isEmpty());
 
-        // A tab with a blank answer serializes as the bare quote line, and a
-        // trailing blank answer leaves no dangling blank lines (trimEnd contract).
+        // A blank active tab never blocks a send: an answer saved in another tab
+        // is sendable on its own. The blank active tab then serializes as the bare
+        // quote line with no dangling blank lines (trimEnd contract).
         QVERIFY(fixture.controller.beginReply(firstId));
         fixture.controller.setDraft("only answer");
         QVERIFY(fixture.controller.addReplyTab(secondId));
-        fixture.controller.send(); // empty active answer cannot send (canSend gate)
-        QTest::qWait(150);
-        QCOMPARE(posts, 1);
-        QVERIFY(fixture.controller.selectReplyTab(fixture.controller.replyTabs()[0].toMap().value("id").toString()));
-        QCOMPARE(fixture.controller.draft(), QString("only answer"));
+        QVERIFY(fixture.controller.draft().isEmpty());
         QVERIFY(fixture.controller.canSend());
         fixture.controller.send();
         QTRY_COMPARE(posts, 2);
@@ -9263,6 +9260,19 @@ private slots:
         QCOMPARE(savedContent(), QString("[Bobby](urn:quote:%1)\n\nanswer two\n\n[Amy](urn:quote:%2)\n\nanswer one")
                  .arg(secondId, firstId));
         QTRY_VERIFY(fixture.controller.replyTabs().isEmpty());
+
+        // The sendable property re-notifies when a tab close removes the last
+        // saved answer while the active draft stays blank (canSend NOTIFY
+        // stateChanged must cover per-tab answers, not only the draft).
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft("saved answer");
+        QVERIFY(fixture.controller.addReplyTab(secondId)); // active tab stays blank
+        QVERIFY(fixture.controller.canSend());
+        QSignalSpy sendable(&fixture.controller, &NativeController::stateChanged);
+        fixture.controller.removeReplyTab(fixture.controller.replyTabs()[0].toMap().value("id").toString());
+        QVERIFY(!fixture.controller.canSend());
+        QVERIFY(sendable.count() > 0);
+        fixture.controller.cancelReply();
     }
 
     // Tab store rules ported from workspace-reply.lib.ts: select, close with the
@@ -9347,6 +9357,113 @@ private slots:
         QCOMPARE(fixture.controller.draft(), QString("typed again"));
         fixture.controller.removeReplyTab(tabA); // closing on an empty session is a no-op
         QVERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
+    // Every tab's answer gets composer-mention serialization at send time, not
+    // just the active draft (message-composer-body.lib.ts buildOutgoingMessageBody:
+    // mentions serialize wherever an answer block is composed).
+    void multiReplyTabsSerializeMentionsInEveryAnswer()
+    {
+        Fixture f;
+        const auto bob = mentionUuid("0b0b"), ann = mentionUuid("0a55");
+        f.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}},
+            QJsonObject{{"uuid", bob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
+            QJsonObject{{"uuid", ann}, {"username", "ann"}, {"first_name", "Ann"}}}}; };
+        const QString firstId = "89000000-0000-4000-8000-000000000001";
+        const QString secondId = "89000000-0000-4000-8000-000000000002";
+        auto noteOne = message(QStringLiteral("First peer note"), firstId);
+        noteOne["author_uuid"] = ann; noteOne["is_own"] = false;
+        auto noteTwo = message(QStringLiteral("Second peer note"), secondId);
+        noteTwo["author_uuid"] = bob; noteTwo["is_own"] = false;
+        QJsonObject posted, saved;
+        f.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                posted = request.body;
+                saved = message(request.body.value("payload").toObject()
+                    .value("content").toString(), QStringLiteral("89000000-0000-4000-8000-000000000003"));
+                saved["user_uuid"] = userId;
+                return Response{saved, 201};
+            }
+            if (request.method == "GET" && request.target.path()
+                .endsWith(QStringLiteral("89000000-0000-4000-8000-000000000003")) && !saved.isEmpty())
+                return Response{saved};
+            return Response{QJsonArray{noteOne, noteTwo}};
+        };
+        QVERIFY(f.start());
+        QVERIFY(f.controller.beginReply(firstId));
+        f.controller.setDraft(QStringLiteral("Hi @Bob Ray!")); // answer captured by tab 1
+        QVERIFY(f.controller.addReplyTab(secondId));           // tab 2 activates blank
+        f.controller.setDraft(QStringLiteral("cc @Ann"));
+        QVERIFY(f.controller.canSend());
+        f.controller.send();
+        QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 4000);
+        const auto content = posted.value("payload").toObject().value("content").toString();
+        // Tab 1 is inactive when the send composes: its saved "@DisplayName" text
+        // must still reach the wire as the canonical urn:user mention.
+        QCOMPARE(content, QStringLiteral("[Ann](urn:quote:%1)\n\nHi [Bob Ray](urn:user:%2)!\n\n"
+            "[Bob Ray](urn:quote:%3)\n\ncc [Ann](urn:user:%4)").arg(firstId, bob, secondId, ann));
+    }
+
+    // A confirmed send must not close a session whose quote the user re-pointed
+    // while that send was in flight: beginReply can replace a tab's quoted
+    // message without changing the tab ids or the active pointer.
+    void multiReplyConfirmedSendKeepsSessionWhoseQuoteChangedInFlight()
+    {
+        Fixture fixture;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        const QString peerC = "7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c7c";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}},
+            QJsonObject{{"uuid", peerC}, {"username", "cleo"}, {"first_name", "Cleo"}}}}; };
+        const QString firstId = "11111111-1111-4111-8111-111111111111";
+        const QString secondId = "22222222-2222-4222-8222-222222222222";
+        const QString thirdId = "33333333-3333-4333-8333-333333333333";
+        auto noteA = message("Alpha note", firstId);
+        noteA["is_own"] = false; noteA["author_uuid"] = peerA;
+        auto noteB = message("Beta note", secondId);
+        noteB["is_own"] = false; noteB["author_uuid"] = peerB;
+        auto noteC = message("Gamma note", thirdId);
+        noteC["is_own"] = false; noteC["author_uuid"] = peerC;
+        QJsonObject saved; std::function<void()> confirm;
+        const auto release = qScopeGuard([&] { if (confirm) confirm(); });
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                saved = message(request.body.value("payload").toObject()
+                    .value("content").toString(), returnedId);
+                return Response{saved, 201};
+            }
+            if (request.method == "GET" && request.target.path().endsWith(returnedId)) {
+                Response response{saved};
+                response.defer = [&](std::function<void()> send) { confirm = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return Response{QJsonArray{noteA, noteB, noteC}};
+            return Response{saved};
+        };
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 3);
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft("answer one");
+        QVERIFY(fixture.controller.addReplyTab(secondId));
+        fixture.controller.setDraft("answer two");
+        fixture.controller.send();
+        QTRY_VERIFY(bool(confirm));
+        // While the send is being verified the user re-points the active tab at a
+        // different quote; the tab ids and the active pointer do not change.
+        QVERIFY(fixture.controller.beginReply(thirdId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 2);
+        confirm(); confirm = {};
+        QTRY_VERIFY(!fixture.controller.busy());
+        // The session the user just changed must survive the confirmed send.
+        QCOMPARE(fixture.controller.replyTabs().size(), 2);
+        const auto tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs[0].toMap().value("message").toString(), firstId);
+        QCOMPARE(tabs[1].toMap().value("message").toString(), thirdId);
+        QCOMPARE(fixture.controller.replyMessageId(), thirdId);
     }
 
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()

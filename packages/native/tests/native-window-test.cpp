@@ -12189,6 +12189,70 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.draft().isEmpty());
     }
 
+    // The message menu's Reply action appends a tab when a reply session is
+    // already open instead of replacing the active quote (the reference routes
+    // the reply action to the add handler whenever the session has tabs,
+    // workspace-message-list.ui.tsx:1284).
+    void replyMenuActionAppendsSecondTabWhenSessionIsOpen()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto firstNote = message("Peer first", messageId);
+        firstNote["is_own"] = false;
+        const QString secondMessageId = "6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b6b";
+        auto secondNote = message("Peer second", secondMessageId);
+        secondNote["is_own"] = false;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{firstNote, secondNote}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply menu tabs teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-menu-tabs", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+
+        // The first Reply click opens the session with a single tab.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("messageMenu");
+        QTRY_VERIFY(menu && menu->property("visible").toBool());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction")); QVERIFY(replyAction);
+        click(window, replyAction);
+        QTRY_COMPARE(controller.replyMessageId(), messageId);
+        QCOMPARE(controller.replyTabs().size(), 1);
+
+        // The second Reply click on another message appends a second tab instead
+        // of replacing the first quote: the strip session keeps both quotes.
+        auto *secondBubble = item(content, "message-" + secondMessageId); QVERIFY(secondBubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            secondBubble->mapToScene(QPointF(secondBubble->width() / 2, secondBubble->height() / 2)).toPoint());
+        auto *secondMenu = window->findChild<QObject *>("messageMenu");
+        QTRY_VERIFY(secondMenu && secondMenu->property("visible").toBool());
+        auto *secondAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction")); QVERIFY(secondAction);
+        click(window, secondAction);
+        QTRY_COMPARE(controller.replyTabs().size(), 2);
+        const auto tabs = controller.replyTabs();
+        QCOMPARE(tabs[0].toMap().value("message").toString(), messageId);
+        QCOMPARE(tabs[1].toMap().value("message").toString(), secondMessageId);
+        QCOMPARE(controller.replyMessageId(), secondMessageId);
+    }
+
     // --- media viewer (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md) ---
     // Geometry assertions cite the measured reference at workspace_ui
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af through the design-doc table.
