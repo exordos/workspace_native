@@ -227,11 +227,14 @@ isOwnProfile`):
 - Pending partner cleared also when a direct-chat create settles `uncertain` (not only on
   explicit failure/rejection): the native create state machine distinguishes "unknown"
   from "failed" and the pending must not leak across attempts either way.
-- Sidebar placement: the reference renders the Call button inside the encrypted chat
-  info panel (`right-panel-workspace-info.ui.tsx:841-866`). Native puts it in the DM
-  chat-info header area as `channelInfoCallButton` (the native info drawer has no
-  encrypted key panel); the gating rule (owner+generation+stream all-match, else disabled)
-  is byte-identical to the reference selector.
+- Sidebar placement: the reference renders the Call button inside the encrypted
+  chat info panel (`right-panel-workspace-info.ui.tsx:841-866`). Native puts it
+  in the DM chat-info header row as `channelInfoCallButton` (the native info
+  drawer has no encrypted key panel); the gating rule
+  (owner+generation+stream all-match, else disabled) is byte-identical to the
+  reference selector. Because the native surface lives inside the direct info
+  panel itself, leaving the DM takes the button away with the panel instead of
+  leaving it visible-but-disabled.
 
 ## i18n
 

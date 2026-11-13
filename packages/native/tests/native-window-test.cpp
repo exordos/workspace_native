@@ -1570,10 +1570,38 @@ struct ProfileWindowScene {
     NativeController controller;
     QQmlApplicationEngine engine;
     QPointer<QQuickWindow> window;
-    ProfileWindowScene()
+    QQuickWindow *windowPtr() { return window; }
+    int invitePosts = 0; // call bridge cases: confirmed invite POSTs
+    // callRoutes adds the Jitsi meet host and confirms invite POSTs (issue #164
+    // cases); the default scene keeps the plain profile routes untouched.
+    explicit ProfileWindowScene(bool callRoutes = false)
         : preferences(directory.filePath("profile.ini")), session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
+        if (callRoutes) {
+            const auto prev = fixture.server.handler;
+            fixture.server.handler = [this, prev](const Request &request) -> Response {
+                const auto path = request.target.path();
+                if (path.endsWith("/server_settings"))
+                    return {QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                        {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/")}}};
+                if (request.method == "POST" && path.endsWith("/messages/")) {
+                    ++invitePosts;
+                    const auto body = request.body;
+                    return {QJsonObject{{QStringLiteral("uuid"),
+                            QStringLiteral("ca110000-0000-4000-8000-000000000001")},
+                        {QStringLiteral("project_id"), projectId},
+                        {QStringLiteral("author_uuid"), userId},
+                        {QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:05:00Z")},
+                        {QStringLiteral("stream_uuid"), body.value("stream_uuid").toString()},
+                        {QStringLiteral("topic_uuid"), body.value("topic_uuid").toString()},
+                        {QStringLiteral("user_display_name"), QStringLiteral("Cassi Volkova")},
+                        {QStringLiteral("user_username"), QStringLiteral("cassi")},
+                        {QStringLiteral("payload"), body.value("payload").toObject()}}, 201};
+                }
+                return prev(request);
+            };
+        }
         preferences.setLocale("en");
         loadNativeUi(engine, &controller, &preferences);
         window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -15247,8 +15275,9 @@ private:
         QVERIFY(visibleItem("profileAction-call"));
         QVERIFY(visibleItem("profileAction-share"));
         auto *call = visibleItem("profileAction-call");
-        QVERIFY(!call->property("enabled").toBool());
-        QVERIFY(qAbs(call->property("opacity").toReal() - 0.5) < 0.01); // disabled:opacity-50
+        // Issue #164 activated the Call chip: enabled on a plain peer profile.
+        QVERIFY(call->property("enabled").toBool());
+        QVERIFY(qAbs(call->property("opacity").toReal() - 1.0) < 0.01);
         QTRY_COMPARE(scene.text("profileDetailValue-email"), QStringLiteral("alice@example.invalid"));
         click(scene.window, visibleItem("profileAction-message"));
         QTRY_COMPARE(scene.evaluate("controller.selectedStream").toString(), windowDirectId());
@@ -15261,6 +15290,62 @@ private:
         QTest::qWait(250);
         QCOMPARE(scene.evaluate("controller.selectedStream").toString(), windowDirectId());
         QVERIFY(visibleItem("profileLayer")); // the drawer keeps showing the profile
+    }
+
+    // Issue #164: the Call chip on a peer's Information page starts the DM
+    // call. The seeded direct chat makes the handoff an open-default-topic
+    // navigation, so one click lands the DM view, posts exactly one invite
+    // markdown message and opens the call once.
+    void windowProfileCallChipOpensSeededDmCallOnce()
+    {
+        ProfileWindowScene scene(true);
+        scene.openPeerProfile(channelPeer);
+        auto *chip = visibleItem("profileAction-call");
+        QVERIFY(chip);
+        QVERIFY(chip->property("enabled").toBool()); // #164: the chip is live
+        click(scene.window, chip);
+        QTRY_VERIFY_WITH_TIMEOUT(scene.controller.calls()->hasActiveCall(), 4000);
+        QCOMPARE(scene.invitePosts, 1);
+        QCOMPARE(scene.controller.callError(), QString());
+        QTRY_COMPARE(scene.evaluate("controller.callBridge.pendingPartnerUuid").toString(),
+            QString());
+        // The active call blocks a second invite: re-clicking sends nothing
+        // (the same-call/different-key refusal never posts a second message).
+        click(scene.window, visibleItem("profileAction-call"));
+        QTest::qWait(250);
+        QCOMPARE(scene.invitePosts, 1);
+    }
+
+    // Issue #164: the chat-info drawer shows the descriptor-gated Call button
+    // for a direct conversation - enabled only while the active-call descriptor
+    // matches the viewed chat on owner+generation+stream; one invoke posts one
+    // invite, and leaving the DM disables it.
+    void windowChannelInfoCallButtonGatedByDescriptor()
+    {
+        ProfileWindowScene scene(true);
+        scene.controller.selectStream(windowDirectId());
+        QTRY_VERIFY(!scene.controller.topics().isEmpty());
+        scene.controller.selectTopic(channelDefault);
+        QTRY_VERIFY(!scene.controller.busy());
+        scene.evaluate("rightDrawer.openInfo()");
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        auto *button = visibleItem("channelInfoCallButton");
+        QVERIFY(button);
+        QVERIFY(button->property("visible").toBool());
+        QTRY_VERIFY(scene.evaluate("controller.callBridge.callSurfaceEnabled").toBool());
+        QVERIFY(button->property("enabled").toBool());
+        click(scene.window, button);
+        QTRY_VERIFY_WITH_TIMEOUT(scene.controller.calls()->hasActiveCall(), 4000);
+        QCOMPARE(scene.invitePosts, 1);
+        // Leaving the DM: the Call surface belongs to the direct info panel,
+        // so it is gone with the DM context; nothing new is sent (the
+        // descriptor re-registers for the newly viewed conversation and the
+        // three-field-match gate itself is covered at controller level).
+        scene.controller.selectStream(streamId);
+        QTRY_VERIFY(!scene.controller.busy());
+        QTest::qWait(250);
+        QVERIFY(!visibleItem("channelInfoCallButton"));
+        QCOMPARE(scene.invitePosts, 1);
     }
 
     // Edit mode: the chip row swaps for the footer (Cancel fixed 110x40,

@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Effects
 
 // qmllint disable unqualified
 
@@ -128,7 +129,8 @@ Item {
             Item {
                 anchors.left: headerAvatar.right
                 anchors.leftMargin: 16
-                anchors.right: parent.right
+                anchors.right: callButton.visible ? callButton.left : parent.right
+                anchors.rightMargin: callButton.visible ? 8 : 0
                 anchors.verticalCenter: parent.verticalCenter
                 height: 36
                 Text {
@@ -155,6 +157,54 @@ Item {
                     color: page.colors["text-secondary"]
                     elide: Text.ElideRight
                 }
+            }
+            // Issue #164 (right-panel-workspace-info.ui.tsx:841-866): the DM
+            // call surface, enabled only while the bridge descriptor matches
+            // the viewed chat on ownerKey + runtimeGeneration + streamUuid.
+            Button {
+                id: callButton
+                objectName: "channelInfoCallButton"
+                Accessible.name: callButtonLabel.text
+                visible: page.controller.isDirectConversation
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                padding: 0
+                implicitWidth: callButtonRow.implicitWidth + 16
+                implicitHeight: 32
+                enabled: page.controller.callBridge.callSurfaceEnabled
+                contentItem: Row {
+                    id: callButtonRow
+                    anchors.centerIn: parent
+                    spacing: 4
+                    Image {
+                        source: "qrc:/workspace/icons/phone.svg"
+                        sourceSize.width: 18; sourceSize.height: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        layer.enabled: true
+                        layer.effect: MultiEffect {
+                            colorizationColor: callButton.enabled
+                                ? page.colors["icon-active"] : page.colors["text-muted"]
+                            colorization: 1.0
+                        }
+                    }
+                    Text {
+                        id: callButtonLabel
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Call")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        color: callButton.enabled
+                            ? page.colors["text-secondary"] : page.colors["text-muted"]
+                    }
+                }
+                background: Rectangle {
+                    radius: 8
+                    color: page.colors["card-bg"]
+                    border.width: 1
+                    border.color: page.colors["border-subtle"]
+                    opacity: callButton.enabled ? 1.0 : 0.5
+                }
+                onClicked: page.controller.callBridge.invokeCallSurface()
             }
         }
         Rectangle {

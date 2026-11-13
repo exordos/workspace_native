@@ -1425,6 +1425,10 @@
             <translation>Не удалось начать звонок.</translation>
         </message>
         <message>
+            <source>Encryption is unavailable for this chat or local key storage could not be opened.</source>
+            <translation>Шифрование для этого чата недоступно или не удалось открыть локальное хранилище ключей.</translation>
+        </message>
+        <message>
             <source>Calls cannot start in encrypted channels yet.</source>
             <translation>В защищённых каналах звонки пока недоступны.</translation>
         </message>
@@ -2739,6 +2743,10 @@
     </context>
     <context>
         <name>NativeChannelInfo</name>
+        <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
         <message>
             <source>Owner</source>
             <translation>Владелец</translation>
