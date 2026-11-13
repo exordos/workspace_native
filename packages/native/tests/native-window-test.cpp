@@ -17508,6 +17508,97 @@ private:
             QVERIFY2(distanceFromBottom() >= 400.0, "the parked reader slid toward the tail");
         }
     }
+
+    // Issue #253 review (medium), deterministic guard: drive the exact QML
+    // handlers through the same synchronous sequence the live race produces.
+    // resizeViewport() is the onWidthChanged/onHeightChanged handler and
+    // queues its restore passes with Qt.callLater, which cannot run until
+    // this test returns to the event loop - so the wheel observer writes and
+    // the one-step wheel movement below land strictly after the capture and
+    // strictly before the queued pin. Under the boolean-edge gate the capture
+    // already holds userSeenAtCapture=true (armed by the send), the hand-off
+    // is blind to this wheel, and the queued pin overwrites it.
+    // An end-to-end variant with a real window->resize() plus a real QTest
+    // wheel was probed first: with the pre-fix gate it recorded the same
+    // overwrite (wheel posted after the capture armed, final distance 0),
+    // with the counter the wheel survived (234 px), but the WM geometry
+    // delivery on the CI Xvnc is not synchronously ordered under suite load
+    // (the probe logged the capture arming up to 6 s after the resize
+    // request), so the outcome there is event-ordering random rather than
+    // deterministic. The deterministic driver above reproduces the reviewer's
+    // exact interleaving without that dependency.
+    void windowResizeHandOffReArmsForWheelAfterSendCapture()
+    {
+        WindowRestoreFixture fixture;
+        QQmlApplicationEngine engine; loadNativeUi(engine, &fixture.controller, &fixture.preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Send-pin capture wheel window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        fixture.session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(fixture.session.projects().size(), 1); fixture.session.selectProject(projectId);
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+        fixture.controller.selectStream(streamId);
+        QTRY_COMPARE(fixture.controller.topics().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 32);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        const auto distanceFromBottom = [&] {
+            return list->property("originY").toReal() + list->property("contentHeight").toReal()
+                + list->property("bottomMargin").toReal() - list->property("contentY").toReal() - list->height();
+        };
+        QJsonObject sent = message(QStringLiteral("The sent row pins the tail before the capture."),
+            QStringLiteral("83000000-0000-4000-8000-999999999999"));
+        sent["read"] = false;
+        sent["created_at"] = QDateTime::fromString("2026-01-02T10:32:00.000Z", Qt::ISODateWithMs)
+            .toString(Qt::ISODateWithMs);
+        const auto baseHandler = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                auto reply = sent;
+                reply["payload"] = request.body.value("payload");
+                fixture.history.append(reply);
+                return Response{reply};
+            }
+            if (request.target.path().endsWith("/messages/" + sent.value("uuid").toString()))
+                return Response{sent};
+            return baseHandler(request);
+        };
+        item(window->contentItem(), "messageComposer")
+            ->setProperty("text", "The sent row pins the tail before the capture.");
+        QTRY_VERIFY(fixture.controller.canSend());
+        click(window, item(window->contentItem(), "sendButton"));
+        QTRY_COMPARE(fixture.controller.messages().size(), 33);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QVERIFY2(list->property("userScrollSeen").toBool(), "the send must arm the persistent scroll intent");
+        QVERIFY2(list->property("tailFollow").toBool(), "the sent row must pin the tail");
+        QVERIFY(distanceFromBottom() <= 80.0);
+        // The capture runs synchronously (this is exactly what onWidthChanged
+        // invokes); the restore passes are queued behind this test body.
+        QVERIFY(QMetaObject::invokeMethod(list, "resizeViewport"));
+        QVERIFY2(list->property("positioning").toBool(), "the capture must arm the restore chain");
+        // The wheel observer's intent write plus the movement one wheel step
+        // produces, landing after the capture and before the queued pin.
+        list->setProperty("userScrollSeen", true);
+        if (list->metaObject()->indexOfProperty("userScrollGeneration") >= 0)
+            list->setProperty("userScrollGeneration", list->property("userScrollGeneration").toInt() + 1);
+        const auto parkedY = list->property("contentY").toReal() - 600.0;
+        list->setProperty("contentY", parkedY);
+        QTRY_VERIFY_WITH_TIMEOUT(!list->property("positioning").toBool(), 6000);
+        const auto finalY = list->property("contentY").toReal();
+        qWarning().noquote() << "[253-sync] parkedY" << parkedY
+            << "finalY" << finalY << "finalDistance" << distanceFromBottom();
+        QVERIFY2(qAbs(finalY - parkedY) <= 1.0, qPrintable(QStringLiteral(
+            "the queued tail pin overwrote the post-capture wheel (contentY %1 -> %2)")
+            .arg(parkedY).arg(finalY)));
+        QVERIFY2(distanceFromBottom() >= 400.0, qPrintable(QStringLiteral(
+            "the post-capture wheel did not survive (distance %1)").arg(distanceFromBottom())));
+        QVERIFY(!list->property("tailFollow").toBool());
+    }
 };
 
 
