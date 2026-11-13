@@ -13,6 +13,9 @@ the ringtone schedule and the 45 s auto-decline.
 All measurements are from `workspace_ui` at
 `61dacef78dab2f5d0be76f283bebf49fe29b84af` (read-only clone; sha present).
 Line numbers below were re-measured from that sha at implementation time.
+Re-checked at current master `230e02b` (0.9.12) during the PR #257 review
+round: `git diff --stat 61dacef7..230e02b -- packages/web/src/features/
+jitsi-call/` is empty, so every measurement above still holds.
 
 ### Ingest filters — `workspace-jitsi-incoming-call.lib.ts:40-73`
 
@@ -211,6 +214,25 @@ ships its reviewed Russian entry in `packages/native/translations/workspace_ru.t
   (`call_incoming_video_toggle.svg`, a 40 px stateful icon) rendered raw at
   the 40 px icon slot exactly like the web `<IncomingCallVideoIcon>`; no
   separate checkbox control is drawn.
+- Narrow-width button readability: the reference button group is a fixed
+  514 px design (`jitsi-call-incoming-large.ui.tsx:85-142`) whose labels are
+  `truncate` spans (`:105`, `:122`, `:139`) - the web dialog elides
+  "With video"/"Cancel"/"Accept" instead of adapting when squeezed. The
+  native large variant must stay usable down to a 400 px window, so when the
+  row can no longer host the reference's full-size buttons
+  (`innerWidth < 498`) it switches to a compact button layout: icon slot
+  40 -> 20 px, horizontal padding 16 -> 6 px, inner gap 6 -> 4 px, label
+  font 16 -> 12 px (glyphs clamp to the slot via `Math.min`), and the row
+  inherits the reference's sub-sm `px-6` inset (48 px) instead of `sm:px-12`
+  (`:48`, `:85`). Threshold math at the 400 px floor: card 368, row
+  368 - 48 = 320, buttons 304 * 169/498 = 103.1 / 304 * 160/498 = 97.6 /
+  103.1 px, label boxes 103.1 - 36 = 67.1 / 61.6 / 67.1 px against measured
+  advances 59.7 / 37.3 / 37.6 px (`QFontMetricsF`, Sans 12 px) - every label
+  paints fully with >= 7.4 px of slack, no ellipsis. Shrinking only the slot
+  and padding cannot achieve this at 16 px: "With video" alone measures
+  79.6 px, leaving a 23.5 px budget for slot + padding + gap, so the font
+  step is part of the adaptation. Guarded by
+  `incomingCallLargeButtonsFitNarrowViewport` in `native-window-test`.
 - Dismiss: Escape clears the invite without a decline action
   (`IncomingCallLifecycle::dismiss`, matching the reference
   `useEscapeListener` -> "incoming call dismissed without invite"). The
@@ -244,4 +266,8 @@ ships its reviewed Russian entry in `packages/native/translations/workspace_ru.t
   at x=window-16-320, y=80; clicking Accept opens the call with
   `startWithVideoMuted` toggled per preference; clicking Cancel/Decline
   clears the invite; auto-decline clears the invite (short injectable clock);
-  all strings resolve in en and ru.
+  all strings resolve in en and ru; at a 400 px presenter the three buttons
+  fit inside the card AND every label paints fully - each label Text is at
+  least as wide as `QFontMetricsF::horizontalAdvance` of its own text in its
+  own font, so none of the three can elide to an ellipsis (PR #257 finding
+  4561759278).
