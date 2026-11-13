@@ -17213,6 +17213,412 @@ private slots:
         QCOMPARE(pollRow.value(QStringLiteral("poll_state")).toObject()
             .value(QStringLiteral("is_closed")).toBool(), true);
     }
+
+    // ---- Issue #164 DM call bridge (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md) ----
+
+    static int callMessagePosts(Fixture &fixture)
+    {
+        return int(std::count_if(fixture.server.requests.begin(), fixture.server.requests.end(),
+            [](const Request &request) { return request.method == "POST" && request.target.path().contains("/messages/"); }));
+    }
+
+    static void deferCallInvites(Fixture &fixture, QVector<QJsonObject> &saved,
+        QVector<std::function<void()>> &release)
+    {
+        fixture.messages = [&saved, &release](const Request &request) {
+            if (request.method == "POST") {
+                const auto body = request.body;
+                const auto topic = body.value("topic_uuid").toString();
+                auto row = message(body.value("payload").toObject().value("content").toString(),
+                    QStringLiteral("ca110000-0000-4000-8000-%1").arg(saved.size() + 1, 12, 10, QChar('0')), topic);
+                row["stream_uuid"] = body.value("stream_uuid").toString();
+                saved.append(row);
+                Response response{row};
+                response.defer = [&release](std::function<void()> go) { release.append(std::move(go)); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+    }
+
+    // Fixture::start asserts a single-stream catalog; call-bridge tests that
+    // navigate between two channels log in with this multi-stream variant.
+    static bool startMultiStream(Fixture &fixture, int streamCount)
+    {
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return fixture.controller.projects().size() == 1; }, 2000))
+            return false;
+        fixture.controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return fixture.controller.streams().size() == streamCount; }, 2000))
+            return false;
+        fixture.controller.selectStream(streamId);
+        if (!QTest::qWaitFor([&] { return !fixture.controller.topics().isEmpty(); }, 2000))
+            return false;
+        fixture.controller.selectTopic(topicId);
+        return QTest::qWaitFor([&] { return !fixture.controller.busy(); }, 2000);
+    }
+
+    // Store contract port of chat-dm-call-bridge.model.test.ts:10-35 plus the
+    // no-op-clear, consume-once and three-field descriptor-match rules.
+    void dmCallBridgeStoreContract()
+    {
+        workspace::DmCallBridge bridge;
+        QSignalSpy pendingSpy(&bridge, &workspace::DmCallBridge::pendingPartnerUuidChanged);
+        QSignalSpy surfaceSpy(&bridge, &workspace::DmCallBridge::callSurfaceEnabledChanged);
+        QSignalSpy invokeSpy(&bridge, &workspace::DmCallBridge::callSurfaceInvokeRequested);
+        QCOMPARE(bridge.pendingPartnerUuid(), QString());
+        // clear on empty is a no-op: no write, no notify (:50-51).
+        bridge.clearPendingPartner();
+        QCOMPARE(pendingSpy.count(), 0);
+        QCOMPARE(bridge.consumePendingPartner(), QString());
+        QCOMPARE(pendingSpy.count(), 0);
+        bridge.setPendingPartnerUserUuid(QStringLiteral("partner-a"));
+        QCOMPARE(bridge.pendingPartnerUuid(), QStringLiteral("partner-a"));
+        QCOMPARE(pendingSpy.count(), 1);
+        bridge.clearPendingPartner();
+        QCOMPARE(bridge.pendingPartnerUuid(), QString());
+        QCOMPARE(pendingSpy.count(), 2);
+        // A consumed pending clears exactly once and never re-fires.
+        bridge.setPendingPartnerUserUuid(QStringLiteral("partner-b"));
+        QCOMPARE(pendingSpy.count(), 3);
+        QCOMPARE(bridge.consumePendingPartner(), QStringLiteral("partner-b"));
+        QCOMPARE(bridge.pendingPartnerUuid(), QString());
+        QCOMPARE(pendingSpy.count(), 4);
+        QCOMPARE(bridge.consumePendingPartner(), QString());
+        QCOMPARE(pendingSpy.count(), 4);
+        // Descriptor gating: enabled only on the full owner+generation+stream match.
+        bridge.setViewedChat(QStringLiteral("owner"), 7, QStringLiteral("stream-a"), true);
+        QVERIFY(bridge.viewedChatIsDirect());
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.invokeCallSurface();
+        QCOMPARE(invokeSpy.count(), 0); // the reference hands out no invoke at all
+        const QVariantMap full{{QStringLiteral("ownerKey"), QStringLiteral("owner")},
+            {QStringLiteral("runtimeGeneration"), qulonglong(7)}, {QStringLiteral("streamUuid"), QStringLiteral("stream-a")}};
+        bridge.setActiveCallDescriptor(full);
+        QVERIFY(bridge.callSurfaceEnabled());
+        QCOMPARE(surfaceSpy.count(), 1);
+        bridge.setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), QStringLiteral("other")},
+            {QStringLiteral("runtimeGeneration"), qulonglong(7)}, {QStringLiteral("streamUuid"), QStringLiteral("stream-a")}});
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), QStringLiteral("owner")},
+            {QStringLiteral("runtimeGeneration"), qulonglong(8)}, {QStringLiteral("streamUuid"), QStringLiteral("stream-a")}});
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), QStringLiteral("owner")},
+            {QStringLiteral("runtimeGeneration"), qulonglong(7)}, {QStringLiteral("streamUuid"), QStringLiteral("stream-b")}});
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.invokeCallSurface();
+        QCOMPARE(invokeSpy.count(), 0); // still mismatched
+        bridge.setActiveCallDescriptor(full);
+        QVERIFY(bridge.callSurfaceEnabled());
+        bridge.setViewedChat(QStringLiteral("owner"), 7, QStringLiteral("stream-a"), false);
+        QVERIFY(!bridge.viewedChatIsDirect()); // viewed identity change keeps the match
+        QVERIFY(bridge.callSurfaceEnabled());
+        bridge.setViewedChat(QStringLiteral("owner"), 9, QStringLiteral("stream-a"), true); // generation bumped
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.setActiveCallDescriptor(full);
+        QVERIFY(!bridge.callSurfaceEnabled()); // full descriptor against the newer generation
+        bridge.clearActiveCallDescriptor();
+        QVERIFY(bridge.activeCallDescriptor().isEmpty());
+        QVERIFY(!bridge.callSurfaceEnabled());
+        bridge.invokeCallSurface();
+        QCOMPARE(invokeSpy.count(), 0);
+        bridge.setViewedChat(QStringLiteral("owner"), 7, QStringLiteral("stream-a"), true);
+        bridge.setActiveCallDescriptor(full);
+        QVERIFY(bridge.callSurfaceEnabled());
+        bridge.invokeCallSurface();
+        QCOMPARE(invokeSpy.count(), 1); // exactly one routed invoke
+        QCOMPARE(surfaceSpy.count(), 5); // every true<->false transition fired NOTIFY
+    }
+
+    // Profile Call with no existing DM: create the DM, then send exactly one
+    // invite into the default topic and open the call once the send is applied.
+    void dmCallProfileCreatesDmThenOpensCallOnce()
+    {
+        DirectChatFixture test;
+        test.fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(test.fixture, saved, release);
+        QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        auto *bridge = controller.callBridge();
+        QVERIFY(bridge);
+        QVERIFY(bridge->pendingPartnerUuid().isEmpty());
+        controller.callFromProfile(channelMemberA);
+        // The pending partner is queued up front (right-panel-user-profile.ui.tsx:491).
+        QCOMPARE(bridge->pendingPartnerUuid(), channelMemberA);
+        QVERIFY(controller.profileCallPending()); // callPending chip gate
+        QTRY_VERIFY(!controller.profileCallPending());
+        // The DM landed with its default topic and the handoff consumed the pending.
+        QTRY_COMPARE(controller.selectedStream(), expectedDirectId(channelMemberA));
+        QTRY_COMPARE(controller.selectedTopic(), channelDefault);
+        QTRY_COMPARE(bridge->pendingPartnerUuid(), QString());
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        QCOMPARE(callMessagePosts(test.fixture), 1); // exactly one invite
+        QCOMPARE(saved.size(), 1);
+        QCOMPARE(saved[0].value("topic_uuid").toString(), channelDefault);
+        QVERIFY(saved[0].value("payload").toObject().value("content").toString()
+            .startsWith(QStringLiteral("https://meet.example.com/workspace-")));
+        release[0](); // the invite send is confirmed
+        QTRY_VERIFY(controller.calls()->hasActiveCall());
+        QCOMPARE(controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
+            saved[0].value("payload").toObject().value("content").toString());
+        QVERIFY(controller.callError().isEmpty());
+        for (auto &go : release) go(); // drain deferred deliveries for teardown
+    }
+
+    // A failed create clears the pending partner and leaves nothing open
+    // (right-panel-user-profile.ui.tsx:507, :513).
+    void dmCallProfileFailedCreateClearsPendingAndOpensNothing()
+    {
+        DirectChatFixture test;
+        test.applyPost = false;
+        test.postStatus = 400;
+        test.fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        controller.callFromProfile(channelMemberA);
+        QCOMPARE(controller.callBridge()->pendingPartnerUuid(), channelMemberA); // set before the create
+        QVERIFY(controller.profileCallPending());
+        QTRY_VERIFY(!controller.profileCallPending());
+        QTRY_COMPARE(controller.callBridge()->pendingPartnerUuid(), QString()); // cleared on failure
+        QCOMPARE(callMessagePosts(test.fixture), 0);
+        QVERIFY(!controller.calls()->hasActiveCall());
+        QCOMPARE(controller.selectedStream(), streamId); // no navigation happened
+    }
+
+    // Already-open DM: the handoff fires on the spot, exactly once, and never
+    // re-fires while the same DM stays open.
+    void dmCallProfileAlreadyOpenHandoffFiresExactlyOnce()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        const auto dmId = expectedDirectId(channelMemberA);
+        fixture.streams = [dmId](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + dmId)
+                return Response{creationDirect(channelMemberA, dmId)};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}, creationDirect(channelMemberA, dmId)}};
+        };
+        fixture.topics = [dmId](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == dmId) {
+                auto topic = creationTopic(channelDefault, dmId, "General Topic");
+                topic["is_default"] = true;
+                return Response{QJsonArray{topic}};
+            }
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(startMultiStream(fixture, 2));
+        auto &controller = fixture.controller;
+        controller.selectStream(dmId);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000));
+        controller.selectTopic(channelDefault);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        controller.callFromProfile(channelMemberA);
+        // Already open: stay put, and the invite lands in the viewed topic.
+        QCOMPARE(controller.selectedStream(), dmId);
+        QCOMPARE(controller.selectedTopic(), channelDefault);
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        QCOMPARE(controller.callBridge()->pendingPartnerUuid(), QString());
+        QCOMPARE(callMessagePosts(fixture), 1);
+        QCOMPARE(saved.first().value("topic_uuid").toString(), channelDefault);
+        release[0](); // confirm the single invite
+        QTRY_VERIFY(controller.calls()->hasActiveCall());
+        // The same DM stays open: re-entering the viewed conversation must not
+        // re-fire the handoff (the consumed pending is the guard).
+        controller.selectStream(dmId);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        QTest::qWait(300);
+        QCOMPARE(callMessagePosts(fixture), 1);
+        for (auto &go : release) go();
+    }
+
+    // Active-call descriptor: registered for the viewed chat, the surface is
+    // enabled only on the full three-field match, and header + sidebar share one
+    // in-flight guard (double invoke -> exactly one invite).
+    void dmCallDescriptorMatchesViewedChatAndSharesGuard()
+    {
+        static const QString secondStream = QStringLiteral("d1d1d1d1-1111-4111-8111-111111111111");
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        fixture.streams = [](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + secondStream)
+                return Response{creationChannel(secondStream, QStringLiteral("Second channel"))};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}},
+                creationChannel(secondStream, QStringLiteral("Second channel"))}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(startMultiStream(fixture, 2));
+        auto &controller = fixture.controller;
+        auto *bridge = controller.callBridge();
+        // Registered for the viewed chat: the sidebar surface is enabled.
+        QTRY_COMPARE(bridge->activeCallDescriptor().value(QStringLiteral("streamUuid")).toString(), streamId);
+        QCOMPARE(bridge->activeCallDescriptor().value(QStringLiteral("ownerKey")).toString(), controller.creationOwnerKey());
+        QVERIFY(bridge->callSurfaceEnabled());
+        const auto full = bridge->activeCallDescriptor();
+        // Each single-field mismatch disables the surface (right-panel-workspace-info
+        // selector port; behaviour test right-panel-workspace-info.ui.test.tsx:333-370).
+        bridge->setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), QStringLiteral("other-owner")},
+            {QStringLiteral("runtimeGeneration"), full.value(QStringLiteral("runtimeGeneration"))},
+            {QStringLiteral("streamUuid"), streamId}});
+        QVERIFY(!bridge->callSurfaceEnabled());
+        bridge->setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), controller.creationOwnerKey()},
+            {QStringLiteral("runtimeGeneration"), full.value(QStringLiteral("runtimeGeneration")).toULongLong() + 1},
+            {QStringLiteral("streamUuid"), streamId}});
+        QVERIFY(!bridge->callSurfaceEnabled());
+        bridge->setActiveCallDescriptor(QVariantMap{{QStringLiteral("ownerKey"), controller.creationOwnerKey()},
+            {QStringLiteral("runtimeGeneration"), full.value(QStringLiteral("runtimeGeneration"))},
+            {QStringLiteral("streamUuid"), secondStream}});
+        QVERIFY(!bridge->callSurfaceEnabled());
+        bridge->invokeCallSurface();
+        QTest::qWait(200);
+        QCOMPARE(release.size(), 0); // a mismatched surface is not invocable
+        bridge->setActiveCallDescriptor(full);
+        QVERIFY(bridge->callSurfaceEnabled());
+        // Header and sidebar share one guard: double invoke -> one invite.
+        bridge->invokeCallSurface();
+        controller.startCall();
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        controller.startCall(); // the pending send owns the guard
+        QTest::qWait(200);
+        QCOMPARE(release.size(), 1);
+        QCOMPARE(callMessagePosts(fixture), 1);
+        for (auto &go : release) go();
+        QTRY_VERIFY(controller.calls()->hasActiveCall());
+        QVERIFY(controller.callError().isEmpty());
+    }
+
+    // A->B->A navigation: the old send resolving after the round trip must not
+    // open the call and must not release the newer invoke's guard
+    // (chat-page-workspace.test.tsx:5597-5665).
+    void dmCallStaleCompletionAfterBackNavigationOpensNothing()
+    {
+        static const QString secondStream = QStringLiteral("d1d1d1d1-1111-4111-8111-111111111111");
+        static const QString secondStreamTopic = QStringLiteral("d2d2d2d2-2222-4222-8222-222222222222");
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        fixture.streams = [](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + secondStream)
+                return Response{creationChannel(secondStream, QStringLiteral("Second channel"))};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}},
+                creationChannel(secondStream, QStringLiteral("Second channel"))}};
+        };
+        fixture.topics = [secondStream, secondStreamTopic](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == secondStream)
+                return Response{QJsonArray{creationTopic(secondStreamTopic, secondStream, QStringLiteral("Second topic"))}};
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(startMultiStream(fixture, 2));
+        auto &controller = fixture.controller;
+        auto *bridge = controller.callBridge();
+        controller.startCall(); // send 1 from conversation A
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        controller.selectStream(secondStream); // A -> B
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        controller.selectStream(streamId); // B -> A
+        QVERIFY(QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000));
+        controller.selectTopic(topicId);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        bridge->invokeCallSurface(); // the same route again: a fresh send is allowed
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 2; }, 2000));
+        release[0](); // the old completion lands
+        QTest::qWait(300);
+        QVERIFY(!controller.calls()->hasActiveCall()); // no late Jitsi window
+        QVERIFY(controller.callError().isEmpty()); // stale completions are silent
+        bridge->invokeCallSurface(); // the newer send still owns the guard
+        QTest::qWait(200);
+        QCOMPARE(release.size(), 2);
+        release[1]();
+        QTRY_VERIFY(controller.calls()->hasActiveCall());
+        QCOMPARE(controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
+            saved[1].value("payload").toObject().value("content").toString());
+    }
+
+    // A session (runtime generation) change aborts an in-flight invite: the
+    // transport cancels it and the completion opens nothing.
+    void dmCallSessionChangeAbortsInFlightInvite()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        QTRY_VERIFY(controller.callBridge()->callSurfaceEnabled());
+        controller.startCall();
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        controller.logout();
+        QVERIFY(QTest::qWaitFor([&] { return !controller.authenticated(); }, 2000));
+        QTest::qWait(300); // the transport cancels the in-flight send
+        QVERIFY(!controller.calls()->hasActiveCall());
+        QVERIFY(controller.callBridge()->activeCallDescriptor().isEmpty());
+        QVERIFY(controller.callError().isEmpty());
+        // A late server answer (if the mock ever delivers) changes nothing;
+        // the cancelled request completed inside the transport already.
+    }
+
+    // E2EE stream without an available session: the invoke is refused with the
+    // cryptoUnavailable error and nothing is sent (reference :5328-5341).
+    void dmCallEncryptedWithoutSessionRefusedWithCryptoUnavailable()
+    {
+        Fixture fixture;
+        fixture.encrypted = true;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        QTRY_VERIFY(controller.canStartCall());
+        // No descriptor for an encrypted stream without a local key: the
+        // sidebar call surface stays disabled (encryptedChatAvailable gate).
+        QVERIFY(controller.callBridge()->activeCallDescriptor().isEmpty());
+        QVERIFY(!controller.callBridge()->callSurfaceEnabled());
+        controller.startCall();
+        QTRY_COMPARE(controller.callError(), QStringLiteral(
+            "Encryption is unavailable for this chat or local key storage could not be opened."));
+        QCOMPARE(callMessagePosts(fixture), 0);
+        QVERIFY(!controller.calls()->hasActiveCall());
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

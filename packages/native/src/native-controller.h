@@ -13,6 +13,7 @@
 #include "call/native-call-window.h"
 #include "call/native-call-store.h"
 #include "call/incoming-call-lifecycle.h"
+#include "native-call-bridge.h"
 
 #include <QHash>
 #include <QLocale>
@@ -1450,6 +1451,19 @@ public:
     bool canStartCall() const
     { return authenticated() && hasConversation() && !topicClosed() && !m_meetHost.isEmpty(); }
     Q_INVOKABLE void startCall();
+    // Issue #164 DM call bridge (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md): the
+    // bridge store (pending partner + active-call descriptor), the profile Call
+    // entry and the busy flag that mirrors the reference `callPending` chip gate.
+    Q_PROPERTY(DmCallBridge *callBridge READ callBridge CONSTANT)
+    Q_PROPERTY(bool profileCallPending READ profileCallPending NOTIFY stateChanged)
+    DmCallBridge *callBridge() { return &m_callBridge; }
+    bool profileCallPending() const;
+    // True when the partner's existing DM is an E2EE stream without a usable
+    // local key: the Call chip is disabled and an invoke would only error.
+    Q_INVOKABLE bool callTargetCryptoUnavailable(const QString &userUuid) const;
+    // Profile panel Call: same navigation contract as the Message action, with
+    // the pending-partner handoff into the shared header start flow.
+    Q_INVOKABLE void callFromProfile(const QString &userUuid);
     // Card join: mirrors the reference join path - opening a different room
     // while a call is active is refused with the generic inline error.
     Q_INVOKABLE void joinCall(const QString &meetingUrl);
@@ -1461,14 +1475,29 @@ public:
 private:
     void fetchCallMeetHost();
     void maybeOfferCallInvite(const Message &message);
+    // Issue #164: descriptor sync + pending handoff (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md).
+    void syncCallBridge();
+    void attemptPendingCallHandoff();
+    void navigateProfileDirect(const ProfileDirectNavigation &navigation);
     JitsiCallStore m_callStore;
     JitsiCallWindowController m_callWindow;
     JitsiEmbedBridge m_embedBridge;
     IncomingCallLifecycle m_incomingCall;
+    DmCallBridge m_callBridge;
     QString m_meetHost;
     QString m_callError;
-    bool m_callPending = false;
     quint64 m_callMeetAttempt = 0;
+    // Issue #164 stale-send guards: monotonic view epoch (bumped on every viewed
+    // conversation change), the epoch owning the one in-flight guard, and the
+    // peer whose Call-triggered direct-chat create is in flight.
+    quint64 m_callViewEpoch = 1;
+    quint64 m_callInflightEpoch = 0;
+    QString m_callViewOwner;
+    QString m_callViewStream;
+    QString m_callViewTopic;
+    QString m_profileCallPeer;
+    // Profile-direct navigation resolution shared by the Message and Call chips.
+    ProfileDirectNavigation resolveProfileDirect(const QString &peer) const;
 };
 
 }
