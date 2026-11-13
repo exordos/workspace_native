@@ -27,10 +27,10 @@ The REST foundation already merged in #214 (`docs/NATIVE_DESKTOP_POLLS_FOUNDATIO
 
 `NativeIconButton` with `objectName: "pollButton"` in the composer toolbar row of
 `Main.qml`, after the emoji trigger (toolbar order file/call -> emoji -> poll).
-`Icon name="poll"` has no local asset; the reference SVG set ships no local
-`poll.svg` in the native asset bundle, so the button reuses the reference glyph
-semantics with the bundled bar chart glyph if present, otherwise a plain
-text-less icon button (see Deviations).
+The reference glyph is vendored verbatim:
+`packages/web/src/shared/assets/icons/poll.svg` from the contract sha (added to
+the `native_icons` CMake list), matching `Icon name="poll"` sized 24 in
+`message-composer.ui.tsx:131-144`. Help/aria text is `pollForm.title`.
 
 Visibility mirrors `message-composer.ui.tsx:471`: hidden while an edit session is
 open (`root.controller.editingMessageId.length > 0`) and hidden when
@@ -133,5 +133,15 @@ preserved (`Question %1`).
   reference's own move-up/move-down buttons only; native implements those.
 - Reference results select is a custom keyboard Combobox; native uses the
   themed `ComboBox` with the same two options and `after_vote` default.
-- The composer poll glyph: bundled assets contain no poll svg; the button ships
-  a minimal inline bar-chart Canvas glyph sized to 24px like sibling triggers.
+- Sections and answer rows are instantiated with `Instantiator` (QtQml), not
+  `Repeater`: in this Qt 6.10.2 build the `Repeater` delegates inside this
+  surface never incubate (the delegate model reports the right count but
+  instantiates no items), while `Instantiator` behaves correctly. Behaviour is
+  identical; the difference is tracked here so a future Qt bump can revisit it.
+- `QQuickPopup` marks its close-event hook as non-overridable in this Qt, so
+  the "cannot dismiss an in-flight create" rule is implemented by switching
+  `closePolicy` to `NoAutoClose` while a create attempt is pending, which yields
+  the same observable behaviour (Escape and outside-click ignored in-flight).
+- The reference question caption template `Question {{number}}` is rendered as
+  the literal `Question` label plus the 1-based number (RU `Вопрос` + number
+  via the catalog), because QML `qsTr` argument substitution is per-call.
