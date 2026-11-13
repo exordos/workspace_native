@@ -802,6 +802,58 @@ private slots:
         QCOMPARE(spy.count(), 1);
     }
 
+    void embedBridgeIsTheProductionLiveCountSource()
+    {
+        // Finding 5 (round 3): the reconcile timer must read a live
+        // production source, not only a test-injected provider. The embed
+        // bridge is that source: it models the reference external_api reads
+        // and listeners (jitsi-participant-count.hook.ts:19-33), and the
+        // production wiring attaches it as the controller's count provider.
+        // Here the ONLY seam touched is the bridge - no setParticipantCountProvider,
+        // no manual pollNow.
+        JitsiCallWindowController shell;
+        JitsiEmbedBridge bridge;
+        bridge.attachTo(&shell);   // exactly what NativeController does in production
+        shell.open(validCall());
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.participantCount(), -1);   // nothing reported by the embed yet
+        bridge.reportParticipantCount(4);         // getNumberOfParticipants() from the embed
+        QCOMPARE(shell.participantCount(), 4);
+        QSignalSpy spy(&shell, &JitsiCallWindowController::participantCountChanged);
+        bridge.reportParticipantCount(6);
+        QCOMPARE(shell.participantCount(), 6);    // delivered without any manual poke
+        QVERIFY(spy.count() >= 1);
+        // The external_api listeners re-sync through the same bridge source.
+        bridge.handleParticipantsJoined();
+        bridge.handleParticipantsLeft();
+        QCOMPARE(shell.participantCount(), 6);
+        // The reconcile poll keeps working as reconciliation only: it re-reads
+        // the bridge without a manual pollNow.
+        shell.setPollIntervalMs(30);
+        bridge.reportParticipantCount(9);
+        QTRY_COMPARE_WITH_TIMEOUT(shell.participantCount(), 9, 2000);
+        // Closing resets the live session exactly like the reference hook.
+        shell.close();
+        QCOMPARE(shell.participantCount(), -1);
+        QCOMPARE(bridge.liveParticipantCount(), -1);
+    }
+
+    void embedBridgeCarriesTheSharedRosterSource()
+    {
+        // Reference: getParticipantsInfo() -> setParticipants(meetingUrl, ...)
+        // shared store (jitsi-call-modal-shell.hook.ts:172-189). The native
+        // counterpart is the bridge roster, fed from the same embed transport.
+        JitsiCallWindowController shell;
+        JitsiEmbedBridge bridge;
+        bridge.attachTo(&shell);
+        shell.open(validCall());
+        shell.apiLoadSucceeded();
+        bridge.reportRoster({QStringLiteral("Ada"), QStringLiteral("Grace")});
+        QCOMPARE(bridge.liveRoster(), QStringList({QStringLiteral("Ada"), QStringLiteral("Grace")}));
+        shell.close();
+        QVERIFY(bridge.liveRoster().isEmpty());
+    }
+
     void focusAwarePollReconcilesCountWithoutManualPoll()
     {
         // Finding 5: after Ready the controller owns a focus-aware reconcile
