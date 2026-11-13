@@ -9707,6 +9707,32 @@ private slots:
         QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha second note"));
     }
 
+    void parkedReplySessionKeepsAuthorAndExcerptWhileHistoryLoads()
+    {
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        fixture.controller.setDraft("answer alpha");
+        // No display getter (replyAuthor/replyExcerpt/replyTabs row) runs
+        // before leaving, so the park must prime the memos from the still
+        // loaded message itself (review #246, native-controller.cpp:11055).
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        // selectTopic commits the route synchronously: the restored tab is
+        // live right now and A's history has not arrived yet, so only a memo
+        // primed at park time can render the banner.
+        QCOMPARE(fixture.controller.replyMessageId(),
+                 QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
+        // Once history returns, live resolution still wins over the memo.
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;
