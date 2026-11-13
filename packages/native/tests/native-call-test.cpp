@@ -718,6 +718,69 @@ private slots:
         QVERIFY(!invalid.isMeetingOrigin(QStringLiteral("https://evil.example")));
     }
 
+    // Review finding (exo-review thread 4559430270): the port check must use
+    // each URL's own scheme default, evaluated independently. A frame at
+    // https://meet.example (effective 443) must NOT match a meeting at
+    // https://meet.example:8443.
+    void isMeetingOriginComparesEffectivePorts_data()
+    {
+        QTest::addColumn<QString>("meetingUrl");
+        QTest::addColumn<QString>("origin");
+        QTest::addColumn<bool>("expected");
+
+        // Same host, meeting on a non-default port: a default-port frame is a
+        // different origin and must get no grant.
+        QTest::newRow("https-meeting-8443-vs-default-port-frame")
+            << QStringLiteral("https://meet.jit.si:8443/Room-1")
+            << QStringLiteral("https://meet.jit.si") << false;
+        QTest::newRow("http-meeting-8443-vs-default-port-frame")
+            << QStringLiteral("http://meet.jit.si:8443/Room-1")
+            << QStringLiteral("http://meet.jit.si") << false;
+        // Same host and port stays granted, spelled explicitly or not.
+        QTest::newRow("https-meeting-8443-vs-same-explicit-port")
+            << QStringLiteral("https://meet.jit.si:8443/Room-1")
+            << QStringLiteral("https://meet.jit.si:8443") << true;
+        // Default vs default: a scheme default is the same effective port.
+        QTest::newRow("https-meeting-default-vs-default-port-frame")
+            << QStringLiteral("https://meet.jit.si/Room-1")
+            << QStringLiteral("https://meet.jit.si") << true;
+        QTest::newRow("https-meeting-default-vs-explicit-443-frame")
+            << QStringLiteral("https://meet.jit.si/Room-1")
+            << QStringLiteral("https://meet.jit.si:443") << true;
+        QTest::newRow("http-meeting-default-vs-default-port-frame")
+            << QStringLiteral("http://meet.jit.si/Room-1")
+            << QStringLiteral("http://meet.jit.si") << true;
+        QTest::newRow("http-meeting-default-vs-explicit-80-frame")
+            << QStringLiteral("http://meet.jit.si/Room-1")
+            << QStringLiteral("http://meet.jit.si:80") << true;
+        // A default-port meeting is not shared with a non-default-port frame.
+        QTest::newRow("https-meeting-default-vs-8443-frame")
+            << QStringLiteral("https://meet.jit.si/Room-1")
+            << QStringLiteral("https://meet.jit.si:8443") << false;
+        QTest::newRow("https-meeting-8443-vs-explicit-443-frame")
+            << QStringLiteral("https://meet.jit.si:8443/Room-1")
+            << QStringLiteral("https://meet.jit.si:443") << false;
+        // Scheme default divergence: http:80 and https:443 never match.
+        QTest::newRow("cross-scheme-default-port-divergence")
+            << QStringLiteral("http://meet.jit.si/Room-1")
+            << QStringLiteral("https://meet.jit.si") << false;
+        // Scheme and host case-insensitivity still holds with ports.
+        QTest::newRow("case-insensitive-scheme-host-with-port")
+            << QStringLiteral("https://Meet.Jit.si:8443/Room-1")
+            << QStringLiteral("HTTPS://meet.jit.si:8443") << true;
+    }
+    void isMeetingOriginComparesEffectivePorts()
+    {
+        QFETCH(QString, meetingUrl);
+        QFETCH(QString, origin);
+        QFETCH(bool, expected);
+        JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), meetingUrl);
+        shell.open(call);
+        QCOMPARE(shell.isMeetingOrigin(origin), expected);
+    }
+
     void syncFullscreenTracksExternalWindowExit()
     {
         // Finding 4: the fullscreen flag must follow the real window, and
