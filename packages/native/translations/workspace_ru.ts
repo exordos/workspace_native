@@ -1065,6 +1065,10 @@
             <source>Personal info</source>
             <translation>Личная информация</translation>
         </message>
+        <message>
+            <source>Create poll</source>
+            <translation>Создать опрос</translation>
+        </message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -3237,6 +3241,129 @@
         <message>
             <source>%1 is calling</source>
             <translation>%1 звонит</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativePollDialog</name>
+        <message>
+            <source>Could not confirm the poll was sent. Retry to safely send the same poll.</source>
+            <translation>Не удалось подтвердить отправку опроса. Повторите отправку того же опроса.</translation>
+        </message>
+        <message>
+            <source>The poll was rejected. Check its questions and settings, then try again.</source>
+            <translation>Опрос отклонён. Проверьте вопросы и настройки, затем попробуйте снова.</translation>
+        </message>
+        <message>
+            <source>Poll creation is not enabled on this server.</source>
+            <translation>Создание опросов на этом сервере не включено.</translation>
+        </message>
+        <message>
+            <source>The default server limit is 20 questions and 20 answers per question.</source>
+            <translation>Стандартный лимит сервера — 20 вопросов и 20 ответов на вопрос.</translation>
+        </message>
+        <message>
+            <source>Add question</source>
+            <translation>Добавить вопрос</translation>
+        </message>
+        <message>
+            <source>Poll settings</source>
+            <translation>Настройки опроса</translation>
+        </message>
+        <message>
+            <source>Multiple answers</source>
+            <translation>Несколько ответов</translation>
+        </message>
+        <message>
+            <source>Participants can select more than one answer for each question</source>
+            <translation>Участники могут выбрать несколько ответов в каждом вопросе</translation>
+        </message>
+        <message>
+            <source>Anonymous poll</source>
+            <translation>Анонимный опрос</translation>
+        </message>
+        <message>
+            <source>Hide voters</source>
+            <translation>Скрыть участников голосования</translation>
+        </message>
+        <message>
+            <source>Allow revoting</source>
+            <translation>Разрешить переголосование</translation>
+        </message>
+        <message>
+            <source>Votes can be changed or withdrawn</source>
+            <translation>Можно изменить или отозвать голос</translation>
+        </message>
+        <message>
+            <source>Allow adding options</source>
+            <translation>Разрешить добавление вариантов</translation>
+        </message>
+        <message>
+            <source>Participants can add answer options</source>
+            <translation>Участники могут добавлять варианты ответа</translation>
+        </message>
+        <message>
+            <source>Results</source>
+            <translation>Результаты</translation>
+        </message>
+        <message>
+            <source>After voting</source>
+            <translation>После голосования</translation>
+        </message>
+        <message>
+            <source>Always</source>
+            <translation>Всегда</translation>
+        </message>
+        <message>
+            <source>Poll closing date</source>
+            <translation>Закрытие опроса</translation>
+        </message>
+        <message>
+            <source>Choose a future date</source>
+            <translation>Выберите будущую дату</translation>
+        </message>
+        <message>
+            <source>Remove deadline</source>
+            <translation>Убрать срок</translation>
+        </message>
+        <message>
+            <source>Set a deadline</source>
+            <translation>Установить срок</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Create</source>
+            <translation>Создать</translation>
+        </message>
+        <message>
+            <source>Question</source>
+            <translation>Вопрос</translation>
+        </message>
+        <message>
+            <source>Enter a question</source>
+            <translation>Введите вопрос</translation>
+        </message>
+        <message>
+            <source>Answer options</source>
+            <translation>Варианты ответа</translation>
+        </message>
+        <message>
+            <source>Mark correct answers if needed</source>
+            <translation>Отметьте правильные ответы, если нужно</translation>
+        </message>
+        <message>
+            <source>Add an answer…</source>
+            <translation>Добавить ответ…</translation>
+        </message>
+        <message>
+            <source>Mark as correct</source>
+            <translation>Отметить правильный ответ</translation>
+        </message>
+        <message>
+            <source>Create poll</source>
+            <translation>Создать опрос</translation>
         </message>
     </context>
 </TS>
