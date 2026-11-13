@@ -8549,7 +8549,11 @@ ApplicationWindow {
             && (root.controller.callWindow.embedState === 1 // Loading
                 || root.controller.callWindow.embedState === 2) // Ready
         source: "NativeCallWebEngineView.qml"
-        onLoaded: if (item) item.controller = root.controller.callWindow
+        onLoaded: if (item) {
+            item.controller = root.controller.callWindow
+            // The live handshake's C++ counterpart (finding 5, round 4).
+            item.bridge = root.controller.embedBridge
+        }
         parent: root.callPipEmbedHost !== null ? root.callPipEmbedHost
             : callWindowExpandedShell.embedHost
         anchors.fill: parent
