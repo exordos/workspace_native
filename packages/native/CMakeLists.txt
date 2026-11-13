@@ -341,6 +341,7 @@ if(BUILD_TESTING)
         uiEncryptedReadUsesActualSourceGrantAndSafeCopy
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
+        uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiEncryptedOsRetryDoesNotSendAKeyRequest
         uiEncryptedCheckIsGetOnlyAndRetryKeepsTheSameIntent
         uiEncryptedSourceHeaderGeometry

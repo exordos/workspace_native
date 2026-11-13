@@ -1903,6 +1903,87 @@ void NativeController::recoverChatKeyResponse(const QString &request, bool retry
     if (guard && chatKeyResponseContext(id, ticket)) readChatKeyResponse(id, ticket, retry);
 }
 
+// Issue #221: re-runs the per-row prepare work for one message exactly like
+// prepareChatSlice does — vault key read, strict base64 envelope, decrypt and the
+// same PreparedChatMessage publication state. Both paths must stay in sync.
+NativeController::PreparedChatMessage NativeController::decryptChatMessageRow(const Message &message)
+{
+    const auto hash = chatPayloadHash(message);
+    const NativeChatKeyVault::Address address{message.stream, message.crypto->keyUuid};
+    auto key = m_chatKeys->read(m_chatVaultLease, address);
+    auto state = key.failure == NativeChatKeyVault::Failure::None && key.value.bytes.isEmpty()
+        ? ChatKeyAvailability::Missing : ChatKeyAvailability::Error;
+    QString text;
+    const auto envelope = strictChatBase64(message.crypto->encodedContent, 213336);
+    if (key.failure == NativeChatKeyVault::Failure::None && key.value.bytes.size() == 32 && !envelope.isEmpty()) {
+        auto plaintext = NativeChatCrypto::decryptMessage(key.value.bytes, envelope, {message.stream, message.crypto->keyUuid});
+        if (plaintext) {
+            text = QString::fromUtf8(plaintext.bytes);
+            if (text.toUtf8() == plaintext.bytes) state = ChatKeyAvailability::Present;
+            else text.clear();
+        }
+        wipeChatBytes(plaintext.bytes);
+    }
+    wipeChatBytes(key.value.bytes);
+    return {hash, text, key.value.deletionRevision, state};
+}
+
+// Issue #221: per-message decrypt Retry on the encrypted message error row
+// (docs/NATIVE_DESKTOP_E2EE_DECRYPT_RETRY.md). It accepts exactly the row the error UI
+// renders: the current encrypted conversation, a real e2ee row whose prepared entry is
+// present-current and failed. One accepted activation records the uuid, announces the
+// in-flight transition, and schedules one single-message re-prepare; a repeat activation
+// while that re-decrypt is in flight is dropped, so one message is never double-decrypted.
+void NativeController::retryMessageDecrypt(const QString &messageUuid)
+{
+    const QPointer<NativeController> lookupGuard(this);
+    checkChatLifetime();
+    if (!lookupGuard) return;
+    if (!chatReadAllowed() || !currentStream() || !currentStream()->encrypted) return;
+    if (m_chatDecryptRetries.contains(messageUuid)) return;
+    const auto *message = findMessage(messageUuid);
+    if (!message || message->kind != "e2ee" || !message->crypto) return;
+    const auto prepared = m_chatPrepared.constFind(message->uuid);
+    if (prepared == m_chatPrepared.cend() || prepared->hash != chatPayloadHash(*message)
+        || prepared->state == ChatKeyAvailability::Present || prepared->state == ChatKeyAvailability::Missing) return;
+    const auto epoch = m_chatEpoch, selection = m_selection;
+    m_chatDecryptRetries.insert(messageUuid);
+    emit decryptRetryStateChanged();
+    QTimer::singleShot(0, this, [this, messageUuid, epoch, selection] {
+        const QPointer<NativeController> guard(this);
+        if (!guard) return;
+        const bool stale = m_chatEpoch != epoch || m_selection != selection || !chatReadAllowed()
+            || !m_chatKeys || !sameChatLease(m_chatKeys->lease(), m_chatVaultLease);
+        const auto *message = stale ? nullptr : findMessage(messageUuid);
+        const bool reprepare = !stale && message != nullptr && message->kind == "e2ee" && message->crypto;
+        PreparedChatMessage entry;
+        if (reprepare) entry = decryptChatMessageRow(*message);
+        // Clear the in-flight flag (and its NOTIFY) before publishing the refreshed body,
+        // so an observer that reads the property after seeing the new content never sees
+        // the stale pending uuid.
+        m_chatDecryptRetries.remove(messageUuid);
+        emit decryptRetryStateChanged();
+        if (!reprepare) return;
+        const auto previous = m_chatPrepared.find(message->uuid);
+        if (previous != m_chatPrepared.end()) {
+            m_chatPreparedUnits -= previous.key().size() + previous->content.size(); m_chatPrepared.erase(previous);
+        }
+        if (entry.content.size() + message->uuid.size() > 2000000 - m_chatPreparedUnits) {
+            m_chatRejectedWindow = m_chatPreparingWindow;
+            m_chatPrepared.clear(); m_chatPreparedUnits = 0; m_chatPrepareRows.clear();
+        } else {
+            m_chatPrepared.insert(message->uuid, entry);
+            m_chatPreparedUnits += entry.content.size() + message->uuid.size();
+        }
+        emit messagesChanged();
+    });
+}
+
+QStringList NativeController::decryptRetryPendingUuids() const
+{
+    return m_chatDecryptRetries.values();
+}
+
 void NativeController::scheduleChatPreparation()
 {
     const QPointer<NativeController> lookupGuard(this);

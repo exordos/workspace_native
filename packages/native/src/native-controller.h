@@ -50,6 +50,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString ownStatusContextKey READ ownStatusContextKey NOTIFY stateChanged)
     Q_PROPERTY(QString viewerDisplayName READ viewerDisplayName NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap encryption READ encryption NOTIFY stateChanged)
+    // Issue #221: uuids whose per-message re-decrypt is in flight. NOTIFY fires on every
+    // insert and erase so the error-row Retry can bind its enabled state to this property.
+    Q_PROPERTY(QStringList decryptRetryPendingUuids READ decryptRetryPendingUuids NOTIFY decryptRetryStateChanged)
     Q_PROPERTY(QVariantList directChatChoices READ directChatChoices NOTIFY stateChanged)
     Q_PROPERTY(bool directChatDirectoryVerified READ directChatDirectoryVerified NOTIFY stateChanged)
     // Like channel creation: genuine lifetime loss, never ordinary row counters
@@ -196,6 +199,9 @@ public:
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyStore();
+    // Issue #221: per-message decrypt Retry on the encrypted message error row.
+    Q_INVOKABLE void retryMessageDecrypt(const QString &messageUuid);
+    QStringList decryptRetryPendingUuids() const;
     Q_INVOKABLE void grantChatKey(const QString &request);
     Q_INVOKABLE void rejectChatKey(const QString &request);
     Q_INVOKABLE void resolveKeyServiceRequest(const QString &responseId);
@@ -512,6 +518,7 @@ public:
 
 signals:
     void chatKeyStoreOpenRequested();
+    void decryptRetryStateChanged();
     void archivedChatsChanged();
     void stateChanged();
     void channelInfoAddSettledChanged();
@@ -607,6 +614,8 @@ private:
     void processChatControls(quint64 epoch, quint64 selection, quint64 work);
     void scheduleChatPreparation();
     void prepareChatSlice(quint64 epoch, quint64 selection, quint64 preparation, qsizetype offset);
+    PreparedChatMessage decryptChatMessageRow(const Message &message);
+    QSet<QString> m_chatDecryptRetries;
     ChatAuthority m_chatAuthority;
     NativeChatKeyVault::Lease m_chatVaultLease;
     QPointer<NativeCacheService> m_chatCache;
