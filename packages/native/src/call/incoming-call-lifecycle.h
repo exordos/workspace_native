@@ -88,6 +88,9 @@ private:
     QString m_notificationSound = QStringLiteral("default");
     QString m_variant = QStringLiteral("large");
     QHash<QString, bool> m_videoEnabledByInvite;
+    // Message id of the invite the video-preference bookkeeping is
+    // currently scoped to (PR #257 finding 6).
+    QString m_trackedInviteId;
     QTimer m_ringTimer;
     QTimer m_declineTimer;
 };

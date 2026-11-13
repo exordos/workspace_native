@@ -14,6 +14,10 @@ IncomingCallLifecycle::IncomingCallLifecycle(QObject *parent)
 #endif
     m_ringTimer.setInterval(m_ringIntervalMs);
     connect(&m_ringTimer, &QTimer::timeout, this, &IncomingCallLifecycle::playRing);
+    // PR #257 finding 5: Qt's default timer type may coarsen a 45 s deadline
+    // by up to 5% (firing the auto-decline up to 2.25 s early). The decline
+    // deadline is a user-visible contract, so it runs Precise.
+    m_declineTimer.setTimerType(Qt::PreciseTimer);
     m_declineTimer.setSingleShot(true);
     m_declineTimer.setInterval(m_autoDeclineMs);
     connect(&m_declineTimer, &QTimer::timeout, this, [this] {
@@ -117,6 +121,18 @@ void IncomingCallLifecycle::dismiss()
 
 void IncomingCallLifecycle::onStoreChanged()
 {
+    // PR #257 finding 6: the video preference belongs to the invite that is
+    // currently shown. When the current invite changes (replaced or cleared
+    // outside the accept/decline/dismiss handlers, e.g. an expired invite),
+    // the discarded invite's preference is dropped so a replay starts at the
+    // default, and videoPreferenceChanged fires so the QML binding picks up
+    // the new invite's value instead of keeping the stale one.
+    const auto inviteId = currentInviteMessageId();
+    if (inviteId != m_trackedInviteId) {
+        m_videoEnabledByInvite.remove(m_trackedInviteId);
+        m_trackedInviteId = inviteId;
+        emit videoPreferenceChanged();
+    }
     // lifecycle.hook.ts:21: visible = invite present, no active call.
     const auto now = m_store && !m_store->incomingInvite().isEmpty()
         && !m_store->hasActiveCall();

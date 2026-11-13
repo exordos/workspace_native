@@ -16218,7 +16218,7 @@ private:
                 .arg(acceptRightInCard).arg(card->width())));
         // Accept is still reachable: a pointer click on its centre fires the
         // accept signal.
-        QSignalSpy accepted(presenter.data(), "acceptRequested()");
+        QSignalSpy accepted(presenter.data(), SIGNAL(acceptRequested()));
         QVERIFY(accepted.isValid());
         click(&window, accept);
         QCOMPARE(accepted.count(), 1);
