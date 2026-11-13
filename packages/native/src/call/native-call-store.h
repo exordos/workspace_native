@@ -29,6 +29,10 @@ public:
     Q_INVOKABLE void closeCall();
     Q_INVOKABLE void ingestIncomingInvite(const QVariantMap &invite);
     Q_INVOKABLE QVariantMap acceptIncomingInvite();
+    // Reference acceptIncomingInvite(options): startWithVideoMuted from the
+    // per-invite video preference (jitsi-call-shell.ui.tsx:61-63), default
+    // muted when the option is absent (jitsi-call.model.ts:166).
+    Q_INVOKABLE QVariantMap acceptIncomingInvite(const QVariantMap &options);
     Q_INVOKABLE void declineIncomingInvite();
     // Drops call state entirely (account sign-out keeps nothing in memory).
     void clear();
