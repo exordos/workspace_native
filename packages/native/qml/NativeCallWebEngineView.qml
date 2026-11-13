@@ -148,10 +148,14 @@ Item {
                 const now = host.controller.embedState
                 if (view.priorEmbedState === 3 && now === 1) {
                     const target = host.controller.embedUrl()
+                    // Assign the url property (WebEngineView exposes no
+                    // load() method; url is settable and assignment starts
+                    // the load): equal urls reload in place, a drifted url
+                    // re-points the one live surface at the meeting.
                     if (target.length > 0 && target === view.url.toString())
                         view.reload()
                     else
-                        view.load(target)
+                        view.url = target
                 }
                 view.priorEmbedState = now
             }
