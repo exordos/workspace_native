@@ -9151,17 +9151,23 @@ private slots:
         QTRY_COMPARE(posts, 1);
         QTRY_VERIFY(fixture.controller.replyMessageId().isEmpty());
 
-        // Leaving the conversation ends the session (reply slot is conversation-scoped).
+        // Leaving a conversation parks the session under its own conversation
+        // key (issue #201): B shows its own (empty) session while A's stays
+        // parked with the typed answer.
         QVERIFY(fixture.controller.beginReply(messageId));
+        fixture.controller.setDraft("parked answer");
         fixture.controller.selectTopic(secondTopicId);
         QVERIFY(fixture.controller.replyMessageId().isEmpty());
         QTRY_VERIFY(!fixture.controller.busy());
 
-        // A message that cannot be quoted reports instead of starting a session.
+        // Returning restores A's session unchanged; a message that cannot be
+        // quoted reports instead of touching the restored session.
         fixture.controller.selectTopic(topicId);
         QTRY_VERIFY(!fixture.controller.busy());
+        QTRY_COMPARE(fixture.controller.replyMessageId(), messageId);
+        QCOMPARE(fixture.controller.draft(), QString("parked answer"));
         QVERIFY(!fixture.controller.beginReply("00000000-0000-4000-8000-000000000000"));
-        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
         QVERIFY(!fixture.controller.error().isEmpty());
 
         // Reply and edit sessions are mutually exclusive.
@@ -9547,6 +9553,158 @@ private slots:
         QCOMPARE(tabs[0].toMap().value("message").toString(), firstId);
         QCOMPARE(tabs[1].toMap().value("message").toString(), thirdId);
         QCOMPARE(fixture.controller.replyMessageId(), thirdId);
+    }
+
+    // ---- per-conversation reply session store (issue #201) ----
+
+    // One stream, two topics: conversation A is `topicId`, conversation B is
+    // `secondTopicId`. Each topic's history serves only its own messages, so a
+    // restored banner that still resolves its author proves which conversation
+    // is loaded. docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md.
+    static void replyPersistenceScene(Fixture &fixture)
+    {
+        fixture.extraTopic = true;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.users = [peerA, peerB](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        auto first = message("Alpha note", QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        first["is_own"] = false; first["author_uuid"] = peerA;
+        auto second = message("Alpha second note", QStringLiteral("12121212-1212-4212-8212-121212121212"));
+        second["is_own"] = false; second["author_uuid"] = peerB;
+        auto beta = message("Beta note", QStringLiteral("23232323-2323-4323-8323-232323232323"), secondTopicId);
+        beta["is_own"] = false; beta["author_uuid"] = peerB;
+        fixture.messages = [first, second, beta](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{beta}};
+            return Response{QJsonArray{first, second}};
+        };
+    }
+
+    void replySessionSurvivesNavigationAwayAndBack()
+    {
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        fixture.controller.setDraft("answer alpha");
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
+        const auto tabsBefore = fixture.controller.replyTabs();
+        QSignalSpy changed(&fixture.controller, &NativeController::replySessionChanged);
+        QVERIFY(changed.isValid());
+
+        // Conversation B opens with its own empty session; A's parked session
+        // stays invisible while B is current.
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QVERIFY(fixture.controller.replyAuthor().isEmpty());
+
+        // Returning to A restores the whole session unchanged: tab identity,
+        // quote target, author, excerpt and the composer answer.
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
+        QCOMPARE(fixture.controller.draft(), QString("answer alpha"));
+        QVERIFY(fixture.controller.replyTabs() == tabsBefore);
+        // Every parked/restore transition a QML binding reads is announced.
+        QVERIFY(changed.count() > 0);
+    }
+
+    void replySessionCancelStaysCancelledAcrossNavigation()
+    {
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        // Cancelling drops the parked entry too, so the next revisit is empty.
+        fixture.controller.cancelReply();
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+    }
+
+    void replySessionsAreIsolatedPerConversation()
+    {
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        fixture.controller.setDraft("answer alpha");
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("23232323-2323-4323-8323-232323232323")));
+        fixture.controller.setDraft("beta answer");
+
+        // Each conversation keeps its own session, answer included.
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QCOMPARE(fixture.controller.draft(), QString("answer alpha"));
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("23232323-2323-4323-8323-232323232323"));
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QCOMPARE(fixture.controller.draft(), QString("beta answer"));
+
+        // Closing B's session never touches A's parked session, and B stays
+        // cancelled on the next revisit.
+        fixture.controller.cancelReply();
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
+    void multiTabReplySessionSurvivesNavigation()
+    {
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        fixture.controller.setDraft("answer one");
+        QVERIFY(fixture.controller.addReplyTab(QStringLiteral("12121212-1212-4212-8212-121212121212")));
+        fixture.controller.setDraft("answer two");
+        const QString firstTab = fixture.controller.replyTabs()[0].toMap().value("id").toString();
+        QVERIFY(fixture.controller.reorderReplyTab(
+            fixture.controller.replyTabs()[1].toMap().value("id").toString(), 0));
+        QCOMPARE(fixture.controller.replyMessageId(),
+                 QStringLiteral("12121212-1212-4212-8212-121212121212"));
+        const auto tabsBefore = fixture.controller.replyTabs();
+
+        // The whole session - tab set, order, active pointer and every answer -
+        // is parked together (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md state).
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE(fixture.controller.replyMessageId(),
+                     QStringLiteral("12121212-1212-4212-8212-121212121212"));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.replyTabs() == tabsBefore);
+        QCOMPARE(fixture.controller.replyTabs()[0].toMap().value("id").toString() != firstTab, true);
+        QCOMPARE(fixture.controller.draft(), QString("answer two"));
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha second note"));
     }
 
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
