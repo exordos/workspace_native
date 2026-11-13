@@ -3381,4 +3381,95 @@
             <translation>Видео</translation>
         </message>
     </context>
+    <context>
+        <name>NativePollCard</name>
+        <message>
+            <source>Poll closed</source>
+            <translation>Опрос завершён</translation>
+        </message>
+        <message>
+            <source>Anonymous poll</source>
+            <translation>Анонимный опрос</translation>
+        </message>
+        <message>
+            <source>Public poll</source>
+            <translation>Публичный опрос</translation>
+        </message>
+        <message>
+            <source>Choose multiple options</source>
+            <translation>Выберите несколько вариантов</translation>
+        </message>
+        <message>
+            <source>Choose one option</source>
+            <translation>Выберите один вариант</translation>
+        </message>
+        <message>
+            <source>Questions: %1</source>
+            <translation>Вопросы: %1</translation>
+        </message>
+        <message>
+            <source>Closed %1</source>
+            <translation>Завершён %1</translation>
+        </message>
+        <message>
+            <source>Until %1</source>
+            <translation>До %1</translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participant</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message>
+            <source>You voted</source>
+            <translation>Вы проголосовали</translation>
+        </message>
+        <message>
+            <source>Results after voting</source>
+            <translation>Результаты после голосования</translation>
+        </message>
+        <message>
+            <source>Could not save the change. Please try again.</source>
+            <translation>Не удалось сохранить изменение. Попробуйте снова.</translation>
+        </message>
+        <message>
+            <source>Could not add the option. Try again.</source>
+            <translation>Не удалось добавить вариант. Попробуйте снова.</translation>
+        </message>
+        <message>
+            <source>Correct answer: %1</source>
+            <translation>Правильный ответ: %1</translation>
+        </message>
+        <message>
+            <source>Participants: %1</source>
+            <translation>Участников: %1</translation>
+        </message>
+        <message>
+            <source>Add an answer option…</source>
+            <translation>Добавить вариант ответа…</translation>
+        </message>
+        <message>
+            <source>Press Enter to add an answer. Shift+Enter inserts a new line.</source>
+            <translation>Нажмите Enter, чтобы добавить вариант ответа. Shift+Enter вставляет новую строку.</translation>
+        </message>
+        <message>
+            <source>Vote counts</source>
+            <translation>Результаты голосования</translation>
+        </message>
+        <message>
+            <source>Poll status</source>
+            <translation>Статус опроса</translation>
+        </message>
+        <message>
+            <source>Read only</source>
+            <translation>Только просмотр</translation>
+        </message>
+        <message>
+            <source>Saving answer…</source>
+            <translation>Сохранение ответа…</translation>
+        </message>
+    </context>
 </TS>

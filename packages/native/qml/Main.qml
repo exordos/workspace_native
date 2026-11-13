@@ -361,6 +361,11 @@ ApplicationWindow {
         root.controller.requestChatKey(String(message.encryptionKeyUuid));
     }
     readonly property bool composerAvailable: root.controller.authenticated && !root.controller.draftsVisible && (root.selectedStreamEncrypted ? root.controller.canCompose : root.controller.selectedTopic.length > 0 && !root.controller.topicClosed)
+    // Poll bubble interactivity gate (issue #216): the reference and the
+    // #214 controller share supportsMessengerPolls; canCreatePoll is its
+    // single native expression, re-evaluated when the stream changes.
+    readonly property bool pollInteractiveStream: root.controller.selectedStream.length > 0
+        && root.controller.canCreatePoll()
     property string composerEmojiContext: ""
     property string composerEmojiStream: ""
     property string composerEmojiTopic: ""
@@ -4319,6 +4324,8 @@ ApplicationWindow {
                     readonly property bool lockedInlineMeta: encryptedLocked && root.encryptedPreparationState(modelData) !== "error" && !Boolean(modelData.reactionBusy) && !(modelData.reactions || []).some(reaction => Number(reaction.count) > 0 || Boolean(reaction.pending))
                     readonly property string controlLabel: root.encryptionControlLabel(String(modelData.kind))
                     readonly property bool keyControl: controlLabel.length > 0
+                    readonly property bool hasPoll: Boolean(modelData.poll)
+                        && !keyControl && !encryptedLocked
                     readonly property bool keyResponse: modelData.kind === "key_grant" || modelData.kind === "key_reject"
                     // Only an instantiated, expanded G/J body supplies demand.
                     // Core derives R and owns runtime/owner/cache revision guards.
@@ -4563,7 +4570,9 @@ ApplicationWindow {
                         id: bubble
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
-                        width: messageRow.keyControl ? messageRow.width : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, messageRow.hasInlineImages ? mediaMessageBody.imagePreferredWidth : 0, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
+                        width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
+                            ? Math.min(360, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
+                            : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, messageRow.hasInlineImages ? mediaMessageBody.imagePreferredWidth : 0, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
                         height: bubbleContent.implicitHeight + (messageRow.keyControl ? 8 : 16)
                         x: messageRow.keyControl ? 0 : messageRow.own ? messageRow.width - width : 56
                         y: messageRow.bubbleOffset + (messageRow.externalAuthor ? 24 : 0)
@@ -4593,6 +4602,25 @@ ApplicationWindow {
                                 authorName: String(messageRow.modelData.author || "")
                                 timeText: String(messageRow.modelData.time || "")
                                 onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
+                            }
+                            // Poll card (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md): the
+                            // reference reserves a 336 px column inside the 360 px bubble
+                            // (workspace-message-poll.css:4-9); voting, results, marks and the
+                            // inline add-option input follow workspace-message-poll-question.ui.tsx.
+                            NativePollCard {
+                                visible: messageRow.hasPoll
+                                width: parent.width
+                                colors: root.colors
+                                controller: root.controller
+                                readOnly: !root.pollInteractiveStream
+                                messageUuid: String(messageRow.modelData.id || "")
+                                poll: messageRow.modelData.poll
+                                onVoteRequested: function (questionUuid, optionUuid, selected) {
+                                    root.controller.votePollOption(messageUuid, questionUuid, optionUuid, selected)
+                                }
+                                onAddOptionRequested: function (questionUuid, optionUuid, optionText) {
+                                    root.controller.addPollOption(messageUuid, questionUuid, optionUuid, optionText)
+                                }
                             }
                             // Quote frame (docs/NATIVE_DESKTOP_REPLIES.md). Source message-surface
                             // frame (workspace_ui 61dacef workspace-message-quote.ui.tsx + frame.ui.tsx:8-18):
