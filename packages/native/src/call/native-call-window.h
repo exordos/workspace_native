@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QObject>
+#include <QPoint>
 #include <QRect>
 #include <QSize>
+#include <QTimer>
 #include <QVariantMap>
 
 #include <functional>
@@ -24,6 +26,9 @@ class JitsiCallWindowController final : public QObject {
     Q_PROPERTY(int embedCreations READ embedCreations NOTIFY embedCreated)
     Q_PROPERTY(int participantCount READ participantCount NOTIFY participantCountChanged)
     Q_PROPERTY(bool fullscreen READ fullscreen NOTIFY fullscreenChanged)
+    // True once the user moved/resized the PiP surface; until then the bounds
+    // are viewport-relative defaults the QML maps through the window position.
+    Q_PROPERTY(bool pipBoundsFromUser READ pipBoundsFromUser NOTIFY boundsChanged)
     // Localized display text for the QML shell (all follow the shell state).
     Q_PROPERTY(QString titleText READ titleText NOTIFY textsChanged)
     Q_PROPERTY(QString subtitleText READ subtitleText NOTIFY textsChanged)
@@ -62,6 +67,9 @@ public:
     // Pure geometry replicas of the reference helpers.
     static QRect expandedBounds(const QSize &viewport);
     static QRect defaultPipBounds(const QSize &viewport);
+    // Same default with the viewport rect converted to screen coordinates by
+    // the hosting window's global position (issue #162 review, finding 6).
+    static QRect defaultPipBounds(const QSize &viewport, const QPoint &screenOrigin);
 
     int mode() const { return m_mode; }
     QRect bounds() const;
@@ -69,6 +77,7 @@ public:
     int embedCreations() const { return m_embedCreations; }
     int participantCount() const { return m_participantCount; }
     bool fullscreen() const { return m_fullscreen; }
+    bool pipBoundsFromUser() const { return m_pipBoundsFromUser; }
     bool permissionsGranted() const { return m_permissionsGranted; }
     int pollIntervalMs() const;
 
@@ -111,6 +120,20 @@ public:
     void apiLoadFailed();    // -> LoadFailed
     Q_INVOKABLE void retry();
 
+    // Capture-permission allowlist: true only when the requesting origin is
+    // exactly the meeting origin (scheme, host and port), never by feature
+    // alone (jitsi-call-permissions.lib.ts grant scope, review finding 3).
+    Q_INVOKABLE bool isMeetingOrigin(const QString &origin) const;
+
+    // Window-side sync for the fullscreen transition: when the hosting window
+    // leaves (or enters) fullscreen outside the shell, the controller state
+    // follows (review finding 4).
+    Q_INVOKABLE void syncFullscreen(bool fullscreen);
+
+    // Test seam for the reconcile poll cadence (0 restores the focused
+    // 5000 ms / unfocused 30000 ms reference intervals).
+    void setPollIntervalMs(int ms);
+
     // Participant roster seam: events + focus-aware reconcile poll read the
     // injected provider (the live embed wires it to getNumberOfParticipants).
     void setParticipantCountProvider(std::function<int()> provider);
@@ -148,6 +171,9 @@ private:
     bool m_permissionsGranted = false;
     int m_participantCount = -1;
     bool m_focused = true;
+    bool m_pipBoundsFromUser = false;
+    QTimer m_pollTimer;
+    int m_pollIntervalOverrideMs = 0;
     QVariantMap m_call;
     QString m_domain;
     QString m_roomName;

@@ -2,6 +2,8 @@
 
 #include "call/jitsi-call.h"
 
+#include <QUrl>
+
 namespace workspace {
 
 namespace {
@@ -18,7 +20,14 @@ QString JitsiCallWindowController::allowPolicy()
     return QStringLiteral("camera; microphone; fullscreen; display-capture");
 }
 
-JitsiCallWindowController::JitsiCallWindowController(QObject *parent) : QObject(parent) {}
+JitsiCallWindowController::JitsiCallWindowController(QObject *parent) : QObject(parent)
+{
+    // Focus-aware reconcile poll (jitsi-participant-count.hook.ts: start on
+    // apiReady, restart on focus change, clear on close): the tick re-reads
+    // the injected count provider exactly like a manual pollNow.
+    m_pollTimer.setTimerType(Qt::CoarseTimer);
+    connect(&m_pollTimer, &QTimer::timeout, this, &JitsiCallWindowController::pollNow);
+}
 
 QRect JitsiCallWindowController::expandedBounds(const QSize &viewport)
 {
@@ -40,6 +49,15 @@ QRect JitsiCallWindowController::defaultPipBounds(const QSize &viewport)
         kDefaultPipWidth, kDefaultPipHeight);
 }
 
+QRect JitsiCallWindowController::defaultPipBounds(const QSize &viewport, const QPoint &screenOrigin)
+{
+    // The viewport-relative default mapped through the hosting window's
+    // global position: the tool window needs screen coordinates (finding 6).
+    QRect bounds = defaultPipBounds(viewport);
+    bounds.translate(screenOrigin);
+    return bounds;
+}
+
 QRect JitsiCallWindowController::bounds() const
 {
     return m_mode == Minimized ? m_pipBounds : expandedBounds(m_viewport);
@@ -47,6 +65,8 @@ QRect JitsiCallWindowController::bounds() const
 
 int JitsiCallWindowController::pollIntervalMs() const
 {
+    if (m_pollIntervalOverrideMs > 0)
+        return m_pollIntervalOverrideMs;
     return m_focused ? kParticipantsPollMs : kParticipantsPollUnfocusedMs;
 }
 
@@ -63,11 +83,16 @@ void JitsiCallWindowController::setViewportSize(const QSize &viewport)
 void JitsiCallWindowController::setFocused(bool focused)
 {
     m_focused = focused;
+    // Focus changes the cadence mid-call (5000 ms focused, 30000 ms not).
+    if (m_pollTimer.isActive())
+        m_pollTimer.setInterval(pollIntervalMs());
 }
 
 void JitsiCallWindowController::setPipBounds(const QRect &bounds)
 {
     // The PiP surface stays resizable down to the shared 280x180 minimum.
+    // Anything the user places is screen space from now on (finding 6).
+    m_pipBoundsFromUser = true;
     m_pipBounds = QRect(bounds.x(), bounds.y(),
         qMax(kMinWindowWidth, bounds.width()), qMax(kMinWindowHeight, bounds.height()));
     if (m_mode == Minimized)
@@ -84,10 +109,12 @@ void JitsiCallWindowController::open(const QVariantMap &activeCall)
     // New session: reset per-call state (the reference resets pip bounds,
     // fullscreen, minimized and the participant count on open).
     m_pipBounds = defaultPipBounds(m_viewport);
+    m_pipBoundsFromUser = false;
     m_fullscreen = false;
     m_permissionsGranted = false;
     m_participantCount = -1;
     m_embedState = m_roomName.isEmpty() ? InvalidUrl : Loading;
+    m_pollTimer.stop();
     m_mode = Expanded;
     emit modeChanged();
     emit boundsChanged();
@@ -106,6 +133,7 @@ void JitsiCallWindowController::close()
     m_permissionsGranted = false;
     m_participantCount = -1;
     m_fullscreen = false;
+    m_pollTimer.stop();
     emit modeChanged();
     emit boundsChanged();
     emit embedStateChanged();
@@ -166,6 +194,9 @@ void JitsiCallWindowController::apiLoadSucceeded()
     emit embedStateChanged();
     ensureEmbed();
     syncParticipantCount();
+    // Reference handleApiReady: reconcile poll runs for the whole session at
+    // the focus-aware cadence (finding 5).
+    m_pollTimer.start(pollIntervalMs());
     emit textsChanged();
 }
 
@@ -174,6 +205,7 @@ void JitsiCallWindowController::apiLoadFailed()
     if (m_embedState != Loading)
         return;
     m_embedState = LoadFailed;
+    m_pollTimer.stop();
     emit embedStateChanged();
     emit textsChanged();
 }
@@ -236,6 +268,41 @@ void JitsiCallWindowController::participantLeft()
 void JitsiCallWindowController::pollNow()
 {
     participantJoined();
+}
+
+bool JitsiCallWindowController::isMeetingOrigin(const QString &origin) const
+{
+    // Deny-by-default allowlist (finding 3): a capture/fullscreen grant is
+    // only ever issued to the exact origin of the live meeting URL — scheme,
+    // host and port must all match; everything else (iframes of other sites,
+    // http downgrades, host-suffix tricks) is rejected.
+    if (m_mode == Closed || m_roomName.isEmpty() || origin.isEmpty())
+        return false;
+    const QUrl meeting = QUrl(meetingUrl());
+    const QUrl request = QUrl(origin);
+    if (meeting.host().isEmpty() || request.host().isEmpty())
+        return false;
+    return request.scheme().compare(meeting.scheme(), Qt::CaseInsensitive) == 0
+        && request.host().compare(meeting.host(), Qt::CaseInsensitive) == 0
+        && request.port(meeting.port(-1)) == meeting.port(-1);
+}
+
+void JitsiCallWindowController::syncFullscreen(bool fullscreen)
+{
+    // The fullscreen control only exists while expanded; the flag follows the
+    // real window in both directions (finding 4).
+    if (m_mode != Expanded || m_fullscreen == fullscreen)
+        return;
+    m_fullscreen = fullscreen;
+    emit fullscreenChanged();
+    emit textsChanged();
+}
+
+void JitsiCallWindowController::setPollIntervalMs(int ms)
+{
+    m_pollIntervalOverrideMs = qMax(0, ms);
+    if (m_pollTimer.isActive())
+        m_pollTimer.setInterval(pollIntervalMs());
 }
 
 QVariantMap JitsiCallWindowController::sessionConfig() const
