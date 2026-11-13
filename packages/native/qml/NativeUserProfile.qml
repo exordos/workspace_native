@@ -923,15 +923,18 @@ Item {
             // .ui.tsx:113-120, disabled={callPending}); native additionally
             // refuses E2EE DMs without a local key (recorded deviation).
             // callTargetCryptoUnavailable() is a plain method call that QML
-            // cannot observe on its own; reading the notifying
-            // callCryptoSessionReady mirror re-evaluates this disabled state on
-            // every stream-catalog, viewed-chat or local-send-key transition
-            // (the short-circuit keeps the answer identical: the method can
-            // only be true when the mirror is true).
+            // cannot observe on its own, so the notifying callCryptoSessionReady
+            // mirror must stay inside this binding for the chip to re-evaluate on
+            // every stream-catalog, viewed-chat or local-send-key transition.
+            // The probe may NOT be short-circuited behind that mirror: an E2EE DM
+            // with no local key reports unavailable exactly while the mirror is
+            // false (round-2 finding 4563207117). The comma reads the mirror on
+            // every evaluation (capturing the NOTIFY dependency) while the bound
+            // value stays "call pending or target crypto unavailable".
             {id: "call", label: qsTr("Call"), icon: "phone.svg", glyph: 30, hug: false,
                 disabled: controller.profileCallPending
-                    || (controller.callCryptoSessionReady
-                        && controller.callTargetCryptoUnavailable(page.userUuid))},
+                    || (controller.callCryptoSessionReady,
+                        controller.callTargetCryptoUnavailable(page.userUuid))},
             {id: "share", label: shareCopied ? qsTr("Copied") : qsTr("Share"),
                 icon: shareCopied ? "check.svg" : "links.svg", glyph: shareCopied ? 28 : 40,
                 hug: false, disabled: page.shareLink.length === 0},
