@@ -89,16 +89,25 @@ All measurements are from `workspace_ui` at
   meeting URL.
 - The native client reuses the `JitsiCallStore` payload contract from #161 and
   the shared participant roster exposed to the message card.
-- Native mapping (review finding 5, round 3): `workspace::JitsiEmbedBridge`
-  (`src/call/native-call-window.{h,cpp}`) is the production live source. The
-  embed page's external_api reads arrive through `reportParticipantCount()` /
-  `reportRoster()` (the native transport of `getNumberOfParticipants()` /
-  `getParticipantsInfo()` until the #160 external_api.js handshake delivers
-  them) and the two listeners through `handleParticipantsJoined/Left()`.
-  `NativeController` attaches the bridge once at construction, making the
-  bridge the shell controller's count provider; the focus-aware timer then
-  only reconciles against the bridge, and closing the call resets the live
-  count and roster exactly like the reference hook.
+- Native mapping (review finding 5, rounds 3-4): `workspace::JitsiEmbedBridge`
+  (`src/call/native-call-window.{h,cpp}`) is the production live source, and
+  the handshake feeding it now ships. `NativeCallWebEngineView.qml` attaches
+  the Qt WebEngine `webChannel` to the embed view and injects two main-world
+  user scripts (vendored `qml/web/qwebchannel.js` plus
+  `qml/web/workspace-call-events.js`). The glue subscribes to the frame's own
+  API event registry (`window.APP.API` - the exact source external_api.js
+  forwards in the reference) for `videoConferenceJoined`,
+  `participantJoined` and `participantLeft`; each event re-reads
+  `getNumberOfParticipants()`/`getParticipantsInfo()` in-page and delivers
+  them over the channel to `reportParticipantCount()` / `reportRoster()`
+  (take semantics), then fires `handleParticipantsJoined/Left()`. Like the
+  reference, events only trigger re-reads and the focus-aware timer only
+  reconciles against the bridge. `NativeController` attaches the bridge once
+  at construction, making it the shell controller's count provider; closing
+  the call resets the live count and roster exactly like the reference hook.
+  The window suite proves this end to end with a local meeting page that
+  drives exactly those in-page events (no C++ poke of the bridge), skipping
+  only where the runtime has no QtWebEngine embed surface at all.
 
 ### States — `jitsi-call.ui.tsx:221-254`
 
@@ -190,10 +199,17 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
 - Screen-share source picking stays in #87 (per #160 the X11 path is not
   supported by QtWebEngine on this host); the allow policy still grants
   `display-capture` once as the reference does.
-- The live embed page (external_api.js handshake) is the #160 embed stack; the
-  shell proves the mount-count contract with the injectable recreation
-  counter instead of a network test. `JitsiEmbedBridge` is the named sink the
-  handshake feeds: the bridge holds the shared roster (`liveRoster`), but the
-  reference's message-card roster surface has no native counterpart yet (the
-  #161 card contract carries no roster), so the roster source ships without
-  a consumer; the count source is fully wired into the shell today.
+- Embed/transport deviation (round 4): the meeting frame is loaded directly
+  in the embed view (no external_api.js iframe), so the handshake is carried
+  natively: the injected glue consumes the frame's `window.APP.API` events -
+  the same external_api event surface and subscriptions the reference wires -
+  and reports over the Qt WebEngine WebChannel. What remains deferred: the
+  roster consumer UI - the bridge holds the shared roster (`liveRoster`) fed
+  by the same handshake, but the reference's message-card roster surface has
+  no native counterpart yet (the #161 card contract carries no roster), so
+  the roster source ships without a consumer (tracked with #161). The
+  handshake needs no network test: the embed lifecycle (mount/recreate) keeps
+  its injectable recreation counter. Runtime dependency note: the embed stack
+  (`qml6-module-qtwebengine` plus `qml6-module-qtwebchannel` for the channel)
+  is bundled with the call-window feature packaging; where it is absent the
+  embed Loader errors inertly and the live-handshake case self-skips.
