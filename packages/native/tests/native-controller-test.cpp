@@ -17619,6 +17619,153 @@ private slots:
         QCOMPARE(callMessagePosts(fixture), 0);
         QVERIFY(!controller.calls()->hasActiveCall());
     }
+
+    // Review finding 1: when a direct chat cannot even be created, the pending
+    // partner must not stay queued. A later visit to that peer's DM would
+    // otherwise consume the stale entry and fire a call nobody asked for.
+    void dmCallProfileCreateUnavailableQueuesNothingAndLaterVisitStaysQuiet()
+    {
+        static const QString ghostPeer = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        static const QString ghostDm = expectedDirectId(ghostPeer);
+        Fixture fixture;
+        bool ghostExists = false;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        fixture.streams = [&ghostExists, ghostDm](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + ghostDm)
+                return Response{creationDirect(ghostPeer, ghostDm)};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}};
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}};
+            if (ghostExists) rows.append(creationDirect(ghostPeer, ghostDm));
+            return Response{rows};
+        };
+        fixture.topics = [ghostDm](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == ghostDm) {
+                auto topic = creationTopic(channelDefault, ghostDm, "General Topic");
+                topic["is_default"] = true;
+                return Response{QJsonArray{topic}};
+            }
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        // The ghost peer has no DM stream and no directory entry: the call chat
+        // cannot start, so nothing may be queued for it.
+        QVERIFY(!controller.canStartDirectChatWith(ghostPeer));
+        controller.callFromProfile(ghostPeer);
+        QCOMPARE(controller.callBridge()->pendingPartnerUuid(), QString());
+        // A DM for that peer appears later (created elsewhere); visiting it
+        // must not fire a call that nobody requested.
+        ghostExists = true;
+        controller.refresh();
+        QVERIFY(QTest::qWaitFor([&] { return controller.streams().size() == 2; }, 2000));
+        controller.selectStream(ghostDm);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000));
+        controller.selectTopic(channelDefault);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        QTest::qWait(300);
+        QCOMPARE(callMessagePosts(fixture), 0);
+        QVERIFY(!controller.calls()->hasActiveCall());
+        QVERIFY(controller.callBridge()->pendingPartnerUuid().isEmpty());
+    }
+
+    // Review finding 2: a same-owner session generation change regenerates the
+    // transport generation. The captured call identity must include it, so the
+    // cancelled invite completion lands silently and the new session starts
+    // with a free call lane.
+    void dmCallSameOwnerGenerationChangeInvalidatesInFlightCallIdentity()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) {
+            return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+                {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+        };
+        QVector<QJsonObject> saved; QVector<std::function<void()>> release;
+        deferCallInvites(fixture, saved, release);
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        QTRY_VERIFY(controller.callBridge()->callSurfaceEnabled());
+        controller.startCall();
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 1; }, 2000));
+        const auto generation = fixture.api.generation();
+        fixture.api.setAccessToken("same-owner-regenerated-session");
+        QVERIFY(fixture.api.generation() > generation);
+        QVERIFY(controller.authenticated()); // same owner: only the generation moved
+        QTest::qWait(300); // the transport cancels the in-flight send
+        QVERIFY(controller.callError().isEmpty()); // the aborted completion stays silent
+        QVERIFY(!controller.calls()->hasActiveCall());
+        // The call lane is free again: a fresh send in the new session posts
+        // exactly one invite, is guarded, and opens once confirmed.
+        controller.startCall();
+        QVERIFY(QTest::qWaitFor([&] { return release.size() >= 2; }, 2000));
+        controller.startCall(); // the pending send owns the guard
+        QTest::qWait(200);
+        QCOMPARE(release.size(), 2);
+        release[1]();
+        QTRY_VERIFY(controller.calls()->hasActiveCall());
+        QVERIFY(controller.callError().isEmpty());
+        for (auto &go : release) go();
+    }
+
+    // Review finding 3: the profile Call chip's encryption-availability
+    // dependency must be notifying: callCryptoStateChanged fires on every
+    // relevant stream or key state transition (catalog rows, viewed chat,
+    // local key lifetime), not only when the boolean answer itself flips.
+    void dmCallCryptoAvailabilityNotifyTransitions()
+    {
+        static const QString secondStream = QStringLiteral("d1d1d1d1-1111-4111-8111-111111111111");
+        static const QString secondStreamTopic = QStringLiteral("d2d2d2d2-2222-4222-8222-222222222222");
+        Fixture fixture;
+        fixture.streams = [](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + secondStream)
+                return Response{creationChannel(secondStream, QStringLiteral("Second channel"))};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}},
+                creationChannel(secondStream, QStringLiteral("Second channel"))}};
+        };
+        fixture.topics = [secondStream, secondStreamTopic](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == secondStream)
+                return Response{QJsonArray{creationTopic(secondStreamTopic, secondStream, QStringLiteral("Second topic"))}};
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        QVERIFY(startMultiStream(fixture, 2));
+        auto &controller = fixture.controller;
+        QSignalSpy crypto(&controller, SIGNAL(callCryptoStateChanged()));
+        QVERIFY2(crypto.isValid(), "the controller must expose callCryptoStateChanged");
+        QVERIFY(!controller.property("callCryptoSessionReady").toBool()); // no vault attached
+        // Stream catalog reload: the peer DM encryption rows were re-read.
+        crypto.clear();
+        controller.refresh();
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY2(crypto.count() >= 1, "a stream catalog reload must notify call crypto availability");
+        // Viewed conversation change: the local-key part of the answer moves
+        // with the viewed stream.
+        crypto.clear();
+        controller.selectStream(secondStream);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000));
+        controller.selectTopic(secondStreamTopic);
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        QVERIFY2(crypto.count() >= 1, "a viewed conversation change must notify call crypto availability");
+        // Local key lifetime teardown: signing out wipes the chat runtime.
+        crypto.clear();
+        controller.logout();
+        QTRY_VERIFY(!controller.authenticated());
+        QVERIFY2(crypto.count() >= 1, "chat key teardown must notify call crypto availability");
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
