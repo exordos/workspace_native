@@ -3196,4 +3196,39 @@
             <translation>Закрыть звонок</translation>
         </message>
     </context>
+    <context>
+        <name>NativeIncomingCallWindow</name>
+        <message>
+            <source>Participant</source>
+            <translation>Участник</translation>
+        </message>
+        <message>
+            <source>Choose how to answer the call</source>
+            <translation>Выберите удобный способ для звонка</translation>
+        </message>
+        <message>
+            <source>With video</source>
+            <translation>Вкл. видео</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отменить</translation>
+        </message>
+        <message>
+            <source>Accept</source>
+            <translation>Принять</translation>
+        </message>
+        <message>
+            <source>Decline</source>
+            <translation>Отклонить</translation>
+        </message>
+        <message>
+            <source>Incoming call</source>
+            <translation>Входящий звонок</translation>
+        </message>
+        <message>
+            <source>%1 is calling</source>
+            <translation>%1 звонит</translation>
+        </message>
+    </context>
 </TS>

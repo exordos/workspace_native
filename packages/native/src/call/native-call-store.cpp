@@ -112,6 +112,13 @@ void JitsiCallStore::declineIncomingInvite()
 {
     if (m_incomingInvite.isEmpty())
         return;
+    clearIncomingInvite();
+}
+
+void JitsiCallStore::clearIncomingInvite()
+{
+    if (m_incomingInvite.isEmpty())
+        return;
     m_incomingInvite = QVariantMap{};
     emit incomingInviteChanged();
 }
