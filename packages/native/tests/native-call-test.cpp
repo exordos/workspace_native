@@ -1249,6 +1249,71 @@ private slots:
         QVERIFY(!lifecycle.videoEnabled(messageId));
     }
 
+    void lifecycleDeclineTimerUsesPreciseType_data()
+    {
+        QTest::addColumn<bool>("armed");
+        QTest::newRow("idle") << false;
+        QTest::newRow("armed") << true;
+    }
+
+    void lifecycleDeclineTimerUsesPreciseType()
+    {
+        // PR #257 finding 5: the default coarse timer may fire the 45 s
+        // auto-decline up to 5% early; the timer type must be Precise and
+        // its interval must match the observable autoDeclineMs (45000 by
+        // default) so the deadline cannot drift.
+        QFETCH(bool, armed);
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setRingIntervalMs(600000);
+        if (armed)
+            store.ingestIncomingInvite(lifecycleInvite());
+        QVERIFY(lifecycle.visible() == armed);
+        QCOMPARE(lifecycle.declineTimerType(), Qt::PreciseTimer);
+        QCOMPARE(lifecycle.declineTimerInterval(), lifecycle.autoDeclineMs());
+    }
+
+    void lifecycleInviteSwapResetsVideoPreference()
+    {
+        // PR #257 finding 6: when the current invite changes (cleared and
+        // replaced by a later one), the discarded invite's video preference
+        // must not survive into a replay, and the video binding's NOTIFY
+        // (videoPreferenceChanged) must fire on the invite swap.
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setRingIntervalMs(600000);
+        lifecycle.setAutoDeclineMs(600000);
+        const auto firstId = QStringLiteral("aaaa0000-0000-0000-0000-000000000009");
+        store.ingestIncomingInvite(lifecycleInvite());
+        QSignalSpy preference(&lifecycle, &IncomingCallLifecycle::videoPreferenceChanged);
+        QVERIFY(preference.isValid());
+        lifecycle.toggleVideoEnabled(firstId);
+        QVERIFY(lifecycle.videoEnabled(firstId));
+        QVERIFY(lifecycle.currentVideoEnabled());
+        const auto before = preference.count();
+        // The invite disappears without an accept/decline/dismiss handler
+        // (expired/revoked path clears the store directly), then a new invite
+        // arrives without any video toggle.
+        store.clearIncomingInvite();
+        QVariantMap second = lifecycleInvite();
+        second.insert(QStringLiteral("messageId"),
+            QStringLiteral("bbbb0000-0000-0000-0000-00000000000b"));
+        store.ingestIncomingInvite(second);
+        QVERIFY(lifecycle.visible());
+        QVERIFY2(preference.count() > before,
+            "the video binding must be notified when the current invite changes");
+        QVERIFY(!lifecycle.currentVideoEnabled());
+        // A replay of the discarded invite starts from the default (off).
+        QVERIFY(!lifecycle.videoEnabled(firstId));
+        store.declineIncomingInvite();
+        store.ingestIncomingInvite(lifecycleInvite());
+        QVERIFY(lifecycle.visible());
+        QVERIFY(!lifecycle.videoEnabled(firstId));
+        QVERIFY(!lifecycle.currentVideoEnabled());
+    }
+
 private:
     static QVariantMap inviteBuilderGoldenInput()
     {
