@@ -549,8 +549,9 @@ private slots:
         QCOMPARE(shell.mode(), int(JitsiCallWindowController::Minimized));
         QCOMPARE(closed.count(), 0);
         shell.toggleMinimize();
-        shell.requestDismiss();
         QCOMPARE(shell.mode(), int(JitsiCallWindowController::Expanded));
+        shell.requestDismiss();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Minimized));
         QCOMPARE(closed.count(), 0);
         // Only readyToClose (or the close button) ends the call.
         shell.readyToClose();
@@ -711,25 +712,26 @@ private slots:
             if (xml.name() == QLatin1String("name"))
                 context = xml.readElementText();
             else if (xml.name() == QLatin1String("message")) {
+                const bool numerus = xml.attributes().value(QStringLiteral("numerus"))
+                    == QLatin1String("yes");
                 QString source;
                 QString translation;
-                QStringList numerusForms;
                 while (xml.readNextStartElement()) {
                     if (xml.name() == QLatin1String("source"))
                         source = xml.readElementText();
                     else if (xml.name() == QLatin1String("translation")) {
-                        bool numerus = false;
-                        while (xml.readNextStartElement()) {
-                            if (xml.name() == QLatin1String("numerusform")) {
-                                numerus = true;
-                                numerusForms.append(xml.readElementText());
-                            } else
-                                xml.skipCurrentElement();
-                        }
-                        if (numerus)
-                            translation = numerusForms.join(QLatin1Char('\x1f'));
-                        else
+                        if (!numerus) {
                             translation = xml.readElementText();
+                        } else {
+                            QStringList numerusForms;
+                            while (xml.readNextStartElement()) {
+                                if (xml.name() == QLatin1String("numerusform"))
+                                    numerusForms.append(xml.readElementText());
+                                else
+                                    xml.skipCurrentElement();
+                            }
+                            translation = numerusForms.join(QLatin1Char('\x1f'));
+                        }
                     } else
                         xml.skipCurrentElement();
                 }
@@ -755,10 +757,15 @@ private slots:
             {QStringLiteral("Minimize"), QString::fromUtf8("Свернуть")},
             {QStringLiteral("Minimize to window"), QString::fromUtf8("Свернуть в окно")},
             {QStringLiteral("Close call"), QString::fromUtf8("Закрыть звонок")},
-            {QStringLiteral("Call (%n participant)|Call (%n participants)"),
+            {QStringLiteral("Call (%n participant)"),
                 QString::fromUtf8("Звонок (%n участник)\x1fЗвонок (%n участника)"
                                   "\x1fЗвонок (%n участников)")},
-            {QStringLiteral("%n participant|%n participants"),
+            {QStringLiteral("Call (%n participants)"),
+                QString::fromUtf8("Звонок (%n участник)\x1fЗвонок (%n участника)"
+                                  "\x1fЗвонок (%n участников)")},
+            {QStringLiteral("%n participant"),
+                QString::fromUtf8("%n участник\x1f%n участника\x1f%n участников")},
+            {QStringLiteral("%n participants"),
                 QString::fromUtf8("%n участник\x1f%n участника\x1f%n участников")},
         };
         for (const auto &key : expected.keys())

@@ -115,6 +115,7 @@ signals:
     void boundsChanged();
     void embedStateChanged();
     void embedCreated();
+    void permissionsChanged();
     void participantCountChanged();
     void fullscreenChanged();
     void closeRequested();

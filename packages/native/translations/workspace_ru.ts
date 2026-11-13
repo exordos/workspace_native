@@ -3018,4 +3018,170 @@
             <translation>Подключиться</translation>
         </message>
     </context>
+    <context>
+        <name>JitsiCallWindowController</name>
+        <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
+        <message numerus="yes">
+            <source>Call (%n participant)</source>
+            <translation>
+                <numerusform>Звонок (%n участник)</numerusform>
+                <numerusform>Звонок (%n участника)</numerusform>
+                <numerusform>Звонок (%n участников)</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>Call (%n participants)</source>
+            <translation>
+                <numerusform>Звонок (%n участник)</numerusform>
+                <numerusform>Звонок (%n участника)</numerusform>
+                <numerusform>Звонок (%n участников)</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participant</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participants</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message>
+            <source>Participant</source>
+            <translation>Участник</translation>
+        </message>
+        <message>
+            <source>Invalid call link</source>
+            <translation>Неверная ссылка на звонок</translation>
+        </message>
+        <message>
+            <source>Loading call client…</source>
+            <translation>Загрузка клиента звонков…</translation>
+        </message>
+        <message>
+            <source>Could not load call client</source>
+            <translation>Не удалось загрузить клиент звонков</translation>
+        </message>
+        <message>
+            <source>Try again</source>
+            <translation>Попробовать снова</translation>
+        </message>
+        <message>
+            <source>Browser fullscreen mode</source>
+            <translation>Полноэкранный режим браузера</translation>
+        </message>
+        <message>
+            <source>Exit fullscreen</source>
+            <translation>Выйти из полноэкранного</translation>
+        </message>
+        <message>
+            <source>Expand</source>
+            <translation>Развернуть</translation>
+        </message>
+        <message>
+            <source>Minimize</source>
+            <translation>Свернуть</translation>
+        </message>
+        <message>
+            <source>Minimize to window</source>
+            <translation>Свернуть в окно</translation>
+        </message>
+        <message>
+            <source>Close call</source>
+            <translation>Закрыть звонок</translation>
+        </message>
+    </context>
+    <context>
+        <name>workspace::JitsiCallWindowController</name>
+        <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
+        <message numerus="yes">
+            <source>Call (%n participant)</source>
+            <translation>
+                <numerusform>Звонок (%n участник)</numerusform>
+                <numerusform>Звонок (%n участника)</numerusform>
+                <numerusform>Звонок (%n участников)</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>Call (%n participants)</source>
+            <translation>
+                <numerusform>Звонок (%n участник)</numerusform>
+                <numerusform>Звонок (%n участника)</numerusform>
+                <numerusform>Звонок (%n участников)</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participant</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participants</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message>
+            <source>Participant</source>
+            <translation>Участник</translation>
+        </message>
+        <message>
+            <source>Invalid call link</source>
+            <translation>Неверная ссылка на звонок</translation>
+        </message>
+        <message>
+            <source>Loading call client…</source>
+            <translation>Загрузка клиента звонков…</translation>
+        </message>
+        <message>
+            <source>Could not load call client</source>
+            <translation>Не удалось загрузить клиент звонков</translation>
+        </message>
+        <message>
+            <source>Try again</source>
+            <translation>Попробовать снова</translation>
+        </message>
+        <message>
+            <source>Browser fullscreen mode</source>
+            <translation>Полноэкранный режим браузера</translation>
+        </message>
+        <message>
+            <source>Exit fullscreen</source>
+            <translation>Выйти из полноэкранного</translation>
+        </message>
+        <message>
+            <source>Expand</source>
+            <translation>Развернуть</translation>
+        </message>
+        <message>
+            <source>Minimize</source>
+            <translation>Свернуть</translation>
+        </message>
+        <message>
+            <source>Minimize to window</source>
+            <translation>Свернуть в окно</translation>
+        </message>
+        <message>
+            <source>Close call</source>
+            <translation>Закрыть звонок</translation>
+        </message>
+    </context>
 </TS>
