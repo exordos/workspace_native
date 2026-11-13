@@ -9275,6 +9275,89 @@ private slots:
         fixture.controller.cancelReply();
     }
 
+    // The send constraints cover every answer in the composed message, not
+    // just the active tab: an oversized answer saved in an INACTIVE tab must
+    // not slip past the size limit that gates the active draft. The
+    // anyReplyAnswer gate makes the inactive answer sendable, so the same
+    // draft().size() <= 40000 rule must be applied to it at canSend time.
+    void multiReplyTabsRejectOversizedInactiveAnswer()
+    {
+        Fixture fixture;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString firstId = "11111111-1111-4111-8111-111111111111";
+        const QString secondId = "22222222-2222-4222-8222-222222222222";
+        auto noteA = message("Alpha note", firstId);
+        noteA["is_own"] = false; noteA["author_uuid"] = peerA;
+        auto noteB = message("Beta note", secondId);
+        noteB["is_own"] = false; noteB["author_uuid"] = peerB;
+        int posts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++posts; return {QJsonArray{}, 500}; }
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{noteA, noteB}};
+            return {QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft(QString(40001, QLatin1Char('x'))); // oversized while active
+        QVERIFY(!fixture.controller.canSend());
+        QVERIFY(fixture.controller.addReplyTab(secondId)); // answer moves into inactive tab A
+        QVERIFY(fixture.controller.draft().isEmpty());
+        QVERIFY(!fixture.controller.canSend()); // inactive answer must not bypass the size limit
+        fixture.controller.send();
+        QCOMPARE(posts, 0);
+        // The limit itself does not move: exactly 40000 in an inactive tab is
+        // sendable, matching the single-draft rule (draft().size() <= 40000).
+        const QString tabA = fixture.controller.replyTabs()[0].toMap().value("id").toString();
+        const QString tabB = fixture.controller.replyTabs()[1].toMap().value("id").toString();
+        QVERIFY(fixture.controller.selectReplyTab(tabA));
+        QCOMPARE(fixture.controller.draft().size(), qsizetype(40001));
+        fixture.controller.setDraft(QString(40000, QLatin1Char('x')));
+        QVERIFY(fixture.controller.selectReplyTab(tabB)); // blank active tab, inactive answer at the limit
+        QVERIFY(fixture.controller.canSend());
+        fixture.controller.cancelReply();
+    }
+
+    // Same gate, protected-fragment rule: ":::" text saved in an inactive tab
+    // must not reach the wire just because the active draft is clean (the
+    // active-draft rule is protectedFragmentsAreNotSentAsOrdinaryPlaintext).
+    void multiReplyTabsRejectProtectedFragmentInInactiveAnswer()
+    {
+        Fixture fixture;
+        const QString peerA = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        const QString peerB = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerA}, {"username", "amy"}, {"first_name", "Amy"}},
+            QJsonObject{{"uuid", peerB}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString firstId = "11111111-1111-4111-8111-111111111111";
+        const QString secondId = "22222222-2222-4222-8222-222222222222";
+        auto noteA = message("Alpha note", firstId);
+        noteA["is_own"] = false; noteA["author_uuid"] = peerA;
+        auto noteB = message("Beta note", secondId);
+        noteB["is_own"] = false; noteB["author_uuid"] = peerB;
+        int posts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++posts; return {QJsonArray{}, 500}; }
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{noteA, noteB}};
+            return {QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginReply(firstId));
+        fixture.controller.setDraft(":::test-only protected fragment:::"); // blocked while active
+        QVERIFY(!fixture.controller.canSend());
+        QVERIFY(fixture.controller.addReplyTab(secondId)); // fragment moves into inactive tab A
+        QVERIFY(fixture.controller.draft().isEmpty());
+        QVERIFY(!fixture.controller.canSend()); // inactive answer must not bypass the content rule
+        fixture.controller.send();
+        QCOMPARE(posts, 0);
+        fixture.controller.cancelReply();
+    }
+
     // Tab store rules ported from workspace-reply.lib.ts: select, close with the
     // active-tab fallback, reorder bounds, and the draft lockstep with the
     // active tab's answer.
