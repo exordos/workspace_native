@@ -491,6 +491,23 @@ public:
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);
     Q_INVOKABLE void toggleReaction(const QString &id, const QString &emoji);
+    // ---- Issue #214 polls foundation (docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md) ----
+    // REST action surface of the poll contract; #215/#216 render them. Failures
+    // only emit pollActionFailed with a technical detail - user-visible strings
+    // arrive with the UI tickets.
+    Q_INVOKABLE bool canCreatePoll() const;
+    Q_INVOKABLE void sendPoll(const QVariantList &questions, bool multipleAnswers, bool isAnonymous,
+        bool allowRevote, const QString &resultsVisibility, bool allowAddingOptions,
+        const QString &closesAt = QString());
+    Q_INVOKABLE void votePollOption(const QString &messageUuid, const QString &questionUuid,
+        const QString &optionUuid, bool selected);
+    Q_INVOKABLE void closePoll(const QString &messageUuid);
+    Q_INVOKABLE void updatePollSettings(const QString &messageUuid, const QString &closesAt,
+        bool allowAddingOptions);
+    Q_INVOKABLE void addPollOption(const QString &messageUuid, const QString &questionUuid,
+        const QString &optionUuid, const QString &optionText);
+    Q_INVOKABLE void loadPollVoters(const QString &messageUuid, const QString &questionUuid,
+        const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0);
     Q_INVOKABLE void attachFiles(const QVariantList &localUrls);
     Q_INVOKABLE void downloadFile(const QString &id, const QUrl &destination);
 
@@ -545,6 +562,10 @@ signals:
     void directChatOpened(QString stream, QString peer, QString defaultTopic);
     void messageSent(QString id, QString stream, QString topic);
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
+    // ---- Issue #214 polls foundation signals ----
+    void pollActionFailed(QString messageUuid, QString action, QString detail);
+    void pollVotersLoaded(QString messageUuid, QString questionUuid, QString optionUuid,
+        QVariantList voters, QString nextMarker, QString error);
     void snapshotReloaded();
     void snapshotFailed();
     void resynchronizeRequested();
@@ -904,6 +925,11 @@ private:
     void observeMessage(const QJsonObject &raw);
     void pruneMessageFields();
     void finishMessageIntent(const QString &id);
+    // ---- Issue #214 polls foundation internals ----
+    void invokePollAction(const QString &messageUuid, const QString &action, const QJsonObject &body);
+    bool applyPollMutation(const QString &messageUuid, const QString &action,
+        const ApiResult &result, const ProjectionContext &context);
+    static QVariantMap pollRowSnapshot(const Message &message);
     void staleReadConversation(const QString &stream, const QString &topic);
     void cachedCollection(const NativeCache::Key &key, const QString &path, const QUrlQuery &query,
                           std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork = false,

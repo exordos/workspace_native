@@ -90,6 +90,69 @@ static QVariantMap modelMessage(const NativeController &controller, const QStrin
     return {};
 }
 
+// ---- Issue #214 poll fixtures (docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md) ----
+static const QString pollQuestionOne = "a1a1a1a1-1111-4111-8111-111111111111";
+static const QString pollQuestionTwo = "b2b2b2b2-2222-4222-8222-222222222222";
+static const QString pollOptionOne = "c3c3c3c3-3333-4333-8333-333333333333";
+static const QString pollOptionTwo = "d4d4d4d4-4444-4444-8444-444444444444";
+static const QString pollOptionThree = "e5e5e5e5-5555-4555-8555-555555555555";
+static const QString pollOptionFour = "f6f6f6f6-6666-4666-8666-666666666666";
+
+static QString pollFixtureUuid(int number)
+{
+    return QStringLiteral("a5a5a5a5-%1-4a5a-8a5a-a5a5a5a5a5a5").arg(number, 4, 16, QLatin1Char('0'));
+}
+
+static QJsonObject pollPayloadFixture(const QString &questionText = QStringLiteral("Which day?"))
+{
+    return {{QString("kind"), QStringLiteral("poll")},
+        {QString("questions"), QJsonArray{
+            QJsonObject{{QString("uuid"), pollQuestionOne}, {QString("text"), questionText},
+                {QString("options"), QJsonArray{
+                    QJsonObject{{QString("uuid"), pollOptionOne}, {QString("text"), QStringLiteral("Monday")}},
+                    QJsonObject{{QString("uuid"), pollOptionTwo}, {QString("text"), QStringLiteral("Tuesday")}}}}},
+            QJsonObject{{QString("uuid"), pollQuestionTwo}, {QString("text"), QStringLiteral("Where?")},
+                {QString("options"), QJsonArray{
+                    QJsonObject{{QString("uuid"), pollOptionThree}, {QString("text"), QStringLiteral("Office")}},
+                    QJsonObject{{QString("uuid"), pollOptionFour}, {QString("text"), QStringLiteral("Online")}}}}}}},
+        {QString("multiple_answers"), true}, {QString("is_anonymous"), false},
+        {QString("allow_revote"), false}, {QString("results_visibility"), QStringLiteral("after_vote")},
+        {QString("allow_adding_options"), true}, {QString("closes_at"), QStringLiteral("2026-12-12T09:00:00Z")},
+        {QString("closed_at"), QJsonValue::Null}};
+}
+
+static QJsonObject pollStateFixture(qint64 revision, bool closed, bool voted)
+{
+    QJsonArray votes;
+    if (voted) votes.append(QJsonObject{{QString("question_uuid"), pollQuestionOne},
+        {QString("option_uuids"), QJsonArray{pollOptionOne}}});
+    return {{QString("revision"), revision}, {QString("is_closed"), closed}, {QString("voter_count"), 3},
+        {QString("questions"), QJsonArray{
+            QJsonObject{{QString("question_uuid"), pollQuestionOne}, {QString("voter_count"), 3},
+                {QString("option_counts"), QJsonObject{{pollOptionOne, 1}, {pollOptionTwo, 2}}}},
+            QJsonObject{{QString("question_uuid"), pollQuestionTwo}, {QString("voter_count"), 3},
+                {QString("option_counts"), QJsonObject{{pollOptionThree, 3}, {pollOptionFour, 0}}}}}},
+        {QString("my_votes"), votes}};
+}
+
+static QJsonObject pollMessageDto(const QString &id, qint64 revision, bool closed,
+    const QString &questionText = QStringLiteral("Which day?"), bool voted = false)
+{
+    return {{QString("uuid"), id}, {QString("project_id"), projectId},
+        {QString("stream_uuid"), streamId}, {QString("topic_uuid"), topicId},
+        {QString("author_uuid"), userId}, {QString("is_own"), true}, {QString("read"), true},
+        {QString("starred"), false}, {QString("created_at"), QStringLiteral("2026-01-02T10:00:30.000Z")},
+        {QString("payload"), pollPayloadFixture(questionText)},
+        {QString("poll_state"), pollStateFixture(revision, closed, voted)}};
+}
+
+static bool pollStateHasMyVote(const QVariantMap &state, const QString &optionUuid)
+{
+    for (const auto &vote : state.value("myVotes").toList())
+        if (vote.toMap().value("optionUuids").toStringList().contains(optionUuid)) return true;
+    return false;
+}
+
 static bool flushCache(NativeCacheService &cache)
 {
     struct Completion { bool done = false; bool okay = false; };
@@ -16706,6 +16769,345 @@ private slots:
         preferences.setAuthIdleTimeout(QStringLiteral("never"));
         QVERIFY(!guard->active());
         QVERIFY(!c.isAuthGuardActive());
+    }
+
+    // ---- Issue #214 polls foundation ----
+
+    void pollMessageArrivesEndToEndWithEveryConfigField()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(1);
+        fixture.messages = [id](const Request &) {
+            return Response{QJsonArray{pollMessageDto(id, 42, false,
+                QStringLiteral("Which day?"), true)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        const auto poll = modelMessage(fixture.controller, id).value("poll").toMap();
+        QVERIFY(!poll.isEmpty());
+        QCOMPARE(poll.value("multipleAnswers").toBool(), true);
+        QCOMPARE(poll.value("isAnonymous").toBool(), false);
+        QCOMPARE(poll.value("allowRevote").toBool(), false);
+        QCOMPARE(poll.value("resultsVisibility").toString(), QStringLiteral("after_vote"));
+        QCOMPARE(poll.value("allowAddingOptions").toBool(), true);
+        QCOMPARE(poll.value("closesAt").toString(), QStringLiteral("2026-12-12T09:00:00Z"));
+        QCOMPARE(poll.value("closedAt").toString(), QString());
+        const auto questions = poll.value("questions").toList();
+        QCOMPARE(questions.size(), 2);
+        QCOMPARE(questions.first().toMap().value("text").toString(), QStringLiteral("Which day?"));
+        QCOMPARE(questions.first().toMap().value("options").toList().size(), 2);
+        const auto state = poll.value("state").toMap();
+        QCOMPARE(state.value("revision").toLongLong(), qint64(42));
+        QCOMPARE(state.value("isClosed").toBool(), false);
+        QCOMPARE(state.value("voterCount").toLongLong(), qint64(3));
+        QCOMPARE(state.value("myVotes").toList().size(), 1);
+        QCOMPARE(state.value("questions").toList().first().toMap()
+            .value("optionCounts").toMap().value(pollOptionTwo).toLongLong(), qint64(2));
+    }
+
+    void malformedPollPageIsRejectedAsAWhole()
+    {
+        Fixture fixture;
+        const auto good = pollFixtureUuid(11);
+        const auto broken = pollFixtureUuid(12);
+        auto brokenRow = pollMessageDto(broken, 7, false);
+        brokenRow.remove(QStringLiteral("poll_state")); // poll requires poll_state
+        fixture.messages = [&](const Request &) {
+            return Response{QJsonArray{message(QStringLiteral("committed"), good), brokenRow},
+                200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.busy(), 3000);
+        QTest::qWait(300);
+        // One invalid row rejects the whole page: not even its valid rows are
+        // applied partially, so the malformed poll can never slip in alongside
+        // the good row.
+        QVERIFY(modelMessage(fixture.controller, good).isEmpty());
+        QVERIFY(modelMessage(fixture.controller, broken).isEmpty());
+    }
+
+    void pollRealtimeNeverRollsBackNewerRevisionOrClosedFlag()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(2);
+        fixture.messages = [id](const Request &) {
+            return Response{QJsonArray{pollMessageDto(id, 5, false, QStringLiteral("Fresh question"))},
+                200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            pollMessageDto(id, 4, true, QStringLiteral("Stale question")), 7701)));
+        QTRY_VERIFY_WITH_TIMEOUT(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("revision").toLongLong() == 5, 2000);
+        {
+            const auto poll = modelMessage(fixture.controller, id).value("poll").toMap();
+            QCOMPARE(poll.value("questions").toList().first().toMap()
+                .value("text").toString(), QStringLiteral("Fresh question"));
+            QCOMPARE(poll.value("state").toMap().value("isClosed").toBool(), false);
+        }
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            pollMessageDto(id, 6, true, QStringLiteral("Fresh question")), 7702)));
+        QTRY_VERIFY_WITH_TIMEOUT(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("isClosed").toBool(), 2000);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            pollMessageDto(id, 6, false, QStringLiteral("Fresh question")), 7703)));
+        QTest::qWait(250);
+        QCOMPARE(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("isClosed").toBool(), true);
+    }
+
+    void votePollInvokePostsDesiredStateAndKeepsOrderAndReadState()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(3);
+        const auto older = pollFixtureUuid(30);
+        auto olderRow = message(QStringLiteral("older"), older);
+        olderRow.insert(QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:00:00.000Z"));
+        QJsonObject capturedVoteBody;
+        int votePosts = 0;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST" && request.target.path().endsWith("/actions/vote/invoke")) {
+                ++votePosts;
+                capturedVoteBody = request.body;
+                const auto selected = request.body.value(QStringLiteral("selected")).toBool();
+                return Response{pollMessageDto(id, 6, false, QStringLiteral("Which day?"), selected),
+                    200, 0, {}};
+            }
+            return Response{QJsonArray{olderRow, pollMessageDto(id, 5, false)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QStringList before;
+        for (const auto &row : fixture.controller.messages())
+            before << row.toMap().value("id").toString();
+        QSignalSpy failed(&fixture.controller, &NativeController::pollActionFailed);
+        // desired-state semantics: an un-vote intent is posted verbatim, not toggled.
+        fixture.controller.votePollOption(id, pollQuestionOne, pollOptionOne, false);
+        QTRY_VERIFY_WITH_TIMEOUT(votePosts == 1, 2000);
+        QCOMPARE(capturedVoteBody.value(QStringLiteral("question_uuid")).toString(), pollQuestionOne);
+        QCOMPARE(capturedVoteBody.value(QStringLiteral("option_uuid")).toString(), pollOptionOne);
+        QCOMPARE(capturedVoteBody.value(QStringLiteral("selected")).toBool(), false);
+        fixture.controller.votePollOption(id, pollQuestionOne, pollOptionOne, true);
+        QTRY_VERIFY_WITH_TIMEOUT(votePosts == 2, 2000);
+        QCOMPARE(capturedVoteBody.value(QStringLiteral("selected")).toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(pollStateHasMyVote(modelMessage(fixture.controller, id)
+            .value("poll").toMap().value("state").toMap(), pollOptionOne), 2000);
+        QCOMPARE(failed.count(), 0);
+        QStringList after;
+        for (const auto &row : fixture.controller.messages())
+            after << row.toMap().value("id").toString();
+        QCOMPARE(after, before); // voting never reorders the window
+        QCOMPARE(modelMessage(fixture.controller, id).value("read").toBool(), true);
+    }
+
+    void addPollOptionReplayOfSameUuidAndTextIsAccepted()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(5);
+        const auto optionUuid = pollFixtureUuid(95);
+        int adds = 0;
+        QJsonObject capturedBody;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST"
+                && request.target.path().endsWith("/actions/add_poll_option/invoke")) {
+                ++adds;
+                capturedBody = request.body;
+                // Contract: a uuid+text replay is 200 with the unchanged message,
+                // no revision bump and no event - even on a closed poll.
+                return Response{pollMessageDto(id, 4, true), 200, 0, {}};
+            }
+            return Response{QJsonArray{pollMessageDto(id, 4, true)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QSignalSpy failed(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.addPollOption(id, pollQuestionOne, optionUuid, QStringLiteral("Wednesday"));
+        QTRY_VERIFY_WITH_TIMEOUT(adds == 1, 2000);
+        QCOMPARE(capturedBody.value(QStringLiteral("question_uuid")).toString(), pollQuestionOne);
+        QCOMPARE(capturedBody.value(QStringLiteral("option")).toObject()
+            .value(QStringLiteral("uuid")).toString(), optionUuid);
+        QCOMPARE(capturedBody.value(QStringLiteral("option")).toObject()
+            .value(QStringLiteral("text")).toString(), QStringLiteral("Wednesday"));
+        fixture.controller.addPollOption(id, pollQuestionOne, optionUuid, QStringLiteral("Wednesday"));
+        QTRY_VERIFY_WITH_TIMEOUT(adds == 2, 2000);
+        QTest::qWait(250);
+        QCOMPARE(failed.count(), 0);
+        const auto options = modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("questions").toList().first().toMap().value("options").toList();
+        int duplicates = 0;
+        for (const auto &option : options)
+            if (option.toMap().value("uuid").toString() == optionUuid) ++duplicates;
+        QCOMPARE(duplicates, 0); // the unchanged response cannot invent options
+        QCOMPARE(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("revision").toLongLong(), qint64(4));
+    }
+
+    void closePollInvokeSendsEmptyBodyAndMarksClosed()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(6);
+        int closes = 0;
+        bool closeBodyEmpty = false;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST" && request.target.path().endsWith("/actions/close_poll/invoke")) {
+                ++closes;
+                closeBodyEmpty = request.body.isEmpty();
+                auto dto = pollMessageDto(id, 7, true);
+                auto payload = dto.value(QStringLiteral("payload")).toObject();
+                payload.insert(QStringLiteral("closed_at"), QStringLiteral("2026-01-02T10:05:00Z"));
+                dto.insert(QStringLiteral("payload"), payload);
+                return Response{dto, 200, 0, {}};
+            }
+            return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QSignalSpy failed(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.closePoll(id);
+        QTRY_VERIFY_WITH_TIMEOUT(closes == 1, 2000);
+        QVERIFY(closeBodyEmpty);
+        QTRY_VERIFY_WITH_TIMEOUT(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("isClosed").toBool(), 2000);
+        QCOMPARE(failed.count(), 0);
+    }
+
+    void updatePollSettingsSendsBothFieldsAsFullConfig()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(7);
+        QJsonObject capturedBody;
+        int settings = 0;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST"
+                && request.target.path().endsWith("/actions/update_settings/invoke")) {
+                ++settings;
+                capturedBody = request.body;
+                auto dto = pollMessageDto(id, 8, false);
+                auto payload = dto.value(QStringLiteral("payload")).toObject();
+                payload.insert(QStringLiteral("allow_adding_options"), false);
+                payload.insert(QStringLiteral("closes_at"), QJsonValue::Null);
+                dto.insert(QStringLiteral("payload"), payload);
+                return Response{dto, 200, 0, {}};
+            }
+            return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QSignalSpy failed(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.updatePollSettings(id, QString(), false);
+        QTRY_VERIFY_WITH_TIMEOUT(settings == 1, 2000);
+        const auto settingsObject = capturedBody.value(QStringLiteral("settings")).toObject();
+        QVERIFY(settingsObject.contains(QStringLiteral("closes_at")));
+        QVERIFY(settingsObject.value(QStringLiteral("closes_at")).isNull());
+        QVERIFY(settingsObject.contains(QStringLiteral("allow_adding_options")));
+        QCOMPARE(settingsObject.value(QStringLiteral("allow_adding_options")).toBool(), false);
+        QTRY_VERIFY_WITH_TIMEOUT(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("allowAddingOptions").toBool() == false, 2000);
+        QCOMPARE(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("closesAt").toString(), QString());
+        QCOMPARE(failed.count(), 0);
+    }
+
+    void sendPollRequiresEligibleStreamAndSendsClientGeneratedUuids()
+    {
+        Fixture fixture;
+        const auto created = pollFixtureUuid(8);
+        QJsonObject createdBody;
+        int creates = 0;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                ++creates;
+                createdBody = request.body;
+                return Response{pollMessageDto(created, 1, false), 200, 0, {}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.canCreatePoll());
+        const QVariantList questions{
+            QVariantMap{{QString("text"), QStringLiteral("Which day?")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        fixture.controller.sendPoll(questions, true, false, false,
+            QStringLiteral("after_vote"), false, QStringLiteral("2026-12-12T09:00:00Z"));
+        QTRY_VERIFY_WITH_TIMEOUT(creates == 1, 2000);
+        const auto payload = createdBody.value(QStringLiteral("payload")).toObject();
+        QCOMPARE(payload.value(QStringLiteral("kind")).toString(), QStringLiteral("poll"));
+        const auto questionsArray = payload.value(QStringLiteral("questions")).toArray();
+        QCOMPARE(questionsArray.size(), 1);
+        const auto question = questionsArray.at(0).toObject();
+        QVERIFY(isUuid(question.value(QStringLiteral("uuid")).toString()));
+        const auto options = question.value(QStringLiteral("options")).toArray();
+        QCOMPARE(options.size(), 2);
+        for (const auto &option : options)
+            QVERIFY(isUuid(option.toObject().value(QStringLiteral("uuid")).toString()));
+        QCOMPARE(payload.value(QStringLiteral("multiple_answers")).toBool(), true);
+        QCOMPARE(payload.value(QStringLiteral("results_visibility")).toString(),
+                 QStringLiteral("after_vote"));
+        QCOMPARE(payload.value(QStringLiteral("closes_at")).toString(),
+                 QStringLiteral("2026-12-12T09:00:00Z"));
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, created).isEmpty(), 2000);
+        // Encrypted streams are never poll-eligible (supportsMessengerPolls).
+        Fixture encrypted;
+        encrypted.encrypted = true;
+        QVERIFY(encrypted.start());
+        QVERIFY(!encrypted.controller.canCreatePoll());
+        encrypted.controller.sendPoll(questions, false, false, false,
+            QStringLiteral("always"), false, QString());
+        QTest::qWait(300);
+        for (const auto &request : encrypted.server.requests)
+            QVERIFY(!(request.method == "POST" && request.target.path().endsWith("/messages/")));
+    }
+
+    void pollVotersPageParsesStrictlyWithPositionalMarker()
+    {
+        Fixture fixture;
+        const auto id = pollFixtureUuid(9);
+        const auto voter = pollFixtureUuid(91);
+        bool votersQueryOk = false;
+        fixture.messages = [&](const Request &request) {
+            if (request.target.path().endsWith("/poll_voters/")) {
+                const QUrlQuery query(request.target);
+                votersQueryOk = query.queryItemValue(QStringLiteral("question_uuid")) == pollQuestionOne
+                    && query.queryItemValue(QStringLiteral("option_uuid")) == pollOptionOne;
+                if (query.queryItemValue(QStringLiteral("page_limit")) != QLatin1String("50")) {
+                    const QJsonObject bad{{QStringLiteral("uuid"), QStringLiteral("nope")}};
+                    return Response{QJsonArray{bad}, 200, 0, {}};
+                }
+                const QJsonObject row{{QStringLiteral("uuid"), voter}};
+                const QMap<QByteArray, QByteArray> headers{
+                    {QByteArray("X-Pagination-Marker"), QByteArray("next-marker")}};
+                return Response{QJsonArray{row}, 200, 0, headers};
+            }
+            return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QSignalSpy loaded(&fixture.controller, &NativeController::pollVotersLoaded);
+        fixture.controller.loadPollVoters(id, pollQuestionOne, pollOptionOne);
+        QTRY_VERIFY_WITH_TIMEOUT(loaded.count() >= 1, 2000);
+        QVERIFY(votersQueryOk);
+        {
+            const QList<QVariant> args = loaded.first();
+            const QStringList expectedVoters{voter};
+            QCOMPARE(args.at(0).toString(), id);
+            QCOMPARE(args.at(3).toStringList(), expectedVoters);
+            QCOMPARE(args.at(4).toString(), QStringLiteral("next-marker"));
+            QCOMPARE(args.at(5).toString(), QString());
+        }
+        // A malformed item rejects the whole page (strict list parsing).
+        fixture.controller.loadPollVoters(id, pollQuestionOne, pollOptionOne, QString(), 60);
+        QTRY_VERIFY_WITH_TIMEOUT(loaded.count() >= 2, 2000);
+        {
+            const QList<QVariant> args = loaded.at(1);
+            QCOMPARE(args.at(3).toStringList(), QStringList{});
+            QVERIFY(!args.at(5).toString().isEmpty());
+        }
+        // The client never asks above the server maximum.
+        fixture.controller.loadPollVoters(id, pollQuestionOne, pollOptionOne, QString(), 500);
+        QTRY_VERIFY_WITH_TIMEOUT(loaded.count() >= 3, 2000);
+        QVERIFY(!loaded.at(2).at(5).toString().isEmpty());
     }
 };
 
