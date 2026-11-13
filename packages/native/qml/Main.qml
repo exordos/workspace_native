@@ -3632,6 +3632,16 @@ ApplicationWindow {
                 property string displayedRoute: ""
                 property int layoutTicket: 0
                 property bool positioning: false
+                // Issue #253: persistent tail-follow intent, the analogue of
+                // the reference wasAtBottomRef/userScrolledAwayFromBottomRef
+                // pair. The instantaneous captureViewport heuristic cannot be
+                // trusted during a resize (the viewport height is already new
+                // while contentHeight still reflects pre-reflow rows), so the
+                // value is kept here and only re-derived from geometry after
+                // non-programmatic movement. It is not a user-scroll proxy:
+                // the #156 wheel observer remains the only userScrollSeen
+                // attribution.
+                property bool tailFollow: true
                 property var pendingViewport: null
                 readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
                 function routeKey() {
@@ -3769,15 +3779,33 @@ ApplicationWindow {
                 function restoreViewport(ticket, finalPass) {
                     if (ticket !== layoutTicket || displayedRoute !== routeKey() || !pendingViewport)
                         return;
+                    // Issue #253: a real wheel/touch that arrived while this
+                    // chain was queued belongs to the user, not the reflow.
+                    // Reference analogue: pinTailToBottom's requestAnimationFrame
+                    // pass returns when userScrolledAwayFromBottomRef fired
+                    // (hook :294-307). Hand the chain over instead of
+                    // overwriting the user's movement.
+                    if (pendingViewport.followTail && pendingViewport.userSeenAtCapture === false
+                        && userScrollSeen) {
+                        pendingViewport = null;
+                        positioning = false;
+                        tailFollow = originY + contentHeight + bottomMargin - contentY - height <= 80
+                        root.controller.noteScrollRearm(distanceFromTop, height)
+                        finishServiceHistoryReady();
+                        scheduleVisibleRead();
+                        return;
+                    }
                     forceMeasuredLayout();
                     const snapshot = pendingViewport;
                     if (snapshot.followTail) {
+                        tailFollow = true;
                         positionViewAtEnd();
                         forceMeasuredLayout();
                         const tail = itemAtIndex(count - 1);
                         if (tail)
                             contentY = Math.max(originY - topMargin, contentY + tail.mapToItem(messageList, 0, tail.height).y + bottomMargin - height);
                     } else {
+                        tailFollow = false;
                         let anchorIndex = -1;
                         const anchorId = serviceAliases[snapshot.anchorId] || snapshot.anchorId;
                         for (let i = 0; i < count; ++i) {
@@ -3845,6 +3873,7 @@ ApplicationWindow {
                         // Reference pinTailToBottom-on-send marks the scroll
                         // intent unconditionally (hook :573-584).
                         userScrollSeen = true
+                        tailFollow = true
                         const snapshot = pendingViewport || captureViewport();
                         snapshot.followTail = true;
                         pendingViewport = snapshot;
@@ -3909,9 +3938,50 @@ ApplicationWindow {
                     // userScrollSeen, positioning, anchorJumpPending).
                     if (userScrollSeen && !positioning && !anchorJumpPending)
                         root.controller.noteScrollReserve(distanceFromTop, height)
+                    // Issue #253: same reference syncAtBottomFromElement analogue
+                    // that keeps the resize-time tail intent current outside the
+                    // programmatic capture/restore passes. Programmatic movement
+                    // must not overwrite it (positioning/anchorJump gates).
+                    if (!positioning && !anchorJumpPending)
+                        tailFollow = originY + contentHeight + bottomMargin - contentY - height <= 80
                 }
-                onWidthChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
-                onHeightChanged: { scheduleVisibleRead(); scheduleServiceInspection(); }
+                // Issue #253: the reference ResizeObserver effect
+                // (workspace-message-list-scroll.hook.ts:956-1016) re-runs its
+                // tail pin or anchor restore whenever the scroll container (or
+                // a row) resizes. A window resize changes every delegate width
+                // and the wrapped row heights with it, so the captured viewport
+                // must be restored against the reflowed layout; without this
+                // hook contentY stayed put while rows above the viewport grew
+                // and the conversation drifted away from its tail or anchor.
+                function resizeViewport() {
+                    // Reference gates: never interrupt an in-flight capture/
+                    // restore or an anchor highlight handoff, and never run on
+                    // an empty or not-yet-laid-out list.
+                    if (positioning || anchorJumpPending || count === 0 || width <= 0 || height <= 0)
+                        return;
+                    const snapshot = captureViewport();
+                    // The persistent intent decides, exactly like the
+                    // reference wasAtBottomRef && !userScrolledAway check:
+                    // during a resize the geometry heuristic reads the new
+                    // viewport against pre-reflow content, so either signal
+                    // alone would misfire - here a taller viewport can shrink
+                    // the bottom distance below 80 for a parked reader.
+                    snapshot.followTail = tailFollow;
+                    // The reference pinTailToBottom second pass re-checks
+                    // userScrolledAwayFromBottomRef before re-pinning; the
+                    // wheel observer moving userScrollSeen during this chain
+                    // is the native wheel-intent analogue of that check.
+                    snapshot.userSeenAtCapture = userScrollSeen;
+                    if (!snapshot.followTail && !snapshot.anchorId.length)
+                        return;
+                    positioning = true;
+                    visibleReadTimer.stop();
+                    pendingViewport = snapshot;
+                    const ticket = ++layoutTicket;
+                    Qt.callLater(() => restoreViewport(ticket));
+                }
+                onWidthChanged: { resizeViewport(); scheduleVisibleRead(); scheduleServiceInspection(); }
+                onHeightChanged: { resizeViewport(); scheduleVisibleRead(); scheduleServiceInspection(); }
                 onMovementEnded: { scheduleVisibleRead(); scheduleServiceInspection(); }
                 Connections {
                     target: root
