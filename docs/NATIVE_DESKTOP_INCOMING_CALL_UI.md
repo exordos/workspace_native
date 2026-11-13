@@ -202,6 +202,21 @@ ships its reviewed Russian entry in `packages/native/translations/workspace_ru.t
   `applyRealtimeEvent` (same envelope owner/project guards as every other
   realtime feature), so encrypted streams (payload kind is not `markdown`
   before decryption) never raise an invite, matching the reference filter.
+- Compact avatar tint: the reference paints the no-photo avatar with
+  `color-mix(in oklab, call-green 15%, transparent)`; QML has no oklab mix,
+  so the native avatar uses `Qt.alpha(call-green, 0.15)` (same color, same
+  15 % strength, different mix space - visually identical on the
+  `bg-elevated` backdrop it sits on).
+- The "With video" checkbox glyph is the reference asset itself
+  (`call_incoming_video_toggle.svg`, a 40 px stateful icon) rendered raw at
+  the 40 px icon slot exactly like the web `<IncomingCallVideoIcon>`; no
+  separate checkbox control is drawn.
+- Dismiss: Escape clears the invite without a decline action
+  (`IncomingCallLifecycle::dismiss`, matching the reference
+  `useEscapeListener` -> "incoming call dismissed without invite"). The
+  large variant's scrim is a dismiss affordance exactly like the reference
+  `closeOnBackdrop: true` (large.ui.tsx:43); the compact toast renders
+  without a backdrop, so it exposes Escape only.
 
 ## Tests
 
