@@ -5,9 +5,11 @@
 #include "native-markdown.h"
 
 #include <QFileInfo>
+#include <QPair>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QVector>
 
 namespace workspace {
 
@@ -46,7 +48,8 @@ QVariantList MediaViewerModel::items() const
 {
     QVariantList result;
     for (const auto &slot : m_slots)
-        result.append(QVariantMap{{"uuid", slot.uuid}, {"state", slot.state}, {"url", slot.url}, {"name", slot.name}});
+        result.append(QVariantMap{{"uuid", slot.uuid}, {"kind", slot.kind}, {"state", slot.state},
+            {"url", slot.url}, {"name", slot.name}});
     return result;
 }
 
@@ -54,11 +57,10 @@ bool MediaViewerModel::openFromMessages(const QVariantList &messages, const QStr
 {
     if (fileUuid.isEmpty())
         return false;
-    // Collection contract (workspace-message-list-media.lib.ts:34-77):
-    // markdown rows only, document order, deduped by file uuid keeping the
-    // first occurrence. Image parts are the same sanitized inline-image
-    // references the message rows actually render.
-    QStringList gallery;
+    // Collection contract (workspace-message-list-media.lib.ts:20-31,44-66):
+    // markdown rows only, image and video workspace references in document
+    // order, deduped by file uuid keeping the first occurrence.
+    QVector<QPair<QString, QString>> gallery;
     QSet<QString> seen;
     for (const auto &entry : messages) {
         const auto row = entry.toMap();
@@ -67,27 +69,34 @@ bool MediaViewerModel::openFromMessages(const QVariantList &messages, const QStr
         const auto text = row.contains("displayContent")
             ? row.value("displayContent").toString()
             : row.value("content").toString();
-        const auto parts = m_markdown->render(text).value("parts").toList();
-        for (const auto &part : parts) {
-            const auto image = part.toMap();
-            if (image.value("kind").toString() != QLatin1String("image"))
+        for (const auto &part : m_markdown->mediaReferences(text)) {
+            const auto reference = part.toMap();
+            const auto kind = reference.value("kind").toString();
+            const auto uuid = reference.value("id").toString();
+            if (kind != QLatin1String("image") && kind != QLatin1String("video"))
                 continue;
-            const auto uuid = image.value("id").toString();
             if (uuid.isEmpty() || seen.contains(uuid))
                 continue;
             seen.insert(uuid);
-            gallery.append(uuid);
+            gallery.append(qMakePair(uuid, kind));
         }
     }
-    const int start = gallery.indexOf(fileUuid);
+    int start = -1;
+    for (int slot = 0; slot < gallery.size(); ++slot) {
+        if (gallery.at(slot).first == fileUuid) {
+            start = slot;
+            break;
+        }
+    }
     if (gallery.isEmpty() || start < 0)
         return false;
     closeSession();
     m_directory = std::make_unique<QTemporaryDir>();
     ++m_generation;
     m_slots.clear();
-    for (const auto &uuid : gallery)
-        m_slots.append(Slot{uuid, QStringLiteral("loading"), QString{}, QString{}, 0});
+    for (const auto &entry : gallery)
+        m_slots.append(Slot{entry.first, entry.second, QStringLiteral("loading"),
+            QString{}, QString{}, 0, false});
     m_index = qBound(0, start, m_slots.size() - 1);
     m_open = true;
     if (m_controller) {
@@ -97,12 +106,12 @@ bool MediaViewerModel::openFromMessages(const QVariantList &messages, const QStr
         m_authenticated = m_controller->authenticated();
     }
     emit mediaViewerChanged();
-    // The clicked slot stages first; the rest launch immediately afterwards,
-    // mirroring the reference parallel image loading
+    // The clicked slot stages first, then every image slot; video slots other
+    // than the clicked one stay loading until navigation reaches them
     // (workspace-media-viewer.hook.ts:205-212).
     startSlot(m_index);
     for (int slot = 0; slot < m_slots.size(); ++slot) {
-        if (slot != m_index)
+        if (slot != m_index && m_slots[slot].kind == QLatin1String("image"))
             startSlot(slot);
     }
     return true;
@@ -118,6 +127,7 @@ void MediaViewerModel::goTo(int index)
         return;
     m_index = target;
     emit mediaViewerChanged();
+    startPendingSlot(m_index);
 }
 
 void MediaViewerModel::next()
@@ -125,6 +135,7 @@ void MediaViewerModel::next()
     if (m_open && m_index + 1 < m_slots.size()) {
         ++m_index;
         emit mediaViewerChanged();
+        startPendingSlot(m_index);
     }
 }
 
@@ -133,12 +144,27 @@ void MediaViewerModel::prev()
     if (m_open && m_index > 0) {
         --m_index;
         emit mediaViewerChanged();
+        startPendingSlot(m_index);
     }
 }
 
 void MediaViewerModel::close()
 {
     closeSession();
+}
+
+void MediaViewerModel::markSlotDisplayError(int index)
+{
+    if (!m_open || index < 0 || index >= m_slots.size())
+        return;
+    auto &target = m_slots[index];
+    // The reference only replaces the current ready item
+    // (media-viewer-overlay.ui.tsx:75-90).
+    if (target.state != QLatin1String("ready"))
+        return;
+    target.state = QStringLiteral("display-error");
+    target.url.clear(); // The uuid stays downloadable through the slot entry.
+    emit mediaViewerChanged();
 }
 
 void MediaViewerModel::closeSession()
@@ -162,12 +188,25 @@ void MediaViewerModel::closeSession()
     emit mediaViewerChanged();
 }
 
+void MediaViewerModel::startPendingSlot(int slot)
+{
+    // Non-clicked video slots start the moment navigation reaches them
+    // (workspace-media-viewer.hook.ts:137-151,260-283).
+    if (!m_open || slot < 0 || slot >= m_slots.size())
+        return;
+    const auto &target = m_slots[slot];
+    if (target.started || target.state != QLatin1String("loading"))
+        return;
+    startSlot(slot);
+}
+
 void MediaViewerModel::startSlot(int slot)
 {
     if (slot < 0 || slot >= m_slots.size())
         return;
+    m_slots[slot].started = true;
     if (!m_files || !m_directory || !m_directory->isValid()) {
-        m_slots[slot].state = QStringLiteral("error");
+        m_slots[slot].state = QStringLiteral("load-error");
         emit mediaViewerChanged();
         return;
     }
@@ -184,7 +223,7 @@ void MediaViewerModel::startSlot(int slot)
             target.url = QUrl::fromLocalFile(result.path).toString();
             target.name = result.metadata.name.isEmpty() ? QFileInfo(result.path).fileName() : result.metadata.name;
         } else {
-            target.state = QStringLiteral("error");
+            target.state = QStringLiteral("load-error");
             target.url.clear();
             target.name.clear();
         }

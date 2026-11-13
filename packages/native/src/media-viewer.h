@@ -52,6 +52,9 @@ public:
     Q_INVOKABLE void next();
     Q_INVOKABLE void prev();
     Q_INVOKABLE void close();
+    // Red test stub (issue #203): body intentionally empty until the
+    // reference replace contract is implemented.
+    Q_INVOKABLE void markSlotDisplayError(int index);
 
 signals:
     void mediaViewerChanged();
@@ -59,14 +62,17 @@ signals:
 private:
     struct Slot {
         QString uuid;
-        QString state; // "loading" | "ready" | "error"
+        QString kind;  // "image" | "video" (media-viewer.types.ts:8)
+        QString state; // "loading" | "ready" | "load-error" | "display-error" (types.ts:9)
         QString url;   // file:// URL of the staged full-size bytes once ready
         QString name;  // server-provided file name once metadata resolved
         quint64 operation = 0;
+        bool started = false; // video slots other than the opened one load lazily
     };
 
     void closeSession();
     void startSlot(int slot);
+    void startPendingSlot(int slot);
 
     QPointer<NativeController> m_controller;
     QPointer<FileClient> m_files;

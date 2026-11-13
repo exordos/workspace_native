@@ -837,6 +837,55 @@ static QJsonObject mediaViewerRow(const QString &uuid, const QString &fileUuid, 
     return row;
 }
 
+// A tiny real H.264/MP4 fixture (96x64, 0.5 s, no audio track) so the video
+// slot tests observe a software-decodable file through the FFmpeg backend
+// (issue #203). Embedded base64 keeps the test independent of developer paths.
+static QByteArray mediaViewerVideoBytes()
+{
+    return QByteArray::fromBase64(QByteArrayLiteral(
+        "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAM1bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAA"
+        "AQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "AAAAAgAAAmB0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAA"
+        "AAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAGAAAABAAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHY"
+        "bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAFABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRl"
+        "b0hhbmRsZXIAAAABg21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAA"
+        "AQAAAUNzdGJsAAAAt3N0c2QAAAAAAAAAAQAAAKdhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAGAAQABIAAAASAAAAAAA"
+        "AAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAALWF2Y0MBQsAK/+EAFmdCwAraGJsBEAAAAwAQAAAD"
+        "AUDxImoBAARozg/IAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAKbAAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAUAAAQA"
+        "AAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAUAAAABAAAAKHN0c3oAAAAAAAAAAAAAAAUAAAJz"
+        "AAAACgAAAAoAAAAKAAAACgAAABRzdGNvAAAAAAAAAAEAAANlAAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAA"
+        "bWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2My4xLjEwMQAAAAhmcmVlAAAC"
+        "o21kYXQAAAJGBgX//0LcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAt"
+        "IENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFj"
+        "PTAgcmVmPTEgZGVibG9jaz0wOjA6MCBhbmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAw"
+        "IG1peGVkX3JlZj0wIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0y"
+        "MSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0wIHRocmVhZHM9MiBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNl"
+        "ZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50"
+        "cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xMCBzY2VuZWN1dD0wIGludHJhX3JlZnJl"
+        "c2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3Jh"
+        "dGlvPTEuNDAgYXE9MACAAAAAJWWIhDoRigACDTHAAEF6OAAIFMnJycnJ1111111111111111114AAAAGQZogEKDMAAAABkGa"
+        "QBGgzAAAAAZBmmARoMwAAAAGQZqAEaDM"
+    ));
+}
+
+static QByteArray mediaViewerGarbageVideoBytes()
+{
+    return QByteArray("NOT-A-DECODABLE-VIDEO-FILE-FOR-DISPLAY-ERROR-TESTING");
+}
+
+// A markdown row carrying one standalone video reference (issue #203).
+static QJsonObject mediaViewerVideoRow(const QString &uuid, const QString &fileUuid, qint64 byteSize)
+{
+    const auto urn = QStringLiteral("urn:video:%1?name=clip.mp4&content_type=video%2Fmp4&size=%2")
+        .arg(fileUuid, QString::number(byteSize));
+    auto row = message(QStringLiteral("Look\n\n![clip.mp4](%1)").arg(urn), uuid);
+    row["user_uuid"] = userId;
+    row["author_uuid"] = channelPeer; row["is_own"] = false;
+    row["pinned"] = false; row["reactions"] = QJsonObject{};
+    row["reaction_users"] = QJsonObject{}; row["updated_at"] = row.value("created_at");
+    return row;
+}
+
 static QQuickItem *avatarProbeCircle(QQuickItem *root, qreal diameter)
 {
     if (!root || !root->isVisible()) return nullptr;
@@ -12598,6 +12647,284 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "mediaViewer-prev")->isVisible());
         QVERIFY(!item(content, "mediaViewer-next")->isVisible());
         QVERIFY(!item(content, "mediaViewer-strip")->isVisible());
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Acceptance (issue #203): a message with image + video URNs opens the
+    // viewer with two slots, the video slot shows the loading label then
+    // plays inline, play/pause toggles, and the video thumbnail carries the
+    // play badge. Player state is asserted through playbackState, never
+    // decoded pixels.
+    void mediaViewerVideoSlotPlaysAndTogglesInlineWithPlayBadge()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    result.delay = 300; // Keep the loading label observable.
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-video.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer video window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        QCOMPARE(viewer->count(), 2);
+        QCOMPARE(viewer->items().at(1).toMap().value("kind").toString(), QString("video"));
+        // The video thumbnail carries the play badge; the image one does not
+        // (media-viewer-thumbnails.ui.tsx:23,44-48).
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-badge-1"));
+        QVERIFY(!visibleItem(content, "mediaViewer-thumb-badge-0"));
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        // The lazily started video slot shows its dedicated loading label
+        // while the bytes stage (media-viewer-overlay.ui.tsx:127-133).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
+            return t && t->property("text").toString() == QString("Video is loading…"); })(), 2000);
+        // The ready slot binds the player and reaches the playing state with
+        // autoPlay (media-viewer-overlay.ui.tsx:152-161).
+        auto *video = visibleItem(content, "mediaViewer-video"); QVERIFY(!video);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 6000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->property("playbackState").toInt() == 1; })(), 15000);
+        video = visibleItem(content, "mediaViewer-video");
+        // Same media box as images: 64 px side padding and the
+        // calc(100vh-12rem) height cap (media-viewer-overlay.ui.tsx:126,158).
+        QCOMPARE(video->width(), content->width() - 128.0);
+        QCOMPARE(video->height(), content->height() - 192.0);
+        QCOMPARE(video->mapToItem(content, QPointF(video->width() / 2.0, video->height() / 2.0)).x(),
+            content->width() / 2.0);
+        // Clicking the picture toggles pause/play like the reference's
+        // browser-native controls and never closes the viewer (stopPropagation,
+        // media-viewer-overlay.ui.tsx:159).
+        click(window, visibleItem(content, "mediaViewer-video-toggle"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->property("playbackState").toInt() == 2; })(), 5000);
+        QVERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-video-toggle"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->property("playbackState").toInt() == 1; })(), 5000);
+        // Navigating back shows the image slot again.
+        click(window, visibleItem(content, "mediaViewer-prev"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image");
+            return shot && shot->isVisible(); })(), 4000);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // The load-failure path renders the dedicated videoLoadFailed text in
+    // both locales (media-viewer-overlay.ui.tsx:134-142; en.json:1416,
+    // ru.json:1427 at the measured sha).
+    void mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+
+    void mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales()
+    {
+        QFETCH(QString, locale);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download"))
+                    return Response{QJsonObject{}, 500};
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-video-load-failure.ini"));
+        preferences.setLocale(locale); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer video failure window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        const QString expected = locale == "ru"
+            ? QString::fromUtf8("Не удалось загрузить видео") : QStringLiteral("Failed to load video");
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
+            return t && t->property("text").toString() == expected; })(), 6000);
+        // Toolbar actions stay unusable for a broken slot
+        // (media-viewer-actions.lib.ts:71-79).
+        QVERIFY(!visibleItem(content, "mediaViewer-download")->property("enabled").toBool());
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Undecodable staged bytes drive the player error path onto the
+    // display-error state with the videoDisplayFailed text
+    // (media-viewer-overlay.ui.tsx:75-90,143-151).
+    void mediaViewerVideoDisplayFailureShowsDedicatedLabel()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray garbage = mediaViewerGarbageVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = garbage; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, garbage);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, garbage.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-video-display-failure.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer video display failure window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        // The staged-but-undecodable file first reaches ready, then the
+        // player error replaces the slot with display-error.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return viewer->items().at(1).toMap().value("state").toString()
+            == QStringLiteral("display-error"); })(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
+            return t && t->property("text").toString() == QString("This video cannot be played"); })(), 6000);
+        QVERIFY(!visibleItem(content, "mediaViewer-download")->property("enabled").toBool());
         click(window, visibleItem(content, "mediaViewer-close"));
         QTRY_VERIFY(!viewer->open());
     }
