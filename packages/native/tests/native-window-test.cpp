@@ -15548,6 +15548,60 @@ private:
         controller.callWindow()->readyToClose();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
+
+    void callWindowKeepsOneEmbedSurfaceAcrossPiPToggles()
+    {
+        // Finding 2: minimize/expand moves the presentation of ONE embed
+        // instance; it never instantiates a second WebEngine session for the
+        // same meeting and never destroys the live one on a toggle.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call embed surface teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        std::function<int(QQuickItem *)> activeEmbedLoaders =
+            [&activeEmbedLoaders](QQuickItem *root) -> int {
+            int total = (root->objectName() == QLatin1String("callWindowEmbedLoader")
+                && root->property("active").toBool()) ? 1 : 0;
+            for (auto *child : root->childItems())
+                total += activeEmbedLoaders(child);
+            return total;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
+        // Minimize: the single embed surface moves into the PiP window; the
+        // app window must hold none while minimized.
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QQuickWindow *pip = nullptr;
+        if (!QTest::qWaitFor([&pip] {
+                for (auto *candidate : QGuiApplication::topLevelWindows())
+                    if (auto *top = qobject_cast<QQuickWindow *>(candidate))
+                        if (top->objectName() == QLatin1String("callWindowPipWindow") && top->isVisible())
+                            return pip = top, true;
+                return false;
+            }, 2000))
+            QFAIL("PiP window never appeared");
+        QVERIFY(QTest::qWaitForWindowExposed(pip));
+        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(pip->contentItem()) == 1, 2000);
+        QCOMPARE(activeEmbedLoaders(window->contentItem()), 0);
+        // Expand: the same surface moves back; the PiP window holds none.
+        click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
+        QCOMPARE(activeEmbedLoaders(pip->contentItem()), 0);
+        controller.callWindow()->readyToClose();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
 };
 
 
