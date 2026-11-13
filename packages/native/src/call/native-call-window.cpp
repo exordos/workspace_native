@@ -94,6 +94,7 @@ void JitsiCallWindowController::open(const QVariantMap &activeCall)
     emit embedStateChanged();
     emit fullscreenChanged();
     emit participantCountChanged();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::close()
@@ -111,6 +112,7 @@ void JitsiCallWindowController::close()
     emit permissionsChanged();
     emit fullscreenChanged();
     emit participantCountChanged();
+    emit textsChanged();
     emit closeRequested();
 }
 
@@ -130,6 +132,7 @@ void JitsiCallWindowController::toggleMinimize()
     }
     emit modeChanged();
     emit boundsChanged();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::toggleFullscreen()
@@ -139,6 +142,7 @@ void JitsiCallWindowController::toggleFullscreen()
         return;
     m_fullscreen = !m_fullscreen;
     emit fullscreenChanged();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::requestDismiss()
@@ -161,13 +165,8 @@ void JitsiCallWindowController::apiLoadSucceeded()
     m_embedState = Ready;
     emit embedStateChanged();
     ensureEmbed();
-    if (m_countProvider) {
-        const auto count = m_countProvider();
-        if (count != m_participantCount) {
-            m_participantCount = count;
-            emit participantCountChanged();
-        }
-    }
+    syncParticipantCount();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::apiLoadFailed()
@@ -176,6 +175,7 @@ void JitsiCallWindowController::apiLoadFailed()
         return;
     m_embedState = LoadFailed;
     emit embedStateChanged();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::retry()
@@ -184,6 +184,7 @@ void JitsiCallWindowController::retry()
         return;
     m_embedState = Loading;
     emit embedStateChanged();
+    emit textsChanged();
 }
 
 void JitsiCallWindowController::ensureEmbed()
@@ -208,15 +209,23 @@ void JitsiCallWindowController::setEmbedFactory(std::function<void()> factory)
     m_embedFactory = std::move(factory);
 }
 
+void JitsiCallWindowController::syncParticipantCount()
+{
+    // Reference syncCallState: every join/leave event and every reconcile
+    // poll re-reads the count from the live embed.
+    if (!m_countProvider)
+        return;
+    const auto count = m_countProvider();
+    if (count == m_participantCount)
+        return;
+    m_participantCount = count;
+    emit participantCountChanged();
+    emit textsChanged();
+}
+
 void JitsiCallWindowController::participantJoined()
 {
-    if (m_countProvider) {
-        const auto count = m_countProvider();
-        if (count != m_participantCount) {
-            m_participantCount = count;
-            emit participantCountChanged();
-        }
-    }
+    syncParticipantCount();
 }
 
 void JitsiCallWindowController::participantLeft()
@@ -327,5 +336,16 @@ QString JitsiCallWindowController::minimizeTooltip() const
 }
 
 QString JitsiCallWindowController::closeLabel() const { return tr("Close call"); }
+
+QString JitsiCallWindowController::embedUrl() const
+{
+    const auto config = sessionConfig();
+    QString hash = QStringLiteral("#config.startWithAudioMuted=true"
+                                   "&config.prejoinConfig.enabled=false");
+    hash += QStringLiteral("&config.startWithVideoMuted=");
+    hash += config.value(QStringLiteral("startWithVideoMuted")).toBool()
+        ? QStringLiteral("true") : QStringLiteral("false");
+    return meetingUrl() + hash;
+}
 
 } // namespace workspace

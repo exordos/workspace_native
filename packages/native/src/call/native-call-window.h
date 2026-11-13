@@ -24,6 +24,15 @@ class JitsiCallWindowController final : public QObject {
     Q_PROPERTY(int embedCreations READ embedCreations NOTIFY embedCreated)
     Q_PROPERTY(int participantCount READ participantCount NOTIFY participantCountChanged)
     Q_PROPERTY(bool fullscreen READ fullscreen NOTIFY fullscreenChanged)
+    // Localized display text for the QML shell (all follow the shell state).
+    Q_PROPERTY(QString titleText READ titleText NOTIFY textsChanged)
+    Q_PROPERTY(QString subtitleText READ subtitleText NOTIFY textsChanged)
+    Q_PROPERTY(QString stateText READ stateText NOTIFY textsChanged)
+    Q_PROPERTY(QString retryText READ retryText CONSTANT)
+    Q_PROPERTY(QString fullscreenLabel READ fullscreenLabel NOTIFY textsChanged)
+    Q_PROPERTY(QString minimizeLabel READ minimizeLabel NOTIFY textsChanged)
+    Q_PROPERTY(QString minimizeTooltip READ minimizeTooltip NOTIFY textsChanged)
+    Q_PROPERTY(QString closeLabel READ closeLabel CONSTANT)
 public:
     enum Mode { Closed = 0, Expanded = 1, Minimized = 2 };
     Q_ENUM(Mode)
@@ -80,10 +89,10 @@ public:
     QString minimizeTooltip() const;
     QString closeLabel() const;
 
-    void setViewportSize(const QSize &viewport);
-    void setFocused(bool focused);
+    Q_INVOKABLE void setViewportSize(const QSize &viewport);
+    Q_INVOKABLE void setFocused(bool focused);
     // Remembers user move/resize of the PiP surface, clamped to min 280x180.
-    void setPipBounds(const QRect &bounds);
+    Q_INVOKABLE void setPipBounds(const QRect &bounds);
 
     // Opens the shell in Expanded mode from a JitsiCallStore activeCall payload
     // (meetingUrl, locationName, optional meetUrl/displayName/startWithVideoMuted).
@@ -109,6 +118,10 @@ public:
     Q_INVOKABLE void participantJoined();
     Q_INVOKABLE void participantLeft();
     Q_INVOKABLE void pollNow();
+    // Ready-to-load URL for the embed host: the meeting URL plus the hash
+    // form of the one-time session config (the native transport of the
+    // reference configOverwrite until the external_api bridge lands).
+    Q_INVOKABLE QString embedUrl() const;
 
 signals:
     void modeChanged();
@@ -119,9 +132,12 @@ signals:
     void participantCountChanged();
     void fullscreenChanged();
     void closeRequested();
+    // One umbrella signal so every derived localized string re-binds at once.
+    void textsChanged();
 
 private:
     void ensureEmbed();
+    void syncParticipantCount();
 
     Mode m_mode = Closed;
     EmbedState m_embedState = Idle;
