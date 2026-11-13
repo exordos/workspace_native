@@ -12411,17 +12411,8 @@ bool supportsMessengerPolls(const Stream *stream)
 }
 
 // Wire shape of one client-generated new option (NewPollOptionDto): uuid always
-// client-side, text carried verbatim. An empty object means "invalid option".
-QJsonObject newPollOptionObject(const QVariantMap &option, QSet<QString> &usedUuids)
-{
-    const auto text = option.value(QStringLiteral("text")).toString();
-    if (text.isEmpty() || text.size() > 200) return {};
-    auto uuid = option.value(QStringLiteral("uuid")).toString();
-    if (uuid.isEmpty()) uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    if (!isUuid(uuid) || usedUuids.contains(uuid)) return {};
-    usedUuids.insert(uuid);
-    return QJsonObject{{QStringLiteral("uuid"), uuid}, {QStringLiteral("text"), text}};
-}
+// client-side, text carried verbatim. Issue #215 moved creation UUIDs into the
+// attempt cache below; the add-option action builds its own object inline.
 } // namespace
 
 bool NativeController::canCreatePoll() const
@@ -12439,26 +12430,79 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
     if (questions.isEmpty() || questions.size() > 20) return;
     if (!closesAt.isEmpty() && !QDateTime::fromString(closesAt, Qt::ISODateWithMs).isValid()
         && !QDateTime::fromString(closesAt, Qt::ISODate).isValid()) return;
-    QJsonArray questionRows;
-    QSet<QString> usedUuids;
+    // Canonicalise the submitted draft first (create-poll.lib.ts preparePollSend
+    // at the contract sha): the attempt identity is the draft content, so an
+    // identical retry replays the same canonical UUIDs and any content edit
+    // rotates the attempt. Client UUIDs are always controller-generated here;
+    // callers (the dialog) never bring their own.
+    QJsonArray signatureQuestions;
     for (const auto &questionValue : questions) {
         const auto question = questionValue.toMap();
         const auto text = question.value(QStringLiteral("text")).toString();
         if (text.isEmpty() || text.size() > 1000) return;
         const auto optionValues = question.value(QStringLiteral("options")).toList();
         if (optionValues.isEmpty() || optionValues.size() > 20) return;
-        QJsonArray optionRows;
+        QJsonArray signatureOptions;
         for (const auto &optionValue : optionValues) {
-            const auto option = newPollOptionObject(optionValue.toMap(), usedUuids);
-            if (option.isEmpty()) return;
-            optionRows.append(option);
+            const auto option = optionValue.toMap();
+            const auto optionText = option.value(QStringLiteral("text")).toString();
+            if (optionText.isEmpty() || optionText.size() > 200) return;
+            signatureOptions.append(QJsonObject{{QStringLiteral("text"), optionText},
+                {QStringLiteral("correct"), option.value(QStringLiteral("correct")).toBool()}});
         }
-        auto questionUuid = question.value(QStringLiteral("uuid")).toString();
-        if (questionUuid.isEmpty()) questionUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        if (!isUuid(questionUuid) || usedUuids.contains(questionUuid)) return;
-        usedUuids.insert(questionUuid);
-        questionRows.append(QJsonObject{{QStringLiteral("uuid"), questionUuid},
-            {QStringLiteral("text"), text}, {QStringLiteral("options"), optionRows}});
+        signatureQuestions.append(QJsonObject{{QStringLiteral("text"), text},
+            {QStringLiteral("options"), signatureOptions}});
+    }
+    const QJsonObject signatureDraft{{QStringLiteral("questions"), signatureQuestions},
+        {QStringLiteral("multiple_answers"), multipleAnswers},
+        {QStringLiteral("is_anonymous"), isAnonymous}, {QStringLiteral("allow_revote"), allowRevote},
+        {QStringLiteral("results_visibility"), resultsVisibility},
+        {QStringLiteral("allow_adding_options"), allowAddingOptions},
+        {QStringLiteral("closes_at"),
+            closesAt.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(closesAt)}};
+    const auto signature = QString::fromUtf8(
+        QJsonDocument(signatureDraft).toJson(QJsonDocument::Compact));
+    const auto conversation = conversationKey();
+    auto attempt = m_pollSendAttempts.value(conversation);
+    if (attempt.signature != signature) {
+        attempt = PollSendAttempt{};
+        attempt.signature = signature;
+        attempt.messageUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        for (const auto &questionValue : signatureQuestions) {
+            attempt.questionUuids
+                << QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringList optionUuids;
+            for (const auto &optionValue : questionValue.toObject()
+                     .value(QStringLiteral("options")).toArray())
+                optionUuids << QUuid::createUuid().toString(QUuid::WithoutBraces);
+            attempt.optionUuids << optionUuids;
+        }
+        m_pollSendAttempts.insert(conversation, attempt);
+    }
+    // The wire rows are rebuilt from the attempt, so a retry sends byte-equal
+    // canonical UUIDs (question + option) and the marked answers travel as
+    // correct_option_uuids (preparePollSend wire shape).
+    QJsonArray questionRows;
+    for (int questionIndex = 0; questionIndex < signatureQuestions.size(); ++questionIndex) {
+        const auto question = signatureQuestions.at(questionIndex).toObject();
+        const auto signatureOptions = question.value(QStringLiteral("options")).toArray();
+        QJsonArray optionRows;
+        QJsonArray correctRows;
+        const auto optionUuids = attempt.optionUuids.at(questionIndex);
+        for (int optionIndex = 0; optionIndex < signatureOptions.size(); ++optionIndex) {
+            const auto option = signatureOptions.at(optionIndex).toObject();
+            const auto optionUuid = optionUuids.at(optionIndex);
+            optionRows.append(QJsonObject{{QStringLiteral("uuid"), optionUuid},
+                {QStringLiteral("text"), option.value(QStringLiteral("text"))}});
+            if (option.value(QStringLiteral("correct")).toBool())
+                correctRows.append(optionUuid);
+        }
+        auto row = QJsonObject{{QStringLiteral("uuid"), attempt.questionUuids.at(questionIndex)},
+            {QStringLiteral("text"), question.value(QStringLiteral("text"))},
+            {QStringLiteral("options"), optionRows}};
+        if (!correctRows.isEmpty())
+            row.insert(QStringLiteral("correct_option_uuids"), correctRows);
+        questionRows.append(row);
     }
     QJsonObject payload{{QStringLiteral("kind"), QStringLiteral("poll")},
         {QStringLiteral("questions"), questionRows},
@@ -12474,10 +12518,14 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
     const auto generation = m_api->generation();
     const auto context = projectionContext();
     const QPointer<NativeController> guard(this);
+    // The create body carries the canonical client message uuid exactly like
+    // the markdown send intent, so an uncertain create can be replayed safely.
     request("POST", messenger + "/messages/",
-        QJsonObject{{QStringLiteral("stream_uuid"), stream}, {QStringLiteral("topic_uuid"), topic},
+        QJsonObject{{QStringLiteral("uuid"), attempt.messageUuid},
+            {QStringLiteral("stream_uuid"), stream}, {QStringLiteral("topic_uuid"), topic},
             {QStringLiteral("payload"), payload}},
-        {}, [this, guard, stream, topic, generation, context](const ApiResult &result) {
+        {}, [this, guard, stream, topic, conversation, attempt, generation,
+            context](const ApiResult &result) {
         if (!guard || generation != m_api->generation()) return;
         const auto parsed = result.ok()
             ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
@@ -12488,6 +12536,9 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
                             : QStringLiteral("http-%1").arg(result.status));
             return;
         }
+        // A confirmed create retires the attempt (reference pollAttemptRef = null).
+        if (m_pollSendAttempts.value(conversation).messageUuid == attempt.messageUuid)
+            m_pollSendAttempts.remove(conversation);
         const auto raw = result.data.toObject();
         observeMessage(raw);
         m_messages = mergeMessages(m_messages, {*parsed});
