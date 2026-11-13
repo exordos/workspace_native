@@ -1,10 +1,12 @@
 #pragma once
 
 #include <QObject>
+#include <QPointer>
 #include <QPoint>
 #include <QRect>
 #include <QSize>
 #include <QTimer>
+#include <QStringList>
 #include <QVariantMap>
 
 #include <functional>
@@ -183,6 +185,45 @@ private:
     QString m_roomName;
     std::function<int()> m_countProvider;
     std::function<void()> m_embedFactory;
+};
+
+// Production live source for the participant count and shared roster
+// (review finding 5, round 3). This is the native counterpart of the exact
+// external_api surface the reference subscribes to in
+// jitsi-participant-count.hook.ts:19-33 and jitsi-call-modal-shell.hook.ts:
+// 172-210: the getNumberOfParticipants()/getParticipantsInfo() reads arrive
+// through the report* slots (the native transport until the #160
+// external_api.js handshake can deliver them), and the participantsJoined/
+// participantsLeft listeners fire the handleParticipants* slots. Once
+// attached it IS the window controller's count provider in production, so
+// the controller's focus-aware timer only ever reconciles against this
+// bridge instead of owning the data.
+class JitsiEmbedBridge final : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int liveParticipantCount READ liveParticipantCount NOTIFY liveParticipantCountChanged)
+    Q_PROPERTY(QStringList liveRoster READ liveRoster NOTIFY liveRosterChanged)
+public:
+    explicit JitsiEmbedBridge(QObject *parent = nullptr);
+    int liveParticipantCount() const { return m_liveCount; }
+    QStringList liveRoster() const { return m_roster; }
+    // Native transport of the two external_api reads against the embed page.
+    Q_INVOKABLE void reportParticipantCount(int count);
+    Q_INVOKABLE void reportRoster(const QStringList &displayNames);
+    // The reference's two external_api listeners (jitsi-participant-count.
+    // hook.ts:24-29): each re-syncs the shell count from this bridge.
+    Q_INVOKABLE void handleParticipantsJoined();
+    Q_INVOKABLE void handleParticipantsLeft();
+    // Production wiring, done once by NativeController: the controller's
+    // count provider becomes this bridge's live count, and closing the call
+    // resets the live session exactly like the reference hook.
+    void attachTo(JitsiCallWindowController *controller);
+signals:
+    void liveParticipantCountChanged();
+    void liveRosterChanged();
+private:
+    int m_liveCount = -1;
+    QStringList m_roster;
+    QPointer<JitsiCallWindowController> m_controller;
 };
 
 } // namespace workspace

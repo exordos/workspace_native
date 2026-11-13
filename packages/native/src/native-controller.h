@@ -1393,11 +1393,16 @@ public:
     // The call window shell state machine (#162), opened/closed with the
     // active call: the QML overlay (expanded) and PiP window bind to it.
     Q_PROPERTY(JitsiCallWindowController *callWindow READ callWindow CONSTANT)
+    // The call window's live participant count/roster source (#162 finding 5):
+    // the embed transport reports count/roster reads here and the bridge feeds
+    // the shell, so the reconcile timer always re-reads live embed data.
+    Q_PROPERTY(JitsiEmbedBridge *embedBridge READ embedBridge CONSTANT)
     Q_PROPERTY(QString meetHost READ meetHost NOTIFY stateChanged)
     Q_PROPERTY(bool canStartCall READ canStartCall NOTIFY stateChanged)
     Q_PROPERTY(QString callError READ callError NOTIFY stateChanged)
     JitsiCallStore *calls() { return &m_callStore; }
     JitsiCallWindowController *callWindow() { return &m_callWindow; }
+    JitsiEmbedBridge *embedBridge() { return &m_embedBridge; }
     QString meetHost() const { return m_meetHost; }
     QString callError() const { return m_callError; }
     // The reference renders the header call action only when the Workspace
@@ -1417,6 +1422,7 @@ private:
     void fetchCallMeetHost();
     JitsiCallStore m_callStore;
     JitsiCallWindowController m_callWindow;
+    JitsiEmbedBridge m_embedBridge;
     QString m_meetHost;
     QString m_callError;
     bool m_callPending = false;
