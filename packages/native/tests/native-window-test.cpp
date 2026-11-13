@@ -1641,45 +1641,137 @@ struct ProfileWindowScene {
     void saveEdit() { QMetaObject::invokeMethod(layer(), "saveEdit"); }
 };
 
-// Issue #162 (round 4): the embed fixture for the live handshake case. This
-// is the local meeting page the WebEngine embed loads: it is a stand-in for
-// the in-page API service of a real Jitsi frame - the same event registry
-// (window.APP.API.addEventListener) and participant reads
-// (getNumberOfParticipants/getParticipantsInfo) that the vendored
-// external_api bridge forwards to the reference client - and it drives its
-// own join/leave timeline, so nothing on the C++ side pokes the bridge.
+// Issue #162 (round 4), hardened for issue #252: the embed fixture for the
+// live handshake case. This is the local meeting page the WebEngine embed
+// loads. The previous fixture invented window.APP.API methods the real Jitsi
+// internal API does not have, so its passing proved nothing about real-page
+// compatibility (#252 finding). This fixture instead speaks the REAL
+// external-API wire contract at the pinned reference revision
+// jitsi-meet c5bf9948a5dab6f63d86508bfb93c1c4653060f2: the Transport +
+// PostMessageTransportBackend + postis stack of @jitsi/js-utils 6.3.2
+// (external_api.js builds exactly this parent side). The wire format is
+// JSON-string postMessage envelopes {postis:true, scope, method:"__ready__"
+//|"message", params}; a "message" param is the Transport envelope
+// {type:"event", data:{name, ...fields}}; the frame sends to window.parent,
+// which for a top-level embed document is this very window, so the embed glue
+// must be the parent-side peer of exactly this contract. The event names and
+// payload fields are the ones API.js itself sends: video-conference-joined
+// {roomName, id, displayName, ...}, participant-joined {id, displayName},
+// participant-left {id} (API.js:1724,1739,1945 at the pinned revision).
 inline QByteArray embedMeetingPage()
 {
     return QByteArray(R"HTML(<!doctype html>
 <html><head><meta charset="utf-8"><title>Call frame fixture</title></head><body>
 <script>
 (function () {
-    var listeners = {};
-    var roster = [];
-    function emit(name, detail) {
-        var fns = listeners[name] || [];
-        for (var i = 0; i < fns.length; ++i)
-            fns[i](detail || {});
+    "use strict";
+    var scope;
+    var idMatch = /jitsi_meet_external_api_id=(\d+)/.exec(window.location.hash || "");
+    if (idMatch)
+        scope = "jitsi_meet_external_api_" + idMatch[1];
+    var target = window.opener || window.parent;
+    var myId = Date.now() + "-" + Math.random();
+    var ready = false;
+    var sendBuffer = [];
+    function wire(method, params) {
+        target.postMessage(JSON.stringify(
+            { postis: true, scope: scope, method: method, params: params }), "*");
     }
-    window.APP = { API: {
-        addEventListener: function (name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
-        removeEventListener: function () {},
-        getNumberOfParticipants: function () { return roster.length; },
-        getParticipantsInfo: function () {
-            return roster.map(function (n) { return { id: n, displayName: n }; });
+    function send(params) {
+        if (ready) wire("message", params); else sendBuffer.push(params);
+    }
+    var interval = window.setInterval(function () { wire("__ready__", myId); }, 50);
+    window.addEventListener("message", function (event) {
+        var data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        if (!data || data.postis !== true || data.scope !== scope) return;
+        if (data.method === "__ready__") {
+            if (data.params === myId) {
+                window.clearInterval(interval);
+                ready = true;
+                for (var i = 0; i < sendBuffer.length; ++i) wire("message", sendBuffer[i]);
+                sendBuffer = [];
+            } else {
+                wire("__ready__", data.params);
+            }
         }
-    } };
-    function join(n) { roster.push(n); emit("participantJoined", { id: n, displayName: n }); }
-    function leave(n) {
-        roster = roster.filter(function (x) { return x !== n; });
-        emit("participantLeft", { id: n, displayName: n });
+    });
+    function emit(name, fields) {
+        var data = { name: name };
+        for (var key in fields) data[key] = fields[key];
+        send({ type: "event", data: data });
     }
-    roster = ["Self"];
-    emit("videoConferenceJoined", {});
-    setTimeout(function () { join("Ada"); }, 120);
-    setTimeout(function () { join("Grace"); }, 240);
-    setTimeout(function () { leave("Ada"); }, 360);
+    // The real join flow: the conference join names the local participant,
+    // then every remote join/leave follows as its own event.
+    setTimeout(function () {
+        emit("video-conference-joined", { roomName: "workspace-call-room", id: "self-1",
+            displayName: "Self", formattedDisplayName: "Self", email: "", avatarURL: "" });
+    }, 300);
+    setTimeout(function () {
+        emit("participant-joined", { id: "ada", displayName: "Ada", formattedDisplayName: "Ada" });
+    }, 500);
+    setTimeout(function () {
+        emit("participant-joined", { id: "grace", displayName: "Grace", formattedDisplayName: "Grace" });
+    }, 700);
+    setTimeout(function () { emit("participant-left", { id: "ada" }); }, 900);
 })();
+</script>
+</body></html>)HTML");
+}
+
+// Issue #251: the trusted meeting origin asks Qt for a microphone and a
+// camera, and a genuinely foreign-origin frame (a second loopback server on
+// its own port) asks for a microphone too - an about:srcdoc frame would just
+// inherit the parent origin, so it proves nothing about the allowlist.
+// Results come back as query-param GETs so the mock server records exactly
+// what each request resolved to. On this host the camera is absent, so a
+// GRANTED video request surfaces NotFoundError (device layer) while a DENIED
+// one surfaces NotAllowedError (app gate) - the two are distinguishable
+// without hardware. The grant itself for audio is proven by the live track
+// (emulated PipeWire input exists on this host).
+inline QByteArray embedPermissionProbePage(const QString &crossOriginFrameUrl)
+{
+    QByteArray page(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Call permission probe</title></head><body>
+<iframe id="untrusted" style="display:none" src="__UNTRUSTED_FRAME__"></iframe>
+<script>
+(function () {
+    "use strict";
+    function report(key, result) {
+        fetch("/perm-probe?" + key + "=" + encodeURIComponent(result)).catch(function () {});
+    }
+    window.addEventListener("message", function (event) {
+        if (event.data && event.data.probe)
+            report(event.data.probe, event.data.result);
+    });
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var track = stream.getAudioTracks()[0];
+        report("audio", track && track.readyState === "live" ? "ok" : "dead-track");
+        stream.getTracks().forEach(function (t) { t.stop(); });
+    }).catch(function (e) { report("audio", String(e.name)); });
+    navigator.mediaDevices.getUserMedia({ video: true }).then(function (stream) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        report("video", "unexpected-ok");
+    }).catch(function (e) { report("video", String(e.name)); });
+})();
+</script>
+</body></html>)HTML");
+    return page.replace("__UNTRUSTED_FRAME__", crossOriginFrameUrl.toUtf8());
+}
+
+// The foreign-origin frame page, served by its own loopback server so its
+// security origin provably differs from the configured meeting origin.
+inline QByteArray embedForeignCaptureFrame()
+{
+    return QByteArray(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Foreign capture frame</title></head><body>
+<script>
+navigator.mediaDevices.getUserMedia({audio:true}).then(function (s) {
+    s.getTracks().forEach(function (t) { t.stop(); });
+    parent.postMessage({ probe: "iframe", result: "unexpected-ok" }, "*");
+}).catch(function (e) {
+    parent.postMessage({ probe: "iframe", result: String(e.name) }, "*");
+});
 </script>
 </body></html>)HTML");
 }
@@ -1692,6 +1784,16 @@ public:
     // Serves the meeting page from the mock server itself (loopback origin)
     // so the embed surface can actually load it and drive the live handshake.
     bool localMeeting = false;
+    // Issue #251: serve the capture-permission probe page instead of the
+    // participant-timeline page, and record the reported probe outcomes.
+    bool permissionProbe = false;
+    QString untrustedFrameUrl;
+    QMap<QString, QString> probeResults;
+    // Issue #250: the next N requests for the meeting page get their socket
+    // dropped without any response - exactly a dead meeting host - so the
+    // embed's real load reaches the failure status, while later requests
+    // (after the shell's retry) succeed again.
+    int breakMeetingLoads = 0;
     QString meetingUrl = QStringLiteral("https://meet.example.com/workspace-call-room");
     int posts = 0;
     QJsonObject posted;
@@ -1699,9 +1801,22 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (path == "/perm-probe") {
+                const auto items = QUrlQuery(request.target.query()).queryItems();
+                for (const auto &item : items)
+                    probeResults.insert(item.first, item.second);
+                return {QJsonObject{{QStringLiteral("ok"), true}}};
+            }
             if (localMeeting && request.method == "GET" && path == "/workspace-call-room") {
+                if (breakMeetingLoads > 0) {
+                    --breakMeetingLoads;
+                    Response broken;
+                    broken.abortConnection = true;
+                    return broken;
+                }
                 Response page;
-                page.rawBody = embedMeetingPage();
+                page.rawBody = permissionProbe
+                    ? embedPermissionProbePage(untrustedFrameUrl) : embedMeetingPage();
                 page.rawContentType = "text/html; charset=utf-8";
                 return page;
             }
@@ -16362,16 +16477,17 @@ private:
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
     }
 
-    // Finding 5 (round 4): the live participant count and the shared roster
-    // must arrive through the production external-API handshake, driven by
-    // the embed page itself. The fixture page fires exactly the in-page
-    // events a real Jitsi frame forwards through external_api -
-    // videoConferenceJoined / participantJoined / participantLeft, the same
-    // subscriptions the reference wires in jitsi-participant-count.hook.ts:19-33
-    // and jitsi-call-modal-shell.hook.ts:172-210 - and the embed glue maps
-    // each event to the getNumberOfParticipants()/getParticipantsInfo()
-    // reads that feed the bridge's report* slots. Nothing here pokes the
-    // bridge or the controller from C++.
+    // Finding 5 (round 4), hardened for #252: the live participant count and
+    // the shared roster must arrive through the production external-API
+    // handshake, driven by the embed page itself. The fixture page now emits
+    // the real wire events a Jitsi frame sends to its embedder through the
+    // pinned external-API transport (video-conference-joined /
+    // participant-joined / participant-left, API.js names at the pinned
+    // revision), the same events external_api.js forwards for
+    // jitsi-participant-count.hook.ts:19-33 and
+    // jitsi-call-modal-shell.hook.ts:172-210 - and the embed glue maps the
+    // tracked state to report* bridge calls. Nothing here pokes the bridge
+    // or the controller from C++.
     void callWindowLiveParticipantCountArrivesFromEmbedPageEvents()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -16392,6 +16508,8 @@ private:
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(
             controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
         click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
@@ -16559,6 +16677,168 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
         QTRY_VERIFY_WITH_TIMEOUT(pipGuard.isNull() || !pipGuard->isVisible(), 2000);
         controller.callWindow()->readyToClose();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
+
+    // --- Issues #250/#251: real Qt load-status and permission wiring ------
+    //
+    // Both cases drive the production NativeCallWebEngineView.qml over the
+    // real WebEngine surface against the loopback fixture server, and both
+    // are signal-level (no live meeting), exactly as the issues' acceptance
+    // criteria define them.
+
+    void callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady()
+    {
+        // Issue #250: onLoadingChanged compared loadRequest.status against
+        // WebEngineView.LoadFinishedStatus, which does not exist in Qt
+        // 6.10.2 - the valid QWebEngineLoadingInfo::LoadStatus values are
+        // LoadStartedStatus 0 / LoadStoppedStatus 1 / LoadSucceededStatus 2 /
+        // LoadFailedStatus 3 (installed header
+        // /usr/include/x86_64-linux-gnu/qt6/QtWebEngineCore/
+        // qwebengineloadinginfo.h:35-40), and success must come from the
+        // status, never from loadRequest.error.code. A real successful page
+        // must reach Ready; an unreachable host must reach LoadFailed with the
+        // retry affordance; retry recreates the view and reaches Ready.
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true; fixture.localMeeting = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Embed load status teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // The view's own successful main-frame load is the embed lifecycle:
+        // the controller must leave Loading for Ready without any C++ poke.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::Ready), 20000);
+        auto *loading = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
+        QVERIFY(loading && !loading->isVisible());
+
+        // A meeting host that drops the connection must drive the view's
+        // failure status into the retry state.
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+        fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::LoadFailed), 20000);
+        auto *retry = visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton"));
+        QVERIFY(retry);
+        // Retry recreates the view (the Loader deactivates on LoadFailed and
+        // re-instantiates on Loading) and the now-serving host reaches Ready.
+        fixture.breakMeetingLoads = 0;
+        click(window, retry);
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::Ready), 20000);
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
+
+    void callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin()
+    {
+        // Issue #251: the permission handler compared numeric features with
+        // nonexistent WebEngineProfile.* enums and called nonexistent
+        // view.grantPermission/denyPermission. Qt 6.10 delivers capture
+        // requests as permissionRequested(QWebEnginePermission): the object
+        // exposes origin + permissionType + grant()/deny() (installed header
+        // /usr/include/x86_64-linux-gnu/qt6/QtWebEngineCore/
+        // qwebenginepermission.h: PermissionType Unsupported 0 /
+        // MediaAudioCapture 1 / MediaVideoCapture 2 / MediaAudioVideoCapture
+        // 3 / DesktopVideoCapture 4). The page-level probes observe the REAL
+        // outcome: trusted microphone gets a live track; trusted camera
+        // reaches the device layer on this camera-less host (NotFoundError,
+        // not NotAllowedError); the foreign-origin child frame is denied.
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        // A second loopback server is the deny-path origin: its port makes
+        // it a genuinely foreign security origin relative to the meeting.
+        MockServer outsider;
+        outsider.handler = [](const Request &request) -> Response {
+            Q_UNUSED(request);
+            Response frame;
+            frame.rawBody = embedForeignCaptureFrame();
+            frame.rawContentType = "text/html; charset=utf-8";
+            return frame;
+        };
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        fixture.permissionProbe = true;
+        fixture.untrustedFrameUrl = outsider.origin().toString() + QStringLiteral("/frame.html");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Embed permission teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // Trusted microphone: the app gate must grant it and the page must
+        // observe a live capture track (proven path on this host, spike doc).
+        QVERIFY2(QTest::qWaitFor([&] { return fixture.probeResults.value("audio") == QStringLiteral("ok"); }, 20000),
+            qPrintable(QStringLiteral("audio probe reported '%1'")
+                .arg(fixture.probeResults.value("audio"))));
+        // Trusted camera: the grant must reach the device layer. No camera
+        // exists here, so the page sees NotFoundError; NotAllowedError would
+        // mean the app gate blocked (or never answered) the request.
+        QVERIFY2(QTest::qWaitFor([&] { return fixture.probeResults.value("video") == QStringLiteral("NotFoundError"); }, 20000),
+            qPrintable(QStringLiteral("video probe reported '%1'")
+                .arg(fixture.probeResults.value("video"))));
+        // Deny-by-default: a capture request from a foreign-origin frame
+        // (second loopback server, different port) must be answered DENIED
+        // by the app gate. Qt 6.10.2 delivers an application deny to the
+        // page as AbortError (same outcome the spike doc recorded for an
+        // explicit Deny: "AUDIO_ERR AbortError Invalid state"); older/policy
+        // paths use NotAllowedError. Either way the promise must NOT resolve
+        // and must not stay pending (empty).
+        QVERIFY2(QTest::qWaitFor([&] {
+                     const auto r = fixture.probeResults.value("iframe");
+                     return r == QStringLiteral("AbortError")
+                         || r == QStringLiteral("NotAllowedError");
+                 }, 20000),
+            qPrintable(QStringLiteral("iframe probe reported '%1'")
+                .arg(fixture.probeResults.value("iframe"))));
+        // The view recorded the one-time policy application (mirrors the
+        // reference allow policy) and the controller saw the grant too.
+        auto *view = loader->property("item").value<QObject *>();
+        QVERIFY(view);
+        QVERIFY(view->property("allowPolicyApplied").toBool());
+        controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
 };

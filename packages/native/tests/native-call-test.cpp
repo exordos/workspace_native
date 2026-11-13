@@ -1314,7 +1314,65 @@ private slots:
         QVERIFY(!lifecycle.currentVideoEnabled());
     }
 
+    // #250/#251/#252: source-contract guards for the shipped embed sources.
+    // The behavioral proof lives in the window-class cases of
+    // native-window-test.cpp (real WebEngine surface); these pin the
+    // contracts themselves so the invalid Qt/Jitsi usages cannot silently
+    // return: the Qt 6.10.2 reality is QWebEngineLoadingInfo LoadStatus
+    // constants on loadingChanged (qwebengineloadinginfo.h:35-40), the
+    // QWebEnginePermission object grant()/deny() on permissionRequested
+    // (qwebenginepermission.h), and the Jitsi EXTERNAL API wire contract -
+    // never the internal API object, never methods the runtime lacks.
+
+    void shippedEmbedViewUsesRealQt610LoadStatusConstants()
+    {
+        const auto src = readEmbedSource(QStringLiteral("NativeCallWebEngineView.qml"));
+        QVERIFY2(!src.isEmpty(), "the shipped embed view source must be locatable");
+        QVERIFY2(!src.contains(QStringLiteral("LoadFinishedStatus")),
+            "WebEngineView.LoadFinishedStatus does not exist in Qt 6.10.2 (#250)");
+        QVERIFY2(!src.contains(QStringLiteral("loadRequest.error.code")),
+            "QWebEngineLoadingInfo exposes errorCode/errorString, not error.code (#250)");
+        QVERIFY(src.contains(QStringLiteral("loadStatusSucceeded")));
+        QVERIFY(src.contains(QStringLiteral("loadStatusFailed")));
+    }
+
+    void shippedEmbedViewUsesTheQt610PermissionObject()
+    {
+        const auto src = readEmbedSource(QStringLiteral("NativeCallWebEngineView.qml"));
+        QVERIFY2(!src.isEmpty(), "the shipped embed view source must be locatable");
+        QVERIFY2(!src.contains(QStringLiteral("denyPermission"))
+                 && !src.contains(QStringLiteral("grantPermission")),
+            "WebEngineView has no grantPermission/denyPermission in Qt 6.10.2 (#251)");
+        QVERIFY2(!src.contains(QStringLiteral("WebEngineProfile.AudioCapture")),
+            "WebEngineProfile capture feature enums do not exist (#251)");
+        QVERIFY(src.contains(QStringLiteral("onPermissionRequested")));
+        QVERIFY(src.contains(QStringLiteral("permission.grant()")));
+        QVERIFY(src.contains(QStringLiteral("permission.deny()")));
+    }
+
+    void shippedCallEventGlueSpeaksOnlyTheExternalApiContract()
+    {
+        const auto src = readEmbedSource(QStringLiteral("web/workspace-call-events.js"));
+        QVERIFY2(!src.isEmpty(), "the shipped call-event glue must be locatable");
+        QVERIFY2(!src.contains(QStringLiteral("APP.API")),
+            "the glue must never touch the Jitsi-meet internal API object (#252)");
+        QVERIFY2(src.contains(QStringLiteral("postis")),
+            "the glue must speak the pinned external-API postMessage wire contract (#252)");
+    }
+
 private:
+    static QString readEmbedSource(const QString &name)
+    {
+#ifdef WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR
+        QFile file(QStringLiteral(WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR "/") + name);
+        if (file.open(QIODevice::ReadOnly))
+            return QString::fromUtf8(file.readAll());
+#else
+        Q_UNUSED(name);
+#endif
+        return QString();
+    }
+
     static QVariantMap inviteBuilderGoldenInput()
     {
         QVariantMap input;
