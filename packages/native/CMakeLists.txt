@@ -107,7 +107,7 @@ qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml q
 qml/NativeJitsiCard.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeUserProfile.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
@@ -122,7 +122,7 @@ set(native_icons chat_bubble calendar mail folders profile channels add attach s
     reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     at bell bell_off person_add
     stylus images border_color links business_center handshake account_circle group
-    globe_location_pin schedule calendar_month celebration videos)
+    globe_location_pin schedule calendar_month celebration videos poll)
 set(native_icon_files)
 foreach(icon IN LISTS native_icons)
     list(APPEND native_icon_files "../web/src/shared/assets/icons/${icon}.svg")

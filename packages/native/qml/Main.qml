@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQml
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
@@ -6292,6 +6293,23 @@ ApplicationWindow {
                                     glyphSize: 24
                                     onClicked: root.toggleComposerEmojiPicker()
                                 }
+                                // Issue #215 poll trigger (message-composer.ui.tsx PollButton):
+                                // sits after the emoji trigger, hidden while an edit session is
+                                // open and on channels without poll support.
+                                NativeIconButton {
+                                    id: composerPollButton
+                                    objectName: "pollButton"
+                                    colors: root.colors
+                                    asset: "poll.svg"
+                                    help: qsTr("Create poll")
+                                    visible: root.controller.pollCreationAllowed
+                                        && root.controller.editingMessageId.length === 0
+                                    enabled: root.composerAvailable
+                                    implicitWidth: 32
+                                    implicitHeight: 32
+                                    glyphSize: 24
+                                    onClicked: pollCreateDialog.openForCreate()
+                                }
                             }
                         }
                     }
@@ -8055,6 +8073,14 @@ ApplicationWindow {
             }
             ScrollBar.vertical: ScrollBar {}
         }
+    }
+
+    // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollDialog {
+        id: pollCreateDialog
+        parent: Overlay.overlay
+        colors: root.colors
+        controller: root.controller
     }
 
     Popup {
