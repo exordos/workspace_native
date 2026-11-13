@@ -9733,6 +9733,59 @@ private slots:
         QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
     }
 
+    void liveEmptyExcerptReplacesParkedMemo()
+    {
+        // A present message whose rendered plain excerpt is empty (its body
+        // became whitespace-only / media-only after an edit) is live content,
+        // not a lookup miss: the banner must show the current empty excerpt,
+        // never the memo left behind by the earlier text body. The tab label
+        // then falls back to the bare author name exactly as the reference
+        // getTabLabel does for an empty excerpt (workspace_ui 61dacef
+        // workspace-reply.ui.tsx).
+        Fixture fixture; replyPersistenceScene(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(fixture.controller.beginReply(QStringLiteral("11111111-1111-4111-8111-111111111111")));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Alpha note"));
+
+        // Park to conversation B, then edit the quoted message on the server
+        // to a body that renders no plain text before coming back to A.
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(fixture.controller.messages().size(), 1);
+        auto blank = message(QStringLiteral("   "),
+                             QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        blank["is_own"] = false;
+        blank["author_uuid"] = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        auto second = message(QStringLiteral("Alpha second note"),
+                              QStringLiteral("12121212-1212-4212-8212-121212121212"));
+        second["is_own"] = false;
+        second["author_uuid"] = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        auto beta = message(QStringLiteral("Beta note"),
+                            QStringLiteral("23232323-2323-4323-8323-232323232323"), secondTopicId);
+        beta["is_own"] = false;
+        beta["author_uuid"] = "8b8b8b8b-8b8b-4b8b-8b8b-8b8b8b8b8b8b";
+        fixture.messages = [blank, second, beta](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{beta}};
+            return Response{QJsonArray{blank, second}};
+        };
+        fixture.controller.selectTopic(topicId);
+        // Restored live with A's history still loading: the memo is the only
+        // renderable source, so the banner may show it for now.
+        QCOMPARE(fixture.controller.replyMessageId(),
+                 QStringLiteral("11111111-1111-4111-8111-111111111111"));
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+        // History arrives: the message is PRESENT with an empty rendered
+        // excerpt, so live resolution (empty) must win over the stale memo.
+        QTRY_COMPARE(fixture.controller.replyExcerpt(), QString());
+        const auto tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs.size(), 1);
+        QCOMPARE(tabs[0].toMap().value("excerpt").toString(), QString());
+        QCOMPARE(tabs[0].toMap().value("label").toString(), QString("Amy"));
+        // The author stays live-resolvable from the present message.
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;
