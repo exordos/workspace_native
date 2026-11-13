@@ -1,9 +1,13 @@
 #include "call/jitsi-call.h"
 #include "call/native-call-store.h"
+#include "call/native-call-window.h"
 
+#include <QHash>
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <QTest>
+#include <QXmlStreamReader>
 
 using namespace workspace;
 
@@ -407,6 +411,359 @@ private slots:
             QStringLiteral("opened"));
         store.clear();
         QVERIFY(!store.hasActiveCall());
+    }
+    // --- Call window shell (issue #162, reference jitsi-call-modal-shell.hook.ts) ---
+
+    QVariantMap validCall() const
+    {
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-X"));
+        call.insert(QStringLiteral("locationName"), QStringLiteral("Design lobby"));
+        return call;
+    }
+
+    void expandedBoundsMatchReferenceInsets()
+    {
+        // Golden acceptance: viewport 1440x900 -> x32 y32 1376x836.
+        QCOMPARE(JitsiCallWindowController::expandedBounds(QSize(1440, 900)),
+            QRect(32, 32, 1376, 836));
+        // Both dims >= 640 use the 32 px desktop inset.
+        QCOMPARE(JitsiCallWindowController::expandedBounds(QSize(640, 640)),
+            QRect(32, 32, 576, 576));
+        // One dim below 640 drops to the 16 px mobile inset.
+        QCOMPARE(JitsiCallWindowController::expandedBounds(QSize(640, 500)),
+            QRect(16, 16, 608, 468));
+        QCOMPARE(JitsiCallWindowController::expandedBounds(QSize(639, 900)),
+            QRect(16, 16, 607, 868));
+        // Minimum window size 280x180 wins over the inset math.
+        QCOMPARE(JitsiCallWindowController::expandedBounds(QSize(300, 200)),
+            QRect(16, 16, 280, 180));
+    }
+
+    void pipDefaultBoundsAnchorBottomRight()
+    {
+        // Golden acceptance: PiP default x1100 y660 at 320x220 on 1440x900.
+        QCOMPARE(JitsiCallWindowController::defaultPipBounds(QSize(1440, 900)),
+            QRect(1100, 660, 320, 220));
+        QCOMPARE(JitsiCallWindowController::defaultPipBounds(QSize(1280, 800)),
+            QRect(940, 560, 320, 220));
+        // Math.max(margin, ...) floors tiny viewports at the margin.
+        QCOMPARE(JitsiCallWindowController::defaultPipBounds(QSize(300, 200)),
+            QRect(20, 20, 320, 220));
+    }
+
+    void openShellParsesCallAndShowsLoading()
+    {
+        JitsiCallWindowController shell;
+        shell.setViewportSize(QSize(1440, 900));
+        shell.open(validCall());
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Expanded));
+        QCOMPARE(shell.embedState(), int(JitsiCallWindowController::Loading));
+        QCOMPARE(shell.bounds(), QRect(32, 32, 1376, 836));
+        QCOMPARE(shell.meetingUrl(), QStringLiteral("https://meet.jit.si/Room-X"));
+        QCOMPARE(shell.parsedRoomName(), QStringLiteral("Room-X"));
+        QCOMPARE(shell.callName(), QStringLiteral("Design lobby"));
+        QCOMPARE(shell.displayName(), QStringLiteral("Design lobby"));
+        // One-time session config (jitsi-call.ui.tsx:15-21).
+        const auto config = shell.sessionConfig();
+        QCOMPARE(config.value(QStringLiteral("startWithAudioMuted")).toBool(), true);
+        QCOMPARE(config.value(QStringLiteral("startWithVideoMuted")).toBool(), true);
+        QCOMPARE(config.value(QStringLiteral("prejoinConfig")).toMap()
+            .value(QStringLiteral("enabled")).toBool(), false);
+        QCOMPARE(shell.subtitleText(), QString());
+        QCOMPARE(shell.titleText(), QStringLiteral("Call - Design lobby"));
+    }
+
+    void sessionConfigHonoursVideoMutedPayloadAndDisplayNameFallback()
+    {
+        JitsiCallWindowController shell;
+        QVariantMap call = validCall();
+        call.insert(QStringLiteral("startWithVideoMuted"), false);
+        call.remove(QStringLiteral("locationName"));
+        call.insert(QStringLiteral("displayName"), QStringLiteral("  Ada  "));
+        shell.open(call);
+        QCOMPARE(shell.sessionConfig().value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+        QCOMPARE(shell.displayName(), QStringLiteral("Ada"));
+        QCOMPARE(shell.callName(), QStringLiteral("Room-X"));
+
+        JitsiCallWindowController bare;
+        QVariantMap anon;
+        anon.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-X"));
+        bare.open(anon);
+        QCOMPARE(bare.displayName(), QStringLiteral("Participant"));
+    }
+
+    void invalidUrlOpensShellInInvalidState()
+    {
+        JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("definitely not a url"));
+        shell.open(call);
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Expanded));
+        QCOMPARE(shell.embedState(), int(JitsiCallWindowController::InvalidUrl));
+        QCOMPARE(shell.stateText(), QStringLiteral("Invalid call link"));
+        QCOMPARE(shell.embedCreations(), 0);
+        // Without a call name the header falls back to the count form.
+        QCOMPARE(shell.titleText(), QStringLiteral("Call"));
+        shell.setParticipantCountProvider([] { return 3; });
+        shell.pollNow();
+        QCOMPARE(shell.titleText(), QStringLiteral("Call (3 participants)"));
+    }
+
+    void embedCreatedExactlyOnceAcrossShellToggles()
+    {
+        JitsiCallWindowController shell;
+        shell.setViewportSize(QSize(1440, 900));
+        int factoryCalls = 0;
+        shell.setEmbedFactory([&factoryCalls] { ++factoryCalls; });
+        shell.open(validCall());
+        QCOMPARE(shell.embedCreations(), 0);
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.embedState(), int(JitsiCallWindowController::Ready));
+        QCOMPARE(shell.embedCreations(), 1);
+        // Minimize/expand/fullscreen/resize never recreate the embed
+        // (reference mount-count contract in jitsi-call.ui.test.tsx).
+        shell.toggleMinimize();
+        shell.toggleMinimize();
+        shell.toggleFullscreen();
+        shell.setViewportSize(QSize(1000, 700));
+        shell.setPipBounds(QRect(10, 20, 400, 300));
+        QCOMPARE(shell.embedCreations(), 1);
+        QCOMPARE(factoryCalls, 1);
+        QCOMPARE(shell.embedState(), int(JitsiCallWindowController::Ready));
+        shell.close();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Closed));
+    }
+
+    void dismissMinimizesAndNeverClosesLiveCall()
+    {
+        JitsiCallWindowController shell;
+        shell.setViewportSize(QSize(1440, 900));
+        QSignalSpy closed(&shell, &JitsiCallWindowController::closeRequested);
+        shell.open(validCall());
+        shell.apiLoadSucceeded();
+        shell.requestDismiss();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Minimized));
+        QCOMPARE(shell.bounds(), QRect(1100, 660, 320, 220));
+        shell.requestDismiss();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Minimized));
+        QCOMPARE(closed.count(), 0);
+        shell.toggleMinimize();
+        shell.requestDismiss();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Expanded));
+        QCOMPARE(closed.count(), 0);
+        // Only readyToClose (or the close button) ends the call.
+        shell.readyToClose();
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Closed));
+        QCOMPARE(closed.count(), 1);
+    }
+
+    void fullscreenExitsWhenMinimizingAndIsIgnoredInPip()
+    {
+        JitsiCallWindowController shell;
+        shell.open(validCall());
+        shell.toggleFullscreen();
+        QCOMPARE(shell.fullscreen(), true);
+        shell.toggleMinimize();
+        QCOMPARE(shell.fullscreen(), false);
+        QCOMPARE(shell.mode(), int(JitsiCallWindowController::Minimized));
+        shell.toggleFullscreen();
+        QCOMPARE(shell.fullscreen(), false);
+    }
+
+    void pipBoundsPreservedAcrossTwoMinimizeCycles()
+    {
+        JitsiCallWindowController shell;
+        shell.setViewportSize(QSize(1440, 900));
+        shell.open(validCall());
+        shell.toggleMinimize();
+        QCOMPARE(shell.bounds(), QRect(1100, 660, 320, 220));
+        shell.setPipBounds(QRect(100, 120, 400, 300));
+        QCOMPARE(shell.bounds(), QRect(100, 120, 400, 300));
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            shell.toggleMinimize();
+            QCOMPARE(shell.bounds(), QRect(32, 32, 1376, 836));
+            shell.toggleMinimize();
+            QCOMPARE(shell.bounds(), QRect(100, 120, 400, 300));
+        }
+        // PiP stays draggable/resizable down to the 280x180 minimum.
+        shell.setPipBounds(QRect(5, 5, 100, 100));
+        QCOMPARE(shell.bounds(), QRect(5, 5, 280, 180));
+        // A new call resets PiP to the default anchor.
+        shell.close();
+        shell.open(validCall());
+        shell.toggleMinimize();
+        QCOMPARE(shell.bounds(), QRect(1100, 660, 320, 220));
+    }
+
+    void participantEventsAndFocusAwarePollCadence()
+    {
+        JitsiCallWindowController shell;
+        int participants = 1;
+        shell.setParticipantCountProvider([&participants] { return participants; });
+        shell.open(validCall());
+        QCOMPARE(shell.participantCount(), -1);
+        QCOMPARE(shell.pollIntervalMs(), 5000);
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.participantCount(), 1);
+        participants = 4;
+        shell.participantJoined();
+        QCOMPARE(shell.participantCount(), 4);
+        participants = 3;
+        shell.participantLeft();
+        QCOMPARE(shell.participantCount(), 3);
+        participants = 7;
+        shell.pollNow();
+        QCOMPARE(shell.participantCount(), 7);
+        shell.setFocused(false);
+        QCOMPARE(shell.pollIntervalMs(), 30000);
+        shell.setFocused(true);
+        QCOMPARE(shell.pollIntervalMs(), 5000);
+        shell.close();
+        QCOMPARE(shell.participantCount(), -1);
+    }
+
+    void headerTitleAndSubtitleRules_data()
+    {
+        QTest::addColumn<QString>("locationName");
+        QTest::addColumn<int>("count");
+        QTest::addColumn<QString>("title");
+        QTest::addColumn<QString>("subtitle");
+        // Reference callName = trimmed locationName, else parsed room name;
+        // so a valid URL always titles "Call - <name-or-room>" and the
+        // count-form title belongs to the unparseable-URL header slot.
+        QTest::newRow("named call, count unknown")
+            << QStringLiteral("Design lobby") << -1
+            << QStringLiteral("Call - Design lobby") << QString();
+        QTest::newRow("named call with count") << QStringLiteral("Design lobby") << 3
+            << QStringLiteral("Call - Design lobby") << QStringLiteral("3 participants");
+        QTest::newRow("no location falls back to room name") << QString() << 1
+            << QStringLiteral("Call - Room-X") << QStringLiteral("1 participant");
+    }
+    void headerTitleAndSubtitleRules()
+    {
+        QFETCH(QString, locationName);
+        QFETCH(int, count);
+        QFETCH(QString, title);
+        QFETCH(QString, subtitle);
+        JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-X"));
+        call.insert(QStringLiteral("locationName"), locationName);
+        if (count >= 0)
+            shell.setParticipantCountProvider([count] { return count; });
+        shell.open(call);
+        if (count >= 0)
+            shell.pollNow();
+        QCOMPARE(shell.titleText(), title);
+        QCOMPARE(shell.subtitleText(), subtitle);
+    }
+
+    void embedStatesAndHeaderLabelsUseReferenceTexts()
+    {
+        JitsiCallWindowController shell;
+        shell.open(validCall());
+        QCOMPARE(shell.stateText(), QStringLiteral("Loading call client\u2026"));
+        shell.apiLoadFailed();
+        QCOMPARE(shell.stateText(), QStringLiteral("Could not load call client"));
+        QCOMPARE(shell.retryText(), QStringLiteral("Try again"));
+        shell.retry();
+        QCOMPARE(shell.embedState(), int(JitsiCallWindowController::Loading));
+        QCOMPARE(shell.minimizeLabel(), QStringLiteral("Minimize"));
+        QCOMPARE(shell.minimizeTooltip(), QStringLiteral("Minimize to window"));
+        QCOMPARE(shell.fullscreenLabel(), QStringLiteral("Browser fullscreen mode"));
+        shell.toggleFullscreen();
+        QCOMPARE(shell.fullscreenLabel(), QStringLiteral("Exit fullscreen"));
+        shell.toggleMinimize();
+        QCOMPARE(shell.minimizeLabel(), QStringLiteral("Expand"));
+        QCOMPARE(shell.minimizeTooltip(), QStringLiteral("Expand"));
+        QCOMPARE(shell.closeLabel(), QStringLiteral("Close call"));
+    }
+
+    void permissionsGrantedOnceAndNeverRevokedByToggles()
+    {
+        JitsiCallWindowController shell;
+        shell.open(validCall());
+        QVERIFY(!shell.permissionsGranted());
+        shell.apiLoadSucceeded();
+        QVERIFY(shell.permissionsGranted());
+        QCOMPARE(shell.allowPolicy(),
+            QStringLiteral("camera; microphone; fullscreen; display-capture"));
+        shell.toggleMinimize();
+        shell.toggleFullscreen();
+        shell.toggleMinimize();
+        QVERIFY(shell.permissionsGranted());
+    }
+
+    void russianCatalogTextsMatchReferenceLocale()
+    {
+        const auto path = QFINDTESTDATA("../translations/workspace_ru.ts");
+        QVERIFY(!path.isEmpty());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QHash<QString, QString> translations;
+        QXmlStreamReader xml(&file);
+        QString context;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (!xml.isStartElement())
+                continue;
+            if (xml.name() == QLatin1String("name"))
+                context = xml.readElementText();
+            else if (xml.name() == QLatin1String("message")) {
+                QString source;
+                QString translation;
+                QStringList numerusForms;
+                while (xml.readNextStartElement()) {
+                    if (xml.name() == QLatin1String("source"))
+                        source = xml.readElementText();
+                    else if (xml.name() == QLatin1String("translation")) {
+                        bool numerus = false;
+                        while (xml.readNextStartElement()) {
+                            if (xml.name() == QLatin1String("numerusform")) {
+                                numerus = true;
+                                numerusForms.append(xml.readElementText());
+                            } else
+                                xml.skipCurrentElement();
+                        }
+                        if (numerus)
+                            translation = numerusForms.join(QLatin1Char('\x1f'));
+                        else
+                            translation = xml.readElementText();
+                    } else
+                        xml.skipCurrentElement();
+                }
+                if (context == QLatin1String("JitsiCallWindowController"))
+                    translations.insert(source, translation);
+            }
+        }
+        // Reference packages/web/src/i18n/locales/ru.json at the contract sha,
+        // with {{count}} mapped to the Qt numerus %n.
+        const QHash<QString, QString> expected = {
+            {QStringLiteral("Call"), QString::fromUtf8("Позвонить")},
+            {QStringLiteral("Participant"), QString::fromUtf8("Участник")},
+            {QStringLiteral("Invalid call link"), QString::fromUtf8("Неверная ссылка на звонок")},
+            {QStringLiteral("Loading call client\u2026"),
+                QString::fromUtf8("Загрузка клиента звонков…")},
+            {QStringLiteral("Could not load call client"),
+                QString::fromUtf8("Не удалось загрузить клиент звонков")},
+            {QStringLiteral("Try again"), QString::fromUtf8("Попробовать снова")},
+            {QStringLiteral("Browser fullscreen mode"),
+                QString::fromUtf8("Полноэкранный режим браузера")},
+            {QStringLiteral("Exit fullscreen"), QString::fromUtf8("Выйти из полноэкранного")},
+            {QStringLiteral("Expand"), QString::fromUtf8("Развернуть")},
+            {QStringLiteral("Minimize"), QString::fromUtf8("Свернуть")},
+            {QStringLiteral("Minimize to window"), QString::fromUtf8("Свернуть в окно")},
+            {QStringLiteral("Close call"), QString::fromUtf8("Закрыть звонок")},
+            {QStringLiteral("Call (%n participant)|Call (%n participants)"),
+                QString::fromUtf8("Звонок (%n участник)\x1fЗвонок (%n участника)"
+                                  "\x1fЗвонок (%n участников)")},
+            {QStringLiteral("%n participant|%n participants"),
+                QString::fromUtf8("%n участник\x1f%n участника\x1f%n участников")},
+        };
+        for (const auto &key : expected.keys())
+            QVERIFY2(translations.value(key) == expected.value(key),
+                qPrintable(key + QStringLiteral(" != expected ru text")));
     }
 };
 
