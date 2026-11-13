@@ -1,3 +1,20 @@
+# Workspace Native 0.21.1 - Linux development preview
+
+One fix for existing behavior:
+
+- Restoring the window after maximizing no longer loses your place. The
+  conversation tail stays visible when you were at the newest message, and a
+  reader parked in older history keeps its anchor row on screen instead of
+  being dumped into empty space or dragged to the tail.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.21.0...0.21.1](https://github.com/exordos/workspace_native/compare/0.21.0...0.21.1)
+
+---
+
 # Workspace Native 0.21.0 - Linux development preview
 
 - A call now starts from the people and conversations around you, not only from
