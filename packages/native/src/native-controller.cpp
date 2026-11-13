@@ -11093,18 +11093,23 @@ QString NativeController::replyTabAuthor(const ReplyTab &tab) const
     return tab.authorMemo;
 }
 
-QString NativeController::replyPlainFor(const QString &id) const
+std::optional<QString> NativeController::replyPlainFor(const QString &id) const
 {
+    // nullopt means "the quoted message is not in memory"; an empty string
+    // means it IS in memory but renders no plain text (image/sticker-only or
+    // whitespace body). The memo layer must treat those two states differently.
     const auto *message = id.isEmpty() ? nullptr : findMessage(id);
-    if (!message) return {};
+    if (!message) return std::nullopt;
     static NativeMarkdown previewCache;
     return previewCache.render(message->content).value("plain").toString().simplified();
 }
 
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
 {
+    // The memo covers only a missing message. A present message with an empty
+    // rendered excerpt is live content and must replace (clear) the memo.
     const auto live = replyPlainFor(tab.message);
-    if (!live.isEmpty()) { tab.plainMemo = live; return live; }
+    if (live) { tab.plainMemo = *live; return *live; }
     return tab.plainMemo;
 }
 
@@ -11117,7 +11122,13 @@ void NativeController::primeReplyTabMemos(QList<ReplyTab> &tabs) const
     // live resolution still wins on every read after the restore.
     for (auto &tab : tabs) {
         if (tab.authorMemo.isEmpty()) tab.authorMemo = replyAuthorFor(tab.message);
-        if (tab.plainMemo.isEmpty()) tab.plainMemo = replyPlainFor(tab.message);
+        if (tab.plainMemo.isEmpty()) {
+            // Seed the fallback only from a non-empty live render; a present
+            // message that renders empty needs no memo because live
+            // resolution now resolves it (to empty) on every read.
+            const auto live = replyPlainFor(tab.message);
+            if (live && !live->isEmpty()) tab.plainMemo = *live;
+        }
     }
 }
 
