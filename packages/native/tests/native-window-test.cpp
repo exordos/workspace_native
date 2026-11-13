@@ -17182,6 +17182,100 @@ private:
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
+
+    void callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl()
+    {
+        // PR #264 review (medium): the LoadFailed -> Loading retry edge also
+        // fires when the live view no longer shows the configured meeting
+        // URL (a redirect or any drift away from it). That branch must
+        // re-point the single live surface through the settable `url`
+        // property: the WebEngineView QML type exposes reload(), stop(),
+        // findText(), goBack()/goForward() - but no load() method (Qt
+        // 6.10.2 qmltypes for QtWebEngine/WebEngineView: url is a QUrl
+        // property with write: "setUrl"), so view.load(target) raised a QML
+        // TypeError and started no load at all, leaving the controller stuck
+        // in Loading forever. This case desynchronizes the live view after
+        // LoadFailed, then retries and requires recovery to Ready.
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true; fixture.localMeeting = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Embed retry url-divergence teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::Ready), 20000);
+
+        // A broken meeting host drives the live view into the retry state.
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+        fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::LoadFailed), 20000);
+
+        // Desynchronize the live surface: point the live WebEngineView at a
+        // decoy URL from the same loopback fixture, so its url no longer
+        // equals controller.embedUrl(). The controller only reacts to load
+        // events while Loading, so this drift cannot move LoadFailed or the
+        // retry affordance; it only takes the retry edge off its happy path.
+        auto *embedItem = loader->property("item").value<QObject *>();
+        QVERIFY(embedItem);
+        QObject *engineView = nullptr;
+        for (auto *child : embedItem->findChildren<QObject *>()) {
+            // QML instantiation names the type QQuickWebEngineView_QML_NNN,
+            // so match on the metaobject hierarchy, not on the class name.
+            if (child->inherits("QQuickWebEngineView")) {
+                engineView = child;
+                break;
+            }
+        }
+        QVERIFY(engineView);
+        const QUrl decoy = fixture.server.origin().toString() + QStringLiteral("/pip-mismatch-decoy");
+        engineView->setProperty("url", decoy);
+        QVERIFY(QTest::qWaitFor([&] {
+            return engineView->property("url").toUrl() == decoy
+                && !engineView->property("loading").toBool();
+        }, 20000));
+        QVERIFY(controller.callWindow()->embedUrl() != decoy.toString());
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::LoadFailed));
+        auto *retry = visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton"));
+        QVERIFY(retry);
+
+        // Retry must re-point the live surface at the meeting URL (via the
+        // settable url property) and recover to Ready. With the old
+        // view.load(target) call the branch hit a nonexistent method: Qt
+        // reported "TypeError: view.load is not a function" (fatal through
+        // failOnWarning above), no load ever started, and the controller
+        // stayed in Loading - the Ready timeout below fails in that state.
+        fixture.breakMeetingLoads = 0;
+        click(window, retry);
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::Ready), 20000);
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
 };
 
 
