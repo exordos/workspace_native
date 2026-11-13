@@ -17109,6 +17109,59 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(loaded.count() >= 3, 2000);
         QVERIFY(!loaded.at(2).at(5).toString().isEmpty());
     }
+
+    // Exordy threads 4563441897/4563441917 (duplicates): the voters callback
+    // must not retain references to the caller's QString argument objects.
+    // The response is held in flight, the heap-owned argument objects are
+    // destroyed, their freed allocation slots are taken over by poison
+    // strings, and only then the held response lands: a by-reference capture
+    // would emit the poison strings (or worse) instead of the request arguments.
+    void pollVotersDeferredResponseCarriesIntactArgumentsAfterCallerObjectsDie()
+    {
+        std::function<void()> releaseVoters;
+        Fixture fixture;
+        const auto id = pollFixtureUuid(17);
+        const auto voter = pollFixtureUuid(171);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/poll_voters/")) {
+                const QJsonObject row{{QStringLiteral("uuid"), voter}};
+                Response response{QJsonArray{row}, 200, 0, {}};
+                response.defer = [&releaseVoters](std::function<void()> send) { releaseVoters = std::move(send); };
+                return response;
+            }
+            return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        QSignalSpy loaded(&fixture.controller, &NativeController::pollVotersLoaded);
+        QVERIFY(loaded.isValid());
+        // Heap-owned argument objects: a callback that keeps a reference to
+        // each caller object survives its destruction only by accident, so
+        // destroying and re-poisoning the slots makes any dangling read
+        // observable instead of stale-but-lucky.
+        auto messageUuid = std::make_unique<QString>(id);
+        auto questionUuid = std::make_unique<QString>(pollQuestionOne);
+        auto optionUuid = std::make_unique<QString>(pollOptionOne);
+        fixture.controller.loadPollVoters(*messageUuid, *questionUuid, *optionUuid);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseVoters), 2000);
+        messageUuid.reset(); questionUuid.reset(); optionUuid.reset();
+        // Heap poison: same-size allocations take over the freed argument
+        // slots before the held response lands.
+        auto poisonMessage = std::make_unique<QString>(pollFixtureUuid(777));
+        auto poisonQuestion = std::make_unique<QString>(pollFixtureUuid(778));
+        auto poisonOption = std::make_unique<QString>(pollFixtureUuid(779));
+        releaseVoters(); releaseVoters = {};
+        QVERIFY(loaded.wait(2000));
+        const QList<QVariant> args = loaded.first();
+        QCOMPARE(args.at(0).toString(), id);
+        QCOMPARE(args.at(1).toString(), pollQuestionOne);
+        QCOMPARE(args.at(2).toString(), pollOptionOne);
+        const QStringList expectedVoters{voter};
+        QCOMPARE(args.at(3).toStringList(), expectedVoters);
+        // Keep the poison strings alive while the callback ran (no optimizer
+        // escape: they were read through the dangling references if any).
+        QVERIFY(poisonMessage->size() > 0 && poisonQuestion->size() > 0 && poisonOption->size() > 0);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
