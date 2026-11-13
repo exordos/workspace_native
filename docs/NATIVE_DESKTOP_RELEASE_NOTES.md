@@ -1,3 +1,31 @@
+# Workspace Native 0.20.0 - Linux development preview
+
+Three features ported from the reference desktop:
+
+- Video now plays inside the media viewer instead of only offering a download:
+  the viewer pages between image and video slots with a position counter, a
+  video slot shows its own loading text, then plays with inline controls, and
+  load and display failures get their own distinct messages in both locales.
+  Video entries in the thumbnail strip carry a play badge, and oversized video
+  lists are trimmed to what the viewer can actually render.
+- An incoming call stops being silent: a large invite card for a normal window
+  and a compact one when the window is narrow now appear with the caller's
+  name and photo, answer and decline actions, a video toggle and automatic
+  decline after 45 seconds if nobody answers. The invite keeps its video
+  preference tied to the call that raised it.
+- Encrypted messages that could not be decrypted no longer stay dead. The error
+  row gained a per-message retry that asks for the key again and decrypts in
+  place, so a message you were given the key for later can be recovered without
+  leaving the conversation.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.19.0...0.20.0](https://github.com/exordos/workspace_native/compare/0.19.0...0.20.0)
+
+---
+
 # Workspace Native 0.19.0 - Linux development preview
 
 Three features ported from the reference desktop:
