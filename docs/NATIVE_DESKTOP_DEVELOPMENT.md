@@ -962,3 +962,11 @@ unexplained initial-open observation, full Window265 and raw component captures
 are in [status picker checks](provenance/status-picker-checks.json). Private
 measurement and diagnostic cases are not checked into the normal test inventory.
 Scrollbar/shadow/spinner/full-shell and live/platform acceptance remain separate.
+
+## Window restore keeps the conversation tail and the reading anchor
+
+Resizing the message viewport re-flows wrapped rows; the message list now runs
+its existing viewport capture/restore lifecycle on every size change so a
+tail-following conversation keeps the latest message visible and an older-history
+reader keeps its anchor, matching the web reference resize observer. See
+[window restore tail anchor](NATIVE_DESKTOP_WINDOW_RESTORE_TAIL.md).
