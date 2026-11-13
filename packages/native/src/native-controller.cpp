@@ -11261,13 +11261,20 @@ QString NativeController::replyTabAuthor(const ReplyTab &tab) const
 
 std::optional<QString> NativeController::replyPlainFor(const QString &id) const
 {
-    // nullopt means "the quoted message is not in memory"; an empty string
-    // means it IS in memory but renders no plain text (image/sticker-only or
+    // nullopt means "the quoted message is not in memory anywhere"; an empty
+    // string means it IS known but renders no plain text (image/sticker-only or
     // whitespace body). The memo layer must treat those two states differently.
-    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
-    if (!message) return std::nullopt;
+    // A quote whose origin sits outside the loaded window is still known once
+    // the lookup resolved it into m_quotes (issue #202, master defect #249), so
+    // the resolved cache content counts as "in memory" here.
+    if (id.isEmpty()) return std::nullopt;
+    const QString *content = nullptr;
+    if (const auto *message = findMessage(id); message) content = &message->content;
+    else if (const auto record = m_quotes.constFind(id);
+             record != m_quotes.cend() && !record->missing) content = &record->content;
+    if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
-    return previewCache.render(message->content).value("plain").toString().simplified();
+    return previewCache.render(*content).value("plain").toString().simplified();
 }
 
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
