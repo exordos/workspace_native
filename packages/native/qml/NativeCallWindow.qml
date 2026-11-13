@@ -184,6 +184,10 @@ Item {
             objectName: "callWindowLoadingState"
             anchors.centerIn: parent
             spacing: 12
+            // #263: the embed surface stays alive through Loading and
+            // LoadFailed (one active loader per phase), so the state
+            // overlays must sit above it to stay visible and clickable.
+            z: 1
             visible: shell.controller.embedState === 1 // Loading
             BusyIndicator {
                 objectName: "callWindowBusy"
@@ -202,6 +206,7 @@ Item {
             objectName: "callWindowErrorState"
             anchors.centerIn: parent
             spacing: 12
+            z: 1 // above the live embed surface (#263)
             visible: shell.controller.embedState === 3 // LoadFailed
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter

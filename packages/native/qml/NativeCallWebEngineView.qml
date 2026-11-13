@@ -119,7 +119,7 @@ Item {
         }
         // The real load events of this view ARE the embed lifecycle: success
         // moves the controller to Ready (creating the embed exactly once),
-        // failure to LoadFailed where retry recreates the view (finding 1,
+        // failure to LoadFailed where the shell offers retry (finding 1,
         // fixed for the real Qt status constants in #250; the controller
         // ignores both callbacks unless the state is Loading, so late
         // in-session navigations cannot downgrade a live call).
@@ -130,6 +130,31 @@ Item {
                 host.controller.apiLoadSucceeded()
             else if (loadRequest.status === host.loadStatusFailed)
                 host.controller.apiLoadFailed()
+        }
+        // #263: the shell keeps this single embed surface alive across the
+        // LoadFailed retry state (one active embed loader in every phase of
+        // expand/PiP), so retry cannot rely on Loader re-instantiation.
+        // When the controller moves LoadFailed -> Loading, the live view
+        // re-requests the meeting URL itself and its own load events drive
+        // the state on, exactly as a recreated view would. The previous
+        // state is captured in the handler (not bound), so the edge survives
+        // the same signal that re-evaluates bindings.
+        property int priorEmbedState: 0
+        Connections {
+            target: host.controller
+            function onEmbedStateChanged() {
+                if (!host.controller)
+                    return
+                const now = host.controller.embedState
+                if (view.priorEmbedState === 3 && now === 1) {
+                    const target = host.controller.embedUrl()
+                    if (target.length > 0 && target === view.url.toString())
+                        view.reload()
+                    else
+                        view.load(target)
+                }
+                view.priorEmbedState = now
+            }
         }
         settings.javascriptEnabled: true
         Component.onCompleted: {
