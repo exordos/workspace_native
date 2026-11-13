@@ -10068,6 +10068,102 @@ private slots:
         QCOMPARE(fixture.controller.replyMessageId(), far);
     }
 
+    // Review thread 4559371966 (round 2): data-driven code-block coverage for
+    // the fence/indent variants a fenced answer can carry. Expectations follow
+    // the reference block model measured with marked 18.0.5 (gfm+breaks - the
+    // lexer parseWorkspaceMessageBody uses): a quote-like line the renderer
+    // puts inside code never splits a tab, while a line the renderer leaves in
+    // a paragraph splits like any other structural quote.
+    void inlineEditRestoreIgnoresQuoteLinesInCodeVariants_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QStringList>("quoteIds");
+        QTest::addColumn<QString>("firstAnswer");
+        const QString first = messageId;
+        const QString second = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString third = QStringLiteral("9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d9d");
+        const QString header = QStringLiteral("[You](urn:quote:%1)\n\nanswer\n\n").arg(first);
+        const QString q2 = QStringLiteral("[Someone](urn:quote:%1)").arg(second);
+        const QString q3 = QStringLiteral("[Other](urn:quote:%1)").arg(third);
+        auto row = [&](const char *name, const QString &rest, const QStringList &ids,
+                       const QString &answer = QString()) {
+            QTest::newRow(name) << (header + rest) << ids
+                                << (QStringLiteral("answer\n\n")
+                                    + (answer.isNull() ? rest : answer)).trimmed();
+        };
+        row("fenceSimple", QStringLiteral("```\nbefore\n\n%1\n\nstill code\n```\n\nafter fence").arg(q2),
+            {first});
+        row("fenceTilde", QStringLiteral("~~~\n\n%1\n\nstill\n~~~\n\nafter").arg(q2), {first});
+        row("fenceIndentThreeSpaces",
+            QStringLiteral("   ```\n\n%1\n\n   ```\n\nafter").arg(q2), {first});
+        // 4 leading spaces make the fence line indented code, so the quote line
+        // below stays a structural paragraph.
+        row("fenceIndentedFourSpaces",
+            QStringLiteral("    ```\n\n%1\n\nafter").arg(q2), {first, second}, "    ```");
+        row("fenceInListNoBlankLineBeforeQuote",
+            QStringLiteral("- ```\n%1\n\n  ```\n\nafter").arg(q2), {first});
+        // A list-item fence ends with its item: the quote line at column 0 after
+        // the blank line is outside the code (measured with marked).
+        row("fenceInListQuoteEndsTheItem",
+            QStringLiteral("- item\n\n  ```\n\n%1\n\n  ```\n\nafter").arg(q2),
+            {first, second}, "- item\n\n  ```");
+        row("fenceInListIndentedQuote",
+            QStringLiteral("- item\n\n  ```\n\n  %1\n\n  ```\n\nafter").arg(q2), {first});
+        // A backtick fence whose info string contains backticks is not a fence.
+        row("openingBacktickInfoWithBackticks",
+            QStringLiteral("```x```\n\n%1\n\nafter").arg(q2), {first, second}, "```x```");
+        // Only a bare closing fence closes a block: "``` text" keeps the rest
+        // of the answer inside the code.
+        row("closingBacktickFenceWithInfo",
+            QStringLiteral("```\n\n%1\n\n``` text\n\n%2\n\nafter").arg(q2, q3), {first});
+        row("closingFenceShorterThanOpening",
+            QStringLiteral("````\n\n%1\n\n```\n\n%2\n\nafter").arg(q2, q3), {first});
+        row("tildeNotClosedByBackticks",
+            QStringLiteral("~~~\n\n%1\n\n```\n\n%2\n\nafter").arg(q2, q3), {first});
+        row("tildeInfoMayContainBackticks",
+            QStringLiteral("~~~ info with `ticks\n\n%1\n\n~~~\n\nafter").arg(q2), {first});
+        row("closingTildeFenceWithInfo",
+            QStringLiteral("~~~\n\n%1\n\n~~~ text\n\n%2\n\nafter").arg(q2, q3), {first});
+        row("unterminatedFenceRunsToEnd",
+            QStringLiteral("```\n\n%1\n\nnever closes").arg(q2), {first});
+        row("indentedCodeFourSpaces", QStringLiteral("    %1\n\nafter").arg(q2), {first});
+        row("indentedCodeTab", QStringLiteral("\t%1\n\nafter").arg(q2), {first});
+        row("twoCharFenceIsNotCode", QStringLiteral("``\n\n%1\n\nafter").arg(q2),
+            {first, second}, "``");
+    }
+
+    void inlineEditRestoreIgnoresQuoteLinesInCodeVariants()
+    {
+        QFETCH(QString, body);
+        QFETCH(QStringList, quoteIds);
+        QFETCH(QString, firstAnswer);
+        Fixture fixture;
+        const QString second = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString third = QStringLiteral("9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d9d");
+        auto origin = message("Origin text", messageId);
+        auto secondOrigin = message("Second origin", second);
+        auto thirdOrigin = message("Third origin", third);
+        auto note = message(body, returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{origin, secondOrigin, thirdOrigin, note}};
+            return {path.endsWith(messageId) ? origin
+                : path.endsWith(second) ? secondOrigin
+                : path.endsWith(third) ? thirdOrigin : note};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto tabs = fixture.controller.replyTabs();
+        QStringList actualIds;
+        for (const auto &tab : tabs) actualIds.append(tab.toMap().value("message").toString());
+        QCOMPARE(actualIds, quoteIds);
+        if (!tabs.isEmpty())
+            QCOMPARE(fixture.controller.draft(), firstAnswer);
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;

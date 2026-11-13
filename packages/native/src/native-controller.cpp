@@ -8590,30 +8590,88 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
     normalized = normalized.trimmed();
     if (normalized.isEmpty()) return {};
     const auto lines = normalized.split(QLatin1Char('\n'));
-    // CommonMark fence tracking (``` or ~~~, up to 3 leading spaces, closing
-    // fence of the same character and at least the opening length): a quote-like
-    // line inside a fenced block is code text and must never split a tab. The
-    // line-scanning reference (workspace-reply-restore.lib.ts) has no fence
-    // awareness of its own - its edit-restore controller only treats quote
-    // references that parseWorkspaceMessageBody surfaces as top-level blocks
-    // as structural, and fenced code never yields one - so this reproduces
-    // that guarantee inside the scanner (deviation note in
-    // docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md).
-    static const QRegularExpression fenceMarker(QStringLiteral("^ {0,3}(`{3,}|~{3,})"));
+    // Code-block tracking (deviation note in
+    // docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md): the line-scanning reference
+    // (workspace-reply-restore.lib.ts) has no fence awareness of its own - its
+    // edit-restore controller only treats quote references that
+    // parseWorkspaceMessageBody surfaces as top-level blocks as structural, and
+    // code never yields one - so the scanner reproduces that guarantee from the
+    // measured block model (marked 18.0.5, matching the CommonMark fence rules):
+    // a quote-like line that renders inside code must never split a tab.
+    //  * fenced code: ``` or ~~~ with up to 3 leading spaces; a backtick
+    //    opening fence's info string must not contain a backtick; only a bare
+    //    closing fence (same character, at least the opening length, trailing
+    //    blanks aside) ends the block; an unterminated fence runs to EOF;
+    //  * a fence opened inside a list item ends with the item - the first
+    //    non-blank line left of the item's content column closes it (marked
+    //    does not lazily absorb such a line into the fence);
+    //  * indented code needs no tracking: the quote patterns match only at
+    //    column 0, where no indented-code content can start.
+    static const QRegularExpression listMarker(
+        QStringLiteral("^( {0,3})([-+*]|\\d{1,9}[.)])([ \\t]*)(.*)$"));
     QVector<bool> insideFence(lines.size(), false);
     {
-        QChar openChar; qsizetype openLength = 0;
+        auto fenceRunAt = [](const QString &line, qsizetype column, QChar &marker,
+                             qsizetype &length, QString &info) -> bool {
+            marker = QChar(); length = 0; info.clear();
+            if (column >= line.size()) return false;
+            const auto candidate = line.at(column);
+            if (candidate != QLatin1Char('`') && candidate != QLatin1Char('~')) return false;
+            while (column + length < line.size() && line.at(column + length) == candidate)
+                ++length;
+            if (length < 3) { length = 0; return false; }
+            info = line.mid(column + length);
+            marker = candidate;
+            return true;
+        };
+        QChar openChar; qsizetype openLength = 0; qsizetype openColumn = 0;
+        qsizetype itemColumn = -1; bool openInList = false;
         for (qsizetype index = 0; index < lines.size(); ++index) {
-            const auto match = fenceMarker.match(lines.at(index));
+            const auto &line = lines.at(index);
+            const bool blank = line.trimmed().isEmpty();
+            qsizetype indent = 0;
+            for (const auto character : line) {
+                if (character == QLatin1Char(' ')) ++indent;
+                else if (character == QLatin1Char('\t')) indent += 4; // tab = four columns
+                else break;
+            }
+            if (itemColumn >= 0 && !blank && indent < itemColumn) {
+                itemColumn = -1;
+                if (openInList) { openChar = QChar(); openLength = 0; openInList = false; }
+            }
+            QChar marker; qsizetype run = 0; QString info;
             if (openLength) {
                 insideFence[index] = true; // fence delimiters are part of the block
-                const auto marker = match.captured(1);
-                if (!marker.isEmpty() && marker.at(0) == openChar && marker.size() >= openLength)
-                    openLength = 0;
-            } else if (match.hasMatch()) {
+                const auto maxColumn = openInList ? openColumn + 3 : 3;
+                if (!blank && indent <= maxColumn
+                    && fenceRunAt(line, indent, marker, run, info)
+                    && marker == openChar && run >= openLength && info.trimmed().isEmpty()) {
+                    openChar = QChar(); openLength = 0; openInList = false;
+                }
+                continue;
+            }
+            if (blank) continue;
+            bool markerLine = false;
+            if (const auto match = listMarker.match(line); match.hasMatch()
+                && (!match.captured(3).isEmpty() || match.captured(4).isEmpty())) {
+                auto spaces = match.captured(3).size();
+                if (spaces == 0) spaces = 1; // blank item: content follows indented
+                if (spaces > 4) spaces = 4;
+                itemColumn = indent + match.captured(2).size() + spaces;
+                markerLine = true;
+            }
+            // A fence may open at column <= 3, inside the current item's content
+            // area (up to three columns past it), or right after a list marker.
+            qsizetype column = -1;
+            if (markerLine) column = itemColumn;
+            else if (itemColumn >= 0) { if (indent <= itemColumn + 3) column = indent; }
+            else if (indent <= 3) column = indent;
+            if (column >= indent
+                && fenceRunAt(line, column, marker, run, info)
+                && (marker == QLatin1Char('~') || !info.contains(QLatin1Char('`')))) {
+                openChar = marker; openLength = run; openColumn = column;
+                openInList = itemColumn >= 0;
                 insideFence[index] = true;
-                openChar = match.captured(1).at(0);
-                openLength = match.captured(1).size();
             }
         }
     }

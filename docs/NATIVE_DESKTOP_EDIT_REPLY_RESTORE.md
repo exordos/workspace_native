@@ -114,11 +114,32 @@ restored flow reuses the existing composer reply chip labels).
    controller to only treat quote references that `parseWorkspaceMessageBody`
    surfaces as top-level blocks as structural, and a fenced code block never
    yields a `quote-reference` block. The native line scanner reproduces that
-   guarantee directly: it tracks CommonMark ``` and ~~~ fences (up to 3 leading
-   spaces, closing fence of the same character and at least the opening length)
-   and never treats a quote-like line inside a fenced block as structural
-   (review thread 4559371966). A quoted answer containing a fence therefore
-   round-trips verbatim through a re-save.
+   guarantee directly (review thread 4559371966). A quoted answer containing a
+   fence therefore round-trips verbatim through a re-save.
+   Round-2 note: the scanner now tracks the practical subset of the block model
+   that marked 18.0.5 (the reference's lexer, measured per variant) applies to
+   code, and a quote-like line inside any of it never splits a tab:
+   - fenced code: ``` or ~~~ with up to 3 leading spaces; a backtick opening
+     fence whose info string contains a backtick is not a fence (```` ```x``` ````
+     is a paragraph); only a bare closing fence (same character, at least the
+     opening length, trailing blanks aside) closes the block - "``` text" and
+     "~~~ text" keep later lines inside the code; an unterminated fence runs to
+     EOF;
+   - fences inside a list item: a fence at the item's content column (including
+     one right after the marker, "- ```") is code; it ends with the item, so a
+     column-0 line after a blank line leaves the item and is structural again.
+     Deviation from CommonMark lazy absorption (spec example 254 absorbs the
+     line into an unclosed item fence): marked does not absorb it either, and
+     the native scanner follows the reference's actual lexer rather than the
+     spec here. Nested list containers deeper than one level are not modeled;
+     neither does marked's restore path produce them in composer output.
+   - indented code (4-space or tab indentation) needs no explicit tracking: the
+     reference scanner's quote patterns match only at column 0, where no
+     indented-code content can start, so a quote line inside indented code was
+     never structural to begin with (guarded by test rows).
+   The tab count for each variant (17-row QTest data table
+   `inlineEditRestoreIgnoresQuoteLinesInCodeVariants`) was fixed against marked
+   18.0.5 (gfm+breaks) token output, not guessed.
 
 ## Tests
 
@@ -139,7 +160,14 @@ restored flow reuses the existing composer reply chip labels).
     quote line, never an empty author;
   - a standalone `[Name](urn:quote:...)` line inside a fenced code block in the
     answer is code text: one tab is restored and the fenced answer round-trips
-    verbatim through a re-save (fence-aware scanner, deviation 4).
+    verbatim through a re-save (fence-aware scanner, deviation 4);
+  - the 17-row `inlineEditRestoreIgnoresQuoteLinesInCodeVariants` data table
+    pins the code-block variants measured against marked 18.0.5: plain ``` and
+    ~~~ fences, 3-space indented fences, 4-space/tab indented code, ` ```x``` `
+    info strings, closing fences with info or too short, tilde fences closed
+    only by bare tildes (info may contain backticks), unterminated fences,
+    2-backtick non-fences, and fences inside list items (quote line at column 0
+    after the blank line leaves the item and becomes structural again).
 - `native-native-window`: the message-menu Edit action on a quoted message shows the
   edit notice and the quote chip (`replyAuthorText`/`replyExcerptText`) above the
   composer, and the composer is pre-filled with only the answer.
