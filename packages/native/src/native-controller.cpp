@@ -11252,7 +11252,11 @@ QString NativeController::replyTabAuthor(const ReplyTab &tab) const
     // quoted message is out of memory (right after a parked session returns).
     const auto live = replyAuthorFor(tab.message);
     if (!live.isEmpty()) { tab.authorMemo = live; return live; }
-    return tab.authorMemo;
+    if (!tab.authorMemo.isEmpty()) return tab.authorMemo;
+    // Issue #202 (review thread 4559371974): an edit-restored tab keeps the
+    // label parsed from its quote line, so a deferred, failed or missing
+    // origin lookup never blanks the chip author.
+    return tab.fallbackAuthor;
 }
 
 std::optional<QString> NativeController::replyPlainFor(const QString &id) const
@@ -11313,15 +11317,6 @@ QString NativeController::replyAuthorFor(const QString &id) const
     else return {};
     own = own || authorId == m_session->user();
     return userDisplayName(authorId, own ? tr("You") : QStringLiteral("#") + authorId.left(8));
-}
-
-QString NativeController::replyTabAuthor(const ReplyTab &tab) const
-{
-    // Issue #202 (review thread 4559371974): an edit-restored tab keeps the
-    // label parsed from its quote line, so a deferred, failed or missing
-    // origin lookup never blanks the chip author.
-    const auto author = replyAuthorFor(tab.message);
-    return author.isEmpty() ? tab.fallbackAuthor : author;
 }
 
 QString NativeController::replyQuotedContent(const QString &id) const
