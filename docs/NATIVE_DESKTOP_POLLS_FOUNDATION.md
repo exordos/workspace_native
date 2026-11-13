@@ -146,7 +146,8 @@ user-visible strings. No new `tr()` strings ship in this ticket.
 - `native-cache-test`: a history page containing a poll round-trips payload and
   `poll_state` through put/get.
 - `native-controller-test`: poll row end-to-end from history into the model with
-  all config fields; a malformed poll keeps the committed page intact;
+  all config fields; a page containing a malformed poll is rejected as a whole
+  (no partial application, so good and bad rows never mix);
   revision-guard merge over `applyRealtimeEvent` including the `is_closed`
   ratchet; vote invoke posts the desired-state body and merges without touching
   order/read state; add_poll_option replay accepted at 200 without duplication;

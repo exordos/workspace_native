@@ -7496,6 +7496,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             const auto found = findMessage(message->uuid);
             const auto previous = found ? std::optional<Message>{*found} : std::optional<Message>{};
             const bool moved = previous && (previous->stream != message->stream || previous->topic != message->topic);
+            // Issue #214: the poll revision guard may keep the previous snapshot
+            // in place of the incoming one (lower revision or reopen attempt);
+            // the merge and the cache projection must then carry the retained
+            // payload, not the stale incoming one (message.model.ts poll merge).
+            const bool pollKeptExisting = previous && applyPollRevisionGuard(*message, *previous);
             const bool leftSelection = moved && !selected;
             const bool fits = previous || m_before.isEmpty() || (!m_messages.isEmpty()
                 && (message->createdMicros > m_messages.first().createdMicros
@@ -7532,8 +7537,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 if (message->stream == m_stream) receiveChatControl(*message);
                 if (!current()) return true;
             }
-            NativeCache::ProjectionFields fields = NativeCache::Projection::Insert | NativeCache::Projection::Payload
+            NativeCache::ProjectionFields fields = NativeCache::Projection::Insert
                 | NativeCache::Projection::Star;
+            // A retained (older-incoming) poll snapshot must not overwrite the
+            // cached payload of the newer revision it lost to.
+            if (!pollKeptExisting) fields |= NativeCache::Projection::Payload;
             if (message->reactionsKnown) fields |= NativeCache::Projection::Reactions;
             if (!deleted) projectCanonical(payload, fields, context);
             if (!current()) return true;
@@ -9013,7 +9021,7 @@ QVariantList NativeController::messages() const
         const auto topicName = topicNames.value(message.topic);
         const auto response = responseMetadata(message);
         const auto announcement = announcementMetadata(message);
-        result.append(QVariantMap{{"id", message.uuid}, {"authorId", message.author},
+        auto row = QVariantMap{{"id", message.uuid}, {"authorId", message.author},
             {"topicId", message.topic}, {"topicName", topicName},
             {"author", userDisplayName(message.author, ownMessage ? tr("You") : QStringLiteral("#") + message.author.left(8))},
             {"authorAvatar", avatarsOwned ? m_names.value(message.author).avatar : QString{}},
@@ -9034,7 +9042,10 @@ QVariantList NativeController::messages() const
             {"reactions", reactions}, {"reactionBusy", intent != m_reactionIntents.cend()},
             {"reactionUncertain", intent != m_reactionIntents.cend() && intent->uncertain},
             {"canReact", authoritativeRoute() && inConversation(message) && !m_busy && !m_loading
-                && !m_snapshotActive && (intent == m_reactionIntents.cend() || !intent->checking)}});
+                && !m_snapshotActive && (intent == m_reactionIntents.cend() || !intent->checking)}};
+        if (message.poll && message.pollState)
+            row.insert(QStringLiteral("poll"), pollRowSnapshot(message));
+        result.append(row);
     }
     return result;
 }
@@ -12285,6 +12296,306 @@ void NativeController::joinCall(const QString &meetingUrl)
 QString NativeController::callRoomName(const QString &url) const
 {
     return formatRoomDisplayName(url, m_meetHost);
+}
+
+// ---- Issue #214 polls foundation (docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md) ----
+//
+// The poll REST action surface, the store merge and the row snapshot. This ports
+// messenger-messages.api.ts (invokePollAction, getPollVoters) and
+// message.model.ts (applyLiveKnownBodyMutation poll branch) onto the native
+// request/cache idioms. Failures never open a dialog: they emit pollActionFailed
+// with a technical detail, and #215/#216 render the user-facing strings.
+
+namespace {
+// The reference poll-eligibility helper (supportsMessengerPolls): native/Zulip
+// source only, never encrypted (the payload would stay plaintext to the server),
+// never archived (action writes are rejected server-side).
+bool supportsMessengerPolls(const Stream *stream)
+{
+    if (!stream || stream->encrypted || stream->archived) return false;
+    const auto source = stream->security && !stream->security->source.isEmpty()
+        ? stream->security->source : QStringLiteral("native");
+    return source == QLatin1String("native") || source == QLatin1String("zulip");
+}
+
+// Wire shape of one client-generated new option (NewPollOptionDto): uuid always
+// client-side, text carried verbatim. An empty object means "invalid option".
+QJsonObject newPollOptionObject(const QVariantMap &option, QSet<QString> &usedUuids)
+{
+    const auto text = option.value(QStringLiteral("text")).toString();
+    if (text.isEmpty() || text.size() > 200) return {};
+    auto uuid = option.value(QStringLiteral("uuid")).toString();
+    if (uuid.isEmpty()) uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!isUuid(uuid) || usedUuids.contains(uuid)) return {};
+    usedUuids.insert(uuid);
+    return QJsonObject{{QStringLiteral("uuid"), uuid}, {QStringLiteral("text"), text}};
+}
+} // namespace
+
+bool NativeController::canCreatePoll() const
+{
+    return authenticated() && supportsMessengerPolls(currentStream());
+}
+
+void NativeController::sendPoll(const QVariantList &questions, bool multipleAnswers,
+    bool isAnonymous, bool allowRevote, const QString &resultsVisibility,
+    bool allowAddingOptions, const QString &closesAt)
+{
+    if (!canCreatePoll() || m_stream.isEmpty() || m_topic.isEmpty()) return;
+    if (resultsVisibility != QLatin1String("always")
+        && resultsVisibility != QLatin1String("after_vote")) return;
+    if (questions.isEmpty() || questions.size() > 20) return;
+    if (!closesAt.isEmpty() && !QDateTime::fromString(closesAt, Qt::ISODateWithMs).isValid()
+        && !QDateTime::fromString(closesAt, Qt::ISODate).isValid()) return;
+    QJsonArray questionRows;
+    QSet<QString> usedUuids;
+    for (const auto &questionValue : questions) {
+        const auto question = questionValue.toMap();
+        const auto text = question.value(QStringLiteral("text")).toString();
+        if (text.isEmpty() || text.size() > 1000) return;
+        const auto optionValues = question.value(QStringLiteral("options")).toList();
+        if (optionValues.isEmpty() || optionValues.size() > 20) return;
+        QJsonArray optionRows;
+        for (const auto &optionValue : optionValues) {
+            const auto option = newPollOptionObject(optionValue.toMap(), usedUuids);
+            if (option.isEmpty()) return;
+            optionRows.append(option);
+        }
+        auto questionUuid = question.value(QStringLiteral("uuid")).toString();
+        if (questionUuid.isEmpty()) questionUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!isUuid(questionUuid) || usedUuids.contains(questionUuid)) return;
+        usedUuids.insert(questionUuid);
+        questionRows.append(QJsonObject{{QStringLiteral("uuid"), questionUuid},
+            {QStringLiteral("text"), text}, {QStringLiteral("options"), optionRows}});
+    }
+    QJsonObject payload{{QStringLiteral("kind"), QStringLiteral("poll")},
+        {QStringLiteral("questions"), questionRows},
+        {QStringLiteral("multiple_answers"), multipleAnswers},
+        {QStringLiteral("is_anonymous"), isAnonymous},
+        {QStringLiteral("allow_revote"), allowRevote},
+        {QStringLiteral("results_visibility"), resultsVisibility},
+        {QStringLiteral("allow_adding_options"), allowAddingOptions}};
+    // The creation settings keep every field (closes_at null = no deadline).
+    payload.insert(QStringLiteral("closes_at"),
+        closesAt.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(closesAt));
+    const auto stream = m_stream, topic = m_topic;
+    const auto generation = m_api->generation();
+    const auto context = projectionContext();
+    const QPointer<NativeController> guard(this);
+    request("POST", messenger + "/messages/",
+        QJsonObject{{QStringLiteral("stream_uuid"), stream}, {QStringLiteral("topic_uuid"), topic},
+            {QStringLiteral("payload"), payload}},
+        {}, [this, guard, stream, topic, generation, context](const ApiResult &result) {
+        if (!guard || generation != m_api->generation()) return;
+        const auto parsed = result.ok()
+            ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
+        if (!parsed || parsed->kind != QLatin1String("poll") || !parsed->pollState
+            || parsed->stream != stream || parsed->topic != topic) {
+            emit pollActionFailed(QString(), QStringLiteral("create"),
+                result.ok() ? QStringLiteral("invalid-response")
+                            : QStringLiteral("http-%1").arg(result.status));
+            return;
+        }
+        const auto raw = result.data.toObject();
+        observeMessage(raw);
+        m_messages = mergeMessages(m_messages, {*parsed});
+        ++m_messageRevision;
+        pruneMessageFields();
+        emit messagesChanged();
+        projectCanonical(raw, NativeCache::Projection::Insert | NativeCache::Projection::Payload
+            | NativeCache::Projection::Star, context);
+        if (!guard) return;
+        emit stateChanged();
+        emit messageSent(parsed->uuid, stream, topic);
+    });
+}
+
+void NativeController::invokePollAction(const QString &messageUuid, const QString &action,
+    const QJsonObject &body)
+{
+    if (!authenticated() || !isUuid(messageUuid)) return;
+    const auto *existing = findMessage(messageUuid);
+    if (!existing || existing->kind != QLatin1String("poll")
+        || existing->project != m_session->project()) return;
+    const auto generation = m_api->generation();
+    const auto context = projectionContext();
+    const QPointer<NativeController> guard(this);
+    // Action requests sit outside the conversation loading states, like the
+    // reaction and read endpoints.
+    request("POST", messenger + "/messages/" + messageUuid + "/actions/" + action + "/invoke",
+        body, {}, [this, guard, messageUuid, action, generation, context](const ApiResult &result) {
+        if (!guard || generation != m_api->generation()) return;
+        applyPollMutation(messageUuid, action, result, context);
+    });
+}
+
+bool NativeController::applyPollMutation(const QString &messageUuid, const QString &action,
+    const ApiResult &result, const ProjectionContext &context)
+{
+    const auto fail = [this, &messageUuid, &action](const QString &detail) {
+        emit pollActionFailed(messageUuid, action, detail);
+        return false;
+    };
+    if (!result.ok()) return fail(QStringLiteral("http-%1").arg(result.status));
+    const auto parsed = parseMessage(result.data.toObject(), m_session->project());
+    const auto *existing = findMessage(messageUuid);
+    // The reference applies a mutation response only when it is the same known
+    // message (uuid AND stream/topic identity match); anything else is rejected
+    // outright rather than partially trusted.
+    if (!parsed || !existing || parsed->uuid != messageUuid
+        || parsed->kind != QLatin1String("poll") || !parsed->pollState
+        || parsed->stream != existing->stream || parsed->topic != existing->topic)
+        return fail(QStringLiteral("invalid-response"));
+    auto merged = *parsed;
+    const bool keptExisting = applyPollRevisionGuard(merged, *existing);
+    // A vote never changes read state and never changes ordering: the row keeps
+    // its monotonic read flag and its created_at ordering stays untouched.
+    merged.read = existing->read || merged.read;
+    for (auto &row : m_messages)
+        if (row.uuid == merged.uuid) row = merged;
+    ++m_messageRevision;
+    observeMessage(result.data.toObject());
+    NativeCache::ProjectionFields fields = NativeCache::Projection::Insert
+        | NativeCache::Projection::Star;
+    if (!keptExisting) fields |= NativeCache::Projection::Payload;
+    if (merged.reactionsKnown) fields |= NativeCache::Projection::Reactions;
+    projectCanonical(result.data.toObject(), fields, context);
+    const QPointer<NativeController> guard(this);
+    emit messagesChanged();
+    if (guard) emit stateChanged();
+    return true;
+}
+
+void NativeController::votePollOption(const QString &messageUuid, const QString &questionUuid,
+    const QString &optionUuid, bool selected)
+{
+    if (!isUuid(questionUuid) || !isUuid(optionUuid)) return;
+    // selected is the desired state and is posted verbatim - never a client-side
+    // guess at the current state (the response is the single source of truth).
+    invokePollAction(messageUuid, QStringLiteral("vote"),
+        QJsonObject{{QStringLiteral("question_uuid"), questionUuid},
+            {QStringLiteral("option_uuid"), optionUuid}, {QStringLiteral("selected"), selected}});
+}
+
+void NativeController::closePoll(const QString &messageUuid)
+{
+    invokePollAction(messageUuid, QStringLiteral("close_poll"), QJsonObject{});
+}
+
+void NativeController::updatePollSettings(const QString &messageUuid, const QString &closesAt,
+    bool allowAddingOptions)
+{
+    // Full-config save: both fields are always present (closes_at null clears).
+    QJsonObject settings{{QStringLiteral("allow_adding_options"), allowAddingOptions}};
+    settings.insert(QStringLiteral("closes_at"),
+        closesAt.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(closesAt));
+    invokePollAction(messageUuid, QStringLiteral("update_settings"),
+        QJsonObject{{QStringLiteral("settings"), settings}});
+}
+
+void NativeController::addPollOption(const QString &messageUuid, const QString &questionUuid,
+    const QString &optionUuid, const QString &optionText)
+{
+    if (!isUuid(questionUuid) || !isUuid(optionUuid) || optionText.trimmed().isEmpty()
+        || optionText.size() > 200) return;
+    // The uuid is client-generated; a replay of uuid+text is an idempotent 200
+    // with the unchanged message, so no local duplicate can appear.
+    invokePollAction(messageUuid, QStringLiteral("add_poll_option"),
+        QJsonObject{{QStringLiteral("question_uuid"), questionUuid},
+            {QStringLiteral("option"), QJsonObject{{QStringLiteral("uuid"), optionUuid},
+                {QStringLiteral("text"), optionText}}}});
+}
+
+void NativeController::loadPollVoters(const QString &messageUuid, const QString &questionUuid,
+    const QString &optionUuid, const QString &pageMarker, int pageLimit)
+{
+    const auto done = [this, &messageUuid, &questionUuid, &optionUuid](const QVariantList &voters,
+                          const QString &marker, const QString &error) {
+        emit pollVotersLoaded(messageUuid, questionUuid, optionUuid, voters, marker, error);
+    };
+    if (!authenticated() || !isUuid(messageUuid) || !isUuid(questionUuid)
+        || !isUuid(optionUuid)) {
+        done({}, QString(), QStringLiteral("invalid-request"));
+        return;
+    }
+    const auto limit = pageLimit > 0 ? pageLimit : 50;
+    if (limit > 100) { done({}, QString(), QStringLiteral("page-limit-exceeded")); return; }
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("question_uuid"), questionUuid);
+    query.addQueryItem(QStringLiteral("option_uuid"), optionUuid);
+    query.addQueryItem(QStringLiteral("page_limit"), QString::number(limit));
+    if (!pageMarker.isEmpty()) query.addQueryItem(QStringLiteral("page_marker"), pageMarker);
+    const auto generation = m_api->generation();
+    const QPointer<NativeController> guard(this);
+    request("GET", messenger + "/messages/" + messageUuid + "/poll_voters/", {}, query,
+        [this, guard, messageUuid, questionUuid, optionUuid, generation, done](const ApiResult &result) {
+        if (!guard || generation != m_api->generation()) return;
+        if (!result.ok() || !result.data.isArray()) {
+            done({}, QString(), result.ok() ? QStringLiteral("invalid-response")
+                : QStringLiteral("http-%1").arg(result.status));
+            return;
+        }
+        QVariantList voters;
+        for (const auto &value : result.data.toArray()) {
+            const auto voterUuid = value.isObject()
+                ? value.toObject().value(QStringLiteral("uuid")).toString() : QString();
+            // Strict list: one malformed item rejects the whole page.
+            if (!isUuid(voterUuid)) { done({}, QString(), QStringLiteral("invalid-response")); return; }
+            voters.append(voterUuid);
+        }
+        done(voters, QString::fromUtf8(result.nextMarker), QString());
+    });
+}
+
+QVariantMap NativeController::pollRowSnapshot(const Message &message)
+{
+    if (!message.poll || !message.pollState) return {};
+    QVariantList questions;
+    for (const auto &question : message.poll->questions) {
+        QVariantList options;
+        for (const auto &option : question.options)
+            options.append(QVariantMap{{QStringLiteral("uuid"), option.uuid},
+                {QStringLiteral("text"), option.text}});
+        questions.append(QVariantMap{{QStringLiteral("uuid"), question.uuid},
+            {QStringLiteral("text"), question.text}, {QStringLiteral("options"), options},
+            {QStringLiteral("correctOptionUuids"), question.correctOptionUuids}});
+    }
+    QVariantMap snapshot{{QStringLiteral("questions"), questions},
+        {QStringLiteral("multipleAnswers"), message.poll->multipleAnswers},
+        {QStringLiteral("isAnonymous"), message.poll->isAnonymous},
+        {QStringLiteral("allowRevote"), message.poll->allowRevote},
+        {QStringLiteral("resultsVisibility"), message.poll->resultsVisibility},
+        {QStringLiteral("allowAddingOptions"), message.poll->allowAddingOptions},
+        {QStringLiteral("closesAt"), message.poll->closesAt},
+        {QStringLiteral("closedAt"), message.poll->closedAt}};
+    QVariantList stateQuestions;
+    for (const auto &question : message.pollState->questions) {
+        QVariantMap counts;
+        for (auto it = question.optionCounts.cbegin(); it != question.optionCounts.cend(); ++it)
+            counts.insert(it.key(), QVariant(it.value()));
+        QVariantMap row{{QStringLiteral("questionUuid"), question.questionUuid},
+            {QStringLiteral("voterCount"), QVariant(question.voterCount)},
+            {QStringLiteral("optionCounts"), counts}};
+        if (question.hasVoterPreviews) {
+            QVariantMap previews;
+            for (auto it = question.optionVoterPreviews.cbegin();
+                 it != question.optionVoterPreviews.cend(); ++it)
+                previews.insert(it.key(), question.optionVoterPreviews.value(it.key()));
+            row.insert(QStringLiteral("optionVoterPreviews"), previews);
+        }
+        stateQuestions.append(row);
+    }
+    QVariantList myVotes;
+    for (const auto &vote : message.pollState->myVotes)
+        myVotes.append(QVariantMap{{QStringLiteral("questionUuid"), vote.questionUuid},
+            {QStringLiteral("optionUuids"), vote.optionUuids}});
+    snapshot.insert(QStringLiteral("state"), QVariantMap{
+        {QStringLiteral("revision"), QVariant(message.pollState->revision)},
+        {QStringLiteral("isClosed"), message.pollState->isClosed},
+        {QStringLiteral("voterCount"), QVariant(message.pollState->voterCount)},
+        {QStringLiteral("myVotes"), myVotes},
+        {QStringLiteral("questions"), stateQuestions}});
+    return snapshot;
 }
 
 }
