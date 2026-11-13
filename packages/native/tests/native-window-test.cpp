@@ -12597,6 +12597,64 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.error().isEmpty());
     }
 
+    void measuredQuoteHeightIncludesNestedTextBeforeViewportRestore()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError|Binding loop detected).*"));
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto origin = message(QStringLiteral("A wrapped quote with **rich text** and a second paragraph. ").repeated(12));
+        const auto quoted = message(QStringLiteral("[Peer](urn:quote:%1)\n\nA short answer.").arg(messageId), returnedId);
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{quoted, origin}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Quote measurement teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *quote = item(window->contentItem(), "message-quote-" + returnedId);
+        QTRY_VERIFY(quote && quote->isVisible());
+        QTRY_VERIFY(!quote->property("quoteHtml").toString().isEmpty());
+        auto *bubble = quote->parentItem()->parentItem();
+        auto *row = bubble->parentItem();
+        QVERIFY(row->metaObject()->indexOfMethod("settleGeometry()") >= 0);
+        // The restoration helper promises measured geometry synchronously.
+        // Change the quote's available width in this turn, then compare its
+        // published height with its actual visible children before any event
+        // pump can complete the nested Column's independent polish pass.
+        for (const qreal width : {qreal(140), qreal(420), qreal(180)}) {
+            quote->setWidth(width);
+            QVERIFY(QMetaObject::invokeMethod(row, "settleGeometry", Qt::DirectConnection));
+            QQuickItem *contents = nullptr;
+            for (auto *child : quote->childItems())
+                if (child->property("spacing").isValid()) contents = child;
+            QVERIFY(contents);
+            qreal expected = 12;
+            int visible = 0;
+            for (auto *child : contents->childItems()) {
+                if (!child->isVisible() || child->height() <= 0) continue;
+                expected += child->height(); ++visible;
+            }
+            QVERIFY(visible >= 2);
+            expected += (visible - 1) * contents->property("spacing").toReal();
+            QCOMPARE(quote->height(), expected);
+        }
+    }
+
     // Reply banner + quote jump, measured against workspace_ui 61dacef:
     // composer preview chrome (message-composer-reply-quote-preview.ui.tsx and
     // message-composer-preface.ui.tsx:222-262): 2 px accent left bar (#7087ff),

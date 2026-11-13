@@ -4349,6 +4349,15 @@ ApplicationWindow {
                     }
                     function settleGeometry() {
                         naturalText.forceLayout();
+                        // Quote text and its nested Column have independent
+                        // polish passes. Finish them before the outer Column
+                        // supplies a height to ListView's viewport restoration.
+                        if (messageQuoteFrame.visible) {
+                            quoteAuthor.forceLayout();
+                            if (quoteSelection.visible) quoteSelection.forceLayout();
+                            if (quoteBody.visible) quoteBody.forceLayout();
+                            messageQuoteContents.forceLayout();
+                        }
                         messageBody.forceLayout();
                         mediaMessageBody.forceLayout();
                         bubbleContent.forceLayout();
@@ -4565,6 +4574,7 @@ ApplicationWindow {
                                     y: 6
                                     spacing: 2
                                     Text {
+                                        id: quoteAuthor
                                         width: parent.width
                                         text: String(messageRow.modelData.quoteStatus) === "unavailable"
                                             ? qsTr("Message unavailable")
@@ -4586,6 +4596,7 @@ ApplicationWindow {
                                         color: root.colors["text-muted"]
                                     }
                                     Text {
+                                        id: quoteSelection
                                         visible: String(messageRow.modelData.quoteStatus) === "ready"
                                             && String(messageRow.modelData.quoteText || "").length > 0
                                         width: parent.width
@@ -4598,6 +4609,7 @@ ApplicationWindow {
                                         color: root.colors["text-primary"]
                                     }
                                     Text {
+                                        id: quoteBody
                                         visible: messageQuoteFrame.quoteHtml.length > 0
                                         width: parent.width
                                         text: messageQuoteFrame.quoteHtml
