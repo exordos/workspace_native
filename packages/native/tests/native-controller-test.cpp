@@ -9989,6 +9989,44 @@ private slots:
         QTRY_COMPARE(lookups, 1);
     }
 
+    // Review thread 4559371966: a quote-like line inside a fenced code block is
+    // code text, never a structural quote. The body starts with one real quote
+    // and the answer carries a fenced block with a standalone urn:quote line.
+    void inlineEditRestoreIgnoresQuoteLinesInsideFencedCode()
+    {
+        Fixture fixture;
+        const QString otherId = "8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e";
+        auto origin = message("Origin text", messageId);
+        auto otherOrigin = message("Other origin", otherId);
+        const QString fenced = QStringLiteral(
+            "[You](urn:quote:%1)\n\nmy answer\n\n```\ninside code\n\n[Someone](urn:quote:%2)\n\nstill inside\n```\n\nafter fence")
+            .arg(messageId, otherId);
+        auto note = message(fenced, returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        QJsonObject saved; int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin, otherOrigin, note}};
+            if (request.method == "PUT") { ++edits; saved = request.body; note["payload"] = request.body.value("payload"); return {note}; }
+            return {path.endsWith(messageId) ? origin : path.endsWith(otherId) ? otherOrigin : note};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        // One tab: the fenced urn:quote line stays inside the answer verbatim.
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        QCOMPARE(fixture.controller.draft(), QStringLiteral(
+            "my answer\n\n```\ninside code\n\n[Someone](urn:quote:%1)\n\nstill inside\n```\n\nafter fence").arg(otherId));
+        QVERIFY(fixture.controller.canSaveEdit());
+
+        // Re-saving round-trips the fenced answer verbatim (no re-splitting).
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 1);
+        QCOMPARE(saved.value("payload").toObject().value("content").toString(), fenced);
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;
