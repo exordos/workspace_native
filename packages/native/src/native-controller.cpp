@@ -1949,6 +1949,9 @@ void NativeController::retryMessageDecrypt(const QString &messageUuid)
     const auto epoch = m_chatEpoch, selection = m_selection;
     m_chatDecryptRetries.insert(messageUuid);
     emit decryptRetryStateChanged();
+    // The in-flight notification is synchronous: an observer may destroy the controller
+    // inside it, and the deferred re-decrypt must never be scheduled onto a dead object.
+    if (!lookupGuard) return;
     QTimer::singleShot(0, this, [this, messageUuid, epoch, selection] {
         const QPointer<NativeController> guard(this);
         if (!guard) return;
@@ -1963,17 +1966,27 @@ void NativeController::retryMessageDecrypt(const QString &messageUuid)
         // the stale pending uuid.
         m_chatDecryptRetries.remove(messageUuid);
         emit decryptRetryStateChanged();
-        if (!reprepare) return;
-        const auto previous = m_chatPrepared.find(message->uuid);
+        // That completion notification is synchronous too: while it ran an observer may
+        // have destroyed the controller, moved the selection away, or rebuilt the message
+        // list this row belonged to. Revalidate the controller lifetime, the conversation
+        // context and the row itself before publishing, mirroring how prepareChatSlice
+        // rechecks epoch/selection/guard around its emissions.
+        if (!guard || !reprepare) return;
+        if (m_chatEpoch != epoch || m_selection != selection || !chatReadAllowed()
+            || !m_chatKeys || !sameChatLease(m_chatKeys->lease(), m_chatVaultLease)) return;
+        const auto *published = findMessage(messageUuid);
+        if (!published || published->kind != "e2ee" || !published->crypto
+            || chatPayloadHash(*published) != entry.hash) return;
+        const auto previous = m_chatPrepared.find(published->uuid);
         if (previous != m_chatPrepared.end()) {
             m_chatPreparedUnits -= previous.key().size() + previous->content.size(); m_chatPrepared.erase(previous);
         }
-        if (entry.content.size() + message->uuid.size() > 2000000 - m_chatPreparedUnits) {
+        if (entry.content.size() + published->uuid.size() > 2000000 - m_chatPreparedUnits) {
             m_chatRejectedWindow = m_chatPreparingWindow;
             m_chatPrepared.clear(); m_chatPreparedUnits = 0; m_chatPrepareRows.clear();
         } else {
-            m_chatPrepared.insert(message->uuid, entry);
-            m_chatPreparedUnits += entry.content.size() + message->uuid.size();
+            m_chatPrepared.insert(published->uuid, entry);
+            m_chatPreparedUnits += entry.content.size() + published->uuid.size();
         }
         emit messagesChanged();
     });
