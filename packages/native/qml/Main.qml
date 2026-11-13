@@ -8265,7 +8265,12 @@ ApplicationWindow {
             enabled: visible
             asset: "reply.svg"
             text: qsTr("Reply")
-            onTriggered: root.controller.beginReply(root.menuMessageId)
+            // An open session collects another quote tab instead of replacing the
+            // active quote (reference routes the reply action to the add handler
+            // whenever the session has tabs, workspace-message-list.ui.tsx:1284).
+            onTriggered: root.controller.replyMessageId.length > 0
+                ? root.controller.addReplyTab(root.menuMessageId)
+                : root.controller.beginReply(root.menuMessageId)
         }
         MessageMenuSeparator {
             visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation
