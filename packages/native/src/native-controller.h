@@ -972,6 +972,8 @@ private:
     void closeEditSession();
     void settleEditRouteChange();
     void closeReplySession();
+    void parkReplySession();
+    void restoreParkedReplySession();
     QString replyAuthorFor(const QString &id) const;
     void scheduleQuoteFetch(const QString &id) const;
     const Message *editableMessage(const QString &id) const;
@@ -1175,9 +1177,24 @@ private:
     // Reply session (docs/NATIVE_DESKTOP_REPLIES.md + docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
     // concurrent quote tabs with per-tab answers; the conversationKey() that owns
     // the session is m_replyRoute. m_quotes caches resolved references.
-    struct ReplyTab { QString id, message, createdAt, answer; };
+    // The author/plain memos keep the restored banner readable while a parked
+    // session's quoted messages are not yet in memory again after navigation
+    // (docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md); live resolution wins
+    // whenever it succeeds.
+    struct ReplyTab {
+        QString id, message, createdAt, answer;
+        mutable QString authorMemo, plainMemo;
+    };
+    // A reply session parked under the conversationKey() that owns it while the
+    // user is in another conversation (issue #201). The whole session travels:
+    // tab set, order, active pointer and every answer.
+    struct ParkedReplySession { QList<ReplyTab> tabs; QString activeTab; };
     QList<ReplyTab> m_replyTabs;
     QString m_replyActiveTab, m_replyRoute;
+    QHash<QString, ParkedReplySession> m_replySessions;
+    const ReplyTab *activeReplyTab() const;
+    QString replyTabAuthor(const ReplyTab &tab) const;
+    QString replyTabPlain(const ReplyTab &tab) const;
     struct QuoteRecord { QString authorId, content; bool missing = false; };
     mutable QHash<QString, QuoteRecord> m_quotes;
     // Transport failures stay retriable (reference loader keeps "stale" out of

@@ -7193,6 +7193,7 @@ void NativeController::reset()
 {
     closeEditSession();
     closeReplySession();
+    m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
     m_quotes.clear();
     m_quoteInFlight.clear();
     // A cold-start deep link is user intent captured before the session
@@ -10146,7 +10147,7 @@ void NativeController::send()
         QStringList blocks;
         for (const auto &tab : std::as_const(m_replyTabs)) {
             const auto quoteLine = workspace::buildWorkspaceQuoteReference(
-                replyAuthorFor(tab.message), tab.message);
+                replyTabAuthor(tab), tab.message);
             if (quoteLine.isEmpty()) {
                 report(tr("This message can no longer be replied to."));
                 return;
@@ -10234,12 +10235,28 @@ void NativeController::send()
             m_error.clear();
             // Close the session only if no tab was added, removed, switched or
             // re-pointed at another quote while the send was in flight (single-slot
-            // precedent generalized to the tab set, quote identity included).
+            // precedent generalized to the tab set, quote identity included). The
+            // cleanup targets the sending conversation's session specifically
+            // (reference WorkspaceComposerSendCleanup carries its own conversationId),
+            // whether it still lives in the composer or was parked by navigation.
             QStringList replyNow;
-            for (const auto &tab : std::as_const(m_replyTabs))
-                replyNow << tab.id + QLatin1Char(':') + tab.message;
-            if (!replySnapshot.isEmpty() && m_replyActiveTab == replyActive && replyNow == replySnapshot)
-                closeReplySession();
+            QString replyActiveNow;
+            if (conversation == m_replyRoute) {
+                replyActiveNow = m_replyActiveTab;
+                for (const auto &tab : std::as_const(m_replyTabs))
+                    replyNow << tab.id + QLatin1Char(':') + tab.message;
+            } else {
+                const auto parked = m_replySessions.constFind(conversation);
+                if (parked != m_replySessions.constEnd()) {
+                    replyActiveNow = parked->activeTab;
+                    for (const auto &tab : parked->tabs)
+                        replyNow << tab.id + QLatin1Char(':') + tab.message;
+                }
+            }
+            if (!replySnapshot.isEmpty() && replyActiveNow == replyActive && replyNow == replySnapshot) {
+                if (conversation == m_replyRoute) closeReplySession();
+                else m_replySessions.remove(conversation);
+            }
             const QPointer<NativeController> guard(this);
             emit draftChanged();
             if (!guard) return;
@@ -11017,6 +11034,10 @@ void NativeController::cancelReply()
 
 void NativeController::closeReplySession()
 {
+    // Cancel, edit-exclusivity and confirmed-send closes are all current-conversation
+    // closes: the live session and its parked copy die together, so the conversation
+    // stays cancelled when revisited (docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md).
+    m_replySessions.remove(m_replyRoute.isEmpty() ? conversationKey() : m_replyRoute);
     if (m_replyTabs.isEmpty()) return;
     m_replyTabs.clear();
     m_replyActiveTab.clear();
@@ -11025,11 +11046,62 @@ void NativeController::closeReplySession()
     emit stateChanged(); // the session may have held the last sendable answer
 }
 
-QString NativeController::replyMessageId() const
+void NativeController::parkReplySession()
+{
+    // The session belongs to its conversation, not to the window that opened it:
+    // move the whole state (tabs, order, active pointer, answers) under the
+    // conversationKey() that started it instead of dropping it on navigation.
+    if (m_replyTabs.isEmpty()) return;
+    m_replySessions.insert(m_replyRoute, ParkedReplySession{m_replyTabs, m_replyActiveTab});
+    m_replyTabs.clear();
+    m_replyActiveTab.clear();
+    m_replyRoute.clear();
+    emit replySessionChanged();
+    emit stateChanged(); // the parked session may have held the last sendable answer
+}
+
+void NativeController::restoreParkedReplySession()
+{
+    // Adopt whatever the entered conversation parked; empty conversations
+    // simply show no session. Take semantics keep live and parked state disjoint.
+    const auto found = m_replySessions.take(conversationKey());
+    if (found.tabs.isEmpty()) return;
+    m_replyTabs = found.tabs;
+    m_replyActiveTab = found.activeTab;
+    m_replyRoute = conversationKey();
+    emit replySessionChanged();
+    emit stateChanged(); // a restored answer can make the composer sendable
+}
+
+const NativeController::ReplyTab *NativeController::activeReplyTab() const
 {
     for (const auto &tab : m_replyTabs)
-        if (tab.id == m_replyActiveTab) return tab.message;
-    return {};
+        if (tab.id == m_replyActiveTab) return &tab;
+    return nullptr;
+}
+
+QString NativeController::replyTabAuthor(const ReplyTab &tab) const
+{
+    // Live resolution wins; the memo keeps the label readable only while the
+    // quoted message is out of memory (right after a parked session returns).
+    const auto live = replyAuthorFor(tab.message);
+    if (!live.isEmpty()) { tab.authorMemo = live; return live; }
+    return tab.authorMemo;
+}
+
+QString NativeController::replyTabPlain(const ReplyTab &tab) const
+{
+    const auto *message = tab.message.isEmpty() ? nullptr : findMessage(tab.message);
+    if (!message) return tab.plainMemo;
+    static NativeMarkdown previewCache;
+    tab.plainMemo = previewCache.render(message->content).value("plain").toString().simplified();
+    return tab.plainMemo;
+}
+
+QString NativeController::replyMessageId() const
+{
+    const auto *tab = activeReplyTab();
+    return tab ? tab->message : QString();
 }
 
 QString NativeController::replyAuthorFor(const QString &id) const
@@ -11042,20 +11114,19 @@ QString NativeController::replyAuthorFor(const QString &id) const
 
 QString NativeController::replyAuthor() const
 {
-    return replyAuthorFor(replyMessageId());
+    const auto *tab = activeReplyTab();
+    return tab ? replyTabAuthor(*tab) : QString();
 }
 
 QString NativeController::replyExcerpt() const
 {
-    const auto id = replyMessageId();
-    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
-    if (!message) return {};
+    const auto *tab = activeReplyTab();
+    if (!tab) return {};
     // QUOTE_PREVIEW_MAX = 80 (workspace_ui 61dacef message-composer-constants.lib.ts:3):
     // whitespace-collapsed summary truncated with the ASCII "..." marker.
     static constexpr int maximumCharacters = 80;
     static constexpr int markerLength = 3;
-    static NativeMarkdown previewCache;
-    const auto text = previewCache.render(message->content).value("plain").toString().simplified();
+    const auto text = replyTabPlain(*tab);
     if (text.size() <= maximumCharacters) return text;
     return text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
 }
@@ -11066,11 +11137,8 @@ QVariantList NativeController::replyTabs() const
     // with a 36-char whitespace-collapsed excerpt, or the bare name when empty.
     QVariantList rows;
     for (const auto &tab : m_replyTabs) {
-        const auto author = replyAuthorFor(tab.message);
-        const auto *message = findMessage(tab.message);
-        auto excerpt = message
-            ? NativeMarkdown().render(message->content).value("plain").toString().simplified()
-            : QString();
+        const auto author = replyTabAuthor(tab);
+        auto excerpt = replyTabPlain(tab);
         if (excerpt.size() > 36) excerpt = excerpt.left(36).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
         rows.append(QVariantMap{
             {"id", tab.id}, {"message", tab.message}, {"author", author},
@@ -11565,10 +11633,13 @@ void NativeController::settleEditRouteChange()
 {
     if (!m_editingMessage.isEmpty() && conversationKey() != m_editRoute)
         closeEditSession();
-    // The reply slot belongs to the conversation that started it
-    // (docs/NATIVE_DESKTOP_REPLIES.md); leaving the conversation ends the session.
+    // The reply session belongs to the conversation that started it, so it
+    // survives navigation: park a session from another conversation under its
+    // own key and adopt the one this conversation parked (issue #201,
+    // docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md).
     if (!m_replyTabs.isEmpty() && conversationKey() != m_replyRoute)
-        closeReplySession();
+        parkReplySession();
+    restoreParkedReplySession();
 }
 
 const Message *NativeController::editableMessage(const QString &id) const
