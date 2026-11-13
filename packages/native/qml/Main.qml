@@ -8474,7 +8474,9 @@ ApplicationWindow {
     // (the native counterpart of the reference browser-fullscreen on the call
     // modal), and a window-side exit (WM shortcut / Esc) syncs the controller
     // state back so the button label and glyph never go stale.
-    property int callRestoreVisibility: Window.Automatic
+    // 0 == Window.Automatic: the enum is not resolvable in a root-Window
+    // property initializer, so keep the plain value here.
+    property int callRestoreVisibility: 0
     function syncCallFullscreenFromWindow() {
         if (controller && controller.callWindow.fullscreen
                 && visibility !== Window.FullScreen)
