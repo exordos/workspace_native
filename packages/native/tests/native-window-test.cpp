@@ -1574,10 +1574,18 @@ struct ProfileWindowScene {
     int invitePosts = 0; // call bridge cases: confirmed invite POSTs
     // callRoutes adds the Jitsi meet host and confirms invite POSTs (issue #164
     // cases); the default scene keeps the plain profile routes untouched.
-    explicit ProfileWindowScene(bool callRoutes = false)
+    // encryptedDm flags the seeded DM stream as E2EE (valid key uuid on the
+    // catalog row) without ever reading its chat key: the fixture stream is
+    // encrypted while no local send key exists.
+    explicit ProfileWindowScene(bool callRoutes = false, bool encryptedDm = false)
         : preferences(directory.filePath("profile.ini")), session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
+        if (encryptedDm) {
+            fixture.created["encryption"] = true;
+            fixture.created["current_encryption_key_uuid"] =
+                QStringLiteral("88000000-0000-4000-8000-000000000099");
+        }
         if (callRoutes) {
             const auto prev = fixture.server.handler;
             fixture.server.handler = [this, prev](const Request &request) -> Response {
@@ -15314,6 +15322,26 @@ private:
         click(scene.window, visibleItem("profileAction-call"));
         QTest::qWait(250);
         QCOMPARE(scene.invitePosts, 1);
+    }
+
+    // Issue #164 round 2 (exordy 4563207117): a seeded DM whose catalog row is
+    // flagged E2EE while no local send key was ever read must render the Call
+    // chip disabled. The previous binding short-circuited the availability
+    // probe behind callCryptoSessionReady, so exactly this "key not ready"
+    // state skipped the probe and left the chip enabled.
+    void windowProfileCallChipDisabledForEncryptedDmWithoutKeyReady()
+    {
+        ProfileWindowScene scene(true, true); // call routes + E2EE seeded DM
+        // The viewed chat is the plain info channel, so no local send key
+        // exists anywhere: the mirror is down and the probe reports the
+        // encrypted DM as unavailable.
+        QVERIFY(!scene.evaluate("controller.callCryptoSessionReady").toBool());
+        QVERIFY(scene.evaluate(
+            "controller.callTargetCryptoUnavailable('" + channelPeer + "')").toBool());
+        scene.openPeerProfile(channelPeer);
+        auto *chip = visibleItem("profileAction-call");
+        QVERIFY(chip);
+        QVERIFY(!chip->property("enabled").toBool()); // E2EE DM, no key -> refuse
     }
 
     // Issue #164: the chat-info drawer shows the descriptor-gated Call button
