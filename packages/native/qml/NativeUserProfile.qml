@@ -922,9 +922,16 @@ Item {
             // Issue #164: the Call chip is live (right-panel-user-profile-actions
             // .ui.tsx:113-120, disabled={callPending}); native additionally
             // refuses E2EE DMs without a local key (recorded deviation).
+            // callTargetCryptoUnavailable() is a plain method call that QML
+            // cannot observe on its own; reading the notifying
+            // callCryptoSessionReady mirror re-evaluates this disabled state on
+            // every stream-catalog, viewed-chat or local-send-key transition
+            // (the short-circuit keeps the answer identical: the method can
+            // only be true when the mirror is true).
             {id: "call", label: qsTr("Call"), icon: "phone.svg", glyph: 30, hug: false,
                 disabled: controller.profileCallPending
-                    || controller.callTargetCryptoUnavailable(page.userUuid)},
+                    || (controller.callCryptoSessionReady
+                        && controller.callTargetCryptoUnavailable(page.userUuid))},
             {id: "share", label: shareCopied ? qsTr("Copied") : qsTr("Share"),
                 icon: shareCopied ? "check.svg" : "links.svg", glyph: shareCopied ? 28 : 40,
                 hug: false, disabled: page.shareLink.length === 0},
