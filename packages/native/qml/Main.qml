@@ -1020,15 +1020,14 @@ ApplicationWindow {
                 || wheel.pixelDelta.y !== 0 && wheel.phase !== Qt.NoScrollPhase)
             return false
         const dy = -wheel.angleDelta.y / 120 * root.wheelPixelsPerNotch
-        const lo = flick.originY
-        const hi = Math.max(lo,
-            flick.originY + flick.contentHeight + flick.bottomMargin - flick.height)
-        const target = Math.max(lo, Math.min(hi, flick.contentY + dy))
-        if (target === flick.contentY)
-            return false
         if (flick.moving)
             flick.flick(0, 0)
-        flick.contentY = target
+        // Out-of-range targets settle through Flickable.returnToBounds()
+        // instead of a hand-rolled clamp: programmatic contentY writes do not
+        // refresh atYBeginning/atYEnd or the drag extents on their own, so
+        // the same fixup the flick path relied on must stay in charge.
+        flick.contentY = flick.contentY + dy
+        flick.returnToBounds()
         return true
     }
     function dayLabel(day) {

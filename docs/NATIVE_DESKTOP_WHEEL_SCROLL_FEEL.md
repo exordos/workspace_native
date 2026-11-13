@@ -92,27 +92,33 @@ the wheel reaches the list's observer through the sibling chain):
 * Intent bookkeeping unchanged: every wheel marks `userScrollSeen` and bumps
   `userScrollGeneration` **before** the movement, so the #156 reserve trigger
   and the #253 resize tail-pin hand-off keep working untouched.
-* Delta mapping (branch condition mirrors QQuickFlickable's own line 1707 rule
-  so physical wheels and synthesized high-res input stay separable):
-  * angle path (`source === Qt.MouseEventNotSynthesized` or zero `pixelDelta.y`
-    or `Qt.NoScrollPhase`): `distance = angleDelta.y / 120 * wheelPixelsPerNotch`
-    with `wheelPixelsPerNotch = max(1, Qt.styleHints.wheelScrollLines) * 100 / 3`
-    — 100 px/notch at the default 3 scroll lines (the measured reference notch),
-    and the system's scroll-lines preference scales it (the issue's "respect the
-    user's system scrolling preferences" clause; Chromium ignores that setting,
-    Telegram Desktop honors it — deviation recorded below).
+* Delta mapping:
+  * angle path (`angleDelta.y != 0`, no synthesized pixel phase attached):
+    `distance = angleDelta.y / 120 * wheelPixelsPerNotch` with
+    `wheelPixelsPerNotch = max(1, Qt.styleHints.wheelScrollLines) * 100 / 3`
+    — 100 px/notch at the default 3 scroll lines (the measured reference
+    notch), and the system's scroll-lines preference scales it (the issue's
+    "respect the user's system scrolling preferences" clause; Chromium ignores
+    that setting, Telegram Desktop honors it — deviation recorded below).
   * pixel path (synthesized source with non-zero `pixelDelta.y` and a real
-    scroll phase): applied 1:1 to the content coordinate, sub-pixel precise,
-    no chunking — preserves precise touchpad scrolling.
+    scroll phase): left to Qt's built-in Flickable path on purpose — measured
+    on this host, the window delivers synthesized pixel wheels straight to the
+    Flickable under the pointer (touchpad grab semantics), bypassing sibling
+    observers, and that path drags 1:1 with the reported pixels after DPR
+    normalization: the precise reference touchpad behavior, preserved
+    unchanged ("Improving a conventional mouse wheel must preserve precise
+    touchpad scrolling").
 * Movement is written directly to `contentY` (same mechanism as the shipped
   viewport-restore code) instead of flicking: cadence-independent, exactly the
   reference endpoint contract, and stable on direction change/stop because
   there is no lingering velocity. An in-flight drag/fling is stopped first
   (`flick(0, 0)`) the way a wheel interrupts a smooth scroll in the browser.
-* Targets are clamped to the content bounds (`originY - topMargin` up to the
-  distanceFromBottom zero-line). When the clamp leaves the position unchanged
-  (at an edge) the event is **not** accepted, so it hands off outward — the
-  same edge rule the reference `ScrollArea` implements.
+* Out-of-range targets settle via `Flickable.returnToBounds()` rather than a
+  hand-rolled clamp: programmatic `contentY` writes do not refresh
+  `atYBeginning`/`atYEnd` on their own (Qt only recomputes them in
+  `viewportMoved`/fixup), and the shipped matrix tests read those flags after
+  big wheels; the fixup keeps the flags, the drag extents and the edge
+  semantics exactly where Qt put them.
 * The pane under the pointer scrolls and nothing else: each list handles only
   its own wheel, matching "Scroll the pane under the pointer without moving
   the other list".
@@ -138,12 +144,14 @@ the wheel reaches the list's observer through the sibling chain):
 
 ## 5. Test contract (native-native-window)
 
-New QtTest cases (`wheelMovesTheMessageListByTheReferenceNotchDistance`,
-`wheelMovesTheSidebarListByTheReferenceNotchDistance`,
-`wheelChangesDirectionAndTouchpadInputStayStable`) drive deterministic
-`QTest::wheelEvent` angle data (±120/notch) and synthesized `pixelDelta`
-events, assert per-notch movement ≥ the measured reference threshold
-(99 px = 100 px − 1 %), exact 1:1 touchpad steps, return-to-origin on a
-direction reversal, and zero residual movement after the input stops. The
-existing prefetch reserve cases and the `messageUpdatesRespectTheVisibleScrollPosition`
-matrix (including the #253 resize tail-pin hand-off) must stay green.
+New QtTest cases (`wheelNotchScrollsMatchTheReferenceContract`,
+`wheelDirectionReversalAndTouchpadStayPredictable`, data-driven over both
+lists) drive deterministic `QTest::wheelEvent` angle data (±120/notch) and
+synthesized `pixelDelta` events. They assert per-notch movement ≥ the measured
+reference threshold (99 px = the 100 px reference notch − 1 %) with a comfort
+ceiling, cadence-independent repeats, the list under the pointer being the
+only list that moves, a clean return-to-origin on direction reversal, and
+sub-notch touchpad steps that are identical for identical input, reverse
+proportionally, and drift nothing after stopping. The existing prefetch reserve
+cases and the `messageUpdatesRespectTheVisibleScrollPosition` matrix
+(including the #253 resize tail-pin hand-off) must stay green.

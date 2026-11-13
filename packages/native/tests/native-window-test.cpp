@@ -16155,6 +16155,21 @@ private:
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
         QTRY_VERIFY(!heldPage.isEmpty());
+        // Park below the reserve but not at the top: with the reference-notch
+        // mapping each 120 notch moves exactly 100 px, so the coarse 1200
+        // steps above park at the list top and the restore lands too close to
+        // the top for this fixture's premise (restore above the reserve).
+        // Short 100 px steps settle 100..300 px past the reserve, staying
+        // below it so the controller still never sees a position above the
+        // reserve before the page is delivered.
+        const qreal parkReserve = qMax<qreal>(100.0, list->property("height").toReal());
+        int parking = 0;
+        while (distanceFromTop() < parkReserve - 200 && parking < 12) {
+            QTest::wheelEvent(window, center, QPoint(0, -120));
+            QVERIFY(settleWheel());
+            ++parking;
+        }
+        QVERIFY(distanceFromTop() >= parkReserve - 200 && distanceFromTop() < parkReserve);
         // Deliver the page: the commit restores the anchor just above the
         // reserve. Every contentY change of the swap is suppressed by the
         // positioning gate, so the controller only ever saw positions below
