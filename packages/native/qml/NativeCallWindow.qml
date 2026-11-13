@@ -235,13 +235,17 @@ Item {
         }
 
         Loader {
-            // The embed surface is created exactly once per session
-            // (embedCreated has already fired by the time embedState is
-            // Ready); dynamic source keeps the QtWebEngine import lazy for
-            // every other window in the app.
+            // The embed surface is created as soon as the meeting URL is
+            // valid - while Loading - because the view's own load events are
+            // what drive Ready/LoadFailed (gating creation on Ready was a
+            // deadlock: nothing could ever produce it). embedCreated still
+            // fires exactly once per session when the load succeeds, and
+            // dynamic source keeps the QtWebEngine import lazy for every
+            // other window in the app.
             objectName: "callWindowEmbedLoader"
             anchors.fill: parent
-            active: shell.controller.embedState === 2 // Ready
+            active: shell.controller.embedState === 1 // Loading
+                || shell.controller.embedState === 2  // Ready
             source: "NativeCallWebEngineView.qml"
             onLoaded: if (item) item.controller = shell.controller
         }

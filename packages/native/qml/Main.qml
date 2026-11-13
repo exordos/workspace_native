@@ -8470,6 +8470,31 @@ ApplicationWindow {
         if (controller)
             controller.callWindow.setViewportSize(Qt.size(root.width, root.height))
     }
+    // #162 finding 4: the shell's fullscreen control drives the real window
+    // (the native counterpart of the reference browser-fullscreen on the call
+    // modal), and a window-side exit (WM shortcut / Esc) syncs the controller
+    // state back so the button label and glyph never go stale.
+    property int callRestoreVisibility: Window.Automatic
+    function syncCallFullscreenFromWindow() {
+        if (controller && controller.callWindow.fullscreen
+                && visibility !== Window.FullScreen)
+            controller.callWindow.syncFullscreen(false)
+    }
+    onVisibilityChanged: root.syncCallFullscreenFromWindow()
+    Connections {
+        target: root.controller.callWindow
+        enabled: root.controller !== undefined && root.controller !== null
+        function onFullscreenChanged() {
+            if (root.controller.callWindow.fullscreen) {
+                if (root.visibility !== Window.FullScreen) {
+                    root.callRestoreVisibility = root.visibility
+                    root.visibility = Window.FullScreen
+                }
+            } else if (root.visibility === Window.FullScreen) {
+                root.visibility = root.callRestoreVisibility
+            }
+        }
+    }
     Item {
         id: callWindowOverlayItem
         objectName: "callWindowOverlay"
@@ -8531,8 +8556,17 @@ ApplicationWindow {
             id: callPipWindow
             objectName: "callWindowPipWindow"
             visible: true
-            x: root.controller.callWindow.bounds.x
-            y: root.controller.callWindow.bounds.y
+            // #162 finding 6: default PiP bounds are viewport-relative and
+            // must be mapped through the app window's screen position (the
+            // reference computes them from the browser viewport, which always
+            // starts at the screen origin). User-placed bounds are already
+            // screen coordinates and are used verbatim.
+            x: root.controller.callWindow.pipBoundsFromUser
+                ? root.controller.callWindow.bounds.x
+                : root.x + root.controller.callWindow.bounds.x
+            y: root.controller.callWindow.pipBoundsFromUser
+                ? root.controller.callWindow.bounds.y
+                : root.y + root.controller.callWindow.bounds.y
             width: root.controller.callWindow.bounds.width
             height: root.controller.callWindow.bounds.height
             minimumWidth: 280
