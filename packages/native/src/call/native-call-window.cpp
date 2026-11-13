@@ -11,6 +11,23 @@ QString trimmed(const QVariantMap &call, const QString &key)
 {
     return call.value(key).toString().trimmed();
 }
+
+// The port a URL actually connects to: its explicit port, or its own
+// scheme's default (https -> 443, http -> 80). Evaluated per URL,
+// independently of any other URL, so a default-port frame can never inherit
+// the grants of a meeting hosted on a non-default port (review finding,
+// exo-review thread 4559430270).
+int effectivePort(const QUrl &url)
+{
+    const int explicitPort = url.port(-1);
+    if (explicitPort != -1)
+        return explicitPort;
+    if (url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0)
+        return 443;
+    if (url.scheme().compare(QLatin1String("http"), Qt::CaseInsensitive) == 0)
+        return 80;
+    return -1; // unknown scheme with no port: only matches another portless URL
+}
 } // namespace
 
 QString JitsiCallWindowController::allowPolicy()
@@ -274,8 +291,9 @@ bool JitsiCallWindowController::isMeetingOrigin(const QString &origin) const
 {
     // Deny-by-default allowlist (finding 3): a capture/fullscreen grant is
     // only ever issued to the exact origin of the live meeting URL — scheme,
-    // host and port must all match; everything else (iframes of other sites,
-    // http downgrades, host-suffix tricks) is rejected.
+    // host and effective port must all match; everything else (iframes of
+    // other sites, http downgrades, host-suffix tricks, same-host frames on a
+    // different port) is rejected.
     if (m_mode == Closed || m_roomName.isEmpty() || origin.isEmpty())
         return false;
     const QUrl meeting = QUrl(meetingUrl());
@@ -284,7 +302,7 @@ bool JitsiCallWindowController::isMeetingOrigin(const QString &origin) const
         return false;
     return request.scheme().compare(meeting.scheme(), Qt::CaseInsensitive) == 0
         && request.host().compare(meeting.host(), Qt::CaseInsensitive) == 0
-        && request.port(meeting.port(-1)) == meeting.port(-1);
+        && effectivePort(request) == effectivePort(meeting);
 }
 
 void JitsiCallWindowController::syncFullscreen(bool fullscreen)
