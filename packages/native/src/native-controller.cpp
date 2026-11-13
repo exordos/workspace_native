@@ -12509,7 +12509,9 @@ void NativeController::addPollOption(const QString &messageUuid, const QString &
 void NativeController::loadPollVoters(const QString &messageUuid, const QString &questionUuid,
     const QString &optionUuid, const QString &pageMarker, int pageLimit)
 {
-    const auto done = [this, &messageUuid, &questionUuid, &optionUuid](const QVariantList &voters,
+    // The callback may outlive this call frame: own copies of the arguments,
+    // never references to the caller's QString objects (issue #214 review).
+    const auto done = [this, messageUuid, questionUuid, optionUuid](const QVariantList &voters,
                           const QString &marker, const QString &error) {
         emit pollVotersLoaded(messageUuid, questionUuid, optionUuid, voters, marker, error);
     };
