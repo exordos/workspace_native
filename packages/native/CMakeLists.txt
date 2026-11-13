@@ -40,12 +40,22 @@ add_library(workspace-native-core STATIC
     src/call/jitsi-call.cpp src/call/jitsi-call.h
     src/call/native-call-store.cpp src/call/native-call-store.h
     src/call/native-call-window.cpp src/call/native-call-window.h
+    src/call/incoming-call.cpp src/call/incoming-call.h
+    src/call/incoming-call-lifecycle.cpp src/call/incoming-call-lifecycle.h
     src/media-viewer.cpp src/media-viewer.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
     src/native-controller.cpp src/native-controller.h)
 target_include_directories(workspace-native-core PUBLIC src)
+# Incoming invite UI variant, the native counterpart of the reference
+# VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):
+# "large" (default) or "compact"; invalid values fall back to "large" at
+# runtime through resolveIncomingCallVariant.
+set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
+    "Incoming call invite UI variant: large | compact (invalid falls back to large)")
+target_compile_definitions(workspace-native-core PRIVATE
+    WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql)
 target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto Qt6::DBus)
 # The notification attention adapter asks the window manager for attention

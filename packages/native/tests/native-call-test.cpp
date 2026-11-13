@@ -1,6 +1,8 @@
 #include "call/jitsi-call.h"
 #include "call/native-call-store.h"
 #include "call/native-call-window.h"
+#include "call/incoming-call.h"
+#include "call/incoming-call-lifecycle.h"
 
 #include <QHash>
 #include <QSignalSpy>
@@ -966,6 +968,323 @@ private slots:
         for (const auto &key : expected.keys())
             QVERIFY2(translations.value(key) == expected.value(key),
                 qPrintable(key + QStringLiteral(" != expected ru text")));
+    }
+
+    // --- Incoming call invite: accept option overload (issue #163) ---
+
+    void acceptIncomingInviteOptionControlsStartWithVideoMuted()
+    {
+        // jitsi-call.model.ts:163-193 + jitsi-call-shell.ui.tsx:61-63:
+        // accept passes startWithVideoMuted = !videoEnabled (default muted).
+        JitsiCallStore store;
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"), 21);
+        invite.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-21"));
+        invite.insert(QStringLiteral("locationName"), QStringLiteral("Direct"));
+        store.ingestIncomingInvite(invite);
+
+        QVariantMap options;
+        options.insert(QStringLiteral("startWithVideoMuted"), false);
+        const auto opened = store.acceptIncomingInvite(options);
+        QCOMPARE(opened.value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+        QCOMPARE(store.activeCall().value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+        QVERIFY(store.incomingInvite().isEmpty());
+    }
+
+    void acceptIncomingInviteEmptyOptionKeepsVideoMuted()
+    {
+        // jitsi-call.model.ts:166 (startWithVideoMuted ?? true).
+        JitsiCallStore store;
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"), 22);
+        invite.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-22"));
+        store.ingestIncomingInvite(invite);
+        const auto opened = store.acceptIncomingInvite(QVariantMap{});
+        QCOMPARE(opened.value(QStringLiteral("startWithVideoMuted")).toBool(), true);
+    }
+
+    // --- Ingest matrix from jitsi-call.model.test.ts:172-231 ---
+
+    void ingestIncomingInviteDeduplicatesByMessageId()
+    {
+        // jitsi-call.model.ts:138-141: the same message id never re-raises.
+        JitsiCallStore store;
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"), 31);
+        invite.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-31"));
+        store.ingestIncomingInvite(invite);
+        QCOMPARE(store.incomingInvite().value(QStringLiteral("messageId")).toInt(), 31);
+
+        QVariantMap same;
+        same.insert(QStringLiteral("messageId"), 31);
+        same.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-31-later"));
+        store.ingestIncomingInvite(same);
+        QCOMPARE(store.incomingInvite().value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.jit.si/room-31"));
+    }
+
+    void ingestIncomingInviteIgnoredWhileCallActive()
+    {
+        // jitsi-call.model.ts:142-148: the id is remembered but nothing shows.
+        JitsiCallStore store;
+        QVariantMap payload;
+        payload.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-live"));
+        store.requestOpenCall(payload);
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"), 32);
+        invite.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-32"));
+        store.ingestIncomingInvite(invite);
+        QVERIFY(store.incomingInvite().isEmpty());
+        // The dedupe id was recorded like the reference ("lastIncomingMessageId"
+        // is set even on the ignored path).
+        store.closeCall();
+        store.ingestIncomingInvite(invite);
+        QVERIFY(store.incomingInvite().isEmpty());
+    }
+
+    void firstInviteKeptWhileAnotherArrives()
+    {
+        // jitsi-call.model.ts:147-153: a second invite never replaces the shown one.
+        JitsiCallStore store;
+        QVariantMap first;
+        first.insert(QStringLiteral("messageId"), 33);
+        first.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-33"));
+        QVariantMap second;
+        second.insert(QStringLiteral("messageId"), 34);
+        second.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.jit.si/room-34"));
+        store.ingestIncomingInvite(first);
+        store.ingestIncomingInvite(second);
+        QCOMPARE(store.incomingInvite().value(QStringLiteral("messageId")).toInt(), 33);
+    }
+
+    // --- Invite builder (workspace-jitsi-incoming-call.lib.ts:40-73) ---
+
+    void inviteBuilderRejectsNonInviteMessages_data()
+    {
+        QTest::addColumn<QString>("caseName");
+        QTest::addColumn<QVariantMap>("override");
+        QTest::newRow("read") << QStringLiteral("read")
+            << (QVariantMap{{QStringLiteral("messageRead"), true}});
+        QTest::newRow("own") << QStringLiteral("own")
+            << (QVariantMap{{QStringLiteral("messageOwn"), true}});
+        QTest::newRow("self-author") << QStringLiteral("self-author")
+            << (QVariantMap{{QStringLiteral("authorUuid"),
+                    QStringLiteral("11111111-1111-1111-1111-111111111111")}});
+        QTest::newRow("no-stream") << QStringLiteral("no-stream")
+            << (QVariantMap{{QStringLiteral("streamKnown"), false}});
+        QTest::newRow("not-private") << QStringLiteral("not-private")
+            << (QVariantMap{{QStringLiteral("streamPrivate"), false}});
+        QTest::newRow("no-direct-user") << QStringLiteral("no-direct-user")
+            << (QVariantMap{{QStringLiteral("streamDirectUser"), QString()}});
+        QTest::newRow("encrypted-payload") << QStringLiteral("encrypted-payload")
+            << (QVariantMap{{QStringLiteral("payloadKind"), QStringLiteral("encrypted")}});
+        QTest::newRow("foreign-host") << QStringLiteral("foreign-host")
+            << (QVariantMap{{QStringLiteral("content"),
+                    QStringLiteral("https://evil.example/room-9")}});
+    }
+    void inviteBuilderRejectsNonInviteMessages()
+    {
+        QFETCH(QString, caseName);
+        QFETCH(QVariantMap, override);
+        Q_UNUSED(caseName);
+        QVariantMap input = inviteBuilderGoldenInput();
+        for (const auto &key : override.keys())
+            input.insert(key, override.value(key));
+        QVERIFY2(buildIncomingDmCallInvite(input).isEmpty(),
+            qPrintable(QStringLiteral("case %1 must not raise an invite").arg(caseName)));
+    }
+
+    void inviteBuilderMapsFieldsAndCallerFallback()
+    {
+        // lib.ts:23-34, 58-72: display name -> stream name -> author prefix.
+        QVariantMap input = inviteBuilderGoldenInput();
+        const auto invite = buildIncomingDmCallInvite(input);
+        QCOMPARE(invite.value(QStringLiteral("messageId")).toString(),
+            QStringLiteral("aaaa0000-0000-0000-0000-000000000009"));
+        QCOMPARE(invite.value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.jit.si/room-9"));
+        QCOMPARE(invite.value(QStringLiteral("callerName")).toString(),
+            QStringLiteral("Slon"));
+        QCOMPARE(invite.value(QStringLiteral("locationName")).toString(),
+            QStringLiteral("Slon Direct"));
+        QCOMPARE(invite.value(QStringLiteral("avatarUrl")).toString(),
+            QStringLiteral("urn:avatar:slon"));
+
+        QVariantMap noDisplay = inviteBuilderGoldenInput();
+        noDisplay.insert(QStringLiteral("authorDisplayName"), QString());
+        QCOMPARE(buildIncomingDmCallInvite(noDisplay)
+            .value(QStringLiteral("callerName")).toString(), QStringLiteral("Slon Direct"));
+
+        QVariantMap noStream = inviteBuilderGoldenInput();
+        noStream.insert(QStringLiteral("authorDisplayName"), QString());
+        noStream.insert(QStringLiteral("streamName"), QString());
+        QCOMPARE(buildIncomingDmCallInvite(noStream)
+            .value(QStringLiteral("callerName")).toString(), QStringLiteral("aaaa0000"));
+    }
+
+    // --- Variant flag (shared/lib/env.ts:132-135) ---
+
+    void resolveIncomingCallVariantMatchesReferenceEnv()
+    {
+        QCOMPARE(resolveIncomingCallVariant(QString{}), QStringLiteral("large"));
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("large")), QStringLiteral("large"));
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("compact")), QStringLiteral("compact"));
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("COMPACT")), QStringLiteral("compact"));
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("Compact")), QStringLiteral("compact"));
+        // Invalid values fall back to large (env.ts:134).
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("toast")), QStringLiteral("large"));
+        QCOMPARE(resolveIncomingCallVariant(QStringLiteral("")), QStringLiteral("large"));
+    }
+
+    // --- Lifecycle (jitsi-call-incoming-lifecycle.hook.ts:6-8, 21, 28-58) ---
+
+    void lifecycleDefaultsUseReferenceConstants()
+    {
+        IncomingCallLifecycle lifecycle;
+        // INCOMING_INVITE_RING_INTERVAL_MS = 1_500 / AUTO_DECLINE = 45_000.
+        QCOMPARE(lifecycle.ringIntervalMs(), 1500);
+        QCOMPARE(lifecycle.autoDeclineMs(), 45000);
+        QCOMPARE(lifecycle.notificationSound(), QStringLiteral("default"));
+        QCOMPARE(lifecycle.visible(), false);
+    }
+
+    void lifecycleRingsImmediatelyThenRepeatedlyWhileVisible()
+    {
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setRingIntervalMs(20);
+        QSignalSpy rings(&lifecycle, &IncomingCallLifecycle::ringRequested);
+        QVERIFY(rings.isValid());
+        store.ingestIncomingInvite(lifecycleInvite());
+        QVERIFY(lifecycle.visible());
+        QVERIFY2(rings.count() >= 1, "the ring fires immediately on becoming visible");
+        QTRY_VERIFY_WITH_TIMEOUT(rings.count() >= 3, 2000);
+        store.declineIncomingInvite();
+        const auto frozen = rings.count();
+        QTest::qWait(100);
+        QCOMPARE(rings.count(), frozen);
+    }
+
+    void lifecycleRingSuppressedWhenNotificationSoundNone()
+    {
+        // lifecycle.hook.ts:43-46: the "none" preset never plays.
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setRingIntervalMs(20);
+        lifecycle.setNotificationSound(QStringLiteral("none"));
+        QSignalSpy rings(&lifecycle, &IncomingCallLifecycle::ringRequested);
+        QVERIFY(rings.isValid());
+        store.ingestIncomingInvite(lifecycleInvite());
+        QVERIFY(lifecycle.visible());
+        QTest::qWait(120);
+        QCOMPARE(rings.count(), 0);
+    }
+
+    void lifecycleAutoDeclineClearsInviteAndNeverOpensCall()
+    {
+        // lifecycle.hook.ts:28-36: single-shot decline at the timeout.
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setAutoDeclineMs(40);
+        lifecycle.setRingIntervalMs(5000);
+        QSignalSpy declined(&lifecycle, &IncomingCallLifecycle::autoDeclined);
+        QVERIFY(declined.isValid());
+        store.ingestIncomingInvite(lifecycleInvite());
+        QVERIFY(lifecycle.visible());
+        QTRY_VERIFY_WITH_TIMEOUT(declined.count() == 1, 2000);
+        QVERIFY(store.incomingInvite().isEmpty());
+        QVERIFY(!store.hasActiveCall());
+        QVERIFY(!lifecycle.visible());
+    }
+
+    void lifecycleHidingCancelsRingAndAutoDecline()
+    {
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setAutoDeclineMs(60);
+        lifecycle.setRingIntervalMs(20);
+        QSignalSpy rings(&lifecycle, &IncomingCallLifecycle::ringRequested);
+        QSignalSpy declined(&lifecycle, &IncomingCallLifecycle::autoDeclined);
+        QVERIFY(rings.isValid() && declined.isValid());
+        store.ingestIncomingInvite(lifecycleInvite());
+        QTRY_VERIFY_WITH_TIMEOUT(rings.count() >= 1, 1000);
+        lifecycle.accept();
+        QVERIFY(!lifecycle.visible());
+        const auto frozen = rings.count();
+        QTest::qWait(200);
+        QCOMPARE(rings.count(), frozen);
+        QCOMPARE(declined.count(), 0);
+        QVERIFY(store.hasActiveCall());
+    }
+
+    void lifecycleVideoPreferencePerMessageIdAndAccept()
+    {
+        // jitsi-call-shell.ui.tsx:41-44, 61-74: preference is per message id,
+        // accept maps it to startWithVideoMuted and clears it.
+        IncomingCallLifecycle lifecycle;
+        JitsiCallStore store;
+        lifecycle.attachStore(&store);
+        lifecycle.setAutoDeclineMs(60000);
+        const auto messageId = QStringLiteral("aaaa0000-0000-0000-0000-000000000009");
+        QVERIFY(!lifecycle.videoEnabled(messageId));
+        store.ingestIncomingInvite(lifecycleInvite());
+        lifecycle.toggleVideoEnabled(messageId);
+        QVERIFY(lifecycle.videoEnabled(messageId));
+        // A toggle for another invite id does not leak into this one.
+        QVERIFY(!lifecycle.videoEnabled(QStringLiteral("other-id")));
+        lifecycle.accept();
+        QCOMPARE(store.activeCall().value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+        QVERIFY(!lifecycle.videoEnabled(messageId));
+    }
+
+private:
+    static QVariantMap inviteBuilderGoldenInput()
+    {
+        QVariantMap input;
+        input.insert(QStringLiteral("messageId"),
+            QStringLiteral("aaaa0000-0000-0000-0000-000000000009"));
+        input.insert(QStringLiteral("messageRead"), false);
+        input.insert(QStringLiteral("messageOwn"), false);
+        input.insert(QStringLiteral("authorUuid"),
+            QStringLiteral("aaaa0000-0000-0000-0000-000000000009"));
+        input.insert(QStringLiteral("payloadKind"), QStringLiteral("markdown"));
+        input.insert(QStringLiteral("content"), QStringLiteral("https://meet.jit.si/room-9"));
+        input.insert(QStringLiteral("streamKnown"), true);
+        input.insert(QStringLiteral("streamName"), QStringLiteral("Slon Direct"));
+        input.insert(QStringLiteral("streamPrivate"), true);
+        input.insert(QStringLiteral("streamDirectUser"),
+            QStringLiteral("aaaa0000-0000-0000-0000-000000000009"));
+        input.insert(QStringLiteral("authorDisplayName"), QStringLiteral("Slon"));
+        input.insert(QStringLiteral("authorAvatarUrl"), QStringLiteral("urn:avatar:slon"));
+        input.insert(QStringLiteral("currentUserUuid"),
+            QStringLiteral("11111111-1111-1111-1111-111111111111"));
+        input.insert(QStringLiteral("currentUserDisplayName"), QStringLiteral("Me"));
+        input.insert(QStringLiteral("ownerKey"), QStringLiteral("owner-1"));
+        input.insert(QStringLiteral("meetUrl"), QStringLiteral("https://meet.jit.si"));
+        return input;
+    }
+
+    static QVariantMap lifecycleInvite()
+    {
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"),
+            QStringLiteral("aaaa0000-0000-0000-0000-000000000009"));
+        invite.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/room-9"));
+        invite.insert(QStringLiteral("callerName"), QStringLiteral("Slon"));
+        invite.insert(QStringLiteral("locationName"), QStringLiteral("Slon Direct"));
+        return invite;
     }
 };
 

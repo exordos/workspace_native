@@ -76,6 +76,11 @@ void JitsiCallStore::ingestIncomingInvite(const QVariantMap &invite)
 
 QVariantMap JitsiCallStore::acceptIncomingInvite()
 {
+    return acceptIncomingInvite(QVariantMap{});
+}
+
+QVariantMap JitsiCallStore::acceptIncomingInvite(const QVariantMap &options)
+{
     if (m_incomingInvite.isEmpty())
         return m_activeCall;
     if (!m_activeCall.isEmpty()) {
@@ -93,6 +98,9 @@ QVariantMap JitsiCallStore::acceptIncomingInvite()
         payload.insert(QStringLiteral("meetUrl"), m_incomingInvite.value(QStringLiteral("meetUrl")));
     if (m_incomingInvite.contains(QStringLiteral("displayName")))
         payload.insert(QStringLiteral("displayName"), m_incomingInvite.value(QStringLiteral("displayName")));
+    // Reference buildActiveCall startWithVideoMuted default is true.
+    payload.insert(QStringLiteral("startWithVideoMuted"),
+        options.value(QStringLiteral("startWithVideoMuted"), true).toBool());
     m_activeCall = buildActiveCall(payload);
     m_incomingInvite = QVariantMap{};
     emit activeCallChanged();
