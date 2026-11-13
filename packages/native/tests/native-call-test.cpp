@@ -696,6 +696,86 @@ private slots:
         QVERIFY(shell.permissionsGranted());
     }
 
+    // --- Review findings (#162 re-review) ---
+
+    void isMeetingOriginAllowlistsTheMeetingOriginOnly()
+    {
+        // Finding 3: capture grants must follow the meeting origin, never the
+        // requested feature alone. Deny-by-default allowlist.
+        JitsiCallWindowController shell;
+        shell.open(validCall()); // https://meet.jit.si/Room-X
+        QVERIFY(shell.isMeetingOrigin(QStringLiteral("https://meet.jit.si")));
+        QVERIFY(!shell.isMeetingOrigin(QStringLiteral("http://meet.jit.si")));
+        QVERIFY(!shell.isMeetingOrigin(QStringLiteral("https://evil.example")));
+        QVERIFY(!shell.isMeetingOrigin(QStringLiteral("https://meet.jit.si.evil.example")));
+        QVERIFY(!shell.isMeetingOrigin(QStringLiteral("https://meet.jit.si:8443")));
+        QVERIFY(!shell.isMeetingOrigin(QString()));
+        // An invalid call never grants anything.
+        JitsiCallWindowController invalid;
+        QVariantMap bad;
+        bad.insert(QStringLiteral("meetingUrl"), QStringLiteral("definitely not a url"));
+        invalid.open(bad);
+        QVERIFY(!invalid.isMeetingOrigin(QStringLiteral("https://evil.example")));
+    }
+
+    void syncFullscreenTracksExternalWindowExit()
+    {
+        // Finding 4: the fullscreen flag must follow the real window, and
+        // every transition must emit fullscreenChanged.
+        JitsiCallWindowController shell;
+        shell.open(validCall());
+        shell.toggleFullscreen();
+        QVERIFY(shell.fullscreen());
+        QSignalSpy spy(&shell, &JitsiCallWindowController::fullscreenChanged);
+        shell.syncFullscreen(true);   // window already fullscreen: no re-emit
+        QCOMPARE(spy.count(), 0);
+        shell.syncFullscreen(false);  // the window left fullscreen externally
+        QCOMPARE(shell.fullscreen(), false);
+        QCOMPARE(spy.count(), 1);
+        // The fullscreen control is expanded-only; a minimized shell ignores it.
+        shell.toggleMinimize();
+        shell.syncFullscreen(true);
+        QCOMPARE(shell.fullscreen(), false);
+        QCOMPARE(spy.count(), 1);
+    }
+
+    void focusAwarePollReconcilesCountWithoutManualPoll()
+    {
+        // Finding 5: after Ready the controller owns a focus-aware reconcile
+        // poll; a live count change reaches participantCount (and its NOTIFY)
+        // without any manual pollNow call.
+        JitsiCallWindowController shell;
+        int participants = 2;
+        shell.setParticipantCountProvider([&participants] { return participants; });
+        shell.setPollIntervalMs(30);
+        shell.open(validCall());
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.participantCount(), 2);
+        QSignalSpy spy(&shell, &JitsiCallWindowController::participantCountChanged);
+        participants = 5;
+        QTRY_COMPARE_WITH_TIMEOUT(shell.participantCount(), 5, 2000);
+        QVERIFY2(spy.count() >= 1, "participantCountChanged must fire on poll sync");
+        // The poll keeps running while minimized (focus changes cadence only).
+        shell.toggleMinimize();
+        participants = 1;
+        QTRY_COMPARE_WITH_TIMEOUT(shell.participantCount(), 1, 2000);
+        // Closing stops the poll and resets the count.
+        shell.close();
+        participants = 9;
+        QTest::qWait(200);
+        QCOMPARE(shell.participantCount(), -1);
+    }
+
+    void defaultPipBoundsMapsThroughScreenOrigin()
+    {
+        // Finding 6: the default PiP rect is viewport-relative and must be
+        // convertible to screen coords with the hosting window position.
+        QCOMPARE(JitsiCallWindowController::defaultPipBounds(QSize(1100, 700), QPoint(120, 70)),
+            QRect(880, 530, 320, 220));
+        QCOMPARE(JitsiCallWindowController::defaultPipBounds(QSize(1100, 700), QPoint()),
+            QRect(760, 460, 320, 220));
+    }
+
     void russianCatalogTextsMatchReferenceLocale()
     {
         const auto path = QFINDTESTDATA("../translations/workspace_ru.ts");
