@@ -8612,12 +8612,20 @@ ApplicationWindow {
     // moves the presentation and never creates a second WebEngine session
     // (the reference React.memo mount-count contract). Dynamic source keeps
     // the QtWebEngine import lazy for every other window in the app.
+    // #263: LoadFailed keeps the surface alive too. Once the real Qt load
+    // status was wired (#250), a failing load deactivated the ONLY embed
+    // loader, so any expand/PiP toggle afterwards held zero active loaders -
+    // the one-surface contract must hold in every live-session phase, and the
+    // shell overlays its retry affordance over the failed view. The retry
+    // re-requests the meeting URL through the live view (see
+    // NativeCallWebEngineView.qml); Idle and InvalidUrl still own no surface.
     property var callPipEmbedHost: null
     Loader {
         objectName: "callWindowEmbedLoader"
         active: root.controller.callWindow.mode !== 0
             && (root.controller.callWindow.embedState === 1 // Loading
-                || root.controller.callWindow.embedState === 2) // Ready
+                || root.controller.callWindow.embedState === 2 // Ready
+                || root.controller.callWindow.embedState === 3) // LoadFailed
         source: "NativeCallWebEngineView.qml"
         onLoaded: if (item) {
             item.controller = root.controller.callWindow
