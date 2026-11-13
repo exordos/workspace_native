@@ -17082,8 +17082,10 @@ private:
             == int(JitsiCallWindowController::LoadFailed), 20000);
         auto *retry = visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton"));
         QVERIFY(retry);
-        // Retry recreates the view (the Loader deactivates on LoadFailed and
-        // re-instantiates on Loading) and the now-serving host reaches Ready.
+        // Retry re-requests the meeting URL through the live embed surface
+        // (#263: the Loader stays active across LoadFailed so the single
+        // surface survives every phase) and the now-serving host reaches
+        // Ready.
         fixture.breakMeetingLoads = 0;
         click(window, retry);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
