@@ -31,6 +31,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontInfo>
+#include <QFontMetricsF>
 #include <QJsonDocument>
 #include <QMimeDatabase>
 #include <QNetworkReply>
@@ -16216,6 +16217,30 @@ private:
         QVERIFY2(acceptRightInCard <= card->width() + 0.5,
             qPrintable(QStringLiteral("Accept right edge %1 exceeds card width %2")
                 .arg(acceptRightInCard).arg(card->width())));
+        // PR #257 finding 4561759278: the proportional buttons must stay
+        // READABLE, not just fit. Each large-variant label Text must be at
+        // least as wide as the full advance of its own text in its own font
+        // (QFontMetricsF::horizontalAdvance - the same font-metric basis the
+        // geometry cases assert through font.pixelSize), so nothing elides to
+        // an ellipsis: width >= natural advance means the whole word paints
+        // and the elide safety net never clips to "...".
+        const QStringList labelNames = {
+            QStringLiteral("incomingCallVideoToggleText"),
+            QStringLiteral("incomingCallDeclineText"),
+            QStringLiteral("incomingCallAcceptText")};
+        for (const auto &labelName : labelNames) {
+            auto *label = item(presenter.data(), labelName); QVERIFY(label);
+            const QFont font = qvariant_cast<QFont>(label->property("font"));
+            const QString text = label->property("text").toString();
+            QVERIFY2(!text.isEmpty(),
+                qPrintable(labelName + QStringLiteral(" has no text")));
+            const qreal required = QFontMetricsF(font).horizontalAdvance(text);
+            QVERIFY2(required > 0.0,
+                qPrintable(labelName + QStringLiteral(" resolved to a null font")));
+            QVERIFY2(label->width() + 0.5 >= required,
+                qPrintable(QStringLiteral("%1 label box %2 px cannot show \"%3\" (%4 px needed)")
+                    .arg(labelName).arg(label->width()).arg(text).arg(required)));
+        }
         // Accept is still reachable: a pointer click on its centre fires the
         // accept signal.
         QSignalSpy accepted(presenter.data(), SIGNAL(acceptRequested()));
