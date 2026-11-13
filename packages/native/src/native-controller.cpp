@@ -12781,6 +12781,18 @@ void NativeController::loadPollVoters(const QString &messageUuid, const QString 
     });
 }
 
+QString NativeController::formatPollDate(const QString &isoDateTime) const
+{
+    // Reference: new Date(statusDate).toLocaleDateString(locale,{day,month:long})
+    // + ", " + toLocaleTimeString({hour,minute}) (workspace-message-poll.ui.tsx:47-49).
+    // Qt's `d MMMM, HH:mm` matches the reference output for ru; the en day
+    // order is a recorded deviation (docs/NATIVE_DESKTOP_POLLS_BUBBLE.md D6).
+    auto parsed = QDateTime::fromString(isoDateTime, Qt::ISODateWithMs);
+    if (!parsed.isValid()) parsed = QDateTime::fromString(isoDateTime, Qt::ISODate);
+    if (!parsed.isValid()) return {};
+    return QLocale().toString(parsed.toLocalTime(), QStringLiteral("d MMMM', 'HH:mm"));
+}
+
 QVariantMap NativeController::pollRowSnapshot(const Message &message)
 {
     if (!message.poll || !message.pollState) return {};
