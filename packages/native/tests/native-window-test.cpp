@@ -25,6 +25,9 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
 #include <QFile>
 #include <QFileInfo>
 #include <QFontInfo>
@@ -1522,11 +1525,57 @@ struct ProfileWindowScene {
     void saveEdit() { QMetaObject::invokeMethod(layer(), "saveEdit"); }
 };
 
+// Issue #162 (round 4): the embed fixture for the live handshake case. This
+// is the local meeting page the WebEngine embed loads: it is a stand-in for
+// the in-page API service of a real Jitsi frame - the same event registry
+// (window.APP.API.addEventListener) and participant reads
+// (getNumberOfParticipants/getParticipantsInfo) that the vendored
+// external_api bridge forwards to the reference client - and it drives its
+// own join/leave timeline, so nothing on the C++ side pokes the bridge.
+inline QByteArray embedMeetingPage()
+{
+    return QByteArray(R"HTML(<!doctype html>
+<html><head><meta charset="utf-8"><title>Call frame fixture</title></head><body>
+<script>
+(function () {
+    var listeners = {};
+    var roster = [];
+    function emit(name, detail) {
+        var fns = listeners[name] || [];
+        for (var i = 0; i < fns.length; ++i)
+            fns[i](detail || {});
+    }
+    window.APP = { API: {
+        addEventListener: function (name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
+        removeEventListener: function () {},
+        getNumberOfParticipants: function () { return roster.length; },
+        getParticipantsInfo: function () {
+            return roster.map(function (n) { return { id: n, displayName: n }; });
+        }
+    } };
+    function join(n) { roster.push(n); emit("participantJoined", { id: n, displayName: n }); }
+    function leave(n) {
+        roster = roster.filter(function (x) { return x !== n; });
+        emit("participantLeft", { id: n, displayName: n });
+    }
+    roster = ["Self"];
+    emit("videoConferenceJoined", {});
+    setTimeout(function () { join("Ada"); }, 120);
+    setTimeout(function () { join("Grace"); }, 240);
+    setTimeout(function () { leave("Ada"); }, 360);
+})();
+</script>
+</body></html>)HTML");
+}
+
 // Issue #161: conversation shell for call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md).
 class WindowCallFixture {
 public:
     MockServer server;
     bool meetConfigured = false;
+    // Serves the meeting page from the mock server itself (loopback origin)
+    // so the embed surface can actually load it and drive the live handshake.
+    bool localMeeting = false;
     QString meetingUrl = QStringLiteral("https://meet.example.com/workspace-call-room");
     int posts = 0;
     QJsonObject posted;
@@ -1534,10 +1583,19 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (localMeeting && request.method == "GET" && path == "/workspace-call-room") {
+                Response page;
+                page.rawBody = embedMeetingPage();
+                page.rawContentType = "text/html; charset=utf-8";
+                return page;
+            }
             if (path.endsWith("/server_settings"))
                 return {QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
                     {QStringLiteral("meet_url"),
-                        meetConfigured ? QStringLiteral("https://meet.example.com/") : QString()}}};
+                        meetConfigured
+                            ? (localMeeting ? server.origin().toString() + QStringLiteral("/")
+                                            : QStringLiteral("https://meet.example.com/"))
+                            : QString()}}};
             if (path.endsWith("/streams/"))
                 return {QJsonArray{windowChannel(streamId, "Call channel")}};
             if (path.endsWith("/streams/" + streamId))
@@ -1563,6 +1621,8 @@ public:
     }
     bool start(NativeController &controller)
     {
+        if (localMeeting)
+            meetingUrl = server.origin().toString() + QStringLiteral("/workspace-call-room");
         controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
         if (!QTest::qWaitFor([&] { return controller.projects().size() == 1; }, 2000)) return false;
         controller.openProject(projectId);
@@ -15542,6 +15602,66 @@ private:
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
     }
 
+    // Finding 5 (round 4): the live participant count and the shared roster
+    // must arrive through the production external-API handshake, driven by
+    // the embed page itself. The fixture page fires exactly the in-page
+    // events a real Jitsi frame forwards through external_api -
+    // videoConferenceJoined / participantJoined / participantLeft, the same
+    // subscriptions the reference wires in jitsi-participant-count.hook.ts:19-33
+    // and jitsi-call-modal-shell.hook.ts:172-210 - and the embed glue maps
+    // each event to the getNumberOfParticipants()/getParticipantsInfo()
+    // reads that feed the bridge's report* slots. Nothing here pokes the
+    // bridge or the controller from C++.
+    void callWindowLiveParticipantCountArrivesFromEmbedPageEvents()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call live count teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            controller.meetHost() == fixture.server.origin().toString(), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        // The handshake is only observable where the WebEngine embed surface
+        // can actually instantiate; the default Linux package does not ship
+        // the QtWebEngine qml module, so the embed Loader reports an error
+        // status there instead of loading the fixture page.
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
+            || loader->property("status").toInt() == 3)
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // The page has driven videoConferenceJoined + two joins + one leave
+        // through the handshake: count 2, roster taken from the live reads.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.embedBridge()->liveParticipantCount() == 2, 20000);
+        QCOMPARE(controller.callWindow()->participantCount(), 2);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.embedBridge()->liveRoster(),
+            QStringList({QStringLiteral("Self"), QStringLiteral("Grace")}), 5000);
+        auto *subtitle = item(window->contentItem(), QStringLiteral("callWindowSubtitleText"));
+        QVERIFY(subtitle);
+        QTRY_VERIFY_WITH_TIMEOUT(subtitle->isVisible(), 5000);
+        QCOMPARE(subtitle->property("text").toString(), QStringLiteral("2 participants"));
+        // Closing the call resets the live session through the same bridge
+        // (reference jitsi-participant-count.hook.ts:34-41).
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.embedBridge()->liveParticipantCount(), -1);
+        QVERIFY(controller.embedBridge()->liveRoster().isEmpty());
+    }
+
     void callWindowFullscreenControlDrivesTheWindow()
     {
         // Finding 4: the fullscreen control must enter/exit fullscreen on the
@@ -15845,6 +15965,18 @@ int main(int argc, char **argv)
     // Exercise Qt's visible fallback dialog deterministically; platform-native
     // picker/portal acceptance remains part of each OS's manual acceptance.
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    // Deterministic embed for the call-window WebEngine cases (mirrors
+    // spike/call/main.cpp): software GL on headless X, /dev/shm-friendly
+    // caches, and the sandbox opt-out only where Chromium cannot use user
+    // namespaces (root CI).
+    {
+        QByteArray chromiumFlags
+            = qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS").toUtf8();
+        chromiumFlags += " --disable-gpu --disable-dev-shm-usage";
+        if (geteuid() == 0)
+            chromiumFlags += " --no-sandbox";
+        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", chromiumFlags);
+    }
     QApplication app(argc, argv);
     QQuickStyle::setStyle("Basic");
     if (qEnvironmentVariableIsSet("CASSI_NATIVE_DRAFT_WORKLOAD")) {
