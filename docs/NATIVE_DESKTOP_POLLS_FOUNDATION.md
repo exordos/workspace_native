@@ -91,7 +91,10 @@ ordering, unread counters or notifications: the merged row keeps its
 `createdMicros` (ordering), its read flag (monotonic) and never enters the
 notification-candidate path. When the guard fully rejects an incoming snapshot,
 the cache projection for that message omits `Projection::Payload` so the stored
-snapshot cannot regress either.
+snapshot cannot regress either. When only the equal-revision `is_closed`
+ratchet fires, the projection carries the guarded closed state (the DTO's
+`poll_state.is_closed` is forced back on before `projectMessage`), so an
+inserted cache row can never persist the rejected reopen.
 
 ## Cache persistence
 

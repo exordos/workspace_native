@@ -17162,6 +17162,57 @@ private slots:
         // escape: they were read through the dangling references if any).
         QVERIFY(poisonMessage->size() > 0 && poisonQuestion->size() > 0 && poisonOption->size() > 0);
     }
+
+    // Exordy thread 4563441924: when the equal-revision reopen ratchet keeps
+    // an already-closed poll closed in memory, the cache projection must
+    // persist that guarded closed state, never the incoming reopened
+    // poll_state. Here the cached head page no longer contains the poll row
+    // (page rebuild/vacate shape), so the projection inserts the incoming row
+    // verbatim - it must carry the guarded state, not the reopen.
+    void pollEqualRevisionReopenCannotPersistOpenStateToCache()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), NativeCache::Policy{}, true);
+        Fixture fixture;
+        const auto id = pollFixtureUuid(21);
+        const auto plainId = pollFixtureUuid(22);
+        auto plain = message(QStringLiteral("Plain older message"), plainId);
+        plain.insert(QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:00:00.000Z"));
+        fixture.messages = [&](const Request &) {
+            return Response{QJsonArray{plain, pollMessageDto(id, 6, true)}, 200, 0, {}};
+        };
+        fixture.controller.useCache(&cache);
+        QVERIFY(fixture.start());
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!modelMessage(fixture.controller, id).isEmpty(), 3000);
+        // Rebuild the cached head page without the poll row: the next
+        // projection of this message must insert it from its DTO.
+        QVERIFY(cache.put(cache.lease(),
+            {NativeCache::Kind::History, streamId, topicId, {}}, {plain}));
+        // Equal-revision reopen attempt: the in-memory guard keeps the poll
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.updated",
+            pollMessageDto(id, 6, false), 7801)));
+        QTRY_VERIFY_WITH_TIMEOUT(modelMessage(fixture.controller, id).value("poll").toMap()
+            .value("state").toMap().value("isClosed").toBool(), 2000);
+        // closed; whatever row the projection persisted must agree with the
+        // guarded state, so a later offline restore cannot reopen the poll.
+        QJsonObject pollRow;
+        const auto foundPoll = [&]() {
+            const auto entry = cacheEntry(cache, cache.lease(),
+                {NativeCache::Kind::History, streamId, topicId, {}});
+            if (!entry) return false;
+            for (const auto &row : entry->rows) {
+                if (row.toObject().value(QStringLiteral("uuid")).toString() == id) {
+                    pollRow = row.toObject();
+                    return true;
+                }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(foundPoll(), 3000);
+        QCOMPARE(pollRow.value(QStringLiteral("poll_state")).toObject()
+            .value(QStringLiteral("is_closed")).toBool(), true);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

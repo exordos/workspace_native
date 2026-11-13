@@ -635,8 +635,9 @@ QVector<Message> mergeMessages(const QVector<Message> &existing, const QVector<M
     return result;
 }
 
-bool applyPollRevisionGuard(Message &incoming, const Message &previous)
+bool applyPollRevisionGuard(Message &incoming, const Message &previous, bool *reopenRatcheted)
 {
+    if (reopenRatcheted) *reopenRatcheted = false;
     if (incoming.kind != QLatin1String("poll") || previous.kind != QLatin1String("poll")
         || !incoming.pollState || !previous.pollState)
         return false;
@@ -648,8 +649,12 @@ bool applyPollRevisionGuard(Message &incoming, const Message &previous)
         return true;
     }
     if (previous.pollState->revision == incoming.pollState->revision
-        && previous.pollState->isClosed && !incoming.pollState->isClosed)
+        && previous.pollState->isClosed && !incoming.pollState->isClosed) {
         incoming.pollState->isClosed = true;
+        // The parsed state no longer matches the incoming DTO: callers that
+        // project the raw payload to the cache must carry the guarded flag.
+        if (reopenRatcheted) *reopenRatcheted = true;
+    }
     return false;
 }
 

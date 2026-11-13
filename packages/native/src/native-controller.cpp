@@ -7500,7 +7500,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             // in place of the incoming one (lower revision or reopen attempt);
             // the merge and the cache projection must then carry the retained
             // payload, not the stale incoming one (message.model.ts poll merge).
-            const bool pollKeptExisting = previous && applyPollRevisionGuard(*message, *previous);
+            bool pollReopenRatcheted = false;
+            const bool pollKeptExisting = previous
+                && applyPollRevisionGuard(*message, *previous, &pollReopenRatcheted);
             const bool leftSelection = moved && !selected;
             const bool fits = previous || m_before.isEmpty() || (!m_messages.isEmpty()
                 && (message->createdMicros > m_messages.first().createdMicros
@@ -7543,7 +7545,16 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             // cached payload of the newer revision it lost to.
             if (!pollKeptExisting) fields |= NativeCache::Projection::Payload;
             if (message->reactionsKnown) fields |= NativeCache::Projection::Reactions;
-            if (!deleted) projectCanonical(payload, fields, context);
+            // Issue #214 review: a reopen ratcheted back to closed at equal
+            // revision must project the guarded state, not the incoming DTO,
+            // so the persisted row agrees with the retained in-memory one.
+            QJsonObject projectionPayload = payload;
+            if (pollReopenRatcheted) {
+                auto guardedState = projectionPayload.value(QStringLiteral("poll_state")).toObject();
+                guardedState.insert(QStringLiteral("is_closed"), true);
+                projectionPayload.insert(QStringLiteral("poll_state"), guardedState);
+            }
+            if (!deleted) projectCanonical(projectionPayload, fields, context);
             if (!current()) return true;
             if (leftSelection && !deleted) {
                 ++m_messageRevision;

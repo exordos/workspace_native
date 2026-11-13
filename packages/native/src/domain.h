@@ -210,8 +210,11 @@ QVector<Message> mergeMessages(const QVector<Message> &existing,
 // Issue #214 store merge (message.model.ts snapshot rule): a lower poll_state
 // revision never overwrites - the incoming row keeps the previous payload and
 // state and the call returns true so the caller can also skip cache payload
-// projection. At equal revision an existing is_closed is never reverted.
-bool applyPollRevisionGuard(Message &incoming, const Message &previous);
+// projection. At equal revision an existing is_closed is never reverted; when
+// that reopen ratchet applies, *reopenRatcheted (if requested) is set so the
+// caller can project the guarded closed state instead of the incoming one.
+bool applyPollRevisionGuard(Message &incoming, const Message &previous,
+                            bool *reopenRatcheted = nullptr);
 
 // Composer mention entries for the send body (message-composer-body.lib.ts
 // WorkspaceComposerMention). visibleText is what the user sees in the draft;
