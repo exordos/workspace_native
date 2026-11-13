@@ -5387,6 +5387,47 @@ private slots:
         QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("ready"));
     }
 
+    // Issue #221 review: both synchronous decryptRetryStateChanged notifications must not
+    // keep executing against a destroyed controller or a message the observer removed or
+    // replaced. The fixture lives on the heap so an observer can destroy the controller in
+    // the middle of a notification; the controller must then stop immediately and never
+    // schedule or run the deferred decrypt publish. The third row keeps the controller
+    // alive but switches topics inside the completion notification, which clears the
+    // message vector and changes the selection under the deferred lambda, so the publish
+    // must be revalidated and skipped. Run the case with MALLOC_PERTURB_=165 so any
+    // dangling read of freed memory faults immediately instead of silently.
+    void decryptRetryObserversMayDestroyTheControllerAndMessage_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"destroy-first-notify", "destroy-second-notify", "reselect-second-notify"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+    void decryptRetryObserversMayDestroyTheControllerAndMessage() {
+        QFETCH(QString, scenario);
+        Fixture *f = new Fixture;
+        const auto retire = qScopeGuard([&] { if (f) delete f; });
+        f->stream = fullEncryptedStream(); QVERIFY(f->start());
+        auto wrong = NativeChatCrypto::createGroupKey(); QVERIFY(wrong);
+        const auto wipeWrong = qScopeGuard([&] { wrong.bytes.fill(0); wrong.bytes.clear(); });
+        QCOMPARE(f->vault.put(f->vault.lease(), {streamId, returnedId}, wrong.bytes, 0), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f->controller, messageId).value("encryptionState").toString(), QString("error"));
+        QSignalSpy transitions(&f->controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        bool invalidated = false;
+        QObject::connect(&f->controller, &NativeController::decryptRetryStateChanged, [&] {
+            if (invalidated) return;
+            // While pending holds the uuid this is the in-flight transition; a pending
+            // set that already dropped the uuid is the completion notification.
+            const bool inFlight = f->controller.decryptRetryPendingUuids().contains(messageId);
+            if (scenario == "destroy-first-notify" && inFlight) { delete f; f = nullptr; invalidated = true; }
+            else if (scenario == "destroy-second-notify" && !inFlight) { delete f; f = nullptr; invalidated = true; }
+            else if (scenario == "reselect-second-notify" && !inFlight) { invalidated = true; f->controller.selectTopic(secondTopicId); }
+        });
+        f->controller.retryMessageDecrypt(messageId);
+        if (invalidated && !f) return; // The controller died mid-notification: surviving the call is the assertion.
+        QTRY_COMPARE(transitions.size(), 2);
+        QVERIFY(!f || f->controller.decryptRetryPendingUuids().isEmpty());
+    }
+
 #ifdef WORKSPACE_NATIVE_E2EE_UI
     // Additive UI capability rows. Core invokable is never called directly here.
     void uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount_data()
