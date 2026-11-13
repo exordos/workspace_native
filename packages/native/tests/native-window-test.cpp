@@ -837,34 +837,100 @@ static QJsonObject mediaViewerRow(const QString &uuid, const QString &fileUuid, 
     return row;
 }
 
-// A tiny real H.264/MP4 fixture (96x64, 0.5 s, no audio track) so the video
-// slot tests observe a software-decodable file through the FFmpeg backend
-// (issue #203). Embedded base64 keeps the test independent of developer paths.
+// A tiny real H.264+AAC/MP4 fixture (96x64, 0.5 s, with a 440 Hz audio
+// track) so the video slot tests observe a software-decodable file with an
+// audio stream through the FFmpeg backend (issue #203; the audio track keeps
+// the AudioOutput wiring under test — a MediaPlayer without an audio sink
+// would still "play" a silent clip). Embedded base64 keeps the test
+// independent of developer paths.
 static QByteArray mediaViewerVideoBytes()
 {
     return QByteArray::fromBase64(QByteArrayLiteral(
-        "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAM1bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAA"
-        "AQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        "AAAAAgAAAmB0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAA"
-        "AAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAGAAAABAAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHY"
-        "bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAFABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRl"
-        "b0hhbmRsZXIAAAABg21pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAA"
-        "AQAAAUNzdGJsAAAAt3N0c2QAAAAAAAAAAQAAAKdhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAGAAQABIAAAASAAAAAAA"
-        "AAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAALWF2Y0MBQsAK/+EAFmdCwAraGJsBEAAAAwAQAAAD"
-        "AUDxImoBAARozg/IAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAKbAAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAUAAAQA"
-        "AAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAUAAAABAAAAKHN0c3oAAAAAAAAAAAAAAAUAAAJz"
-        "AAAACgAAAAoAAAAKAAAACgAAABRzdGNvAAAAAAAAAAEAAANlAAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAA"
-        "bWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2My4xLjEwMQAAAAhmcmVlAAAC"
-        "o21kYXQAAAJGBgX//0LcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAt"
-        "IENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFj"
-        "PTAgcmVmPTEgZGVibG9jaz0wOjA6MCBhbmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAw"
-        "IG1peGVkX3JlZj0wIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0y"
-        "MSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0wIHRocmVhZHM9MiBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNl"
-        "ZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50"
-        "cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xMCBzY2VuZWN1dD0wIGludHJhX3JlZnJl"
-        "c2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3Jh"
-        "dGlvPTEuNDAgYXE9MACAAAAAJWWIhDoRigACDTHAAEF6OAAIFMnJycnJ1111111111111111114AAAAGQZogEKDMAAAABkGa"
-        "QBGgzAAAAAZBmmARoMwAAAAGQZqAEaDM"
+        "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"
+        "rgd6znKsbirjZtBs2NsWJuVluWc69icdjcU+tn1s+qo1+avzV+MqlJpaafWz6qUqmq7DRh4SY6sdWOrHDRhow0ST"
+        "STSNJNJNJNJNJNJNJNI0jSTSTPQ9DzZcuWKLjxiiiiiiiiiiiiiii4AAAAJGBgX//0LcRem95tlIt5Ys2CDZI+7v"
+        "eDI2NCAtIGNvcmUgMTY1IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0"
+        "dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTAgcmVmPTEgZGVibG9jaz0w"
+        "OjA6MCBhbmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0w"
+        "IG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0yMSwxMSBm"
+        "YXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0wIHRocmVhZHM9MiBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNl"
+        "ZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWlu"
+        "ZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xMCBzY2VuZWN1dD0w"
+        "IGludHJhX3JlZnJlc2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4"
+        "PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MACAAAAAJWWIhDoRigACDTHAAEF6OAAIFMnJycnJ11111111"
+        "11111111114BOJjayl3WU8sp2Jsl3pc/z7dcNnjV3X/p6/frjXGr1ev/7Hj+fPGuNXq5//b9/588a61q+Ow3+tlt"
+        "njx5cB9k07sFil8KnWbymNucBnOAwM7hMwMDO4SEgwM7hISDAwM7uEhKwYGBndwkJOAw5l3cJONAzINed3yCQnJc"
+        "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"
     ));
 }
 
@@ -12740,6 +12806,19 @@ mv -Tf "$root/.current-new" "$root/current"
             return v && v->isVisible(); })(), 6000);
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
             return v && v->property("playbackState").toInt() == 1; })(), 15000);
+        // Sound must actually be routed: the active slot exposes an
+        // AudioOutput bound to the active player (exo-review finding A on
+        // issue #203 — a MediaPlayer connected only to a video output has no
+        // audio sink, so clips with audio tracks played silently). Audio
+        // outputs are non-visual objects on this Qt; the overlay's object
+        // subtree hangs off the window root object (visible items hang off
+        // the content item), so search from the window.
+        auto *audio = window->findChild<QObject *>("mediaViewer-audio-1");
+        QVERIFY2(audio, "The active video slot must expose an AudioOutput item");
+        QVERIFY2(audio->property("playerBound").toBool(),
+            "The slot AudioOutput must be bound to a player");
+        QCOMPARE(audio->property("playerObjectName").toString(), QStringLiteral("mediaViewer-player"));
+        QCOMPARE(audio->property("playerPlaybackState").toInt(), 1);
         video = visibleItem(content, "mediaViewer-video");
         // Same media box as images: 64 px side padding and the
         // calc(100vh-12rem) height cap (media-viewer-overlay.ui.tsx:126,158).
@@ -12754,6 +12833,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
             return v && v->property("playbackState").toInt() == 2; })(), 5000);
         QVERIFY(viewer->open());
+        // The same bound player drives the pause, so the slot's audio sink
+        // tracks the active player's state, not a stale sibling.
+        QCOMPARE(audio->property("playerPlaybackState").toInt(), 2);
         click(window, visibleItem(content, "mediaViewer-video-toggle"));
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
             return v && v->property("playbackState").toInt() == 1; })(), 5000);
