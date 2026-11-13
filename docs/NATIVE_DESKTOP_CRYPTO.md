@@ -4,6 +4,9 @@ The latest fully accepted baseline is the imported V34 snapshot. Current ordinar
 response changes are in progress; see [current development](CURRENT_DEVELOPMENT.md)
 for the checks and unresolved observations on this branch.
 
+The per-message decrypt Retry on the encrypted message error row is specified in
+[per-message decrypt retry](NATIVE_DESKTOP_E2EE_DECRYPT_RETRY.md).
+
 [NativeChatCrypto](../packages/native/src/native-chat-crypto.h) implements the
 binary operations from the existing
 [real client provider](../packages/web/src/entities/messenger/chat-real-crypto-provider.lib.ts).
