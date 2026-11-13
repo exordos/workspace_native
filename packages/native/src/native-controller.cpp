@@ -9102,19 +9102,27 @@ bool NativeController::canSend() const
     // A reply session sends when any tab holds a sendable answer: the blank
     // active draft must not block answers saved in the other tabs
     // (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md composition covers every tab).
-    bool anyReplyAnswer = false;
-    for (const auto &tab : std::as_const(m_replyTabs))
-        if (!tab.answer.trimmed().isEmpty()) { anyReplyAnswer = true; break; }
+    // Every answer that reaches the wire - the active draft and each answer
+    // saved in an inactive tab - clears the same size limit and protected-
+    // fragment check, because composition serializes all of them.
+    const auto answerAllowed = [](const QString &text)
+    { return !text.contains(":::") && text.size() <= 40000; };
+    bool anyReplyAnswer = false, repliesAllowed = true;
+    for (const auto &tab : std::as_const(m_replyTabs)) {
+        if (tab.answer.trimmed().isEmpty()) continue;
+        anyReplyAnswer = true;
+        if (!answerAllowed(tab.answer)) repliesAllowed = false;
+    }
     const auto *stream = currentStream();
     if (stream && stream->encrypted)
         return canCompose() && !m_sending && m_pendingSends.value(conversationKey()).uuid.isEmpty()
             && !draft().trimmed().isEmpty() && boundedText(draft(), 40000);
     return authoritativeRoute() && stream && !stream->encrypted && !m_topic.isEmpty()
         && (!durableDraftRoute() || m_draftStore->ready(m_stream, m_topic))
-        && !draft().contains(":::")
+        && answerAllowed(draft())
         && !m_pendingSends.value(conversationKey()).encrypted
         && !topicClosed() && !m_sending && m_pendingUploads.value(conversationKey()) == 0
-        && (!draft().trimmed().isEmpty() || anyReplyAnswer) && draft().size() <= 40000;
+        && (!draft().trimmed().isEmpty() || anyReplyAnswer) && repliesAllowed;
 }
 
 bool NativeController::topicClosed() const
