@@ -5333,6 +5333,60 @@ private slots:
         QCOMPARE(f.controller.draft(), QString{}); QCOMPARE(f.bindingGets, 0);
     }
 
+    // Issue #221: per-message decrypt Retry. Error row -> Retry -> re-decrypt -> re-error with the
+    // same bad key; every in-flight transition emits decryptRetryStateChanged (the property that
+    // drives the QML disabled state); repeat activations while in flight queue nothing; locked
+    // stores and rows outside the error state are no-ops.
+    void decryptRetryStateMachineRequeuesTheFailedRowAndAnnouncesEveryTransition()
+    {
+        Fixture f; f.stream = fullEncryptedStream(); QVERIFY(f.start());
+        auto wrong = NativeChatCrypto::createGroupKey(); QVERIFY(wrong);
+        const auto wipeWrong = qScopeGuard([&] { wrong.bytes.fill(0); wrong.bytes.clear(); });
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, wrong.bytes, 0), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("error"));
+        QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 1);
+        QCOMPARE(f.controller.decryptRetryPendingUuids(), QStringList{messageId});
+        // A second activation while the first re-decrypt is in flight must not double-decrypt.
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 1);
+        QCOMPARE(f.controller.decryptRetryPendingUuids(), QStringList{messageId});
+        QTRY_COMPARE(transitions.size(), 2);
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+        // The same unreadable vault key: the row re-errors and Retry becomes available again.
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("error"));
+        // Key-missing rows have no error Retry: the guard queues nothing.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, returnedId}), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("missing"));
+        const auto settled = transitions.size();
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), settled);
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+        // Unknown message uuids are not accepted either.
+        f.controller.retryMessageDecrypt(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        QCOMPARE(transitions.size(), settled);
+        // A locked vault keeps reads out: retry is a no-op while the chat is locked.
+        f.vault.close();
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("locked"));
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), settled);
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+    }
+    void decryptRetryIgnoresRowsWithoutTheErrorState()
+    {
+        Fixture f; f.stream = fullEncryptedStream(); QVERIFY(f.start()); QVERIFY(f.prepareA());
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("ready"));
+        QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 0);
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("ready"));
+    }
+
 #ifdef WORKSPACE_NATIVE_E2EE_UI
     // Additive UI capability rows. Core invokable is never called directly here.
     void uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount_data()
@@ -9129,6 +9183,92 @@ private slots:
         }
         if(state=="archived"){QVERIFY(f.controller.selectedTopic().isEmpty());for(const auto &req:f.http.requests)QVERIFY(!req.target.path().contains("unarchive"));}
         QVERIFY(!f.controller.canSend());QVERIFY(!f.controller.canAttach());window->close();
+    }
+    // Issue #221 acceptance: the error row carries an inline ghost Retry (reference
+    // encrypted-message-placeholder.ui.tsx:28-48 at workspace_ui 230e02b), disabled while its
+    // single-message re-decrypt is in flight, and success replaces the row body.
+    void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs_data() {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
+    }
+    void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs() {
+        QFETCH(QString, locale);
+        auto right = NativeChatCrypto::createGroupKey(); QVERIFY(right);
+        const auto wipeRight = qScopeGuard([&] { right.bytes.fill(0); right.bytes.clear(); });
+        auto sealed = NativeChatCrypto::encryptMessage(right.bytes, "Retry recovery body", {streamId, returnedId}); QVERIFY(sealed);
+        const auto wipeSealed = qScopeGuard([&] { sealed.bytes.fill(0); sealed.bytes.clear(); });
+        Fixture f; f.stream = fullEncryptedStream();
+        f.cipher["payload"] = QJsonObject{{"kind","e2ee"},{"key_uuid",returnedId},
+            {"content",QString::fromLatin1(sealed.bytes.toBase64())}};
+        QVERIFY(f.start());
+        auto wrong = NativeChatCrypto::createGroupKey(); QVERIFY(wrong);
+        const auto wipeWrong = qScopeGuard([&] { wrong.bytes.fill(0); wrong.bytes.clear(); });
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, wrong.bytes, 0), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("error"));
+        NativePreferences preferences(f.directory.filePath("ui.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        // Close once on normal completion or an assertion return, before engine teardown.
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Visual window teardown did not observe inactive focus before close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *row = encryptedUiItem(window, "encrypted-error-" + messageId); QVERIFY(row);
+        auto *retry = encryptedUiItem(window, "encrypted-retry-" + messageId); QVERIFY(retry);
+        QVERIFY(retry->isEnabled());
+        // Reference geometry: the error row keeps min-height 36 (placeholder :29 min-h-9) and the
+        // sm ghost retry rides the 20 px text-sm line (placeholder :29-45).
+        QVERIFY2(row->height() >= 36.0, qPrintable(QStringLiteral("error row height %1").arg(row->height())));
+        QVERIFY2(retry->height() == 20.0, qPrintable(QStringLiteral("retry height %1").arg(retry->height())));
+        QCOMPARE(retry->property("text").toString(), locale == "ru" ? QString::fromUtf8("Повторить") : QString("Retry"));
+        QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        // The click path drains the scheduled cycle within the click, so prove the binding with a
+        // watcher at the start NOTIFY, and open a pump-free in-flight window with direct calls.
+        bool disabledAtStart = false;
+        const auto watchInFlight = QObject::connect(&f.controller, &NativeController::decryptRetryStateChanged, [&] {
+            if (f.controller.decryptRetryPendingUuids().contains(messageId))
+                disabledAtStart = !retry->isEnabled();
+        });
+        const auto stopWatching = qScopeGuard([watchInFlight] { QObject::disconnect(watchInFlight); });
+        encryptedUiClick(retry);
+        QVERIFY2(disabledAtStart, "Retry must be disabled while its decrypt is in flight");
+        QTRY_COMPARE(transitions.size(), 2); // exactly one re-decrypt cycle for one click
+        // Repeated failure: the row stays an error and Retry works again.
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("error"));
+        QTRY_VERIFY(retry->isVisible()); QTRY_VERIFY(retry->isEnabled());
+        // In-flight window without the pump: the property and the button disable together, and a
+        // second activation cannot queue a second decrypt of this uuid.
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 3);
+        QVERIFY2(!retry->isEnabled(), "Retry must be disabled while its decrypt is in flight");
+        QVERIFY(f.controller.decryptRetryPendingUuids().contains(messageId));
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 3);
+        QTRY_COMPARE(transitions.size(), 4);
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("error"));
+        QTRY_VERIFY(retry->isEnabled());
+        // Success: one more Retry, the key repaired while the single re-decrypt is scheduled; the
+        // single-message prepare path replaces the row body with the decrypted plaintext.
+        f.controller.retryMessageDecrypt(messageId);
+        QCOMPARE(transitions.size(), 5);
+        QVERIFY(!retry->isEnabled());
+        // The vault slot refuses a different key (Conflict); repair = remove then put, all before
+        // the scheduled single re-decrypt runs, so the in-flight cycle decrypts with the new key.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, returnedId}), NativeChatKeyVault::Failure::None);
+        const auto slot = f.vault.read(f.vault.lease(), {streamId, returnedId});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, right.bytes, slot.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(displayed(f.controller, messageId).value("decrypted").toBool());
+        QCOMPARE(transitions.size(), 6);
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+        QCOMPARE(displayed(f.controller, messageId).value("content").toString(), QString("Retry recovery body"));
+        QVERIFY(!encryptedUiItem(window, "encrypted-error-" + messageId));
+        QVERIFY(!encryptedUiItem(window, "encrypted-retry-" + messageId));
+        QVERIFY(encryptedUiItem(window, "message-content-" + messageId));
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
     }
     void uiEncryptedOsRetryDoesNotSendAKeyRequest() {
         // Sentinels outlive Fixture, including any assertion-return teardown.

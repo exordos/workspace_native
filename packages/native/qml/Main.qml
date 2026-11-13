@@ -324,6 +324,34 @@ ApplicationWindow {
             }
         }
     }
+    // Issue #221: the ghost-underline Retry inside the encrypted message error row
+    // (reference encrypted-message-placeholder.ui.tsx:32-47: ghost neutral sm Button with
+    // !h-auto !p-0 underline, disabled opacity 50). Same ghost-link convention as
+    // InlineKeyRequestAction, riding the row's 20 px text-sm line in text-muted.
+    component InlineDecryptRetryAction: NativeButton {
+        id: decryptRetryAction
+        colors: root.colors
+        implicitWidth: contentItem.implicitWidth
+        implicitHeight: 20
+        height: 20
+        padding: 0; horizontalPadding: 0; verticalPadding: 0
+        font.pixelSize: 14; font.weight: Font.Normal; font.underline: true
+        contentItem: Text {
+            text: decryptRetryAction.text; textFormat: Text.PlainText
+            font: decryptRetryAction.font; color: root.colors["text-muted"]
+            lineHeightMode: Text.FixedHeight; lineHeight: 20
+            opacity: decryptRetryAction.enabled ? 1 : 0.5
+        }
+        background: Rectangle {
+            color: "transparent"; radius: 2
+            Rectangle {
+                x: -4; y: -4; width: parent.width + 8; height: parent.height + 8
+                color: "transparent"; radius: 6
+                border.width: 2; border.color: root.colors.accent
+                visible: decryptRetryAction.visualFocus
+            }
+        }
+    }
     function requestMessageKey(id) {
         const message = root.currentMessage(id);
         if (!message || message.kind !== "e2ee" || Boolean(message.decrypted) || !Boolean(message.canRequestKey) || !root.chatEncryption.canRequest || !String(message.encryptionKeyUuid || "").length)
@@ -4509,10 +4537,21 @@ ApplicationWindow {
                                 }
                                 Text {
                                     id: encryptedErrorText
-                                    width: Math.max(0, parent.width - 24)
+                                    width: Math.max(0, parent.width - 32 - (messageDecryptRetry.visible ? messageDecryptRetry.implicitWidth : 0))
                                     text: qsTr("Could not decrypt message"); textFormat: Text.PlainText
                                     font.pixelSize: 14; color: root.colors["text-muted"]; wrapMode: Text.Wrap
                                     Accessible.role: Accessible.AlertMessage
+                                }
+                                // Issue #221: inline ghost Retry re-runs this message's decrypt
+                                // (workspace_ui 230e02b workspace-message-content-bubble.ui.tsx:49-55);
+                                // disabled while the controller reports the uuid in flight.
+                                InlineDecryptRetryAction {
+                                    id: messageDecryptRetry
+                                    objectName: "encrypted-retry-" + messageRow.modelData.id
+                                    text: qsTr("Retry")
+                                    Accessible.name: text
+                                    enabled: root.controller.decryptRetryPendingUuids.indexOf(String(messageRow.modelData.id)) < 0
+                                    onClicked: root.controller.retryMessageDecrypt(String(messageRow.modelData.id))
                                 }
                             }
                             Column {
