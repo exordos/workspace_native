@@ -433,4 +433,53 @@ QString JitsiCallWindowController::embedUrl() const
     return meetingUrl() + hash;
 }
 
+JitsiEmbedBridge::JitsiEmbedBridge(QObject *parent) : QObject(parent) {}
+
+void JitsiEmbedBridge::reportParticipantCount(int count)
+{
+    if (m_liveCount == count)
+        return;
+    m_liveCount = count;
+    emit liveParticipantCountChanged();
+}
+
+void JitsiEmbedBridge::reportRoster(const QStringList &displayNames)
+{
+    if (m_roster == displayNames)
+        return;
+    m_roster = displayNames;
+    emit liveRosterChanged();
+}
+
+void JitsiEmbedBridge::handleParticipantsJoined()
+{
+    // Reference syncCallState: the event only triggers a re-read of the
+    // live count; the bridge is where that count lives.
+    if (m_controller)
+        m_controller->participantJoined();
+}
+
+void JitsiEmbedBridge::handleParticipantsLeft()
+{
+    handleParticipantsJoined();
+}
+
+void JitsiEmbedBridge::attachTo(JitsiCallWindowController *controller)
+{
+    m_controller = controller;
+    controller->setParticipantCountProvider([this] { return m_liveCount; });
+    // Each live count report flows into the shell the same way a reference
+    // participantJoined/participantLeft listener re-syncs it.
+    connect(this, &JitsiEmbedBridge::liveParticipantCountChanged,
+            controller, &JitsiCallWindowController::participantJoined);
+    // Closing the call resets the count and the shared roster (reference
+    // jitsi-participant-count.hook.ts:34-41 and shell close effect).
+    connect(controller, &JitsiCallWindowController::closeRequested, this, [this] {
+        m_liveCount = -1;
+        m_roster.clear();
+        emit liveParticipantCountChanged();
+        emit liveRosterChanged();
+    });
+}
+
 } // namespace workspace

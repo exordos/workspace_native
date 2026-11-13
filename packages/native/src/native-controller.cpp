@@ -6107,6 +6107,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(&m_callWindow, &JitsiCallWindowController::closeRequested, this, [this] {
         m_callStore.closeCall();
     });
+    // #162 finding 5: the embed bridge is the shell's live participant count
+    // and roster source in production; the reconcile timer re-reads this
+    // bridge, never test-injected data.
+    m_embedBridge.attachTo(&m_callWindow);
     // Issue #165: the inactivity guard signs out through this controller's
     // regular logout so credential wiping matches a manual sign-out exactly.
     m_authGuard = new NativeAuthGuard(this);
