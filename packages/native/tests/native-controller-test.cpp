@@ -9786,6 +9786,209 @@ private slots:
         QCOMPARE(fixture.controller.replyAuthor(), QString("Amy"));
     }
 
+    // Issue #202 (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md): opening a stored
+    // message whose body starts with "[Name](urn:quote:...)" restores the reply
+    // session and edits only the answer; re-saving round-trips the quote line.
+    void inlineEditRestoresQuoteReplyAndPreservesTheQuoteLineOnSave()
+    {
+        Fixture fixture;
+        auto origin = message("Origin text", messageId);
+        auto note = message(QStringLiteral("[You](urn:quote:%1?text=kept%20selection)\n\nmy answer").arg(messageId), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        QJsonObject saved; int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin, note}};
+            if (request.method == "PUT") { ++edits; saved = request.body; note["payload"] = request.body.value("payload"); return {note}; }
+            return {path.endsWith(messageId) ? origin : note};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId);
+        // The quote reference is taken off the body: the composer shows only the answer.
+        QCOMPARE(fixture.controller.draft(), QString("my answer"));
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
+        const auto tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs.size(), 1);
+        QCOMPARE(tabs.first().toMap().value("message").toString(), messageId);
+        QVERIFY(tabs.first().toMap().value("active").toBool());
+        QVERIFY(fixture.controller.canSaveEdit());
+        QVERIFY(!fixture.controller.canSend());
+
+        // The restored tab answers in lockstep with the edit buffer.
+        fixture.controller.setDraft("fixed answer");
+        QCOMPARE(fixture.controller.replyTabs().first().toMap().value("answer").toString(), QString("fixed answer"));
+
+        // Re-saving preserves the quote line verbatim, including the ?text= fragment.
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 1);
+        QCOMPARE(saved.value("payload").toObject().value("content").toString(),
+                 QStringLiteral("[You](urn:quote:%1?text=kept%20selection)\n\nfixed answer").arg(messageId));
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+    }
+
+    void inlineEditRestoreCancelClosesTheRestoredReplySession()
+    {
+        Fixture fixture;
+        auto origin = message("Origin text", messageId);
+        auto note = message(QStringLiteral("[You](urn:quote:%1)\n\nmy answer").arg(messageId), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin, note}};
+            if (request.method == "PUT") { ++edits; return {note}; }
+            return {path.endsWith(messageId) ? origin : note};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.setDraft("pre-edit draft");
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        fixture.controller.cancelEditMessage();
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+        // The restored tabs were session-local: cancelling closes them too and
+        // the stored draft is back.
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("pre-edit draft"));
+        QCOMPARE(edits, 0);
+    }
+
+    void inlineEditRestoreSplitsMultipleQuoteBlocksIntoTabs()
+    {
+        Fixture fixture;
+        const QString secondOriginId = "7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b";
+        auto firstOrigin = message("First origin", messageId);
+        auto secondOrigin = message("Second origin", secondOriginId);
+        auto note = message(QStringLiteral("[First](urn:quote:%1)\n\nfirst answer\n\n[Second](urn:quote:%2)\n\nsecond answer")
+            .arg(messageId, secondOriginId), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        QJsonObject saved; int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{firstOrigin, secondOrigin, note}};
+            if (request.method == "PUT") { ++edits; saved = request.body; note["payload"] = request.body.value("payload"); return {note}; }
+            return {path.endsWith(messageId) ? firstOrigin
+                : path.endsWith(secondOriginId) ? secondOrigin : note};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto tabs = fixture.controller.replyTabs();
+        QCOMPARE(tabs.size(), 2);
+        QCOMPARE(tabs[0].toMap().value("message").toString(), messageId);
+        QCOMPARE(tabs[1].toMap().value("message").toString(), secondOriginId);
+        QCOMPARE(fixture.controller.draft(), QString("first answer"));
+
+        // Switching tabs swaps the edit buffer to that tab's answer.
+        QVERIFY(fixture.controller.selectReplyTab(tabs[1].toMap().value("id").toString()));
+        QCOMPARE(fixture.controller.draft(), QString("second answer"));
+        fixture.controller.setDraft("second answer, edited");
+
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 1);
+        QCOMPARE(saved.value("payload").toObject().value("content").toString(),
+                 QStringLiteral("[First](urn:quote:%1)\n\nfirst answer\n\n[Second](urn:quote:%2)\n\nsecond answer, edited")
+                     .arg(messageId, secondOriginId));
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+    }
+
+    void inlineEditLeavesNonStructuralQuoteMentionsRaw()
+    {
+        Fixture fixture;
+        auto origin = message("Origin text", messageId);
+        auto inlineRef = message(QStringLiteral("See [You](urn:quote:%1) inline.").arg(messageId), returnedId);
+        inlineRef["created_at"] = "2026-01-02T10:00:01.000Z";
+        const QString codeId = "5c5c5c5c-5c5c-4c5c-8c5c-5c5c5c5c5c5c";
+        auto codeRef = message(QStringLiteral("Use `[You](urn:quote:%1)` as code.").arg(messageId), codeId);
+        codeRef["created_at"] = "2026-01-02T10:00:02.000Z";
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin, inlineRef, codeRef}};
+            return {path.endsWith(messageId) ? origin : path.endsWith(returnedId) ? inlineRef : codeRef};
+        };
+        QVERIFY(fixture.start());
+
+        // An inline occurrence is not a structural quote: the body edits raw.
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), inlineRef.value("payload").toObject().value("content").toString());
+        fixture.controller.cancelEditMessage();
+
+        QVERIFY(fixture.controller.beginEditMessage(codeId));
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QCOMPARE(fixture.controller.draft(), codeRef.value("payload").toObject().value("content").toString());
+        fixture.controller.cancelEditMessage();
+    }
+
+    void inlineEditRestoreRecognizesTheLegacyBlockquoteHeader()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        auto origin = message("Origin text", messageId);
+        origin["is_own"] = false; origin["author_uuid"] = peerId;
+        auto note = message(QStringLiteral("> [Bobby](urn:user:%1) [wrote](urn:message:%2):\n> Origin text\n\nmy answer")
+            .arg(peerId, messageId), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        QJsonObject saved; int edits = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin, note}};
+            if (request.method == "PUT") { ++edits; saved = request.body; note["payload"] = request.body.value("payload"); return {note}; }
+            return {path.endsWith(messageId) ? origin : note};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        QCOMPARE(fixture.controller.replyMessageId(), messageId);
+        QCOMPARE(fixture.controller.draft(), QString("my answer"));
+
+        // The legacy header round-trips to the current urn:quote form (the tab
+        // serializer always emits the reference form, as the reference does).
+        fixture.controller.submitEditMessage();
+        QTRY_COMPARE(edits, 1);
+        QCOMPARE(saved.value("payload").toObject().value("content").toString(),
+                 QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(messageId));
+    }
+
+    void inlineEditRestoreFetchesQuoteOriginsOutsideTheWindow()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString far = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d";
+        auto farOrigin = message("Far body", far);
+        farOrigin["is_own"] = false; farOrigin["author_uuid"] = peerId;
+        auto note = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(far), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        int lookups = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) {
+                ++lookups;
+                return query.queryItemValue("uuid") == far ? Response{QJsonArray{farOrigin}} : Response{QJsonArray{}};
+            }
+            return Response{QJsonArray{note}};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        // The tab restores synchronously with the link label as the fallback
+        // name; the quote lookup fills the chip once it lands (once only).
+        QCOMPARE(fixture.controller.replyMessageId(), far);
+        QTRY_COMPARE(fixture.controller.replyExcerpt(), QString("Far body"));
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QTRY_COMPARE(lookups, 1);
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;
