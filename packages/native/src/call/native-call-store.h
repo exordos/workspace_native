@@ -34,6 +34,8 @@ public:
     // muted when the option is absent (jitsi-call.model.ts:166).
     Q_INVOKABLE QVariantMap acceptIncomingInvite(const QVariantMap &options);
     Q_INVOKABLE void declineIncomingInvite();
+    // Clears only the invite (dedupe id untouched so replays stay suppressed).
+    void clearIncomingInvite();
     // Drops call state entirely (account sign-out keeps nothing in memory).
     void clear();
 

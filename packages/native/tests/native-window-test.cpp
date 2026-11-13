@@ -15898,6 +15898,181 @@ private:
         QCOMPARE(controller.callWindow()->embedCreations(), 0);
     }
 
+    // --- Issue #163 incoming invite UI (docs/NATIVE_DESKTOP_INCOMING_CALL_UI.md) ---
+
+    static QVariantMap windowInvite()
+    {
+        QVariantMap invite;
+        invite.insert(QStringLiteral("messageId"),
+            QStringLiteral("aaaa0000-0000-4000-8000-000000000009"));
+        invite.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/workspace-call-room"));
+        invite.insert(QStringLiteral("callerName"), QStringLiteral("Slon"));
+        invite.insert(QStringLiteral("locationName"), QStringLiteral("Slon Direct"));
+        return invite;
+    }
+
+    void incomingCallLargeInviteMatchesReferenceGeometry_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+    void incomingCallLargeInviteMatchesReferenceGeometry()
+    {
+        QFETCH(QString, locale);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Incoming call large teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        // Viewport-relative assertions use the live window size (the WM may
+        // keep the default 1440x900 geometry in this environment).
+        // The 45 s auto-decline and the ring cadence are proven with shortened
+        // clocks in native-native-call; this suite only shows the invite.
+        controller.incomingCall()->setAutoDeclineMs(600000);
+        controller.incomingCall()->setRingIntervalMs(600000);
+        controller.calls()->ingestIncomingInvite(windowInvite());
+        auto *content = window->contentItem();
+        auto *scrim = visibleItem(content, QStringLiteral("incomingCallScrim"));
+        QVERIFY(scrim);
+        // Scrim: black at 55 % across the viewport (jitsi-call-incoming-large.ui.tsx:43).
+        QCOMPARE(scrim->property("color").value<QColor>(), QColor(0, 0, 0, 140));
+        auto *viewport = scrim->parentItem();
+        QVERIFY(viewport);
+        QCOMPARE(QRectF(scrim->x(), scrim->y(), scrim->width(), scrim->height()),
+            QRectF(0, 0, viewport->width(), viewport->height()));
+        // Section: 918x574, rounded 16, #000000, centered (large.ui.tsx:44-50).
+        auto *card = visibleItem(content, QStringLiteral("incomingCallCard")); QVERIFY(card);
+        QCOMPARE(card->width(), qreal(918));
+        QCOMPARE(card->height(), qreal(574));
+        QCOMPARE(card->mapToScene(QPointF{}),
+            QPointF(viewport->mapToScene(QPointF{}).x() + (viewport->width() - 918) / 2.0,
+                viewport->mapToScene(QPointF{}).y() + (viewport->height() - 574) / 2.0));
+        QCOMPARE(card->property("radius").toReal(), qreal(16));
+        QCOMPARE(card->property("color").value<QColor>(), QColor(QStringLiteral("#000000")));
+        // Avatar: 200 px on a wide viewport (large.ui.tsx:63-66 sm: w-[200px]).
+        auto *avatar = visibleItem(content, QStringLiteral("incomingCallAvatar")); QVERIFY(avatar);
+        QCOMPARE(avatar->width(), qreal(200));
+        QCOMPARE(avatar->height(), qreal(200));
+        // Caller name 24 px semibold white; subtitle 18 px white/60
+        // (large.ui.tsx:77-81).
+        auto *title = item(content, QStringLiteral("incomingCallTitleText")); QVERIFY(title);
+        QCOMPARE(title->property("text").toString(), QStringLiteral("Slon"));
+        QCOMPARE(qvariant_cast<QFont>(title->property("font")).pixelSize(), 24);
+        QCOMPARE(qvariant_cast<QFont>(title->property("font")).weight(), QFont::DemiBold);
+        auto *subtitle = item(content, QStringLiteral("incomingCallSubtitleText")); QVERIFY(subtitle);
+        QCOMPARE(subtitle->property("text").toString(), locale == QStringLiteral("ru")
+            ? QString::fromUtf8("Выберите удобный способ для звонка")
+            : QStringLiteral("Choose how to answer the call"));
+        QCOMPARE(qvariant_cast<QFont>(subtitle->property("font")).pixelSize(), 18);
+        // Button group: max width 514, buttons 52 high, gap 8 (large.ui.tsx:85-142).
+        auto *row = visibleItem(content, QStringLiteral("incomingCallButtonRow")); QVERIFY(row);
+        QCOMPARE(row->width(), qreal(514));
+        auto *toggle = visibleItem(content, QStringLiteral("incomingCallVideoToggle")); QVERIFY(toggle);
+        auto *decline = visibleItem(content, QStringLiteral("incomingCallDeclineButton")); QVERIFY(decline);
+        auto *accept = visibleItem(content, QStringLiteral("incomingCallAcceptButton")); QVERIFY(accept);
+        QCOMPARE(toggle->height(), qreal(52));
+        QCOMPARE(decline->height(), qreal(52));
+        QCOMPARE(accept->height(), qreal(52));
+        QCOMPARE(row->property("spacing").toReal(), qreal(8));
+        // Palette: Cancel call-red, Accept call-green, toggle off outlined
+        // surface (large.ui.tsx:96-137; blue-cold light tokens).
+        QCOMPARE(decline->property("color").value<QColor>(), QColor(QStringLiteral("#e43535")));
+        QCOMPARE(accept->property("color").value<QColor>(), QColor(QStringLiteral("#26c038")));
+        QCOMPARE(decline->property("text").toString(),
+            locale == QStringLiteral("ru") ? QString::fromUtf8("Отменить")
+                                           : QStringLiteral("Cancel"));
+        QCOMPARE(accept->property("text").toString(),
+            locale == QStringLiteral("ru") ? QString::fromUtf8("Принять")
+                                           : QStringLiteral("Accept"));
+        QCOMPARE(qvariant_cast<QFont>(item(content, QStringLiteral("incomingCallAcceptText"))
+            ->property("font")).pixelSize(), 16);
+        // Toggle: default off (outlined surface). Clicking turns it call-green.
+        QVERIFY(!controller.incomingCall()->videoEnabled(
+            QStringLiteral("aaaa0000-0000-4000-8000-000000000009")));
+        QCOMPARE(toggle->property("color").value<QColor>(),
+            QColor(QStringLiteral("#e4ecf3"))); // blue-cold light "bg" token
+        click(window, toggle);
+        QVERIFY(controller.incomingCall()->videoEnabled(
+            QStringLiteral("aaaa0000-0000-4000-8000-000000000009")));
+        // Accept with the video preference -> the call starts video-unmuted
+        // and the invite is gone (shell accept mapping, :61-65).
+        click(window, accept);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.calls()->activeCall()
+            .value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(content, QStringLiteral("incomingCallCard")), 2000);
+        // Decline clears the invite again. The accepted message id stays
+        // deduped (model.ts ignore matrix), so this is a fresh invite.
+        controller.calls()->closeCall();
+        QVariantMap second = windowInvite();
+        second.insert(QStringLiteral("messageId"),
+            QStringLiteral("bbbb0000-0000-4000-8000-00000000000b"));
+        controller.calls()->ingestIncomingInvite(second);
+        QVERIFY(visibleItem(content, QStringLiteral("incomingCallCard")));
+        click(window, visibleItem(content, QStringLiteral("incomingCallDeclineButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->incomingInvite().isEmpty(), 2000);
+        QVERIFY(!visibleItem(content, QStringLiteral("incomingCallCard")));
+    }
+
+    void incomingCallCompactInviteMatchesReferenceGeometry()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Incoming call compact teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        controller.incomingCall()->setAutoDeclineMs(600000);
+        controller.incomingCall()->setRingIntervalMs(600000);
+        controller.incomingCall()->setVariant(QStringLiteral("compact"));
+        QCOMPARE(controller.incomingCall()->variant(), QStringLiteral("compact"));
+        controller.calls()->ingestIncomingInvite(windowInvite());
+        auto *content = window->contentItem();
+        // 320 px toast at right-4 top-20 (jitsi-call-incoming-compact.ui.tsx:25-27).
+        auto *toast = visibleItem(content, QStringLiteral("incomingCallToast")); QVERIFY(toast);
+        QCOMPARE(toast->width(), qreal(320));
+        auto *toastViewport = toast->parentItem(); QVERIFY(toastViewport);
+        QCOMPARE(toast->mapToScene(QPointF{}),
+            toastViewport->mapToScene(QPointF{})
+                + QPointF(toastViewport->width() - 16.0 - 320.0, 80.0));
+        QCOMPARE(toast->property("radius").toReal(), qreal(12));
+        // Title/subtitle rows (:44-52).
+        QCOMPARE(item(content, QStringLiteral("incomingCallToastTitleText"))
+            ->property("text").toString(), QStringLiteral("Incoming call"));
+        QCOMPARE(item(content, QStringLiteral("incomingCallToastSubtitleText"))
+            ->property("text").toString(), QStringLiteral("Slon is calling"));
+        auto *decline = visibleItem(content, QStringLiteral("incomingCallDeclineButton")); QVERIFY(decline);
+        auto *accept = visibleItem(content, QStringLiteral("incomingCallAcceptButton")); QVERIFY(accept);
+        // sm buttons are 32 px high (button.tsx:9 h-8).
+        QCOMPARE(decline->height(), qreal(32));
+        QCOMPARE(accept->height(), qreal(32));
+        click(window, accept);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        // Compact accept keeps the reference default: muted video.
+        QCOMPARE(controller.calls()->activeCall()
+            .value(QStringLiteral("startWithVideoMuted")).toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(content, QStringLiteral("incomingCallToast")), 2000);
+    }
+
     // --- Review findings (#162 re-review) ---
 
     // Shared join preamble for the call-window review cases (same shape as

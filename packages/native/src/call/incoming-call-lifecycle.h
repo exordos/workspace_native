@@ -26,6 +26,7 @@ class IncomingCallLifecycle final : public QObject {
     Q_PROPERTY(int autoDeclineMs READ autoDeclineMs WRITE setAutoDeclineMs NOTIFY autoDeclineMsChanged)
     Q_PROPERTY(QString notificationSound READ notificationSound WRITE setNotificationSound NOTIFY notificationSoundChanged)
     Q_PROPERTY(QString variant READ variant WRITE setVariant NOTIFY variantChanged)
+    Q_PROPERTY(bool currentVideoEnabled READ currentVideoEnabled NOTIFY videoPreferenceChanged)
 public:
     explicit IncomingCallLifecycle(QObject *parent = nullptr);
 
@@ -40,15 +41,23 @@ public:
     void setNotificationSound(const QString &value);
     QString variant() const { return m_variant; }
     void setVariant(const QString &value);
+    // The video preference of the currently visible invite (QML binding
+    // target; false when no invite is present).
+    bool currentVideoEnabled() const { return videoEnabled(currentInviteMessageId()); }
 
     Q_INVOKABLE bool videoEnabled(const QString &messageId) const;
     Q_INVOKABLE void toggleVideoEnabled(const QString &messageId);
     Q_INVOKABLE void accept();
     Q_INVOKABLE void decline();
+    // Escape/backdrop close: clears the invite without a decline action
+    // (jitsi-call-incoming-modal.tsx:59-73 "incoming call dismissed without
+    // invite").
+    Q_INVOKABLE void dismiss();
 
 signals:
     void visibleChanged();
     void ringRequested();
+    void dismissRequested(const QString &messageId);
     void autoDeclined(const QString &messageId);
     void ringIntervalMsChanged();
     void autoDeclineMsChanged();

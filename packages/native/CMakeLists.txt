@@ -104,7 +104,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeJitsiCard.qml
-qml/NativeCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
+qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeUserProfile.qml)
 foreach(qml_file IN LISTS native_qml_files)
@@ -117,6 +117,7 @@ set(native_icons chat_bubble calendar mail folders profile channels add attach s
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact side_panel phone chevron-down close check
+    call_incoming_video_toggle
     reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     at bell bell_off person_add
     stylus images border_color links business_center handshake account_circle group

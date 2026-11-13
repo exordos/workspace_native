@@ -16520,6 +16520,24 @@ private slots:
             .value(QStringLiteral("startWithVideoMuted")).toBool(), false);
     }
 
+    void incomingCallDismissClearsWithoutDeclineOrCall()
+    {
+        // Escape closes the invite: the invite and its notification clear,
+        // nothing declines and no call opens (modal.tsx:59-73).
+        Fixture fixture; configureIncomingCall(fixture);
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created",
+            incomingCallMessage(QStringLiteral("https://meet.example.com/room-esc")))));
+        QTRY_VERIFY(!fixture.controller.calls()->incomingInvite().isEmpty());
+        QSignalSpy dismissed(fixture.controller.incomingCall(),
+            &IncomingCallLifecycle::dismissRequested);
+        fixture.controller.incomingCall()->dismiss();
+        QCOMPARE(dismissed.count(), 1);
+        QVERIFY(fixture.controller.calls()->incomingInvite().isEmpty());
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        QVERIFY(!fixture.controller.incomingCall()->visible());
+    }
+
     void joinCallDuringPendingStartIsSerialized()
     {
         // While the start POST is in flight a join click on another room must

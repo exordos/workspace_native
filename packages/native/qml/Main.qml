@@ -8576,6 +8576,35 @@ ApplicationWindow {
             onActivated: root.controller.callWindow.requestDismiss()
         }
     }
+    Item {
+        id: incomingCallOverlayItem
+        objectName: "incomingCallOverlay"
+        anchors.fill: parent
+        // Above the call-window overlay: the store never shows an invite
+        // while a call is active, so the two are never visible together.
+        z: 1001
+        visible: root.controller.incomingCall.visible
+        NativeIncomingCallWindow {
+            objectName: "incomingCallPresenter"
+            anchors.fill: parent
+            colors: root.colors
+            invite: root.controller.calls.incomingInvite
+            variant: root.controller.incomingCall.variant
+            videoEnabled: root.controller.incomingCall.currentVideoEnabled
+            onAcceptRequested: root.controller.incomingCall.accept()
+            onDeclineRequested: root.controller.incomingCall.decline()
+            onDismissRequested: root.controller.incomingCall.dismiss()
+            onToggleVideoRequested: root.controller.incomingCall.toggleVideoEnabled(
+                String(root.controller.calls.incomingInvite.messageId || ""))
+        }
+        // Escape closes the invite without a decline action (reference
+        // useEscapeListener in jitsi-call-incoming-modal.tsx:70-73).
+        Shortcut {
+            sequence: "Escape"
+            enabled: incomingCallOverlayItem.visible
+            onActivated: root.controller.incomingCall.dismiss()
+        }
+    }
     // #162 finding 2: exactly one embed surface per call session. The Loader
     // activates as soon as the meeting URL is valid (Loading - the view's own
     // load events drive Ready/LoadFailed, finding 1) and is re-parented

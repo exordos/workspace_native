@@ -103,6 +103,18 @@ void IncomingCallLifecycle::decline()
     handleDecline(currentInviteMessageId());
 }
 
+void IncomingCallLifecycle::dismiss()
+{
+    if (!m_store || m_store->incomingInvite().isEmpty())
+        return;
+    const auto messageId = currentInviteMessageId();
+    clearVideoPreference(messageId);
+    // No decline, no call: the invite and its notification disappear
+    // (jitsi-call.model.ts clearIncomingInvite path).
+    m_store->clearIncomingInvite();
+    emit dismissRequested(messageId);
+}
+
 void IncomingCallLifecycle::onStoreChanged()
 {
     // lifecycle.hook.ts:21: visible = invite present, no active call.
