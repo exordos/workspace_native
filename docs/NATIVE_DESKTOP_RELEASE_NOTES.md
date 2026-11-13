@@ -1,3 +1,38 @@
+# Workspace Native 0.19.0 - Linux development preview
+
+Three features ported from the reference desktop:
+
+- Joined calls now get their own window: an active meeting opens in an expanded
+  call window with header controls (mute, camera, hand, hang up) and collapses
+  to a picture-in-picture tile that stays on top and remembers where you put
+  it. The web meeting keeps a single embed across expand and collapse, the
+  window follows the meeting into fullscreen and back, and the participant
+  count tracks the live meeting through the embed's own event channel instead
+  of a guess. Camera, microphone and screen access are only granted to the
+  meeting's own origin, never to a page it redirects to.
+- A reply you did not finish now survives navigation: leaving a conversation
+  parks the whole reply session - every quote tab, its answer and the active
+  tab - under that conversation, and returning restores it intact. Cancelling
+  the reply drops the parked copy, and a quote whose text just changed or went
+  empty shows the current excerpt rather than a stale memo.
+- Editing a message that begins with a quoted line restores the reply session
+  for the edit: the quote chip shows above the composer, the composer is
+  pre-filled with only the answer, and saving re-serializes the quote line
+  byte-for-byte. Quote lines inside code blocks are never mistaken for reply
+  quotes, and a restored chip keeps its parsed sender label while the quoted
+  origin is still loading or turns out to be unavailable.
+
+Also fixed: a reply quoting a message outside the loaded window now shows the
+resolved excerpt of that quote once the lookup lands.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.18.0...0.19.0](https://github.com/exordos/workspace_native/compare/0.18.0...0.19.0)
+
+---
+
 # Workspace Native 0.18.0 - Linux development preview
 
 One feature ported from the reference desktop:
