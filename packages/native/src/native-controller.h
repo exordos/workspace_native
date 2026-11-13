@@ -975,6 +975,10 @@ private:
     void parkReplySession();
     void restoreParkedReplySession();
     QString replyAuthorFor(const QString &id) const;
+    // The quoted message's markdown for a reply tab: the loaded row when present,
+    // otherwise the resolved quote cache (issue #202 edit-time restore chips may
+    // point outside the loaded window; docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md).
+    QString replyQuotedContent(const QString &id) const;
     void scheduleQuoteFetch(const QString &id) const;
     const Message *editableMessage(const QString &id) const;
     void reset();
@@ -1174,6 +1178,9 @@ private:
     // save for the same message is refused instead of racing the first.
     quint64 m_editSession = 0, m_editRevision = 0;
     QSet<QString> m_editSaveInFlight;
+    // True when the open edit session restored its reply tabs from the stored body
+    // (issue #202): the restored session is edit-local and closes with the edit.
+    bool m_editRestoresReply = false;
     // Reply session (docs/NATIVE_DESKTOP_REPLIES.md + docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
     // concurrent quote tabs with per-tab answers; the conversationKey() that owns
     // the session is m_replyRoute. m_quotes caches resolved references.
@@ -1181,8 +1188,11 @@ private:
     // session's quoted messages are not yet in memory again after navigation
     // (docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md); live resolution wins
     // whenever it succeeds.
+    // ReplyTab.reference is the verbatim wire quote line captured by an edit-time
+    // restore (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md); ordinary tabs keep it
+    // empty and serialize their quote line from the quoted message.
     struct ReplyTab {
-        QString id, message, createdAt, answer;
+        QString id, message, createdAt, answer, reference;
         mutable QString authorMemo, plainMemo;
     };
     // A reply session parked under the conversationKey() that owns it while the

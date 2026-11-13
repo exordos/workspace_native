@@ -8561,6 +8561,78 @@ std::optional<ParsedLeadingQuote> leadingQuoteReference(const QString &content)
     parsed.rest = match.captured(3).trimmed();
     return parsed;
 }
+
+// Issue #202: mirrors restoreWorkspaceReplySessionFromMarkdown (workspace_ui
+// 61dacef workspace-reply-restore.lib.ts). A leading standalone
+// "[Name](urn:quote:...)" line restores one quote block; the legacy blockquote
+// header "[Name](urn:user:..) [wrote](urn:message:..):" with its ">" lines is
+// also recognised (marked TODO there for the backend rollout). Further quotes
+// are only recognised at a line start preceded by a blank line; each quote's
+// answer runs to the next quote and is trimmed. Returns nothing when the first
+// line is not a quote block, so ordinary bodies keep raw editing.
+struct EditQuoteEntry { QString referenceLine, messageUuid, senderName, answer; };
+
+QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
+{
+    static const QRegularExpression uuid(
+        QStringLiteral("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+    static const QRegularExpression quoteLine(
+        QStringLiteral("^\\[((?:\\\\.|[^\\\\\\]])+)\\]\\((urn:quote:[^)]+)\\)[ \\t]*$"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression legacyHeader(
+        QStringLiteral("^\\[((?:\\\\.|[^\\\\\\]])+)\\]\\(urn:user:(%1)\\)\\s+\\[(?:\\\\.|[^\\]])*\\]"
+                      "\\(urn:message:(%1)\\):[ \\t]*$").arg(uuid.pattern()),
+        QRegularExpression::CaseInsensitiveOption);
+    struct RawQuote { QString line, messageUuid, senderName; qsizetype end = 0; };
+    auto normalized = body;
+    normalized.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    normalized = normalized.trimmed();
+    if (normalized.isEmpty()) return {};
+    const auto lines = normalized.split(QLatin1Char('\n'));
+    auto parseAt = [&lines](qsizetype index) -> std::optional<RawQuote> {
+        if (index < 0 || index >= lines.size()) return std::nullopt;
+        const auto line = lines.at(index);
+        if (const auto match = quoteLine.match(line); match.hasMatch()) {
+            const auto name = unescapeQuoteLabel(match.captured(1)).trimmed();
+            const auto reference = workspace::parseWorkspaceReference(match.captured(2));
+            if (name.isEmpty() || !reference
+                || reference->kind != workspace::WorkspaceReferenceKind::Quote) return std::nullopt;
+            return RawQuote{line, reference->id, name, index + 1};
+        }
+        if (!line.startsWith(QLatin1Char('>'))) return std::nullopt;
+        const auto content = line.startsWith(QLatin1String("> ")) ? line.mid(2) : line.mid(1);
+        const auto match = legacyHeader.match(content);
+        if (!match.hasMatch()) return std::nullopt;
+        const auto name = unescapeQuoteLabel(match.captured(1)).trimmed();
+        if (name.isEmpty() || match.captured(2).isEmpty() || match.captured(3).isEmpty())
+            return std::nullopt;
+        // The legacy header round-trips to the canonical reference form, exactly
+        // as the reference's tab serializer re-emits every restored tab.
+        RawQuote quote{workspace::buildWorkspaceQuoteReference(name, match.captured(3).toLower()),
+                       match.captured(3).toLower(), name, index + 1};
+        while (quote.end < lines.size() && lines.at(quote.end).startsWith(QLatin1Char('>')))
+            ++quote.end;
+        return quote;
+    };
+    auto current = parseAt(0);
+    if (!current) return {};
+    QList<EditQuoteEntry> entries;
+    while (current) {
+        std::optional<RawQuote> next;
+        qsizetype nextStart = lines.size();
+        for (qsizetype index = current->end; index < lines.size(); ++index) {
+            if (!lines.at(index - 1).trimmed().isEmpty()) continue;
+            next = parseAt(index);
+            if (next) { nextStart = index; break; }
+        }
+        entries.append(EditQuoteEntry{current->line, current->messageUuid, current->senderName,
+            QStringList(lines.cbegin() + current->end, lines.cbegin() + nextStart)
+                .join(QLatin1Char('\n')).trimmed()});
+        current = next;
+    }
+    return entries;
+}
 } // namespace
 
 QVariantList NativeController::messages() const
@@ -9200,6 +9272,11 @@ void NativeController::setDraft(const QString &text)
         if (m_editBuffer == text) return;
         m_editBuffer = text;
         ++m_editRevision;   // a save may not close past this revision (issue #115)
+        // A restored edit keeps the answer lockstep with the buffer, as the plain
+        // reply session below does (issue #202).
+        for (auto &tab : m_replyTabs)
+            if (m_editRestoresReply && tab.id == m_replyActiveTab && tab.answer != text)
+                tab.answer = text;
         emit draftChanged();
         emit stateChanged();
         return;
@@ -11140,10 +11217,26 @@ QString NativeController::replyMessageId() const
 
 QString NativeController::replyAuthorFor(const QString &id) const
 {
-    const auto *message = id.isEmpty() ? nullptr : findMessage(id);
-    if (!message) return {};
-    const bool own = message->own || message->author == m_session->user();
-    return userDisplayName(message->author, own ? tr("You") : QStringLiteral("#") + message->author.left(8));
+    if (id.isEmpty()) return {};
+    // Issue #202: an edit-restored quote may point outside the loaded window;
+    // the resolved quote cache answers the chip author in that case.
+    QString authorId;
+    bool own = false;
+    if (const auto *message = findMessage(id)) { authorId = message->author; own = message->own; }
+    else if (const auto record = m_quotes.constFind(id); record != m_quotes.cend() && !record->missing)
+        authorId = record->authorId;
+    else return {};
+    own = own || authorId == m_session->user();
+    return userDisplayName(authorId, own ? tr("You") : QStringLiteral("#") + authorId.left(8));
+}
+
+QString NativeController::replyQuotedContent(const QString &id) const
+{
+    if (id.isEmpty()) return {};
+    if (const auto *message = findMessage(id); message && message->kind == "markdown")
+        return message->content;
+    const auto record = m_quotes.constFind(id);
+    return record != m_quotes.cend() && !record->missing ? record->content : QString();
 }
 
 QString NativeController::replyAuthor() const
@@ -11229,6 +11322,11 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             }
             self->m_quotes.insert(id, record);
             emit self->messagesChanged();
+            // An edit-restored chip waiting on this origin re-reads through the
+            // reply session notification (issue #202).
+            if (std::any_of(self->m_replyTabs.cbegin(), self->m_replyTabs.cend(),
+                    [id](const ReplyTab &tab) { return tab.message == id; }))
+                emit self->replySessionChanged();
         });
     }, Qt::QueuedConnection);
 }
@@ -11587,9 +11685,31 @@ bool NativeController::beginEditMessage(const QString &id)
         return false;
     }
     // Reply and edit sessions are mutually exclusive (one composer, one mode).
+    // A reopened session replaces the previous buffer; closeReplySession also
+    // drops any restored tabs from an earlier edit session.
     closeReplySession();
+    // Issue #202 (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md): a stored reply's
+    // leading quote reference is restored as a reply session so the user edits
+    // the answer, never the raw urn:quote markdown. Quoted origins outside the
+    // loaded window resolve through the existing quote lookup path.
+    const auto restored = parseEditQuoteRestore(message->content);
+    for (const auto &entry : restored) {
+        ReplyTab tab;
+        tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tab.message = entry.messageUuid;
+        tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+        tab.answer = entry.answer;
+        tab.reference = entry.referenceLine;
+        m_replyTabs.append(tab);
+        if (!findMessage(entry.messageUuid)) scheduleQuoteFetch(entry.messageUuid);
+    }
+    m_editRestoresReply = !restored.isEmpty();
+    if (m_editRestoresReply) {
+        m_replyActiveTab = m_replyTabs.first().id;
+        m_replyRoute = conversationKey();
+    }
     m_editingMessage = id;
-    m_editBuffer = message->content;
+    m_editBuffer = restored.isEmpty() ? message->content : restored.first().answer;
     m_editRoute = conversationKey();
     // Each open session gets a fresh identity and buffer revision (issue #115), so an
     // in-flight save from a previous session can never match the reopened one.
@@ -11598,6 +11718,7 @@ bool NativeController::beginEditMessage(const QString &id)
     emit editSessionChanged();
     emit draftChanged();
     emit stateChanged();
+    if (m_editRestoresReply) emit replySessionChanged();
     return true;
 }
 
@@ -11611,7 +11732,27 @@ void NativeController::submitEditMessage()
     if (m_editingMessage.isEmpty()) return;
     if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
     const auto id = m_editingMessage;
-    const auto text = m_editBuffer;
+    auto text = m_editBuffer;
+    // Issue #202: a restored edit re-serializes every quote block the same way a
+    // reply send does - quote line + blank line + answer per tab, joined by blank
+    // lines with trailing whitespace trimmed - so the quote identity (including a
+    // "?text=" selection) round-trips unchanged (workspace-reply.lib.ts:190-211).
+    if (m_editRestoresReply && !m_replyTabs.isEmpty()) {
+        QStringList blocks;
+        for (const auto &tab : std::as_const(m_replyTabs)) {
+            const auto quoteLine = !tab.reference.isEmpty()
+                ? tab.reference
+                : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message), tab.message);
+            if (quoteLine.isEmpty()) {
+                report(tr("This message can no longer be replied to."));
+                return;
+            }
+            const auto answer = (tab.id == m_replyActiveTab ? text : tab.answer).trimmed();
+            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
+        }
+        text = blocks.join(QStringLiteral("\n\n"));
+        while (!text.isEmpty() && text.back().isSpace()) text.chop(1); // reference trimEnd
+    }
     // Issue #115: the completion may only close the exact session and buffer revision it
     // submitted. Text typed after Save, or a session reopened for the same UUID, gets a
     // newer identity and survives this completion; B stays savable.
@@ -11655,12 +11796,17 @@ bool NativeController::canSaveEdit() const
 void NativeController::closeEditSession()
 {
     if (m_editingMessage.isEmpty()) return;
+    const bool restoredReply = m_editRestoresReply;
+    m_editRestoresReply = false;
     m_editingMessage.clear();
     m_editBuffer.clear();
     m_editRoute.clear();
     emit editSessionChanged();
     emit draftChanged();
     emit stateChanged();
+    // The tabs an edit restore opened are session-local: the edit ends, they go
+    // (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md); cancel then reveals the stored draft.
+    if (restoredReply) closeReplySession();
 }
 
 void NativeController::settleEditRouteChange()
