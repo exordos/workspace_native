@@ -2731,6 +2731,12 @@ void NativeController::finishDirectChat(const QString &owner, const QString &att
     if (found == m_directChats.end() || found->attempt != attempt || found->ticket != ticket) return;
     found->busy = found->publishing = false; found->phase = phase; found->error = error; found->topics = {};
     found->allowCreate = false;
+    // Issue #164: a Call-triggered direct-chat create that settles without
+    // landing must clear the pending partner (right-panel-user-profile.ui.tsx:507, :513).
+    if (m_profileCallPeer == found->peer) {
+        m_profileCallPeer.clear();
+        m_callBridge.clearPendingPartner();
+    }
     if (owner == creationOwnerKey()) emit stateChanged();
 }
 
@@ -3901,31 +3907,12 @@ void NativeController::openDirectChatFromProfile(const QString &userUuid)
     if (!authenticated()) return;
     const auto peer = userUuid.toLower();
     if (!isUuid(peer) || peer == m_session->user()) return;
-    QVector<QPair<QString, QString>> directStreams;
-    QHash<QString, QString> defaultTopics;
-    for (const auto &stream : std::as_const(m_streams)) {
-        if (!stream.privateStream || !isUuid(stream.directUser)) continue;
-        directStreams.append({stream.uuid, stream.directUser});
-        if (isUuid(stream.defaultTopic)) defaultTopics.insert(stream.uuid, stream.defaultTopic);
-    }
-    const auto navigation = workspace::resolveProfileDirectNavigation(
-        peer, directStreams, defaultTopics, m_stream);
+    const auto navigation = resolveProfileDirect(peer);
     switch (navigation.status) {
     case ProfileDirectNavigation::Status::AlreadyOpen:
         return;
     case ProfileDirectNavigation::Status::OpenDefaultTopic:
-        selectStream(navigation.streamUuid);
-        if (m_stream == navigation.streamUuid) {
-            const bool present = std::any_of(m_topics.cbegin(), m_topics.cend(),
-                [&](const Topic &topic) { return topic.uuid == navigation.topicUuid; });
-            if (present) selectTopic(navigation.topicUuid);
-            else {
-                m_profileDirectActive = true;
-                m_profileDirectStream = navigation.streamUuid;
-                m_profileDirectTopic = navigation.topicUuid;
-            }
-        }
-        emit stateChanged();
+        navigateProfileDirect(navigation);
         return;
     case ProfileDirectNavigation::Status::MissingDefaultTopic:
         // Reference contract: a stream without a default topic logs an error
@@ -3935,6 +3922,34 @@ void NativeController::openDirectChatFromProfile(const QString &userUuid)
         if (canStartDirectChatWith(peer)) startDirectChat(peer);
         return;
     }
+}
+
+ProfileDirectNavigation NativeController::resolveProfileDirect(const QString &peer) const
+{
+    QVector<QPair<QString, QString>> directStreams;
+    QHash<QString, QString> defaultTopics;
+    for (const auto &stream : m_streams) {
+        if (!stream.privateStream || !isUuid(stream.directUser)) continue;
+        directStreams.append({stream.uuid, stream.directUser});
+        if (isUuid(stream.defaultTopic)) defaultTopics.insert(stream.uuid, stream.defaultTopic);
+    }
+    return workspace::resolveProfileDirectNavigation(peer, directStreams, defaultTopics, m_stream);
+}
+
+void NativeController::navigateProfileDirect(const ProfileDirectNavigation &navigation)
+{
+    selectStream(navigation.streamUuid);
+    if (m_stream == navigation.streamUuid) {
+        const bool present = std::any_of(m_topics.cbegin(), m_topics.cend(),
+            [&](const Topic &topic) { return topic.uuid == navigation.topicUuid; });
+        if (present) selectTopic(navigation.topicUuid);
+        else {
+            m_profileDirectActive = true;
+            m_profileDirectStream = navigation.streamUuid;
+            m_profileDirectTopic = navigation.topicUuid;
+        }
+    }
+    emit stateChanged();
 }
 
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
@@ -6203,6 +6218,16 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // (visible = invite present without an active call, ring + auto-decline
     // timers, per-invite video preference).
     m_incomingCall.attachStore(&m_callStore);
+    // Issue #164: the bridge's pending partner reacts immediately (reference
+    // subscription chat-page-workspace.ui.tsx:863-865), and the sidebar invoke
+    // routes through the same header start flow, sharing the in-flight guard.
+    connect(&m_callBridge, &DmCallBridge::pendingPartnerUuidChanged,
+        this, [this] { attemptPendingCallHandoff(); });
+    connect(&m_callBridge, &DmCallBridge::callSurfaceInvokeRequested,
+        this, [this] { startCall(); });
+    // A session generation change (the reference runtimeGeneration) re-publishes
+    // the viewed-chat identity and descriptor.
+    connect(m_api, &ApiClient::sessionChanged, this, [this] { syncCallBridge(); });
     connect(&m_callWindow, &JitsiCallWindowController::closeRequested, this, [this] {
         m_callStore.closeCall();
     });
@@ -6240,7 +6265,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_callStore.clear();
         m_meetHost.clear();
         m_callError.clear();
-        m_callPending = false;
+        // Issue #164: nothing of the call bridge survives the session.
+        m_callInflightEpoch = 0;
+        m_profileCallPeer.clear();
+        m_callBridge.clearPendingPartner();
+        m_callBridge.clearActiveCallDescriptor();
+        syncCallBridge();
         emit stateChanged();
     });
     // Issue #146: a failed bootstrap stays announced until the next snapshot
@@ -9881,6 +9911,12 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     if (!current()) return;
     if (!id.isEmpty() && !verifiedTopics) loadTopics();
     if (current() && hasConversation()) loadMessages();
+    // Issue #164: the viewed conversation changed; re-publish the call bridge
+    // identity and let a queued pending partner hand off once the DM is open.
+    if (current()) {
+        syncCallBridge();
+        attemptPendingCallHandoff();
+    }
 }
 
 void NativeController::loadTopics()
@@ -10206,6 +10242,11 @@ void NativeController::selectTopic(const QString &id)
     emit draftChanged();
     if (guard && selection == m_selection && m_topicSeedUnverified) loadTopics();
     if (guard && selection == m_selection && hasConversation()) loadMessages();
+    // Issue #164: topic selection changes the viewed conversation identity.
+    if (guard && selection == m_selection) {
+        syncCallBridge();
+        attemptPendingCallHandoff();
+    }
 }
 
 void NativeController::loadOlder()
@@ -12206,6 +12247,10 @@ void NativeController::fetchCallMeetHost()
         if (next != m_meetHost) {
             m_meetHost = next;
             emit stateChanged();
+            // Issue #164: meet host arrival opens the descriptor gate and lets a
+            // queued pending partner finally hand off (consumer dep at :2309).
+            syncCallBridge();
+            attemptPendingCallHandoff();
         }
     });
 }
@@ -12213,16 +12258,29 @@ void NativeController::fetchCallMeetHost()
 void NativeController::startCall()
 {
     m_callError.clear();
-    if (!canStartCall() || m_callPending) {
-        if (!canStartCall())
-            m_callError = tr("Call could not be started.");
+    if (!canStartCall()) {
+        m_callError = tr("Call could not be started.");
+        emit stateChanged();
+        return;
+    }
+    // Issue #164: header and sidebar share the one in-flight guard
+    // (pendingWorkspaceJitsiHeaderCallRef, chat-page-workspace.ui.tsx:641);
+    // a second invoke inside the same view epoch sends nothing.
+    if (m_callInflightEpoch == m_callViewEpoch) {
         emit stateChanged();
         return;
     }
     if (const auto *stream = currentStream(); stream && stream->encrypted) {
-        // Recorded deviation: encrypted programmatic send is a follow-up; the
-        // meeting URL must never leave an E2EE stream as plaintext.
-        m_callError = tr("Calls cannot start in encrypted channels yet.");
+        // E2EE stream without an available session: reference e2ee.cryptoUnavailable
+        // refusal with nothing sent (chat-page-workspace.test.tsx:5328-5341). A
+        // session is available when the encrypted composer has a live send key.
+        const bool sessionAvailable = chatContext(m_chatEpoch, m_selection) && !m_chatSendKey.isEmpty();
+        if (!sessionAvailable)
+            m_callError = tr("Encryption is unavailable for this chat or local key storage could not be opened.");
+        else
+            // Recorded deviation: encrypted programmatic send is a follow-up; the
+            // meeting URL must never leave an E2EE stream as plaintext.
+            m_callError = tr("Calls cannot start in encrypted channels yet.");
         emit stateChanged();
         return;
     }
@@ -12239,21 +12297,33 @@ void NativeController::startCall()
         return;
     }
     const auto locationName = isDirectConversation() ? title() : QString();
-    m_callPending = true;
-    emit stateChanged();
-    // The reference posts the meeting URL markdown message first and opens the
-    // call only after the send is applied (chat-page-workspace.ui.tsx:2148-2260).
-    const QJsonObject body{{QStringLiteral("uuid"), QUuid::createUuid().toString(QUuid::WithoutBraces)},
-        {QStringLiteral("stream_uuid"), m_stream}, {QStringLiteral("topic_uuid"), m_topic},
-        {QStringLiteral("payload"), QJsonObject{{QStringLiteral("kind"), QStringLiteral("markdown")},
-            {QStringLiteral("content"), meetingUrl}}}};
+    // captureWorkspaceChatUiAction() port: this invoke owns the in-flight guard
+    // for its view epoch; a completion from an older epoch or owner is dropped
+    // silently and never touches a guard a newer invoke has taken over.
+    const auto epoch = m_callViewEpoch;
+    m_callInflightEpoch = epoch;
     const auto owner = ownerKey();
     const auto meet = m_meetHost;
     const auto stream = m_stream;
     const auto topic = m_topic;
+    emit stateChanged();
+    // The reference posts the meeting URL markdown message first and opens the
+    // call only after the send is applied (chat-page-workspace.ui.tsx:2148-2260).
+    const QJsonObject body{{QStringLiteral("uuid"), QUuid::createUuid().toString(QUuid::WithoutBraces)},
+        {QStringLiteral("stream_uuid"), stream}, {QStringLiteral("topic_uuid"), topic},
+        {QStringLiteral("payload"), QJsonObject{{QStringLiteral("kind"), QStringLiteral("markdown")},
+            {QStringLiteral("content"), meetingUrl}}}};
     request("POST", messenger + "/messages/", body, {},
-        [this, meetingUrl, locationName, owner, meet, stream, topic](const ApiResult &result) {
-        m_callPending = false;
+        [this, meetingUrl, locationName, owner, meet, stream, topic, epoch](const ApiResult &result) {
+        const bool ownsGuard = m_callInflightEpoch == epoch;
+        if (ownsGuard) m_callInflightEpoch = 0;
+        if (!ownsGuard || epoch != m_callViewEpoch || owner != ownerKey()) {
+            // Stale completion (navigation moved on, A->B->A or session change):
+            // no open, no inline error, and a newer invoke keeps its guard
+            // (chat-page-workspace.ui.tsx:2199, :2245).
+            emit stateChanged();
+            return;
+        }
         // Same confirmation contract as the composer send: a 2xx proves the
         // message only when the response parses back as the sent markdown
         // message on the target conversation.
@@ -12285,7 +12355,7 @@ void NativeController::joinCall(const QString &meetingUrl)
 {
     if (meetingUrl.trimmed().isEmpty())
         return;
-    if (m_callPending) {
+    if (m_callInflightEpoch == m_callViewEpoch) {
         // A start POST is in flight: joining another room now would open it
         // before the posted room, leaving the sender blocked from their own
         // invite. The pending start owns the call lane until it settles, so
@@ -12610,5 +12680,126 @@ QVariantMap NativeController::pollRowSnapshot(const Message &message)
         {QStringLiteral("questions"), stateQuestions}});
     return snapshot;
 }
+
+// ---- Issue #164 DM call bridge (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md) ----
+
+void NativeController::callFromProfile(const QString &userUuid)
+{
+    // right-panel-user-profile.ui.tsx:472-536 handleCall port.
+    if (!authenticated()) return;
+    const auto peer = userUuid.toLower();
+    if (!isUuid(peer) || peer == m_session->user()) return;
+    if (m_callInflightEpoch == m_callViewEpoch) return; // call lane owned by an in-flight send
+    const auto navigation = resolveProfileDirect(peer);
+    if (navigation.status == ProfileDirectNavigation::Status::MissingDefaultTopic) {
+        // :481-489: logged and returned before the pending queue is touched.
+        qInfo().noquote() << "Default topic missing for existing direct stream before call"
+                          << navigation.streamUuid;
+        return;
+    }
+    m_callBridge.setPendingPartnerUserUuid(peer); // :491 (before any navigation)
+    switch (navigation.status) {
+    case ProfileDirectNavigation::Status::AlreadyOpen:
+        // :2300-2316: the consumer sees the queue set while the DM is already
+        // viewed and hands off on the spot (pending cleared inside).
+        attemptPendingCallHandoff();
+        return;
+    case ProfileDirectNavigation::Status::OpenDefaultTopic:
+        // Navigation lands activateStream/selectTopic, which run the handoff
+        // once the DM is the viewed conversation. The re-park path resolves
+        // later through applyTopics -> selectTopic.
+        navigateProfileDirect(navigation);
+        return;
+    case ProfileDirectNavigation::Status::StreamMissing:
+        if (canStartDirectChatWith(peer)) {
+            m_profileCallPeer = peer; // Call chip busy gate for the create duration
+            emit stateChanged();
+            startDirectChat(peer);
+        }
+        return;
+    case ProfileDirectNavigation::Status::MissingDefaultTopic:
+        break;
+    }
+}
+
+void NativeController::syncCallBridge()
+{
+    // Viewed-chat identity + descriptor publishing (chat-page-workspace.ui.tsx
+    // :2264-2297 plus the view epoch guarding the send completion). The
+    // creation-scope owner key is the never-empty session identity, matching
+    // the reference ownerKey's always-populated runtime behavior.
+    const auto owner = creationOwnerKey();
+    if (owner != m_callViewOwner || m_stream != m_callViewStream || m_topic != m_callViewTopic) {
+        m_callViewEpoch++;
+        m_callViewOwner = owner;
+        m_callViewStream = m_stream;
+        m_callViewTopic = m_topic;
+    }
+    const auto *streamRow = currentStream();
+    const bool direct = streamRow && streamRow->privateStream && isUuid(streamRow->directUser)
+        && streamRow->directUser.compare(m_session->user(), Qt::CaseInsensitive) != 0;
+    m_callBridge.setViewedChat(owner, m_api->generation(), m_stream, direct);
+    // The reference skips registration while favorites or the meet url are not
+    // loaded, and for E2EE streams without a session. Native skips every
+    // encrypted stream outright (programmatic encrypted send is a follow-up).
+    const bool registrable = authenticated() && !m_stream.isEmpty() && !m_meetHost.isEmpty()
+        && streamRow && !streamRow->encrypted;
+    if (registrable) {
+        QVariantMap descriptor;
+        descriptor.insert(QStringLiteral("ownerKey"), owner);
+        descriptor.insert(QStringLiteral("runtimeGeneration"), qulonglong(m_api->generation()));
+        descriptor.insert(QStringLiteral("streamUuid"), m_stream);
+        m_callBridge.setActiveCallDescriptor(descriptor);
+    } else {
+        m_callBridge.clearActiveCallDescriptor();
+    }
+}
+
+void NativeController::attemptPendingCallHandoff()
+{
+    const auto pending = m_callBridge.pendingPartnerUuid();
+    if (pending.isEmpty() || !authenticated() || m_meetHost.isEmpty()) return;
+    const auto *streamRow = currentStream();
+    if (!streamRow || !streamRow->privateStream || !isUuid(streamRow->directUser)) return;
+    if (streamRow->directUser.compare(pending, Qt::CaseInsensitive) != 0) return;
+    if (m_topic.isEmpty()) {
+        // The reference lands a freshly created DM on its default topic before
+        // the header call fires; native selects it here and selectTopic's tail
+        // re-runs this handoff with a concrete conversation.
+        if (isUuid(streamRow->defaultTopic)) selectTopic(streamRow->defaultTopic);
+        return;
+    }
+    if (m_callBridge.consumePendingPartner().isEmpty()) return;
+    m_profileCallPeer.clear(); // the chip busy gate ends with the handoff
+    emit stateChanged();
+    startCall(); // :2310 "start the header call as-is, exactly once"
+}
+
+bool NativeController::profileCallPending() const
+{
+    // Call-triggered direct create in flight: same per-peer intent the Message
+    // chip reads, tagged when callFromProfile started the create.
+    if (m_profileCallPeer.isEmpty()) return false;
+    const auto *intent = directChat();
+    return intent && intent->peer == m_profileCallPeer && (intent->busy || intent->publishing);
+}
+
+bool NativeController::callTargetCryptoUnavailable(const QString &userUuid) const
+{
+    // Chip disabled state (right-panel-user-profile.ui.tsx:460-469). Encrypted
+    // DM streams never allow a programmatic call in this build; a stream
+    // already viewed with a live encrypted send key is session-available, so
+    // the refusal belongs to startCall instead.
+    const auto peer = userUuid.toLower();
+    if (!authenticated() || !isUuid(peer)) return false;
+    for (const auto &stream : m_streams) {
+        if (!stream.privateStream || stream.directUser.compare(peer, Qt::CaseInsensitive) != 0)
+            continue;
+        if (!stream.encrypted) return false;
+        const bool localKeyReady = stream.uuid == m_stream
+            && chatContext(m_chatEpoch, m_selection) && !m_chatSendKey.isEmpty();
+        return !localKeyReady;
+    }
+    return false;}
 
 }
