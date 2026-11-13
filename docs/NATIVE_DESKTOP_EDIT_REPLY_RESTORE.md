@@ -105,6 +105,16 @@ restored flow reuses the existing composer reply chip labels).
    the quote cache); the header, the split and the round-trip contract are the same.
 3. No attachment or `?text=` selection editing; same limitation as the existing
    reply session (#188 owns edit attachments).
+4. Fence-aware scanner: the reference's `workspace-reply-restore.lib.ts` line
+   scan has no fence tracking of its own - it relies on the edit-restore
+   controller to only treat quote references that `parseWorkspaceMessageBody`
+   surfaces as top-level blocks as structural, and a fenced code block never
+   yields a `quote-reference` block. The native line scanner reproduces that
+   guarantee directly: it tracks CommonMark ``` and ~~~ fences (up to 3 leading
+   spaces, closing fence of the same character and at least the opening length)
+   and never treats a quote-like line inside a fenced block as structural
+   (review thread 4559371966). A quoted answer containing a fence therefore
+   round-trips verbatim through a re-save.
 
 ## Tests
 
@@ -119,7 +129,10 @@ restored flow reuses the existing composer reply chip labels).
   - legacy `[Name](urn:user:..) [wrote](urn:message:..):` blockquote restores the tab
     and the re-save migrates the body to the `urn:quote` form;
   - a quoted origin outside the loaded window is fetched once via `GET
-    /messages/?uuid=` and fills the chip author/excerpt asynchronously.
+    /messages/?uuid=` and fills the chip author/excerpt asynchronously;
+  - a standalone `[Name](urn:quote:...)` line inside a fenced code block in the
+    answer is code text: one tab is restored and the fenced answer round-trips
+    verbatim through a re-save (fence-aware scanner, deviation 4).
 - `native-native-window`: the message-menu Edit action on a quoted message shows the
   edit notice and the quote chip (`replyAuthorText`/`replyExcerptText`) above the
   composer, and the composer is pre-filled with only the answer.

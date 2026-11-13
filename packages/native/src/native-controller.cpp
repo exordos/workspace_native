@@ -8590,8 +8590,35 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
     normalized = normalized.trimmed();
     if (normalized.isEmpty()) return {};
     const auto lines = normalized.split(QLatin1Char('\n'));
-    auto parseAt = [&lines](qsizetype index) -> std::optional<RawQuote> {
-        if (index < 0 || index >= lines.size()) return std::nullopt;
+    // CommonMark fence tracking (``` or ~~~, up to 3 leading spaces, closing
+    // fence of the same character and at least the opening length): a quote-like
+    // line inside a fenced block is code text and must never split a tab. The
+    // line-scanning reference (workspace-reply-restore.lib.ts) has no fence
+    // awareness of its own - its edit-restore controller only treats quote
+    // references that parseWorkspaceMessageBody surfaces as top-level blocks
+    // as structural, and fenced code never yields one - so this reproduces
+    // that guarantee inside the scanner (deviation note in
+    // docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md).
+    static const QRegularExpression fenceMarker(QStringLiteral("^ {0,3}(`{3,}|~{3,})"));
+    QVector<bool> insideFence(lines.size(), false);
+    {
+        QChar openChar; qsizetype openLength = 0;
+        for (qsizetype index = 0; index < lines.size(); ++index) {
+            const auto match = fenceMarker.match(lines.at(index));
+            if (openLength) {
+                insideFence[index] = true; // fence delimiters are part of the block
+                const auto marker = match.captured(1);
+                if (!marker.isEmpty() && marker.at(0) == openChar && marker.size() >= openLength)
+                    openLength = 0;
+            } else if (match.hasMatch()) {
+                insideFence[index] = true;
+                openChar = match.captured(1).at(0);
+                openLength = match.captured(1).size();
+            }
+        }
+    }
+    auto parseAt = [&lines, &insideFence](qsizetype index) -> std::optional<RawQuote> {
+        if (index < 0 || index >= lines.size() || insideFence.value(index)) return std::nullopt;
         const auto line = lines.at(index);
         if (const auto match = quoteLine.match(line); match.hasMatch()) {
             const auto name = unescapeQuoteLabel(match.captured(1)).trimmed();
