@@ -9099,6 +9099,12 @@ bool NativeController::canSend() const
 {
     // While an edit session is open the save control, not send, owns submission.
     if (!m_editingMessage.isEmpty()) return false;
+    // A reply session sends when any tab holds a sendable answer: the blank
+    // active draft must not block answers saved in the other tabs
+    // (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md composition covers every tab).
+    bool anyReplyAnswer = false;
+    for (const auto &tab : std::as_const(m_replyTabs))
+        if (!tab.answer.trimmed().isEmpty()) { anyReplyAnswer = true; break; }
     const auto *stream = currentStream();
     if (stream && stream->encrypted)
         return canCompose() && !m_sending && m_pendingSends.value(conversationKey()).uuid.isEmpty()
@@ -9108,7 +9114,7 @@ bool NativeController::canSend() const
         && !draft().contains(":::")
         && !m_pendingSends.value(conversationKey()).encrypted
         && !topicClosed() && !m_sending && m_pendingUploads.value(conversationKey()) == 0
-        && !draft().trimmed().isEmpty() && draft().size() <= 40000;
+        && (!draft().trimmed().isEmpty() || anyReplyAnswer) && draft().size() <= 40000;
 }
 
 bool NativeController::topicClosed() const
@@ -10117,12 +10123,17 @@ void NativeController::send()
     // every reply tab serializes as "[Name](urn:quote:uuid)" + blank line + answer,
     // blocks joined by blank lines in tab order with trailing whitespace trimmed.
     const auto replyActive = m_replyActiveTab;
+    // Quote identity is part of the snapshot: beginReply can re-point a tab's
+    // quoted message without touching the tab ids or the active pointer.
     QStringList replySnapshot;
-    for (const auto &tab : std::as_const(m_replyTabs)) replySnapshot << tab.id;
+    for (const auto &tab : std::as_const(m_replyTabs))
+        replySnapshot << tab.id + QLatin1Char(':') + tab.message;
     // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
     // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
-    // mention serialization happens before the reply quote prefix join).
-    auto wire = serializeComposerMentions(text, composerMentionEntries());
+    // mention serialization happens before the reply quote prefix join) and
+    // apply to every tab's answer, not just the active draft.
+    const auto mentionEntries = composerMentionEntries();
+    auto wire = serializeComposerMentions(text, mentionEntries);
     if (!m_replyTabs.isEmpty()) {
         QStringList blocks;
         for (const auto &tab : std::as_const(m_replyTabs)) {
@@ -10132,10 +10143,11 @@ void NativeController::send()
                 report(tr("This message can no longer be replied to."));
                 return;
             }
-            // The active tab answers with the live composer text (mention-serialized
-            // like the single-slot flow); the others carry the answer captured while
-            // they were active.
-            const auto answer = (tab.id == m_replyActiveTab ? wire : tab.answer).trimmed();
+            // The active tab answers with the live composer text; the others
+            // carry the answer captured while they were active - both get the
+            // same mention serialization.
+            const auto answer = (tab.id == m_replyActiveTab ? wire
+                : serializeComposerMentions(tab.answer, mentionEntries)).trimmed();
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
         auto body = blocks.join(QStringLiteral("\n\n"));
@@ -10212,10 +10224,12 @@ void NativeController::send()
             }
             finishMessageIntent(canonicalId);
             m_error.clear();
-            // Close the session only if no tab was added, removed or switched while
-            // the send was in flight (single-slot precedent generalized to the tab set).
+            // Close the session only if no tab was added, removed, switched or
+            // re-pointed at another quote while the send was in flight (single-slot
+            // precedent generalized to the tab set, quote identity included).
             QStringList replyNow;
-            for (const auto &tab : std::as_const(m_replyTabs)) replyNow << tab.id;
+            for (const auto &tab : std::as_const(m_replyTabs))
+                replyNow << tab.id + QLatin1Char(':') + tab.message;
             if (!replySnapshot.isEmpty() && m_replyActiveTab == replyActive && replyNow == replySnapshot)
                 closeReplySession();
             const QPointer<NativeController> guard(this);
@@ -10956,8 +10970,10 @@ void NativeController::removeReplyTab(const QString &tabId)
     if (removedIndex >= m_replyTabs.size()) return;
     const auto wasActive = m_replyActiveTab == tabId;
     m_replyTabs.removeAt(removedIndex);
-    if (m_replyTabs.isEmpty()) { m_replyActiveTab.clear(); m_replyRoute.clear(); emit replySessionChanged(); return; }
-    if (!wasActive) { emit replySessionChanged(); return; }
+    if (m_replyTabs.isEmpty()) { m_replyActiveTab.clear(); m_replyRoute.clear(); emit replySessionChanged();
+        emit stateChanged(); // the removed tab may have held the last sendable answer
+        return; }
+    if (!wasActive) { emit replySessionChanged(); emit stateChanged(); return; }
     // Active-tab fallback: the tab at the old index, then the previous one.
     const auto fallback = m_replyTabs.value(std::min(removedIndex,
         static_cast<qsizetype>(m_replyTabs.size()) - 1));
@@ -10998,6 +11014,7 @@ void NativeController::closeReplySession()
     m_replyActiveTab.clear();
     m_replyRoute.clear();
     emit replySessionChanged();
+    emit stateChanged(); // the session may have held the last sendable answer
 }
 
 QString NativeController::replyMessageId() const
