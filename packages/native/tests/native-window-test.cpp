@@ -15593,12 +15593,14 @@ private:
             }, 2000))
             QFAIL("PiP window never appeared");
         QVERIFY(QTest::qWaitForWindowExposed(pip));
+        QPointer<QQuickWindow> pipGuard(pip);
         QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(pip->contentItem()) == 1, 2000);
         QCOMPARE(activeEmbedLoaders(window->contentItem()), 0);
-        // Expand: the same surface moves back; the PiP window holds none.
+        // Expand: the same surface moves back into the app window; the PiP
+        // window (with no embed of its own left inside) is destroyed.
         click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
-        QCOMPARE(activeEmbedLoaders(pip->contentItem()), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(pipGuard.isNull() || !pipGuard->isVisible(), 2000);
         controller.callWindow()->readyToClose();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }

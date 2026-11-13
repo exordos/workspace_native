@@ -31,6 +31,12 @@ Item {
     readonly property string titleText: controller.titleText
     readonly property string subtitleText: controller.subtitleText
     readonly property string stateText: controller.stateText
+    // #162 finding 2: exactly ONE embed surface exists per call session;
+    // Main.qml owns it and re-parents it between the expanded shell and the
+    // PiP window. Each shell only offers this slot, so a minimize/expand
+    // toggle moves the presentation and never creates or destroys a second
+    // WebEngine session for the same meeting.
+    property Item embedHost: embedAreaItem
 
     Rectangle {
         id: surface
@@ -166,6 +172,7 @@ Item {
     }
 
     Item {
+        id: embedAreaItem
         objectName: "callWindowEmbedArea"
         anchors.top: headerItem.bottom
         anchors.left: parent.left
@@ -234,20 +241,7 @@ Item {
             color: shell.colors["notice-base"]
         }
 
-        Loader {
-            // The embed surface is created as soon as the meeting URL is
-            // valid - while Loading - because the view's own load events are
-            // what drive Ready/LoadFailed (gating creation on Ready was a
-            // deadlock: nothing could ever produce it). embedCreated still
-            // fires exactly once per session when the load succeeds, and
-            // dynamic source keeps the QtWebEngine import lazy for every
-            // other window in the app.
-            objectName: "callWindowEmbedLoader"
-            anchors.fill: parent
-            active: shell.controller.embedState === 1 // Loading
-                || shell.controller.embedState === 2  // Ready
-            source: "NativeCallWebEngineView.qml"
-            onLoaded: if (item) item.controller = shell.controller
-        }
+        // The embed surface itself is owned by Main.qml (single instance per
+        // call session, finding 2); this slot only hosts it while visible.
     }
 }

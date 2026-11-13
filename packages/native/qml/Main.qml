@@ -8519,6 +8519,7 @@ ApplicationWindow {
             width: root.controller.callWindow.bounds.width
             height: root.controller.callWindow.bounds.height
             NativeCallWindow {
+                id: callWindowExpandedShell
                 objectName: "callWindowExpanded"
                 anchors.fill: parent
                 colors: root.colors
@@ -8532,6 +8533,25 @@ ApplicationWindow {
             onActivated: root.controller.callWindow.requestDismiss()
         }
     }
+    // #162 finding 2: exactly one embed surface per call session. The Loader
+    // activates as soon as the meeting URL is valid (Loading - the view's own
+    // load events drive Ready/LoadFailed, finding 1) and is re-parented
+    // between the expanded shell and the PiP window, so minimize/expand only
+    // moves the presentation and never creates a second WebEngine session
+    // (the reference React.memo mount-count contract). Dynamic source keeps
+    // the QtWebEngine import lazy for every other window in the app.
+    property var callPipEmbedHost: null
+    Loader {
+        objectName: "callWindowEmbedLoader"
+        active: root.controller.callWindow.mode !== 0
+            && (root.controller.callWindow.embedState === 1 // Loading
+                || root.controller.callWindow.embedState === 2) // Ready
+        source: "NativeCallWebEngineView.qml"
+        onLoaded: if (item) item.controller = root.controller.callWindow
+        parent: root.callPipEmbedHost !== null ? root.callPipEmbedHost
+            : callWindowExpandedShell.embedHost
+        anchors.fill: parent
+    }
     // The PiP surface is a separate frameless tool window: Qt does not
     // instantiate Window elements nested in a Window's content, so it is
     // created when the shell minimizes and destroyed when it expands or ends.
@@ -8544,6 +8564,9 @@ ApplicationWindow {
                 root.callPipInstance = callPipComponent.createObject(root)
             else if (!minimized && root.callPipInstance !== null) {
                 const previous = root.callPipInstance
+                // Hand the single embed surface back to the expanded shell
+                // before the PiP window (its former host) goes away.
+                root.callPipEmbedHost = null
                 root.callPipInstance = null
                 previous.visible = false
                 previous.destroy()
@@ -8574,8 +8597,13 @@ ApplicationWindow {
             title: root.controller.callWindow.titleText
             flags: Qt.Window | Qt.Tool | Qt.FramelessWindowHint
             color: root.colors["bg-elevated"]
-            Component.onCompleted: raise()
+            Component.onCompleted: {
+                raise()
+                // The single embed surface follows the presentation here.
+                root.callPipEmbedHost = callPipShellRoot.embedHost
+            }
             NativeCallWindow {
+                id: callPipShellRoot
                 objectName: "callWindowPipShell"
                 anchors.fill: parent
                 colors: root.colors
