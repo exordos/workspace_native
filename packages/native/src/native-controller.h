@@ -12,6 +12,7 @@
 #include "call/jitsi-call.h"
 #include "call/native-call-window.h"
 #include "call/native-call-store.h"
+#include "call/incoming-call-lifecycle.h"
 
 #include <QHash>
 #include <QLocale>
@@ -1406,12 +1407,16 @@ public:
     // the embed transport reports count/roster reads here and the bridge feeds
     // the shell, so the reconcile timer always re-reads live embed data.
     Q_PROPERTY(JitsiEmbedBridge *embedBridge READ embedBridge CONSTANT)
+    // Issue #163: the incoming invite lifecycle (ring schedule, 45 s
+    // auto-decline, per-invite video preference, invite variant).
+    Q_PROPERTY(IncomingCallLifecycle *incomingCall READ incomingCall CONSTANT)
     Q_PROPERTY(QString meetHost READ meetHost NOTIFY stateChanged)
     Q_PROPERTY(bool canStartCall READ canStartCall NOTIFY stateChanged)
     Q_PROPERTY(QString callError READ callError NOTIFY stateChanged)
     JitsiCallStore *calls() { return &m_callStore; }
     JitsiCallWindowController *callWindow() { return &m_callWindow; }
     JitsiEmbedBridge *embedBridge() { return &m_embedBridge; }
+    IncomingCallLifecycle *incomingCall() { return &m_incomingCall; }
     QString meetHost() const { return m_meetHost; }
     QString callError() const { return m_callError; }
     // The reference renders the header call action only when the Workspace
@@ -1429,9 +1434,11 @@ public:
 
 private:
     void fetchCallMeetHost();
+    void maybeOfferCallInvite(const Message &message);
     JitsiCallStore m_callStore;
     JitsiCallWindowController m_callWindow;
     JitsiEmbedBridge m_embedBridge;
+    IncomingCallLifecycle m_incomingCall;
     QString m_meetHost;
     QString m_callError;
     bool m_callPending = false;

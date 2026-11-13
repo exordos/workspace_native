@@ -16387,6 +16387,139 @@ private slots:
         QVERIFY(!mismatch.controller.calls()->hasActiveCall());
     }
 
+    // ---- Issue #163 incoming call invite ingest ----
+
+
+    static void configureIncomingCall(Fixture &fixture,
+        const QString &streamName = QStringLiteral("Slon Direct"),
+        bool withCatalogAuthor = true)
+    {
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        fixture.streams = [streamName](const Request &) {
+            const QJsonObject direct{{QStringLiteral("uuid"), streamId},
+                {QStringLiteral("project_id"), projectId}, {QStringLiteral("name"), streamName},
+                {QStringLiteral("encryption"), false}, {QStringLiteral("private"), true},
+                {QStringLiteral("direct_user_uuid"), channelMemberA},
+                {QStringLiteral("unread_count"), 0}, {QStringLiteral("active_unread_count"), 0},
+                {QStringLiteral("passive_unread_count"), 0},
+                {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                {QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:00:00Z")},
+                {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:00Z")}};
+            return Response{QJsonArray{direct}};
+        };
+        fixture.users = [withCatalogAuthor](const Request &) {
+            if (!withCatalogAuthor)
+                return Response{QJsonArray{}};
+            const QJsonObject self{{QStringLiteral("uuid"), userId},
+                {QStringLiteral("username"), QStringLiteral("self")}};
+            const QJsonObject author{{QStringLiteral("uuid"), channelMemberA},
+                {QStringLiteral("username"), QStringLiteral("slon")},
+                {QStringLiteral("first_name"), QStringLiteral("Slon")}};
+            return Response{QJsonArray{self, author}};
+        };
+    }
+
+    static QJsonObject incomingCallMessage(const QString &content)
+    {
+        auto row = message(content,
+            QStringLiteral("dddd0000-0000-4000-8000-000000000001"));
+        row[QStringLiteral("author_uuid")] = channelMemberA;
+        row[QStringLiteral("is_own")] = false;
+        row[QStringLiteral("read")] = false;
+        return row;
+    }
+
+    void incomingCallRealtimeDirectMessageRaisesInvite()
+    {
+        Fixture fixture; configureIncomingCall(fixture);
+        QVERIFY(fixture.start());
+        QTRY_COMPARE(fixture.controller.meetHost(), QStringLiteral("https://meet.example.com"));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created",
+            incomingCallMessage(QStringLiteral("https://meet.example.com/workspace-call-room")))));
+        QTRY_VERIFY(!fixture.controller.calls()->incomingInvite().isEmpty());
+        const auto invite = fixture.controller.calls()->incomingInvite();
+        QCOMPARE(invite.value(QStringLiteral("callerName")).toString(),
+            QStringLiteral("Slon"));
+        QCOMPARE(invite.value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.example.com/workspace-call-room"));
+        QCOMPARE(invite.value(QStringLiteral("locationName")).toString(),
+            QStringLiteral("Slon Direct"));
+        // Accept without the video toggle opens the call with muted video
+        // (jitsi-call-shell.ui.tsx:43,61-63).
+        fixture.controller.incomingCall()->accept();
+        QVERIFY(fixture.controller.calls()->hasActiveCall());
+        QCOMPARE(fixture.controller.calls()->activeCall()
+            .value(QStringLiteral("startWithVideoMuted")).toBool(), true);
+        QVERIFY(fixture.controller.calls()->incomingInvite().isEmpty());
+    }
+
+    void incomingCallInviteCallerFallsBackToStreamName()
+    {
+        // resolveCallerName fallback display name -> stream name (lib.ts:23-34).
+        Fixture fixture; configureIncomingCall(fixture, QStringLiteral("Slon Direct"), false);
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created",
+            incomingCallMessage(QStringLiteral("https://meet.jit.si/room-x")))));
+        QTRY_VERIFY(!fixture.controller.calls()->incomingInvite().isEmpty());
+        QCOMPARE(fixture.controller.calls()->incomingInvite()
+            .value(QStringLiteral("callerName")).toString(), QStringLiteral("Slon Direct"));
+    }
+
+    void incomingCallInviteDeduplicatesSecondDelivery()
+    {
+        Fixture fixture; configureIncomingCall(fixture);
+        QVERIFY(fixture.start());
+        const auto row = incomingCallMessage(QStringLiteral("https://meet.example.com/room-d"));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", row)));
+        QTRY_VERIFY(!fixture.controller.calls()->incomingInvite().isEmpty());
+        // A replay of the same message id changes nothing (model.ts:138-141).
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", row)));
+        QCOMPARE(fixture.controller.calls()->incomingInvite()
+            .value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.example.com/room-d"));
+        fixture.controller.incomingCall()->decline();
+        QVERIFY(fixture.controller.calls()->incomingInvite().isEmpty());
+        // The remembered id keeps even a post-decline replay suppressed.
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", row)));
+        QVERIFY(fixture.controller.calls()->incomingInvite().isEmpty());
+    }
+
+    void incomingCallInviteIgnoredWhileCallActive()
+    {
+        Fixture fixture; configureIncomingCall(fixture);
+        QVERIFY(fixture.start());
+        QVariantMap other;
+        other.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/other-room"));
+        other.insert(QStringLiteral("locationName"), QStringLiteral("Other"));
+        fixture.controller.calls()->requestOpenCall(other);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created",
+            incomingCallMessage(QStringLiteral("https://meet.example.com/room-e")))));
+        QTest::qWait(200);
+        QVERIFY(fixture.controller.calls()->incomingInvite().isEmpty());
+        QCOMPARE(fixture.controller.calls()->activeCall()
+            .value(QStringLiteral("meetingUrl")).toString(),
+            QStringLiteral("https://meet.example.com/other-room"));
+    }
+
+    void incomingCallAcceptUsesVideoTogglePreference()
+    {
+        Fixture fixture; configureIncomingCall(fixture);
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created",
+            incomingCallMessage(QStringLiteral("https://meet.example.com/room-v")))));
+        QTRY_VERIFY(!fixture.controller.calls()->incomingInvite().isEmpty());
+        const auto messageId = fixture.controller.calls()->incomingInvite()
+            .value(QStringLiteral("messageId")).toString();
+        fixture.controller.incomingCall()->toggleVideoEnabled(messageId);
+        QVERIFY(fixture.controller.incomingCall()->videoEnabled(messageId));
+        fixture.controller.incomingCall()->accept();
+        QVERIFY(fixture.controller.calls()->hasActiveCall());
+        // Video enabled -> the accepted call starts with video unmuted.
+        QCOMPARE(fixture.controller.calls()->activeCall()
+            .value(QStringLiteral("startWithVideoMuted")).toBool(), false);
+    }
+
     void joinCallDuringPendingStartIsSerialized()
     {
         // While the start POST is in flight a join click on another room must
