@@ -526,6 +526,9 @@ public:
         const QString &optionUuid, const QString &optionText);
     Q_INVOKABLE void loadPollVoters(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0);
+    // Issue #216: locale rendering of poll deadline/closed dates
+    // (workspace-message-poll.ui.tsx:47-49 in the reference).
+    Q_INVOKABLE QString formatPollDate(const QString &isoDateTime) const;
     Q_INVOKABLE void attachFiles(const QVariantList &localUrls);
     Q_INVOKABLE void downloadFile(const QString &id, const QUrl &destination);
 

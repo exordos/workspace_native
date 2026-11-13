@@ -17529,6 +17529,23 @@ private slots:
             .value(QStringLiteral("is_closed")).toBool(), true);
     }
 
+    // The poll status date mirrors the reference locale rendering
+    // (workspace-message-poll.ui.tsx:47-49): long month + HH:mm, in the app
+    // locale that applyLanguage set as the QLocale default.
+    void pollDateLabelFollowsTheAppLocale()
+    {
+        Fixture fixture; QVERIFY(fixture.start());
+        const auto saved = QLocale();
+        const auto restore = qScopeGuard([&saved] { QLocale::setDefault(saved); });
+        QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+        QCOMPARE(fixture.controller.formatPollDate(QStringLiteral("2026-12-12T10:00:00")),
+            QStringLiteral("12 December, 10:00"));
+        QLocale::setDefault(QLocale(QLocale::Russian, QLocale::Russia));
+        QCOMPARE(fixture.controller.formatPollDate(QStringLiteral("2026-12-12T10:00:00")),
+            QStringLiteral("12 декабря, 10:00"));
+        QCOMPARE(fixture.controller.formatPollDate(QStringLiteral("not-a-date")), QString{});
+    }
+
     // ---- Issue #164 DM call bridge (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md) ----
 
     static int callMessagePosts(Fixture &fixture)
