@@ -89,6 +89,16 @@ All measurements are from `workspace_ui` at
   meeting URL.
 - The native client reuses the `JitsiCallStore` payload contract from #161 and
   the shared participant roster exposed to the message card.
+- Native mapping (review finding 5, round 3): `workspace::JitsiEmbedBridge`
+  (`src/call/native-call-window.{h,cpp}`) is the production live source. The
+  embed page's external_api reads arrive through `reportParticipantCount()` /
+  `reportRoster()` (the native transport of `getNumberOfParticipants()` /
+  `getParticipantsInfo()` until the #160 external_api.js handshake delivers
+  them) and the two listeners through `handleParticipantsJoined/Left()`.
+  `NativeController` attaches the bridge once at construction, making the
+  bridge the shell controller's count provider; the focus-aware timer then
+  only reconciles against the bridge, and closing the call resets the live
+  count and roster exactly like the reference hook.
 
 ### States — `jitsi-call.ui.tsx:221-254`
 
@@ -182,4 +192,8 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
   `display-capture` once as the reference does.
 - The live embed page (external_api.js handshake) is the #160 embed stack; the
   shell proves the mount-count contract with the injectable recreation
-  counter instead of a network test.
+  counter instead of a network test. `JitsiEmbedBridge` is the named sink the
+  handshake feeds: the bridge holds the shared roster (`liveRoster`), but the
+  reference's message-card roster surface has no native counterpart yet (the
+  #161 card contract carries no roster), so the roster source ships without
+  a consumer; the count source is fully wired into the shell today.
