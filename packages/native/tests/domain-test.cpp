@@ -8,6 +8,66 @@
 using namespace workspace;
 using namespace workspace::test;
 
+// Issue #214: the poll contract fixtures mirror docs/plans/message-polls.md
+// (reference workspace_ui 230e02b8b0273dee556a406746d122180a68b3e7).
+namespace {
+const QString pollQuestionOne = "aaaaaaaa-1111-4111-8111-111111111111";
+const QString pollQuestionTwo = "bbbbbbbb-2222-4222-8222-222222222222";
+const QString pollOptionOne = "cccccccc-3333-4333-8333-333333333333";
+const QString pollOptionTwo = "dddddddd-4444-4444-8444-444444444444";
+const QString pollOptionThree = "eeeeeeee-5555-4555-8555-555555555555";
+const QString pollOptionFour = "ffffffff-6666-4666-8666-666666666666";
+const QString pollVoter = "99999999-9999-4999-8999-999999999999";
+
+QJsonObject pollOptionRow(const QString &uuid, const QString &text)
+{
+    return {{QString("uuid"), uuid}, {QString("text"), text}};
+}
+
+QJsonObject pollMessagePayload()
+{
+    return {{QString("kind"), QStringLiteral("poll")},
+        {QString("questions"), QJsonArray{
+            QJsonObject{{QString("uuid"), pollQuestionOne}, {QString("text"), QStringLiteral("Which day?")},
+                {QString("options"), QJsonArray{pollOptionRow(pollOptionOne, QStringLiteral("Monday")),
+                    pollOptionRow(pollOptionTwo, QStringLiteral("Tuesday"))}},
+                {QString("correct_option_uuids"), QJsonArray{pollOptionOne}}},
+            QJsonObject{{QString("uuid"), pollQuestionTwo}, {QString("text"), QStringLiteral("Where?")},
+                {QString("options"), QJsonArray{pollOptionRow(pollOptionThree, QStringLiteral("Office")),
+                    pollOptionRow(pollOptionFour, QStringLiteral("Online"))}}}}},
+        {QString("multiple_answers"), true}, {QString("is_anonymous"), false},
+        {QString("allow_revote"), false}, {QString("results_visibility"), QStringLiteral("after_vote")},
+        {QString("allow_adding_options"), true}, {QString("closes_at"), QStringLiteral("2026-12-12T09:00:00Z")},
+        {QString("closed_at"), QJsonValue::Null}};
+}
+
+QJsonObject pollMessageState()
+{
+    return {{QString("revision"), 42}, {QString("is_closed"), false}, {QString("voter_count"), 12},
+        {QString("questions"), QJsonArray{
+            QJsonObject{{QString("question_uuid"), pollQuestionOne}, {QString("voter_count"), 12},
+                {QString("option_counts"), QJsonObject{{pollOptionOne, 7}, {pollOptionTwo, 8}}},
+                {QString("option_voter_previews"), QJsonObject{{pollOptionOne, QJsonArray{pollVoter}}}}},
+            QJsonObject{{QString("question_uuid"), pollQuestionTwo}, {QString("voter_count"), 12},
+                {QString("option_counts"), QJsonObject{{pollOptionThree, 5}, {pollOptionFour, 7}}}}}},
+        {QString("my_votes"), QJsonArray{
+            QJsonObject{{QString("question_uuid"), pollQuestionOne},
+                {QString("option_uuids"), QJsonArray{pollOptionOne}}}}}};
+}
+
+QJsonObject pollRow(const QJsonObject &payload = pollMessagePayload(),
+                    const QJsonValue &state = pollMessageState())
+{
+    QJsonObject row{{QString("uuid"), messageId}, {QString("project_id"), projectId},
+        {QString("stream_uuid"), streamId}, {QString("topic_uuid"), topicId},
+        {QString("author_uuid"), userId}, {QString("is_own"), true}, {QString("read"), true},
+        {QString("starred"), false}, {QString("created_at"), QStringLiteral("2026-01-02T10:00:00.000Z")},
+        {QString("payload"), payload}};
+    if (!state.isUndefined()) row.insert(QString("poll_state"), state);
+    return row;
+}
+} // namespace
+
 class DomainTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -405,6 +465,127 @@ private slots:
         const auto later = *parseMessage(laterJson, projectId);
         const auto result = mergeMessages({later}, {earlier});
         QCOMPARE(result.first().uuid, returnedId);
+    }
+
+    // Issue #214: strict DTO guards mirroring messenger.types.ts. A malformed
+    // poll row (or a non-poll row carrying poll_state) must parse as nothing;
+    // history pages keep their all-or-nothing shape around that.
+    void pollGuardRejectsMalformedRows_data()
+    {
+        QTest::addColumn<QJsonObject>("row");
+        const auto withPayload = [](QJsonObject payload) {
+            auto row = pollRow(); row.insert(QStringLiteral("payload"), payload); return row;
+        };
+        const auto withState = [](const QJsonValue &state) {
+            auto row = pollRow();
+            if (state.isUndefined()) row.remove(QStringLiteral("poll_state"));
+            else row.insert(QStringLiteral("poll_state"), state);
+            return row;
+        };
+        // Strict poll payload guard.
+        { auto p = pollMessagePayload(); p.remove(QStringLiteral("multiple_answers"));
+          QTest::newRow("payload-multiple-answers-absent") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("is_anonymous"), QStringLiteral("yes"));
+          QTest::newRow("payload-anonymous-not-bool") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("allow_revote"), 1);
+          QTest::newRow("payload-revote-not-bool") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("results_visibility"), QStringLiteral("sometimes"));
+          QTest::newRow("payload-results-visibility-unknown") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("allow_adding_options"), QStringLiteral("true"));
+          QTest::newRow("payload-adding-options-not-bool") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("closes_at"), 123);
+          QTest::newRow("payload-closes-at-number") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("closes_at"), QStringLiteral("   "));
+          QTest::newRow("payload-closes-at-blank") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("closed_at"), false);
+          QTest::newRow("payload-closed-at-bool") << withPayload(p); }
+        { auto p = pollMessagePayload(); p.insert(QStringLiteral("questions"), QStringLiteral("none"));
+          QTest::newRow("payload-questions-not-array") << withPayload(p); }
+        { auto p = pollMessagePayload(); auto questions = p.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject(); first.remove(QStringLiteral("uuid"));
+          questions[0] = first; p.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("payload-question-uuid-absent") << withPayload(p); }
+        { auto p = pollMessagePayload(); auto questions = p.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject(); auto options = first.value(QStringLiteral("options")).toArray();
+          auto option = options.at(0).toObject(); option.insert(QStringLiteral("text"), 7); options[0] = option;
+          first.insert(QStringLiteral("options"), options); questions[0] = first;
+          p.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("payload-option-text-not-string") << withPayload(p); }
+        { auto p = pollMessagePayload(); auto questions = p.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("correct_option_uuids"), QJsonArray{QStringLiteral("nope")});
+          questions[0] = first; p.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("payload-correct-uuids-invalid") << withPayload(p); }
+        // Strict poll state guard.
+        { auto s = pollMessageState(); s.insert(QStringLiteral("revision"), 0);
+          QTest::newRow("state-revision-zero") << withState(s); }
+        { auto s = pollMessageState(); s.insert(QStringLiteral("revision"), QStringLiteral("3"));
+          QTest::newRow("state-revision-string") << withState(s); }
+        { auto s = pollMessageState(); s.remove(QStringLiteral("revision"));
+          QTest::newRow("state-revision-absent") << withState(s); }
+        { auto s = pollMessageState(); s.insert(QStringLiteral("is_closed"), QStringLiteral("false"));
+          QTest::newRow("state-is-closed-not-bool") << withState(s); }
+        { auto s = pollMessageState(); s.insert(QStringLiteral("voter_count"), -1);
+          QTest::newRow("state-voter-count-negative") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject(); first.insert(QStringLiteral("voter_count"), 1.5);
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-question-voter-count-fraction") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("option_counts"), QJsonObject{{QStringLiteral("nope"), 1}});
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-option-counts-key-not-uuid") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("option_counts"), QJsonObject{{pollOptionOne, -2}});
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-option-counts-negative") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("option_voter_previews"), QJsonObject{{pollOptionOne, QJsonArray{}}});
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-previews-empty-array") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("option_voter_previews"),
+              QJsonObject{{pollOptionOne, QJsonArray{pollVoter, pollVoter}}});
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-previews-duplicate-voter") << withState(s); }
+        { auto s = pollMessageState(); auto questions = s.value(QStringLiteral("questions")).toArray();
+          auto first = questions.at(0).toObject();
+          first.insert(QStringLiteral("option_voter_previews"),
+              QJsonObject{{QStringLiteral("nope"), QJsonArray{pollVoter}}});
+          questions[0] = first; s.insert(QStringLiteral("questions"), questions);
+          QTest::newRow("state-previews-key-not-uuid") << withState(s); }
+        { auto s = pollMessageState();
+          s.insert(QStringLiteral("my_votes"), QJsonArray{QJsonObject{
+              {QString("question_uuid"), pollQuestionOne},
+              {QString("option_uuids"), QJsonArray{QStringLiteral("x")}}}});
+          QTest::newRow("state-my-votes-option-not-uuid") << withState(s); }
+        // Polls REQUIRE poll_state; every other kind forbids it.
+        QTest::newRow("poll-state-absent") << withState(QJsonValue(QJsonValue::Undefined));
+        QTest::newRow("poll-state-null") << withState(QJsonValue::Null);
+        { auto row = message(QStringLiteral("plain"));
+          row.insert(QStringLiteral("poll_state"), pollMessageState());
+          QTest::newRow("markdown-with-poll-state") << row; }
+    }
+    void pollGuardRejectsMalformedRows()
+    {
+        QFETCH(QJsonObject, row);
+        QVERIFY2(parseMessage(row, projectId) == std::nullopt,
+                 qPrintable(row.value(QStringLiteral("payload")).toObject()
+                     .value(QStringLiteral("kind")).toString()));
+    }
+
+    void pollGuardAcceptsTheValidShapeAndNullStateOnOtherKinds()
+    {
+        QVERIFY(parseMessage(pollRow(), projectId));
+        auto markdown = message(QStringLiteral("plain"));
+        markdown.insert(QStringLiteral("poll_state"), QJsonValue::Null);
+        QVERIFY(parseMessage(markdown, projectId));
+        markdown.remove(QStringLiteral("poll_state"));
+        QVERIFY(parseMessage(markdown, projectId));
     }
 };
 
