@@ -198,3 +198,11 @@ Could not add the option. Try again., Could not load the poll.
   is likewise not portable in Qt (already recorded in the app docs).
 - D7 Screen-reader-only `Saving answer…` texts exist as `Accessible.name` on
   the disabled question (Qt has no `sr-only`); same for the region labels.
+- D8 The reference `participantCount` plural uses ICU plural categories; the
+  native catalog ships the three Qt numerus forms (one/few/many) like every
+  other plural entry in `workspace_ru.ts` (the `%n event` pattern).
+- D9 The #214 failure signal identifies the message, not the question, so a
+  failed vote in native clears the in-flight flags of ALL pending questions of
+  that message and marks them with the inline error. The reference isolates
+  the error to the originating question; concurrent in-flight votes on two
+  questions of one message are the only case where this differs visibly.
