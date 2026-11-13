@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "call/incoming-call.h"
 #include "media-viewer.h"
 #include "native-deeplink.h"
 #include "workspace-reference.h"
@@ -6198,6 +6199,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         else if (m_callWindow.mode() != JitsiCallWindowController::Closed)
             m_callWindow.close();
     });
+    // Issue #163: the incoming invite lifecycle follows the same store
+    // (visible = invite present without an active call, ring + auto-decline
+    // timers, per-invite video preference).
+    m_incomingCall.attachStore(&m_callStore);
     connect(&m_callWindow, &JitsiCallWindowController::closeRequested, this, [this] {
         m_callStore.closeCall();
     });
@@ -7465,6 +7470,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (kind == QLatin1String("message.created") && !selected
             && !message->own && !message->read)
             offerNotificationCandidate(*message);
+        // Issue #163: every created message runs the incoming-invite builder,
+        // mirroring the reference realtime applier's onMessageCreated
+        // (layout-workspace-realtime.hook.ts:448-465). The builder itself
+        // filters own/read/non-DM/non-markdown/foreign-host messages, and the
+        // store keeps the dedupe-by-id and ignore-while-active matrix, so the
+        // call stays invisible unless every reference condition holds.
+        if (kind == QLatin1String("message.created"))
+            maybeOfferCallInvite(*message);
         if (kind == "message.read") {
             staleReadConversation(message->stream, message->topic);
             if (message->read && m_cache)
@@ -9074,6 +9087,43 @@ void NativeController::setWindowFocused(bool focused)
 {
     m_windowFocused = focused;
     m_notifications.setWindowFocused(focused);
+}
+
+void NativeController::maybeOfferCallInvite(const Message &message)
+{
+    if (!authenticated())
+        return;
+    // Field mapping of the reference buildWorkspaceIncomingDmCallInvite input
+    // (workspace-jitsi-incoming-call.lib.ts:40-73): the stream row supplies
+    // private/direct-user facts, the users catalog the caller display name
+    // and avatar, and the per-session meet host the URL allowlist.
+    QVariantMap input;
+    input.insert(QStringLiteral("messageId"), message.uuid);
+    input.insert(QStringLiteral("messageRead"), message.read);
+    input.insert(QStringLiteral("messageOwn"), message.own);
+    input.insert(QStringLiteral("authorUuid"), message.author);
+    input.insert(QStringLiteral("payloadKind"), message.kind);
+    input.insert(QStringLiteral("content"), message.content);
+    const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&](const Stream &row) { return row.uuid == message.stream; });
+    input.insert(QStringLiteral("streamKnown"), stream != m_streams.cend());
+    input.insert(QStringLiteral("streamName"),
+        stream == m_streams.cend() ? QString() : stream->name);
+    input.insert(QStringLiteral("streamPrivate"),
+        stream != m_streams.cend() && stream->privateStream);
+    input.insert(QStringLiteral("streamDirectUser"),
+        stream == m_streams.cend() ? QString() : stream->directUser);
+    input.insert(QStringLiteral("authorDisplayName"), userDisplayName(message.author, QString()));
+    input.insert(QStringLiteral("authorAvatarUrl"), userAvatar(message.author));
+    input.insert(QStringLiteral("currentUserUuid"), m_session->user());
+    input.insert(QStringLiteral("currentUserDisplayName"),
+        userDisplayName(m_session->user(), m_session->user()));
+    input.insert(QStringLiteral("ownerKey"), ownerKey());
+    input.insert(QStringLiteral("meetUrl"), m_meetHost);
+    input.insert(QStringLiteral("createdAtMs"), message.createdMicros / 1000);
+    const auto invite = buildIncomingDmCallInvite(input);
+    if (!invite.isEmpty())
+        m_callStore.ingestIncomingInvite(invite);
 }
 
 bool NativeController::inConversation(const Message &message) const
