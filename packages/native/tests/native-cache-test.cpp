@@ -39,6 +39,41 @@ QJsonObject message(const QString &text = "Saved message")
         {"starred", false}, {"payload", QJsonObject{{"kind", "markdown"}, {"content", text}}}};
 }
 
+// Issue #214: the poll contract fixture (docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md).
+QJsonObject pollPayloadFixture()
+{
+    const QString question = "aaaaaaaa-1111-4111-8111-111111111111";
+    const QString optionOne = "cccccccc-3333-4333-8333-333333333333";
+    const QString optionTwo = "dddddddd-4444-4444-8444-444444444444";
+    return {{"kind", "poll"},
+        {"questions", QJsonArray{QJsonObject{{"uuid", question}, {"text", "Which day?"},
+            {"options", QJsonArray{QJsonObject{{"uuid", optionOne}, {"text", "Monday"}},
+                QJsonObject{{"uuid", optionTwo}, {"text", "Tuesday"}}}}}}},
+        {"multiple_answers", true}, {"is_anonymous", false}, {"allow_revote", false},
+        {"results_visibility", "after_vote"}, {"allow_adding_options", true},
+        {"closes_at", "2026-12-12T09:00:00Z"}, {"closed_at", QJsonValue::Null}};
+}
+
+QJsonObject pollStateFixture()
+{
+    const QString question = "aaaaaaaa-1111-4111-8111-111111111111";
+    const QString optionOne = "cccccccc-3333-4333-8333-333333333333";
+    const QString optionTwo = "dddddddd-4444-4444-8444-444444444444";
+    return {{"revision", 42}, {"is_closed", false}, {"voter_count", 3},
+        {"questions", QJsonArray{QJsonObject{{"question_uuid", question}, {"voter_count", 3},
+            {"option_counts", QJsonObject{{optionOne, 1}, {optionTwo, 2}}}}}},
+        {"my_votes", QJsonArray{QJsonObject{{"question_uuid", question},
+            {"option_uuids", QJsonArray{optionTwo}}}}}};
+}
+
+QJsonObject pollMessageRow()
+{
+    return {{"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"project_id", Project},
+        {"stream_uuid", Stream}, {"topic_uuid", Topic}, {"author_uuid", User},
+        {"created_at", "2026-11-06T12:34:56.123456Z"}, {"read", false}, {"is_own", true},
+        {"starred", false}, {"payload", pollPayloadFixture()}, {"poll_state", pollStateFixture()}};
+}
+
 bool modify(const QString &directory, const QString &sql, bool foreignKeys = false)
 {
     const auto connection = QUuid::createUuid().toString();
@@ -1731,6 +1766,26 @@ private slots:
                          << "us, payload=" << cache.stats().bytes << " bytes";
         // Measurement only; machine load does not become a flaky latency gate.
         QCOMPARE(cache.stats().hits, quint64(100)); QCOMPARE(cache.stats().staleHits, quint64(0));
+    }
+
+    // Issue #214: a poll payload and its poll_state persist together in the cache
+    // row and read back through the strict re-validation without loss.
+    void pollPayloadAndStateSurviveCacheRoundTrip()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        {
+            NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
+            QVERIFY(cache.put(cache.lease(), History, {pollMessageRow()}));
+        }
+        NativeCache reopened(directory.path()); QVERIFY(reopened.open(Server, Project, User));
+        const auto entry = reopened.get(reopened.lease(), History); QVERIFY(entry);
+        QCOMPARE(entry->rows.size(), 1);
+        const auto saved = entry->rows.first().toObject();
+        QVERIFY(saved.value("payload").toObject() == pollPayloadFixture());
+        QVERIFY(saved.contains("poll_state"));
+        QVERIFY(saved.value("poll_state").toObject() == pollStateFixture());
+        // The stored shape re-parses as a poll: state revision survives.
+        QCOMPARE(saved.value("poll_state").toObject().value("revision").toInt(), 42);
     }
 };
 

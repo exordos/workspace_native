@@ -351,6 +351,18 @@ std::optional<QJsonArray> NativeCache::sanitize(const Key &key, const QJsonArray
                 "read", "is_own", "starred", "reactions", "reaction_users"});
             const auto payload = input.value("payload").toObject();
             const auto kind = payload.value("kind").toString();
+            if (kind == QLatin1String("poll")) {
+                // Issue #214: the whole poll payload and its poll_state persist
+                // together. The strict parse above already proved every field
+                // type, so the string-only shape check below does not apply.
+                row.insert("payload", select(payload, {"kind", "questions", "multiple_answers",
+                    "is_anonymous", "allow_revote", "results_visibility", "allow_adding_options",
+                    "closes_at", "closed_at"}));
+                if (input.contains("poll_state") && !input.value("poll_state").isNull())
+                    row.insert("poll_state", input.value("poll_state"));
+                result.append(row);
+                continue;
+            }
             QStringList fields{"kind"};
             if (kind == "markdown") fields << "content";
             else if (kind == "e2ee") fields << "key_uuid" << "content";
