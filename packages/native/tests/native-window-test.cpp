@@ -240,6 +240,8 @@ class TopicCompletionProbe final : public QObject {
     Q_OBJECT
 signals:
     void completed(const QString &stream, const QString &uuid);
+
+
 };
 
 class WindowSecrets final : public SessionSecretStore {
@@ -15254,7 +15256,72 @@ private:
             fixture.meetingUrl);
         QCOMPARE(controller.callError(), QString());
     }
+
+    // Issue #202 (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md): editing a stored
+    // reply shows the quote chip above the composer while the edit notice is
+    // open, and the composer is pre-filled with only the answer.
+    void editQuotedMessageShowsTheQuoteChipOverTheComposer()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message("Origin text", messageId);
+        auto quoted = message(QStringLiteral("[You](urn:quote:%1)\n\nanswer body").arg(messageId), returnedId);
+        QJsonObject saved;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{origin, quoted}};
+            if (request.method == "PUT") { saved = request.body; quoted["payload"] = request.body.value("payload"); return {quoted}; }
+            if (request.method == "GET" && path.endsWith("/" + returnedId)) return {quoted};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Edit restore teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-edit-restore", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        auto *bubble = item(content, "message-" + returnedId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *editAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("editMessageAction")); QVERIFY(editAction);
+        click(window, editAction);
+        auto *notice = item(content, "editMessageNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->property("visible").toBool());
+        // The restored quote chip is visible next to the edit notice, and the
+        // composer carries only the answer - never the raw urn:quote reference.
+        auto *header = item(content, "replyAuthorText"); QVERIFY(header);
+        QTRY_VERIFY(header->isVisible());
+        QVERIFY2(header->property("text").toString().startsWith("Reply: "),
+                 qPrintable(header->property("text").toString()));
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QCOMPARE(excerpt->property("text").toString(), QString("Origin text"));
+        QTRY_COMPARE(composer->property("text").toString(), QString("answer body"));
+        QVERIFY(controller.canSaveEdit());
+        // Saving through the composer re-serializes the quote line unchanged.
+        auto *saveButton = window->findChild<QObject *>("saveEditButton"); QVERIFY(saveButton);
+        QTRY_VERIFY(saveButton->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(saveButton));
+        QTRY_VERIFY(saved.value("payload").toObject().value("content").toString()
+            .startsWith(QStringLiteral("[You](urn:quote:%1)\n\nanswer body").arg(messageId)));
+        QTRY_VERIFY(!notice->property("visible").toBool());
+        QVERIFY(controller.replyMessageId().isEmpty());
+    }
 };
+
 
 
 class NativeCacheWindowWorker final : public QObject {
@@ -15408,6 +15475,7 @@ private slots:
         cache.shutdown();
         QTRY_VERIFY(cache.stopped());
     }
+
 
 };
 
