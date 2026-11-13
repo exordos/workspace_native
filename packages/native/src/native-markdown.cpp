@@ -100,6 +100,24 @@ bool secretFragment(const QTextCharFormat &format)
         && (isWorkspaceSecretReference(target)
             || isWorkspaceSecretReference(QUrl::fromPercentEncoding(target.toUtf8())));
 }
+// The renderer refuses bodies above 40000 Unicode code points (and bodies
+// with unpaired surrogates): the message contract counts code points, while
+// QString::size() counts UTF-16 units, so the unit bound is only a
+// pre-filter for the scan. Gallery collection must apply the exact same
+// guard, or references hidden inside a body render() would refuse could
+// enter the gallery and trigger downloads (issue #203, exo-review finding B).
+bool withinMessageDisplayLimit(const QString &markdown)
+{
+    bool bounded = markdown.size() <= 80000;
+    int points = 0;
+    for (qsizetype i = 0; bounded && i < markdown.size(); ++i) {
+        if (markdown[i].isHighSurrogate()) {
+            if (++i == markdown.size() || !markdown[i].isLowSurrogate()) bounded = false;
+        } else if (markdown[i].isLowSurrogate()) bounded = false;
+        if (++points > 40000) bounded = false;
+    }
+    return bounded;
+}
 }
 
 QVariantMap NativeMarkdown::reference(const QString &target) const
@@ -121,15 +139,8 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
 {
     // The message contract counts Unicode code points, while QString::size()
     // counts UTF-16 units. Bound the scan before accepting surrogate pairs.
-    bool bounded = markdown.size() <= 80000;
-    int points = 0;
-    for (qsizetype i = 0; bounded && i < markdown.size(); ++i) {
-        if (markdown[i].isHighSurrogate()) {
-            if (++i == markdown.size() || !markdown[i].isLowSurrogate()) bounded = false;
-        } else if (markdown[i].isLowSurrogate()) bounded = false;
-        if (++points > 40000) bounded = false;
-    }
-    if (!bounded)
+    // The gallery collector shares this exact guard (withinMessageDisplayLimit).
+    if (!withinMessageDisplayLimit(markdown))
         return {{"html", tr("Message is too large to display.")}, {"plain", tr("Message is too large to display.")}};
     const auto cacheKey = QString::fromLatin1(QCryptographicHash::hash(markdown.toUtf8(), QCryptographicHash::Sha256).toHex());
     if (m_cache.contains(cacheKey))
@@ -262,7 +273,10 @@ QVariantList NativeMarkdown::mediaReferences(const QString &markdown) const
     // (workspace-message-list-media.lib.ts:44-66). Code spans and escaped
     // HTML therefore cannot smuggle references into the gallery.
     QVariantList result;
-    if (markdown.isEmpty() || markdown.size() > 80000)
+    // The renderer will refuse an over-limit body, so collecting references
+    // from one could expose gallery slots (and their downloads) that the
+    // message list itself cannot display. Use the renderer's own guard.
+    if (markdown.isEmpty() || !withinMessageDisplayLimit(markdown))
         return result;
     QByteArray generated;
     const auto input = markdown.toUtf8();
