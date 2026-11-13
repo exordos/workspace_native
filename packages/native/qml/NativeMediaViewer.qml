@@ -1,12 +1,13 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
+import QtMultimedia
 
-// Full-size media viewer overlay (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md).
+// Full-size media viewer overlay (issue #8, docs/NATIVE_DESKTOP_MEDIA_VIEWER.md;
+// video slots added by issue #203, docs/NATIVE_DESKTOP_MEDIA_VIEWER_VIDEO.md).
 // Every geometry and colour value below was measured from the React reference
 // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af; file citations name
-// the source line. The viewer covers image media only; video slots and wheel
-// zoom are follow-ups recorded in the design doc.
+// the source line. Wheel zoom remains a follow-up recorded in the design docs.
 Item {
     id: viewerRoot
     objectName: "mediaViewer-overlay"
@@ -55,7 +56,9 @@ Item {
             anchors.centerIn: parent
             width: parent.width
             height: Math.min(parent.height, hostWindow ? Math.max(0, hostWindow.height - 192) : parent.height)
-            source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready" ? String(viewerRoot.currentSlot.url || "") : ""
+            source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
+                && String(viewerRoot.currentSlot.kind || "image") !== "video"
+                ? String(viewerRoot.currentSlot.url || "") : ""
             fillMode: Image.PreserveAspectFit
             asynchronous: true
             cache: false
@@ -70,6 +73,7 @@ Item {
         // letterbox bands behave like backdrop clicks and close the viewer.
         MouseArea {
             anchors.fill: mediaImage
+            enabled: mediaImage.visible
             onClicked: (mouse) => {
                 const insidePainted = mediaImage.status === Image.Ready
                     && Math.abs(mouse.x - mediaImage.width / 2) <= mediaImage.paintedWidth / 2 + 1
@@ -78,17 +82,86 @@ Item {
                     viewerRoot.viewer.close();
             }
         }
+        // Ready video slots play inline (media-viewer-overlay.ui.tsx:152-161):
+        // source, controls-equivalent play/pause, autoPlay and the
+        // onError display-error path; the box and height cap match the image
+        // (px-16 pb-28 pt-14 with calc(100vh-12rem), :126,158).
+        MediaPlayer {
+            id: videoPlayer
+            autoPlay: true
+            videoOutput: mediaVideo
+            source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
+                && String(viewerRoot.currentSlot.kind || "") === "video"
+                ? String(viewerRoot.currentSlot.url || "") : ""
+            // A staged file the decoder rejects maps onto the reference's
+            // video onError -> replaceItem display-error contract
+            // (media-viewer-overlay.ui.tsx:75-90). An empty source is the
+            // slot not being a ready video, never a display failure.
+            onErrorOccurred: (error, errorString) => {
+                if (String(source).length > 0)
+                    viewerRoot.viewer.markSlotDisplayError(viewerRoot.viewer.index);
+            }
+        }
+        VideoOutput {
+            id: mediaVideo
+            objectName: "mediaViewer-video"
+            property int playbackState: videoPlayer.playbackState
+            anchors.centerIn: parent
+            width: parent.width
+            height: Math.min(parent.height, hostWindow ? Math.max(0, hostWindow.height - 192) : parent.height)
+            fillMode: VideoOutput.PreserveAspectFit
+            visible: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
+                && String(viewerRoot.currentSlot.kind || "") === "video"
+            Accessible.ignored: true
+        }
+        // The reference media element consumes its clicks
+        // (media-viewer-overlay.ui.tsx:159); a browser's native video controls
+        // toggle play/pause on a picture click, which this reproduces.
+        MouseArea {
+            objectName: "mediaViewer-video-toggle"
+            anchors.fill: mediaVideo
+            enabled: mediaVideo.visible
+            onClicked: (mouse) => {
+                const painted = mediaVideo.contentRect;
+                const insidePainted = painted.width > 0
+                    && mouse.x >= painted.x - 1 && mouse.x <= painted.x + painted.width + 1
+                    && mouse.y >= painted.y - 1 && mouse.y <= painted.y + painted.height + 1;
+                if (!insidePainted) {
+                    viewerRoot.viewer.close();
+                    return;
+                }
+                if (videoPlayer.playbackState === MediaPlayer.PlayingState)
+                    videoPlayer.pause();
+                else
+                    videoPlayer.play();
+            }
+        }
         Text {
+            id: statusLabel
+            objectName: "mediaViewer-status"
             anchors.centerIn: parent
             width: Math.min(480, mediaArea.width)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             color: "#B3FFFFFF"
             font.pixelSize: 14
-            text: viewerRoot.currentSlot.state === "error"
-                // mediaViewer.unavailable
-                ? qsTr("This media cannot be displayed. You can download the file instead.")
-                : qsTr("Loading media…")
+            readonly property bool isVideo: String(viewerRoot.currentSlot.kind || "") === "video"
+            // Per-state labels exactly as measured
+            // (media-viewer-overlay.ui.tsx:127-151).
+            text: isVideo
+                // mediaViewer.videoLoadFailed
+                ? (viewerRoot.currentSlot.state === "load-error"
+                    ? qsTr("Failed to load video")
+                    // mediaViewer.videoDisplayFailed
+                    : viewerRoot.currentSlot.state === "display-error"
+                        ? qsTr("This video cannot be played")
+                        // mediaViewer.videoLoading
+                        : qsTr("Video is loading…"))
+                // mediaViewer.unavailable / mediaViewer.loading
+                : (viewerRoot.currentSlot.state === "load-error"
+                    || viewerRoot.currentSlot.state === "display-error"
+                    ? qsTr("This media cannot be displayed. You can download the file instead.")
+                    : qsTr("Loading media…"))
             visible: viewerRoot.visible && viewerRoot.currentSlot.state !== "ready"
         }
     }
@@ -258,6 +331,8 @@ Item {
                     required property int modelData
                     objectName: "mediaViewer-thumb-" + modelData
                     readonly property bool isActive: modelData === viewerRoot.viewer.index
+                    readonly property var slotData: viewerRoot.viewer.items[thumb.modelData] || ({})
+                    readonly property bool isVideo: String(slotData.kind || "") === "video"
                     implicitWidth: 56
                     implicitHeight: 56
                     padding: 0
@@ -269,15 +344,41 @@ Item {
                         border.color: thumb.isActive ? viewerRoot.colors["accent"] : "transparent"
                         opacity: thumb.isActive ? 1.0 : 0.7
                     }
+                    // Thumbnail still images are rendered for image slots only
+                    // (media-viewer-thumbnails.ui.tsx:23).
                     Image {
                         anchors.fill: parent
                         anchors.margins: 2
-                        source: String((viewerRoot.viewer.items[thumb.modelData] || {}).url || "")
+                        source: !thumb.isVideo ? String(slotData.url || "") : ""
                         fillMode: Image.PreserveAspectCrop
                         asynchronous: true
                         cache: false
                         visible: status === Image.Ready
                         Accessible.ignored: true
+                    }
+                    // Video slots carry a play badge: inset-0 bg-black/40 with
+                    // the videos glyph at 20 px text-primary
+                    // (media-viewer-thumbnails.ui.tsx:44-48).
+                    Rectangle {
+                        objectName: "mediaViewer-thumb-badge-" + thumb.modelData
+                        visible: thumb.isVideo
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        radius: 6
+                        color: "#66000000"
+                        Accessible.ignored: true
+                        Image {
+                            anchors.centerIn: parent
+                            source: "qrc:/workspace/icons/videos.svg"
+                            sourceSize.width: 20
+                            sourceSize.height: 20
+                            asynchronous: false
+                            layer.enabled: true
+                            layer.effect: MultiEffect {
+                                colorizationColor: viewerRoot.colors["text-primary"]
+                                colorization: 1.0
+                            }
+                        }
                     }
                     Accessible.name: qsTr("Media %1").arg(modelData + 1)
                 }

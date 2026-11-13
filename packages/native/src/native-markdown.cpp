@@ -254,4 +254,45 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
     return result;
 }
 
+QVariantList NativeMarkdown::mediaReferences(const QString &markdown) const
+{
+    // Collection runs on the same parser as rendering (md4c GFM ->
+    // QTextDocument), matching the reference gallery which walks the parsed
+    // message body's file references in document order
+    // (workspace-message-list-media.lib.ts:44-66). Code spans and escaped
+    // HTML therefore cannot smuggle references into the gallery.
+    QVariantList result;
+    if (markdown.isEmpty() || markdown.size() > 80000)
+        return result;
+    QByteArray generated;
+    const auto input = markdown.toUtf8();
+    const auto append = [](const MD_CHAR *text, MD_SIZE size, void *output) {
+        static_cast<QByteArray *>(output)->append(text, size);
+    };
+    if (md_html(input.constData(), MD_SIZE(input.size()), append, &generated,
+                MD_DIALECT_GITHUB | MD_FLAG_NOHTML | MD_FLAG_HARD_SOFT_BREAKS, 0) != 0)
+        return result;
+    MessageDocument document;
+    document.setResourceProvider([](const QUrl &) { return QVariant{}; });
+    document.setHtml(QString::fromUtf8(generated).trimmed());
+    for (auto block = document.begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (!fragment.isValid())
+                continue;
+            const auto format = fragment.charFormat();
+            const auto target = format.isImageFormat()
+                ? format.toImageFormat().name()
+                : (format.isAnchor() ? format.anchorHref() : QString{});
+            if (target.isEmpty())
+                continue;
+            const auto parsed = reference(target);
+            const auto kind = parsed.value("kind").toString();
+            if (kind == QLatin1String("image") || kind == QLatin1String("video"))
+                result.append(parsed);
+        }
+    }
+    return result;
+}
+
 }

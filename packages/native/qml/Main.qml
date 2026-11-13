@@ -1013,12 +1013,14 @@ ApplicationWindow {
             // Workspace mention links open the user profile drawer (#134).
             rightDrawer.openWorkspaceUserProfile(reference.id);
         } else if (["file", "image", "video"].indexOf(reference.kind) >= 0 && root.controller.authenticated) {
-            // Inline images open the full-size viewer whenever the clicked file
-            // belongs to the conversation gallery (docs/NATIVE_DESKTOP_MEDIA_VIEWER.md);
-            // every other file kind keeps the established save-dialog route. A
-            // preview whose load failed keeps its Save fallback instead (the
-            // viewer cannot show bytes the client never received).
-            if (reference.kind === "image" && !imageFailed
+            // Inline images and videos open the full-size viewer whenever the
+            // clicked file belongs to the conversation gallery
+            // (docs/NATIVE_DESKTOP_MEDIA_VIEWER.md, video slots added by
+            // docs/NATIVE_DESKTOP_MEDIA_VIEWER_VIDEO.md); every other file
+            // kind keeps the established save-dialog route. A preview whose
+            // load failed keeps its Save fallback instead (the viewer cannot
+            // show bytes the client never received).
+            if ((reference.kind === "image" || reference.kind === "video") && !imageFailed
                 && root.controller.mediaViewer.openFromMessages(root.controller.messages, reference.id))
                 return;
             root.downloadOwner = root.controller.ownerKey;

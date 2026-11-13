@@ -2686,6 +2686,18 @@
             <translation>Медиа загружается…</translation>
         </message>
         <message>
+            <source>Video is loading…</source>
+            <translation>Видео загружается…</translation>
+        </message>
+        <message>
+            <source>Failed to load video</source>
+            <translation>Не удалось загрузить видео</translation>
+        </message>
+        <message>
+            <source>This video cannot be played</source>
+            <translation>Не удалось воспроизвести видео</translation>
+        </message>
+        <message>
             <source>This media cannot be displayed. You can download the file instead.</source>
             <translation>Не удалось показать медиа. Файл можно скачать.</translation>
         </message>

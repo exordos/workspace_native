@@ -12,7 +12,7 @@ if(UNIX AND NOT APPLE)
     find_program(WORKSPACE_NATIVE_PATCHELF_EXECUTABLE patchelf REQUIRED)
     set(QT_DEPLOY_USE_PATCHELF ON)
 endif()
-find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus)
+find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus Multimedia)
 find_package(Qt6Keychain REQUIRED)
 find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
@@ -64,7 +64,7 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
 add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
     src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
     src/message-images.cpp src/message-images.h)
-target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
+target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
 target_link_libraries(workspace-native-desktop PUBLIC Qt6::Widgets)
@@ -110,7 +110,7 @@ set(native_icons chat_bubble calendar mail folders profile channels add attach s
     reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     at bell bell_off person_add
     stylus images border_color links business_center handshake account_circle group
-    globe_location_pin schedule calendar_month celebration)
+    globe_location_pin schedule calendar_month celebration videos)
 set(native_icon_files)
 foreach(icon IN LISTS native_icons)
     list(APPEND native_icon_files "../web/src/shared/assets/icons/${icon}.svg")

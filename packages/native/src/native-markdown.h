@@ -16,6 +16,9 @@ public:
     Q_INVOKABLE QVariantMap render(const QString &markdown);
     Q_INVOKABLE QVariantMap reference(const QString &target) const;
     Q_INVOKABLE bool openExternal(const QString &target) const;
+    // Workspace image/video references found in a message body in document
+    // order (media gallery collection, docs/NATIVE_DESKTOP_MEDIA_VIEWER_VIDEO.md).
+    QVariantList mediaReferences(const QString &markdown) const;
 
 private:
     QHash<QString, QVariantMap> m_cache;

@@ -717,6 +717,16 @@ static QVariantMap mediaViewerRow(const QString &id, const QString &fileUuid,
     return QVariantMap{{"id", id}, {"kind", kind}, {"content", body}, {"displayContent", body}};
 }
 
+// A markdown row carrying one standalone video reference (issue #203,
+// workspace-media-viewer-item.lib.ts:22-27 accepts mediaKind video).
+static QVariantMap mediaViewerVideoRow(const QString &id, const QString &fileUuid,
+    const QString &kind = QStringLiteral("markdown"))
+{
+    const auto body = QStringLiteral("Head\n\n![%1.mp4](urn:video:%2?name=%1.mp4&content_type=video%2Fmp4&size=3)\n\nTail")
+        .arg(id, fileUuid);
+    return QVariantMap{{"id", id}, {"kind", kind}, {"content", body}, {"displayContent", body}};
+}
+
 // Private additive test fixture only. Actual existing Users HTTP collection and
 // canonical existing-direct GET flow; no controller/QML directory injection.
 static const QString avatarReferenceA = "urn:image:aaaaaaaa-0000-4000-8000-000000000001";
@@ -14343,7 +14353,7 @@ private slots:
         QVERIFY(viewer->openFromMessages(rows, mvFileA));
         QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("loading"));
         QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
-        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("error"), 4000);
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("load-error"), 4000);
         const auto ready = viewer->items().at(0).toMap();
         const QUrl url(ready.value("url").toString());
         QVERIFY(url.isLocalFile());
@@ -14417,6 +14427,129 @@ private slots:
         QVERIFY(viewer->open());
         fixture.controller.logout();
         QTRY_VERIFY_WITH_TIMEOUT(!viewer->open(), 2000);
+    }
+
+    // The gallery accepts image and video media references in document order
+    // (workspace-message-list-media.lib.ts:20-31,44-66) and each slot carries
+    // its media kind (workspace-media-viewer-item.lib.ts:22-26,48).
+    void mediaViewerGalleryCarriesImageAndVideoSlotsInDocumentOrder()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA)
+             << mediaViewerVideoRow("m2", mvFileB)
+             << mediaViewerRow("m3", mvFileA)
+             << mediaViewerVideoRow("m4", mvFileC);
+        QVERIFY(viewer->openFromMessages(rows, mvFileB));
+        QVERIFY(viewer->open());
+        QCOMPARE(viewer->count(), 3);
+        QCOMPARE(viewer->index(), 1);
+        const auto items = viewer->items();
+        QCOMPARE(items.at(0).toMap().value("uuid").toString(), mvFileA);
+        QCOMPARE(items.at(0).toMap().value("kind").toString(), QStringLiteral("image"));
+        QCOMPARE(items.at(1).toMap().value("uuid").toString(), mvFileB);
+        QCOMPARE(items.at(1).toMap().value("kind").toString(), QStringLiteral("video"));
+        QCOMPARE(items.at(2).toMap().value("uuid").toString(), mvFileC);
+        QCOMPARE(items.at(2).toMap().value("kind").toString(), QStringLiteral("video"));
+        // Opening on a video uuid anchors the start index on the video slot.
+        QVERIFY(viewer->openFromMessages(rows, mvFileC));
+        QCOMPARE(viewer->count(), 3);
+        QCOMPARE(viewer->index(), 2);
+        viewer->close();
+    }
+
+    // Non-clicked video slots do not preload on open
+    // (workspace-media-viewer.hook.ts:205-212); they start when navigation
+    // reaches them (the lazyLoadRef contract, hook :137-151,260-283).
+    void mediaViewerVideoSlotsLoadLazilyWhenNavigationReachesThem()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes("PNG");
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        int videoRequests = 0;
+        fixture.files = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.contains(mvFileB))
+                ++videoRequests;
+            if (path.endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            const auto isB = path.contains(mvFileB);
+            return Response{QJsonObject{{"uuid", isB ? mvFileB : mvFileA}, {"stream_uuid", streamId},
+                {"name", isB ? QStringLiteral("clip.mp4") : QStringLiteral("m1.png")},
+                {"content_type", isB ? "video/mp4" : "image/png"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA) << mediaViewerVideoRow("m2", mvFileB);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QCOMPARE(viewer->count(), 2);
+        QCOMPARE(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("loading"));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        // The image slot loaded; the video slot is untouched until reached.
+        QTest::qWait(250);
+        QCOMPARE(videoRequests, 0);
+        QCOMPARE(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("loading"));
+        viewer->next();
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        QVERIFY(videoRequests > 0);
+        const auto video = viewer->items().at(1).toMap();
+        QCOMPARE(video.value("kind").toString(), QStringLiteral("video"));
+        QCOMPARE(video.value("name").toString(), QStringLiteral("clip.mp4"));
+        const QUrl url(video.value("url").toString());
+        QVERIFY(url.isLocalFile());
+        viewer->close();
+    }
+
+    // The video onError path replaces the slot with display-error and clears
+    // the url while the uuid stays downloadable
+    // (media-viewer-overlay.ui.tsx:75-90).
+    void mediaViewerMarkDisplayErrorFollowsTheReferenceReplaceContract()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes("PNG");
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        // Out-of-range indexes and a closed session are no-ops.
+        viewer->markSlotDisplayError(4);
+        QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"));
+        viewer->markSlotDisplayError(0);
+        const auto failed = viewer->items().at(0).toMap();
+        QCOMPARE(failed.value("state").toString(), QStringLiteral("display-error"));
+        QCOMPARE(failed.value("url").toString(), QString());
+        QCOMPARE(failed.value("uuid").toString(), mvFileA);
+        // A slot that is not ready keeps its state (the reference guards the
+        // current item before replacing it).
+        viewer->markSlotDisplayError(0);
+        QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("display-error"));
+        viewer->close();
+        viewer->markSlotDisplayError(0);
+        QCOMPARE(viewer->count(), 0);
     }
 
     // The controller-side half of docs/NATIVE_DESKTOP_AUTO_PAGING.md: a fetched
