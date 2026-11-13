@@ -556,6 +556,7 @@ signals:
     void editSessionChanged();
     void replySessionChanged();
     void streamsChanged();
+    void callCryptoStateChanged();
     void topicsChanged();
     void messagesChanged();
     void topicCreated(QString stream, QString topic);
@@ -1456,8 +1457,16 @@ public:
     // entry and the busy flag that mirrors the reference `callPending` chip gate.
     Q_PROPERTY(DmCallBridge *callBridge READ callBridge CONSTANT)
     Q_PROPERTY(bool profileCallPending READ profileCallPending NOTIFY stateChanged)
+    // Encryption-availability mirror for the profile Call chip. The per-peer
+    // answer below is an invokable whose stream and key inputs QML cannot
+    // observe on its own; callCryptoStateChanged fires on every transition of
+    // those inputs (stream catalog rows, the viewed conversation, the local
+    // send key / chat read lifetime), and the chip binds through this property.
+    Q_PROPERTY(bool callCryptoSessionReady READ callCryptoSessionReady NOTIFY callCryptoStateChanged)
     DmCallBridge *callBridge() { return &m_callBridge; }
     bool profileCallPending() const;
+    bool callCryptoSessionReady() const
+    { return chatContext(m_chatEpoch, m_selection) && !m_chatSendKey.isEmpty(); }
     // True when the partner's existing DM is an E2EE stream without a usable
     // local key: the Call chip is disabled and an invoke would only error.
     Q_INVOKABLE bool callTargetCryptoUnavailable(const QString &userUuid) const;
@@ -1492,6 +1501,7 @@ private:
     // peer whose Call-triggered direct-chat create is in flight.
     quint64 m_callViewEpoch = 1;
     quint64 m_callInflightEpoch = 0;
+    quint64 m_callViewGeneration = 0;
     QString m_callViewOwner;
     QString m_callViewStream;
     QString m_callViewTopic;

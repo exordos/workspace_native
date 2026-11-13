@@ -107,6 +107,7 @@ void NativeController::resetChatRuntime(bool preserveInitialOrder)
     ++m_chatPreparation; m_chatPreparingWindow.clear(); m_chatRejectedWindow.clear();
     m_chatResponses.clear();
     m_chatAuthorityLoading = false; m_chatAuthorityWaiters.clear();
+    emit callCryptoStateChanged(); // local key lifetime reset
 }
 
 bool NativeController::chatVaultMatches() const
@@ -2039,6 +2040,9 @@ void NativeController::scheduleChatPreparation()
             const QPointer<NativeController> guard(this);
             emit stateChanged();
             if (!guard || m_chatEpoch != epoch || m_selection != selection || !chatReadAllowed()) return;
+            // The local send key moved: the Call chip's availability mirror
+            // depends on it (callCryptoStateChanged feeds the profile chip).
+            emit callCryptoStateChanged();
         }
         if (!m_chatPreparingWindow.isEmpty()) {
             qsizetype index = 0;
@@ -2992,6 +2996,7 @@ void NativeController::loadDirectCatalog(const QString &owner, const QString &at
         m_streams = streams; ++m_streamRevision; m_catalogVerified = true;
         emit streamsChanged();
         if (!guard || !directChatContext(owner, attempt, ticket)) return;
+        emit callCryptoStateChanged(); // catalog encryption rows moved (guarded re-check above)
         if (m_streamRevision != streamRevision + 1 || m_directChats.value(owner).revision != intent.revision) {
             if (reconcileDirectRead(owner, attempt, ticket, intent.unsafeRevision,
                 [this, owner, attempt, ticket] { loadDirectCatalog(owner, attempt, ticket); })) return;
@@ -4376,6 +4381,7 @@ void NativeController::loadChannelCatalog(const QString &owner, const QString &i
         m_catalogVerified = true;
         emit streamsChanged();
         if (!guard || !channelCreationContext(owner, id, ticket)) return;
+        emit callCryptoStateChanged(); // catalog encryption rows moved (guarded re-check above)
         if (m_streamRevision != streamRevision + 1 || m_channelCreations.value(owner).revision != creationRevision) {
             if (reconcileChannelRead(owner, id, ticket, unsafeRevision, [this, owner, id, ticket] { loadChannelCatalog(owner, id, ticket); })) return;
             finishChannelCreation(owner, id, ticket, tr("The channel was created, but the channel list changed. Check status.")); return;
@@ -9757,6 +9763,7 @@ void NativeController::reloadSnapshot()
         m_streams = streams;
         m_catalogVerified = authoritative;
         emit streamsChanged();
+        emit callCryptoStateChanged(); // catalog encryption rows moved
         if (authoritative && !m_stream.isEmpty()) {
             if (!currentStream()) {
                 m_snapshotActive = false;
@@ -12274,7 +12281,7 @@ void NativeController::startCall()
         // E2EE stream without an available session: reference e2ee.cryptoUnavailable
         // refusal with nothing sent (chat-page-workspace.test.tsx:5328-5341). A
         // session is available when the encrypted composer has a live send key.
-        const bool sessionAvailable = chatContext(m_chatEpoch, m_selection) && !m_chatSendKey.isEmpty();
+        const bool sessionAvailable = callCryptoSessionReady();
         if (!sessionAvailable)
             m_callError = tr("Encryption is unavailable for this chat or local key storage could not be opened.");
         else
@@ -12299,8 +12306,11 @@ void NativeController::startCall()
     const auto locationName = isDirectConversation() ? title() : QString();
     // captureWorkspaceChatUiAction() port: this invoke owns the in-flight guard
     // for its view epoch; a completion from an older epoch or owner is dropped
-    // silently and never touches a guard a newer invoke has taken over.
+    // silently and never touches a guard a newer invoke has taken over. The
+    // API generation is part of the captured identity: a same-owner session
+    // regeneration invalidates this send even though the view epoch stands.
     const auto epoch = m_callViewEpoch;
+    const auto generation = m_api->generation();
     m_callInflightEpoch = epoch;
     const auto owner = ownerKey();
     const auto meet = m_meetHost;
@@ -12314,10 +12324,11 @@ void NativeController::startCall()
         {QStringLiteral("payload"), QJsonObject{{QStringLiteral("kind"), QStringLiteral("markdown")},
             {QStringLiteral("content"), meetingUrl}}}};
     request("POST", messenger + "/messages/", body, {},
-        [this, meetingUrl, locationName, owner, meet, stream, topic, epoch](const ApiResult &result) {
+        [this, meetingUrl, locationName, owner, meet, stream, topic, epoch, generation](const ApiResult &result) {
         const bool ownsGuard = m_callInflightEpoch == epoch;
         if (ownsGuard) m_callInflightEpoch = 0;
-        if (!ownsGuard || epoch != m_callViewEpoch || owner != ownerKey()) {
+        if (!ownsGuard || epoch != m_callViewEpoch || owner != ownerKey()
+            || generation != m_api->generation()) {
             // Stale completion (navigation moved on, A->B->A or session change):
             // no open, no inline error, and a newer invoke keeps its guard
             // (chat-page-workspace.ui.tsx:2199, :2245).
@@ -12697,6 +12708,12 @@ void NativeController::callFromProfile(const QString &userUuid)
                           << navigation.streamUuid;
         return;
     }
+    if (navigation.status == ProfileDirectNavigation::Status::StreamMissing && !canStartDirectChatWith(peer)) {
+        // A call chat that cannot even be created must not queue the pending
+        // partner at all: a later visit to this peer's DM would otherwise
+        // consume the stale entry and fire a call nobody requested.
+        return;
+    }
     m_callBridge.setPendingPartnerUserUuid(peer); // :491 (before any navigation)
     switch (navigation.status) {
     case ProfileDirectNavigation::Status::AlreadyOpen:
@@ -12711,11 +12728,10 @@ void NativeController::callFromProfile(const QString &userUuid)
         navigateProfileDirect(navigation);
         return;
     case ProfileDirectNavigation::Status::StreamMissing:
-        if (canStartDirectChatWith(peer)) {
-            m_profileCallPeer = peer; // Call chip busy gate for the create duration
-            emit stateChanged();
-            startDirectChat(peer);
-        }
+        // Creation availability was verified above, before the queue write.
+        m_profileCallPeer = peer; // Call chip busy gate for the create duration
+        emit stateChanged();
+        startDirectChat(peer);
         return;
     case ProfileDirectNavigation::Status::MissingDefaultTopic:
         break;
@@ -12729,11 +12745,16 @@ void NativeController::syncCallBridge()
     // creation-scope owner key is the never-empty session identity, matching
     // the reference ownerKey's always-populated runtime behavior.
     const auto owner = creationOwnerKey();
-    if (owner != m_callViewOwner || m_stream != m_callViewStream || m_topic != m_callViewTopic) {
+    // The API generation belongs to the view identity: a same-owner session
+    // regeneration re-epochs the call view, which invalidates any guard an
+    // in-flight send still holds (its completion is then dropped silently).
+    if (owner != m_callViewOwner || m_stream != m_callViewStream || m_topic != m_callViewTopic
+        || m_api->generation() != m_callViewGeneration) {
         m_callViewEpoch++;
         m_callViewOwner = owner;
         m_callViewStream = m_stream;
         m_callViewTopic = m_topic;
+        m_callViewGeneration = m_api->generation();
     }
     const auto *streamRow = currentStream();
     const bool direct = streamRow && streamRow->privateStream && isUuid(streamRow->directUser)
@@ -12753,6 +12774,9 @@ void NativeController::syncCallBridge()
     } else {
         m_callBridge.clearActiveCallDescriptor();
     }
+    // The viewed chat (and session generation) moved: the profile Call chip's
+    // encryption-availability mirror re-observes through this NOTIFY.
+    emit callCryptoStateChanged();
 }
 
 void NativeController::attemptPendingCallHandoff()
@@ -12796,8 +12820,7 @@ bool NativeController::callTargetCryptoUnavailable(const QString &userUuid) cons
         if (!stream.privateStream || stream.directUser.compare(peer, Qt::CaseInsensitive) != 0)
             continue;
         if (!stream.encrypted) return false;
-        const bool localKeyReady = stream.uuid == m_stream
-            && chatContext(m_chatEpoch, m_selection) && !m_chatSendKey.isEmpty();
+        const bool localKeyReady = stream.uuid == m_stream && callCryptoSessionReady();
         return !localKeyReady;
     }
     return false;}
