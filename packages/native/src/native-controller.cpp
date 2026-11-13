@@ -11257,6 +11257,15 @@ QString NativeController::replyAuthorFor(const QString &id) const
     return userDisplayName(authorId, own ? tr("You") : QStringLiteral("#") + authorId.left(8));
 }
 
+QString NativeController::replyTabAuthor(const ReplyTab &tab) const
+{
+    // Issue #202 (review thread 4559371974): an edit-restored tab keeps the
+    // label parsed from its quote line, so a deferred, failed or missing
+    // origin lookup never blanks the chip author.
+    const auto author = replyAuthorFor(tab.message);
+    return author.isEmpty() ? tab.fallbackAuthor : author;
+}
+
 QString NativeController::replyQuotedContent(const QString &id) const
 {
     if (id.isEmpty()) return {};
@@ -11727,6 +11736,8 @@ bool NativeController::beginEditMessage(const QString &id)
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = entry.answer;
         tab.reference = entry.referenceLine;
+        // The parsed label backs the chip until (or unless) the origin resolves.
+        tab.fallbackAuthor = entry.senderName;
         m_replyTabs.append(tab);
         if (!findMessage(entry.messageUuid)) scheduleQuoteFetch(entry.messageUuid);
     }
