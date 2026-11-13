@@ -287,8 +287,7 @@ Item {
                     asset: page.copiedKey === "share" && chip.modelData.id === "share"
                         ? "check.svg" : chip.modelData.icon
                     glyph: page.copiedKey === "share" && chip.modelData.id === "share" ? 28 : chip.modelData.glyph
-                    tint: chip.modelData.id === "call" ? page.colors["text-muted"]
-                        : page.colors["icon-active"]
+                    tint: page.colors["icon-active"]
                 }
             }
             Text {
@@ -312,7 +311,8 @@ Item {
             case "edit": page.startEdit(); break
             case "share": page.copyText(page.shareLink, "share"); break
             case "message": page.controller.openDirectChatFromProfile(page.userUuid); break
-            default: break // favorites (no destination until #70) and call (#33)
+            case "call": page.controller.callFromProfile(page.userUuid); break
+            default: break // favorites (no destination until #70)
             }
         }
     }
@@ -919,8 +919,12 @@ Item {
         return [
             {id: "message", label: qsTr("Message"), icon: "chat_bubble.svg", glyph: 28, hug: false,
                 disabled: messagePending},
-            // The call handoff is gated on epic #33: disabled until then.
-            {id: "call", label: qsTr("Call"), icon: "phone.svg", glyph: 30, hug: false, disabled: true},
+            // Issue #164: the Call chip is live (right-panel-user-profile-actions
+            // .ui.tsx:113-120, disabled={callPending}); native additionally
+            // refuses E2EE DMs without a local key (recorded deviation).
+            {id: "call", label: qsTr("Call"), icon: "phone.svg", glyph: 30, hug: false,
+                disabled: controller.profileCallPending
+                    || controller.callTargetCryptoUnavailable(page.userUuid)},
             {id: "share", label: shareCopied ? qsTr("Copied") : qsTr("Share"),
                 icon: shareCopied ? "check.svg" : "links.svg", glyph: shareCopied ? 28 : 40,
                 hug: false, disabled: page.shareLink.length === 0},
