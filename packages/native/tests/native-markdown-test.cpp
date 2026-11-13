@@ -324,6 +324,64 @@ private slots:
         QCOMPARE(renderer.render("**first**"), first);
         QVERIFY(renderer.render(QString(50000, 'a')).value("plain").toString().size() <= 40000);
     }
+
+    // Gallery collection must apply the renderer's own size guard: a body
+    // that render() refuses as too large must not contribute media
+    // references, or hidden references enter the gallery and trigger
+    // downloads for content the user can never see (issue #203, exo-review
+    // finding B). The guard counts Unicode code points, not UTF-16 units,
+    // exactly as the renderer's rejection path does.
+    void galleryCollectionRefusesBodiesTheRendererRejects_data()
+    {
+        QTest::addColumn<QString>("markdown");
+        QTest::addColumn<bool>("collects");
+        const QString image = QStringLiteral("\n\n![sample](urn:image:") + messageId + QStringLiteral(")\n\n");
+        QCOMPARE(image.size(), 61);
+        QTest::newRow("codepoints-40000-accepted")
+            << image + QString(40000 - image.size(), QLatin1Char('a')) << true;
+        QTest::newRow("codepoints-40001-rejected")
+            << image + QString(40001 - image.size(), QLatin1Char('a')) << false;
+        const char32_t scalar = 0x1f642;
+        // 61 + 39,000 surrogate pairs + 1,500 BMP chars = 40,561 code points
+        // in 79,561 UTF-16 units: the old UTF-16-unit scan bound (80,000)
+        // would still have collected this body.
+        QTest::newRow("surrogate-pairs-over-codepoint-limit")
+            << image + QString::fromUcs4(&scalar, 1).repeated(39000)
+               + QString(1500, QLatin1Char('a')) << false;
+        // 61 + 39,900 pairs = 39,961 code points in 79,861 UTF-16 units:
+        // near the unit bound but code-point legal, so it must be collected.
+        QTest::newRow("surrogate-pairs-under-codepoint-limit")
+            << image + QString::fromUcs4(&scalar, 1).repeated(39900) << true;
+    }
+    void galleryCollectionRefusesBodiesTheRendererRejects()
+    {
+        QFETCH(QString, markdown);
+        QFETCH(bool, collects);
+        NativeMarkdown renderer;
+        // Same guard on both entry points: every rejected row must hit the
+        // renderer's own too-large diagnostic (captured from a pure-text
+        // body the renderer is known to refuse), and every accepted row
+        // must render normally.
+        const QString tooLargeText =
+            renderer.render(QString(40001, QLatin1Char('a'))).value("plain").toString();
+        const auto rendered = renderer.render(markdown);
+        if (collects) {
+            QVERIFY2(rendered.value("plain").toString() != tooLargeText,
+                "Accepted rows must not hit the renderer's too-large path");
+        } else {
+            QVERIFY2(rendered.value("plain").toString() == tooLargeText,
+                "Rejected rows must hit the renderer's too-large path");
+        }
+        const auto refs = renderer.mediaReferences(markdown);
+        if (collects) {
+            QCOMPARE(refs.size(), 1);
+            QCOMPARE(refs.first().toMap().value("kind").toString(), QStringLiteral("image"));
+            QCOMPARE(refs.first().toMap().value("id").toString(), messageId);
+        } else {
+            QVERIFY2(refs.isEmpty(),
+                "References inside a body too large to render must not enter the gallery");
+        }
+    }
 };
 
 QTEST_MAIN(NativeMarkdownTest)
