@@ -282,8 +282,10 @@ if(BUILD_TESTING)
         set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
         if(test STREQUAL "native-controller")
             # Include Archive/placement and creation HTTP/lifecycle cases in the complete suite.
-            # This is the whole-suite budget, not a request timeout.
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 700)
+            # This is the whole-suite budget, not a request timeout. The poll-creation retry
+            # cases (#215) took the solo runtime to 697s against the old 700s ceiling; 780s
+            # is the measured solo runtime plus the usual headroom.
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 780)
         elseif(test STREQUAL "native-cache")
             # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
             # across solo runs, and the suite-context run was killed at the old 90s
