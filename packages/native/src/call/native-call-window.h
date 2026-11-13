@@ -115,9 +115,13 @@ public:
     // Jitsi readyToClose event ends the call.
     Q_INVOKABLE void readyToClose();
 
-    // Embed lifecycle seam (the external_api loader result):
-    void apiLoadSucceeded(); // -> Ready, creates the embed exactly once
-    void apiLoadFailed();    // -> LoadFailed
+    // Embed lifecycle seam (the external_api loader result). These are
+    // Q_INVOKABLE because the embed surface's own QML load handler
+    // (NativeCallWebEngineView.qml onLoadingChanged) is the production caller
+    // - a plain C++ method is not callable from QML, which would leave a
+    // valid call stuck on Loading forever (review finding, round 3).
+    Q_INVOKABLE void apiLoadSucceeded(); // -> Ready, creates the embed exactly once
+    Q_INVOKABLE void apiLoadFailed();    // -> LoadFailed
     Q_INVOKABLE void retry();
 
     // Capture-permission allowlist: true only when the requesting origin is
