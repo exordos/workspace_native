@@ -15399,7 +15399,9 @@ private:
             QVERIFY(visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         };
         auto *pip = waitForPip();
-        assertPipBounds(pip, QRect(940, 560, 320, 220));
+        // Default PiP is viewport-relative (940,560 at this viewport) mapped
+        // through the window's screen position (#162 finding 6).
+        assertPipBounds(pip, QRect(window->x() + 940, window->y() + 560, 320, 220));
         QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         // User move/resize lands in the controller and is remembered across
         // two full minimize/expand cycles.
@@ -15425,6 +15427,126 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(findPip() == nullptr, 2000);
         QCOMPARE(controller.callWindow()->embedCreations(), 0);
+    }
+
+    // --- Review findings (#162 re-review) ---
+
+    // Shared join preamble for the call-window review cases (same shape as
+    // the sibling call cases: fresh fixture, controller and engine per test).
+    void callWindowEmbedHostIsCreatedWhileLoading()
+    {
+        // Finding 1: a valid call must not stay on the loading screen forever
+        // waiting for a load-success event that its own creation would report
+        // - the embed host is created while Loading, and the view feeds the
+        // real load result back into the controller.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call embed host teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.callWindow()->embedState(),
+            int(JitsiCallWindowController::Loading));
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        // The loader activates on Loading: creation of the embed surface is
+        // what produces the load events, so it can never be gated on them.
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+    }
+
+    void callWindowFullscreenControlDrivesTheWindow()
+    {
+        // Finding 4: the fullscreen control must enter/exit fullscreen on the
+        // real window, and an external exit must sync the controller back.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call fullscreen teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
+        QVERIFY(button);
+        click(window, button);
+        QCOMPARE(controller.callWindow()->fullscreen(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() == QWindow::FullScreen, 2000);
+        // Exiting through the control restores the previous window state.
+        click(window, button);
+        QCOMPARE(controller.callWindow()->fullscreen(), false);
+        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() != QWindow::FullScreen, 2000);
+        // Leaving fullscreen externally (WM/Esc) syncs the controller state
+        // and emits fullscreenChanged exactly once.
+        click(window, button);
+        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() == QWindow::FullScreen, 2000);
+        QSignalSpy spy(controller.callWindow(), &JitsiCallWindowController::fullscreenChanged);
+        window->showNormal();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.callWindow()->fullscreen(), 2000);
+        QCOMPARE(spy.count(), 1);
+    }
+
+    void callWindowPipDefaultTracksWindowPosition()
+    {
+        // Finding 6: the default PiP anchor is viewport-relative and must be
+        // converted to screen coords through the app window position, so a
+        // moved window still gets its own bottom-right corner.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call pip origin teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        window->resize(1100, 700); QTRY_COMPARE_WITH_TIMEOUT(window->width(), 1100, 2000);
+        window->setPosition(120, 70);
+        QTRY_COMPARE_WITH_TIMEOUT(window->x(), 120, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(window->y(), 70, 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QQuickWindow *pip = nullptr;
+        if (!QTest::qWaitFor([&pip] {
+                for (auto *candidate : QGuiApplication::topLevelWindows())
+                    if (auto *top = qobject_cast<QQuickWindow *>(candidate))
+                        if (top->objectName() == QLatin1String("callWindowPipWindow") && top->isVisible())
+                            return pip = top, true;
+                return false;
+            }, 2000))
+            QFAIL("PiP window never appeared");
+        QVERIFY(QTest::qWaitForWindowExposed(pip));
+        // Viewport 1100x700 default anchor (760,460) plus the window origin
+        // (120,70) puts the PiP at screen (880,530).
+        QCOMPARE(QRect(pip->x(), pip->y(), pip->width(), pip->height()), QRect(880, 530, 320, 220));
+        controller.callWindow()->readyToClose();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
 };
 
