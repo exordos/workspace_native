@@ -88,8 +88,14 @@ Item {
         // (px-16 pb-28 pt-14 with calc(100vh-12rem), :126,158).
         MediaPlayer {
             id: videoPlayer
+            objectName: "mediaViewer-player"
             autoPlay: true
             videoOutput: mediaVideo
+            // The player has no audio sink of its own: connected only to the
+            // VideoOutput, a clip's audio track is silently dropped
+            // (exo-review finding A). On this Qt the binding direction is
+            // MediaPlayer.audioOutput; the sink names the active slot.
+            audioOutput: videoAudio
             source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
                 && String(viewerRoot.currentSlot.kind || "") === "video"
                 ? String(viewerRoot.currentSlot.url || "") : ""
@@ -101,6 +107,17 @@ Item {
                 if (String(source).length > 0)
                     viewerRoot.viewer.markSlotDisplayError(viewerRoot.viewer.index);
             }
+        }
+        // One AudioOutput follows the active slot because the viewer drives a
+        // single shared player (bound above via audioOutput); the objectName
+        // names the slot and the mirror properties expose the wired player
+        // for the window test.
+        AudioOutput {
+            id: videoAudio
+            objectName: "mediaViewer-audio-" + viewerRoot.viewer.index
+            readonly property bool playerBound: videoPlayer.audioOutput === videoAudio
+            readonly property string playerObjectName: videoPlayer.objectName
+            readonly property int playerPlaybackState: videoPlayer.playbackState
         }
         VideoOutput {
             id: mediaVideo
