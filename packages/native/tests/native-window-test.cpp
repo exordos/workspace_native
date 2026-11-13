@@ -15465,6 +15465,83 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
     }
 
+    void callWindowQmlLoadCallbackAdvancesShellToReady()
+    {
+        // Finding 1 (round 3): the embed view's onLoadingChanged handler
+        // invokes host.controller.apiLoadSucceeded()/apiLoadFailed() from
+        // QML, so those lifecycle slots must be callable from the QML engine
+        // at all - a plain C++ method is not, and the shell would sit on
+        // Loading forever. This drives the exact QML call site against the
+        // same controller object the production Loader binds
+        // (Main.qml: item.controller = root.controller.callWindow); the
+        // controller itself is never poked from C++ here.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call QML load callback teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+
+        // The production view file is the caller: the very qrc source the
+        // embed Loader instantiates must invoke both lifecycle slots through
+        // `host.controller`, exactly as the QML below re-evaluates.
+        QFile viewFile(QStringLiteral(":/workspace/qml/NativeCallWebEngineView.qml"));
+        QVERIFY(viewFile.open(QIODevice::ReadOnly));
+        const QByteArray viewSource = viewFile.readAll();
+        QVERIFY(viewSource.contains("host.controller.apiLoadSucceeded()"));
+        QVERIFY(viewSource.contains("host.controller.apiLoadFailed()"));
+
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+
+        // Run the view's callback in the app's own QML engine/context, on the
+        // same object the Loader hands to the view as its `controller`.
+        auto qmlCall = [&engine, window](const QString &script, QString *error) {
+            QQmlExpression expression(engine.rootContext(), window, script);
+            bool isError = false;
+            const auto value = expression.evaluate(&isError);
+            *error = expression.hasError() ? expression.error().toString() : QString();
+            return !isError && error->isEmpty() ? value : QVariant();
+        };
+        QString error;
+        const auto callable = qmlCall(QStringLiteral(
+            "typeof nativeController.callWindow.apiLoadSucceeded === 'function'"
+            " && typeof nativeController.callWindow.apiLoadFailed === 'function'"), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY2(callable.toBool(),
+            "the embed view's QML callback cannot invoke the lifecycle slots: they are not exposed to QML");
+        qmlCall(QStringLiteral("nativeController.callWindow.apiLoadSucceeded()"), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Ready));
+        QCOMPARE(controller.callWindow()->embedCreations(), 1);
+        auto *loading = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
+        QVERIFY(loading && !loading->isVisible());
+
+        // The failure branch is the same QML call site: re-open, report a
+        // failed load from QML, see the retry state, and retry from the shell.
+        qmlCall(QStringLiteral("nativeController.callWindow.close()"), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::LoadFailed));
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+    }
+
     void callWindowFullscreenControlDrivesTheWindow()
     {
         // Finding 4: the fullscreen control must enter/exit fullscreen on the
