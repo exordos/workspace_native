@@ -15320,6 +15320,112 @@ private:
         QTRY_VERIFY(!notice->property("visible").toBool());
         QVERIFY(controller.replyMessageId().isEmpty());
     }
+
+    void callWindowShellExpandsMinimizesAndRestoresPiP_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+    void callWindowShellExpandsMinimizesAndRestoresPiP()
+    {
+        QFETCH(QString, locale);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call window shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        window->resize(1280, 800); QTRY_COMPARE(window->width(), 1280);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        // Join from the card: the store opens the shell expanded in a scrim.
+        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
+        auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
+        QVERIFY(surface);
+        // Expanded bounds at the 1280x800 desktop viewport: inset 32 px
+        // (the 1440x900 golden lives in the native-native-call suite).
+        QCOMPARE(surface->mapToScene(QPointF{}), QPointF(32, 32));
+        QCOMPARE(surface->width(), qreal(1216));
+        QCOMPARE(surface->height(), qreal(736));
+        auto *title = item(window->contentItem(), QStringLiteral("callWindowTitleText"));
+        QVERIFY(title);
+        QCOMPARE(title->property("text").toString(), locale == QStringLiteral("ru")
+            ? QString::fromUtf8("Позвонить - workspace-call-room")
+            : QStringLiteral("Call - workspace-call-room"));
+        // API-not-loaded state renders the localized loading text.
+        auto *state = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
+        QVERIFY(state && state->isVisible());
+        QCOMPARE(item(window->contentItem(), QStringLiteral("callWindowSurface"))->isEnabled(), true);
+        for (auto *child : state->childItems())
+            if (!child->property("text").toString().isEmpty()) {
+                QCOMPARE(child->property("text").toString(), locale == QStringLiteral("ru")
+                    ? QString::fromUtf8("Загрузка клиента звонков…")
+                    : QStringLiteral("Loading call client…"));
+            }
+        // Minimize: the frameless PiP surface takes the default 320x220
+        // anchor 20 px from the viewport bottom-right (940,560 here). The
+        // PiP window is created on minimize and destroyed on expand/closed,
+        // so every cycle re-acquires it (a held pointer would dangle).
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        auto findPip = [] {
+            for (auto *candidate : QGuiApplication::topLevelWindows())
+                if (auto *top = qobject_cast<QQuickWindow *>(candidate))
+                    if (top->objectName() == QLatin1String("callWindowPipWindow") && top->isVisible())
+                        return top;
+            return static_cast<QQuickWindow *>(nullptr);
+        };
+        auto waitForPip = [&findPip] {
+            QQuickWindow *pip = nullptr;
+            if (!QTest::qWaitFor([&pip,&findPip] { return (pip = findPip()) != nullptr; }, 2000))
+                return static_cast<QQuickWindow *>(nullptr);
+            if (!QTest::qWaitFor([pip] { return QTest::qWaitForWindowExposed(pip); }, 5000))
+                return static_cast<QQuickWindow *>(nullptr);
+            return pip;
+        };
+        auto assertPipBounds = [&window](QQuickWindow *pip, const QRect &expected) {
+            QVERIFY(pip);
+            QCOMPARE(QRect(pip->x(), pip->y(), pip->width(), pip->height()), expected);
+            QVERIFY(pip->contentItem());
+            QVERIFY(visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        };
+        auto *pip = waitForPip();
+        assertPipBounds(pip, QRect(940, 560, 320, 220));
+        QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
+        // User move/resize lands in the controller and is remembered across
+        // two full minimize/expand cycles.
+        controller.callWindow()->setPipBounds(QRect(120, 90, 400, 300));
+        QTRY_COMPARE_WITH_TIMEOUT(QRect(pip->x(), pip->y(), pip->width(), pip->height()),
+            QRect(120, 90, 400, 300), 2000);
+        // Cycle 1: expand through the PiP chevron (destroys that surface),
+        // then Escape minimizes a fresh PiP with the remembered bounds.
+        click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
+        pip = waitForPip();
+        assertPipBounds(pip, QRect(120, 90, 400, 300));
+        // Cycle 2: expand, then minimize again from the expanded chevron.
+        click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        pip = waitForPip();
+        assertPipBounds(pip, QRect(120, 90, 400, 300));
+        // Only close (or readyToClose) ends the live call.
+        controller.callWindow()->readyToClose();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(findPip() == nullptr, 2000);
+        QCOMPARE(controller.callWindow()->embedCreations(), 0);
+    }
 };
 
 

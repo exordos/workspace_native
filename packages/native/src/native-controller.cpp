@@ -6095,6 +6095,18 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // #162: the call window shell follows the single-active-call store. An
+    // active call opens the shell; closing the shell (close button or
+    // readyToClose) ends the stored call exactly like the reference onClose.
+    connect(&m_callStore, &JitsiCallStore::activeCallChanged, this, [this] {
+        if (m_callStore.hasActiveCall())
+            m_callWindow.open(m_callStore.activeCall());
+        else if (m_callWindow.mode() != JitsiCallWindowController::Closed)
+            m_callWindow.close();
+    });
+    connect(&m_callWindow, &JitsiCallWindowController::closeRequested, this, [this] {
+        m_callStore.closeCall();
+    });
     // Issue #165: the inactivity guard signs out through this controller's
     // regular logout so credential wiping matches a manual sign-out exactly.
     m_authGuard = new NativeAuthGuard(this);

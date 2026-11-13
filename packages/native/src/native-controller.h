@@ -10,6 +10,7 @@
 #include "native-drafts.h"
 #include "native-notifications.h"
 #include "call/jitsi-call.h"
+#include "call/native-call-window.h"
 #include "call/native-call-store.h"
 
 #include <QHash>
@@ -1389,10 +1390,14 @@ public:
     // with the session), the single-active-call store, and the header start
     // flow that posts the meeting URL before opening the call.
     Q_PROPERTY(JitsiCallStore *calls READ calls CONSTANT)
+    // The call window shell state machine (#162), opened/closed with the
+    // active call: the QML overlay (expanded) and PiP window bind to it.
+    Q_PROPERTY(JitsiCallWindowController *callWindow READ callWindow CONSTANT)
     Q_PROPERTY(QString meetHost READ meetHost NOTIFY stateChanged)
     Q_PROPERTY(bool canStartCall READ canStartCall NOTIFY stateChanged)
     Q_PROPERTY(QString callError READ callError NOTIFY stateChanged)
     JitsiCallStore *calls() { return &m_callStore; }
+    JitsiCallWindowController *callWindow() { return &m_callWindow; }
     QString meetHost() const { return m_meetHost; }
     QString callError() const { return m_callError; }
     // The reference renders the header call action only when the Workspace
@@ -1411,6 +1416,7 @@ public:
 private:
     void fetchCallMeetHost();
     JitsiCallStore m_callStore;
+    JitsiCallWindowController m_callWindow;
     QString m_meetHost;
     QString m_callError;
     bool m_callPending = false;

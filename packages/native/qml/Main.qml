@@ -8454,4 +8454,128 @@ ApplicationWindow {
             attachmentSaveDialog.open();
         }
     }
+    // Call window shell (#162, docs/NATIVE_DESKTOP_CALL_WINDOW.md): expanded
+    // mode is a scrim dialog inside the app (outside click / Escape only
+    // minimize), minimized mode is the frameless PiP tool window bound to the
+    // controller bounds (32 px inset / 16 px under the 640 breakpoint /
+    // 320x220 default PiP 20 px from the bottom-right).
+    Connections {
+        target: root
+        enabled: root.controller !== undefined && root.controller !== null
+        function onWidthChanged() { root.controller.callWindow.setViewportSize(Qt.size(root.width, root.height)) }
+        function onHeightChanged() { root.controller.callWindow.setViewportSize(Qt.size(root.width, root.height)) }
+        function onActiveChanged() { root.controller.callWindow.setFocused(root.active) }
+    }
+    Component.onCompleted: {
+        if (controller)
+            controller.callWindow.setViewportSize(Qt.size(root.width, root.height))
+    }
+    Item {
+        id: callWindowOverlayItem
+        objectName: "callWindowOverlay"
+        anchors.fill: parent
+        z: 1000
+        visible: root.controller.callWindow.mode === 1 // Expanded
+        Rectangle {
+            // Scrim: clicking it dismisses to PiP, never ends the call
+            // (handleOpenChange maps an expanded dismiss to minimize).
+            objectName: "callWindowScrim"
+            anchors.fill: parent
+            color: Qt.alpha("#000000", 0.45)
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.controller.callWindow.requestDismiss()
+            }
+        }
+        Item {
+            objectName: "callWindowExpandedHost"
+            x: root.controller.callWindow.bounds.x
+            y: root.controller.callWindow.bounds.y
+            width: root.controller.callWindow.bounds.width
+            height: root.controller.callWindow.bounds.height
+            NativeCallWindow {
+                objectName: "callWindowExpanded"
+                anchors.fill: parent
+                colors: root.colors
+                controller: root.controller.callWindow
+                pipMode: false
+            }
+        }
+        Shortcut {
+            sequence: "Escape"
+            enabled: callWindowOverlayItem.visible
+            onActivated: root.controller.callWindow.requestDismiss()
+        }
+    }
+    // The PiP surface is a separate frameless tool window: Qt does not
+    // instantiate Window elements nested in a Window's content, so it is
+    // created when the shell minimizes and destroyed when it expands or ends.
+    property var callPipInstance: null
+    Connections {
+        target: root.controller.callWindow
+        function onModeChanged() {
+            const minimized = root.controller.callWindow.mode === 2
+            if (minimized && root.callPipInstance === null)
+                root.callPipInstance = callPipComponent.createObject(root)
+            else if (!minimized && root.callPipInstance !== null) {
+                const previous = root.callPipInstance
+                root.callPipInstance = null
+                previous.visible = false
+                previous.destroy()
+            }
+        }
+    }
+    Component {
+        id: callPipComponent
+        Window {
+            id: callPipWindow
+            objectName: "callWindowPipWindow"
+            visible: true
+            x: root.controller.callWindow.bounds.x
+            y: root.controller.callWindow.bounds.y
+            width: root.controller.callWindow.bounds.width
+            height: root.controller.callWindow.bounds.height
+            minimumWidth: 280
+            minimumHeight: 180
+            title: root.controller.callWindow.titleText
+            flags: Qt.Window | Qt.Tool | Qt.FramelessWindowHint
+            color: root.colors["bg-elevated"]
+            Component.onCompleted: raise()
+            NativeCallWindow {
+                objectName: "callWindowPipShell"
+                anchors.fill: parent
+                colors: root.colors
+                controller: root.controller.callWindow
+                pipMode: true
+                dragWindow: callPipWindow
+            }
+            Item {
+                // Corner resize handle, clamped to the shared 280x180 minimum.
+                objectName: "callWindowResizeGrip"
+                width: 16
+                height: 16
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.SizeFDiagCursor
+                    property real grabWidth: 0
+                    property real grabHeight: 0
+                    onPressed: (mouse) => {
+                        grabWidth = callPipWindow.width
+                        grabHeight = callPipWindow.height
+                    }
+                    onPositionChanged: (mouse) => {
+                        if (!pressed)
+                            return
+                        callPipWindow.width = Math.max(280, grabWidth + mouse.x)
+                        callPipWindow.height = Math.max(180, grabHeight + mouse.y)
+                    }
+                    onReleased: root.controller.callWindow.setPipBounds(
+                        Qt.rect(callPipWindow.x, callPipWindow.y,
+                            callPipWindow.width, callPipWindow.height))
+                }
+            }
+        }
+    }
 }
