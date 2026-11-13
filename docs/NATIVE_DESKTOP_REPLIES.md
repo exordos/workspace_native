@@ -223,9 +223,10 @@ for `Reply` and `Cancel`.
 - Editing a reply message prefills the raw canonical markdown (the reference
   line is visible text) instead of restoring the quote into the banner
   (source `workspace-reply-restore.lib.ts`). Follow-up.
-- Cross-conversation reply handoff is not ported: leaving the conversation
-  closes the reply session (mirrors the edit-session route guard rule
-  shipped in 0.8.0).
+- Cross-conversation reply handoff is not ported: leaving a conversation parks
+  the reply session under its conversation key and restores it unchanged on
+  return (see `docs/NATIVE_DESKTOP_REPLY_SESSION_PERSISTENCE.md`); a reply
+  intent aimed at a conversation that is not open yet still does not arrive.
 - Replies in encrypted streams stay unavailable (menu entry hidden), matching
   the shipped e2ee message-action gate.
 
