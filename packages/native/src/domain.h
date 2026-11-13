@@ -45,6 +45,54 @@ struct MessageCryptoPayload {
     QString recipientDevice;
 };
 
+// Issue #214: wire-shaped poll snapshots mirroring the reference domain types
+// (messenger.types.ts MessengerPollPayload/MessengerPollState). Empty
+// closesAt/closedAt strings mean null. parseMessage fills them only for kind
+// "poll", and only after the full reference guards accepted both objects.
+struct PollOption {
+    QString uuid;
+    QString text;
+};
+
+struct PollQuestion {
+    QString uuid;
+    QString text;
+    QVector<PollOption> options;
+    QStringList correctOptionUuids;
+};
+
+struct PollPayload {
+    QVector<PollQuestion> questions;
+    bool multipleAnswers = false;
+    bool isAnonymous = false;
+    bool allowRevote = false;
+    QString resultsVisibility; // "always" | "after_vote"
+    bool allowAddingOptions = false;
+    QString closesAt;
+    QString closedAt;
+};
+
+struct PollQuestionState {
+    QString questionUuid;
+    qint64 voterCount = 0;
+    QMap<QString, qint64> optionCounts;
+    QMap<QString, QStringList> optionVoterPreviews;
+    bool hasVoterPreviews = false;
+};
+
+struct PollMyVote {
+    QString questionUuid;
+    QStringList optionUuids;
+};
+
+struct PollState {
+    qint64 revision = 0;
+    bool isClosed = false;
+    qint64 voterCount = 0;
+    QVector<PollQuestionState> questions;
+    QVector<PollMyVote> myVotes;
+};
+
 struct Stream {
     QString uuid;
     QString name;
@@ -120,6 +168,10 @@ struct Message {
     QMap<QString, QStringList> reactionUsers;
     bool reactionsKnown = false;
     std::optional<MessageCryptoPayload> crypto;
+    // Issue #214: present only for kind "poll". A poll DTO is accepted only
+    // with a valid poll_state; other kinds must carry poll_state == null.
+    std::optional<PollPayload> poll;
+    std::optional<PollState> pollState;
 };
 
 struct ReactionFact {
@@ -154,6 +206,12 @@ std::optional<Topic> parseTopic(const QJsonObject &json, const QString &project,
 std::optional<Message> parseMessage(const QJsonObject &json, const QString &project);
 QVector<Message> mergeMessages(const QVector<Message> &existing,
                               const QVector<Message> &incoming);
+
+// Issue #214 store merge (message.model.ts snapshot rule): a lower poll_state
+// revision never overwrites - the incoming row keeps the previous payload and
+// state and the call returns true so the caller can also skip cache payload
+// projection. At equal revision an existing is_closed is never reverted.
+bool applyPollRevisionGuard(Message &incoming, const Message &previous);
 
 // Composer mention entries for the send body (message-composer-body.lib.ts
 // WorkspaceComposerMention). visibleText is what the user sees in the draft;

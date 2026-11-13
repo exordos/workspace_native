@@ -255,7 +255,161 @@ bool optionalUuid(const QJsonObject &json, const char *field, bool nullable)
     const auto value = json.value(QLatin1String(field));
     return value.isUndefined() || (nullable && value.isNull()) || (value.isString() && isUuid(value.toString()));
 }
+
+// Issue #214 mirrors of the reference guard primitives (messenger.types.ts):
+// isNonNegativeInteger and isDateTime (a non-empty trimmed string).
+bool nonNegativeInteger(const QJsonValue &value)
+{
+    return value.isDouble() && std::isfinite(value.toDouble())
+        && std::floor(value.toDouble()) == value.toDouble() && value.toDouble() >= 0;
 }
+
+bool dateTimeText(const QJsonValue &value)
+{
+    return value.isString() && !sourceTrimmed(value.toString()).isEmpty();
+}
+
+bool datetimeOrNull(const QJsonObject &json, const char *field)
+{
+    const auto value = json.value(QLatin1String(field));
+    return value.isUndefined() || value.isNull() || dateTimeText(value);
+}
+
+bool everyUuid(const QJsonArray &values)
+{
+    for (const auto &value : values)
+        if (!isUuid(value.toString())) return false;
+    return true;
+}
+
+bool parsePollOption(const QJsonValue &value, PollOption &out)
+{
+    if (!value.isObject()) return false;
+    const auto option = value.toObject();
+    if (!isUuid(option.value("uuid").toString()) || !option.value("text").isString()) return false;
+    out = {option.value("uuid").toString(), option.value("text").toString()};
+    return true;
+}
+
+// Strict poll payload guard: every boolean is typed, results_visibility is the
+// closed enum, closes_at/closed_at are datetime-or-null.
+bool parsePollPayload(const QJsonObject &payload, PollPayload &out)
+{
+    const auto questions = payload.value(QStringLiteral("questions"));
+    if (!questions.isArray()) return false;
+    PollPayload parsed;
+    for (const auto &question : questions.toArray()) {
+        if (!question.isObject()) return false;
+        const auto row = question.toObject();
+        if (!isUuid(row.value("uuid").toString()) || !row.value("text").isString()) return false;
+        const auto options = row.value(QStringLiteral("options"));
+        if (!options.isArray()) return false;
+        PollQuestion parsedQuestion{row.value("uuid").toString(), row.value("text").toString(), {}, {}};
+        for (const auto &option : options.toArray()) {
+            PollOption parsedOption;
+            if (!parsePollOption(option, parsedOption)) return false;
+            parsedQuestion.options.append(parsedOption);
+        }
+        const auto correct = row.value(QStringLiteral("correct_option_uuids"));
+        if (!correct.isUndefined()) {
+            if (!correct.isArray() || !everyUuid(correct.toArray())) return false;
+            for (const auto &value : correct.toArray())
+                parsedQuestion.correctOptionUuids.append(value.toString());
+        }
+        parsed.questions.append(parsedQuestion);
+    }
+    for (const auto *field : {"multiple_answers", "is_anonymous", "allow_revote"})
+        if (!payload.value(QLatin1String(field)).isBool()) return false;
+    const auto visibility = payload.value(QStringLiteral("results_visibility")).toString();
+    if (visibility != QLatin1String("always") && visibility != QLatin1String("after_vote")) return false;
+    const auto adding = payload.value(QStringLiteral("allow_adding_options"));
+    if (!adding.isUndefined() && !adding.isBool()) return false;
+    if (!datetimeOrNull(payload, "closes_at") || !datetimeOrNull(payload, "closed_at")) return false;
+    parsed.multipleAnswers = payload.value(QStringLiteral("multiple_answers")).toBool();
+    parsed.isAnonymous = payload.value(QStringLiteral("is_anonymous")).toBool();
+    parsed.allowRevote = payload.value(QStringLiteral("allow_revote")).toBool();
+    parsed.resultsVisibility = visibility;
+    parsed.allowAddingOptions = adding.toBool(false);
+    parsed.closesAt = payload.value(QStringLiteral("closes_at")).toString();
+    parsed.closedAt = payload.value(QStringLiteral("closed_at")).toString();
+    out = std::move(parsed);
+    return true;
+}
+
+// option_voter_previews: UUID-keyed non-empty, duplicate-free UUID arrays.
+bool parseVoterPreviews(const QJsonValue &value, QMap<QString, QStringList> &out)
+{
+    if (!value.isObject()) return false;
+    const auto previews = value.toObject();
+    for (auto it = previews.begin(); it != previews.end(); ++it) {
+        if (!isUuid(it.key()) || !it.value().isArray()) return false;
+        const auto voters = it.value().toArray();
+        if (voters.isEmpty() || !everyUuid(voters)) return false;
+        QStringList ids;
+        for (const auto &voter : voters) {
+            if (ids.contains(voter.toString())) return false;
+            ids.append(voter.toString());
+        }
+        out.insert(it.key(), ids);
+    }
+    return true;
+}
+
+// Strict poll state guard: revision is an integer > 0, counters are
+// non-negative integers keyed by UUID, previews are unique non-empty UUID lists.
+bool parsePollState(const QJsonValue &value, PollState &out)
+{
+    if (!value.isObject()) return false;
+    const auto state = value.toObject();
+    const auto revision = state.value(QStringLiteral("revision"));
+    if (!nonNegativeInteger(revision) || revision.toDouble() < 1) return false;
+    if (!state.value(QStringLiteral("is_closed")).isBool()) return false;
+    if (!nonNegativeInteger(state.value(QStringLiteral("voter_count")))) return false;
+    const auto questions = state.value(QStringLiteral("questions"));
+    if (!questions.isArray()) return false;
+    PollState parsed;
+    for (const auto &question : questions.toArray()) {
+        if (!question.isObject()) return false;
+        const auto row = question.toObject();
+        if (!isUuid(row.value(QStringLiteral("question_uuid")).toString())) return false;
+        if (!nonNegativeInteger(row.value(QStringLiteral("voter_count")))) return false;
+        const auto counts = row.value(QStringLiteral("option_counts"));
+        if (!counts.isObject()) return false;
+        PollQuestionState parsedQuestion;
+        parsedQuestion.questionUuid = row.value(QStringLiteral("question_uuid")).toString();
+        parsedQuestion.voterCount = qint64(row.value(QStringLiteral("voter_count")).toDouble());
+        const auto countsObject = counts.toObject();
+        for (auto it = countsObject.begin(); it != countsObject.end(); ++it) {
+            if (!isUuid(it.key()) || !nonNegativeInteger(it.value())) return false;
+            parsedQuestion.optionCounts.insert(it.key(), qint64(it.value().toDouble()));
+        }
+        const auto previews = row.value(QStringLiteral("option_voter_previews"));
+        if (!previews.isUndefined()) {
+            if (!parseVoterPreviews(previews, parsedQuestion.optionVoterPreviews)) return false;
+            parsedQuestion.hasVoterPreviews = true;
+        }
+        parsed.questions.append(parsedQuestion);
+    }
+    const auto myVotes = state.value(QStringLiteral("my_votes"));
+    if (!myVotes.isArray()) return false;
+    for (const auto &vote : myVotes.toArray()) {
+        if (!vote.isObject()) return false;
+        const auto row = vote.toObject();
+        if (!isUuid(row.value(QStringLiteral("question_uuid")).toString())) return false;
+        const auto options = row.value(QStringLiteral("option_uuids"));
+        if (!options.isArray() || !everyUuid(options.toArray())) return false;
+        QStringList optionUuids;
+        for (const auto &option : options.toArray())
+            optionUuids.append(option.toString());
+        parsed.myVotes.append({row.value(QStringLiteral("question_uuid")).toString(), optionUuids});
+    }
+    parsed.revision = qint64(revision.toDouble());
+    parsed.isClosed = state.value(QStringLiteral("is_closed")).toBool();
+    parsed.voterCount = qint64(state.value(QStringLiteral("voter_count")).toDouble());
+    out = std::move(parsed);
+    return true;
+}
+} // namespace
 
 std::optional<Stream> parseStream(const QJsonObject &json, const QString &project)
 {
@@ -389,6 +543,20 @@ std::optional<Message> parseMessage(const QJsonObject &json, const QString &proj
             crypto.recipientDevice = payload.value("recipient_device_id").toString();
         }
         message.crypto = std::move(crypto);
+    } else if (message.kind == "poll") {
+        // A poll message REQUIRES a valid poll_state beside its validated
+        // payload (isWorkspaceMessengerMessageDto); malformed stays unparsed.
+        PollPayload poll;
+        if (!parsePollPayload(payload, poll)) return std::nullopt;
+        PollState state;
+        if (!parsePollState(json.value("poll_state"), state)) return std::nullopt;
+        message.poll = std::move(poll);
+        message.pollState = std::move(state);
+    }
+    // Every kind other than poll must carry poll_state == null (absent or null).
+    if (message.kind != QLatin1String("poll")) {
+        const auto state = json.value("poll_state");
+        if (!state.isNull() && !state.isUndefined()) return std::nullopt;
     }
     message.own = json.value("is_own").toBool();
     message.read = json.value("read").toBool();
@@ -465,6 +633,24 @@ QVector<Message> mergeMessages(const QVector<Message> &existing, const QVector<M
         return a.createdMicros == b.createdMicros ? a.uuid < b.uuid : a.createdMicros < b.createdMicros;
     });
     return result;
+}
+
+bool applyPollRevisionGuard(Message &incoming, const Message &previous)
+{
+    if (incoming.kind != QLatin1String("poll") || previous.kind != QLatin1String("poll")
+        || !incoming.pollState || !previous.pollState)
+        return false;
+    if (previous.pollState->revision > incoming.pollState->revision) {
+        // The reference store keeps the whole previous poll snapshot (payload
+        // and state) when an older revision arrives (message.model.ts).
+        incoming.poll = previous.poll;
+        incoming.pollState = previous.pollState;
+        return true;
+    }
+    if (previous.pollState->revision == incoming.pollState->revision
+        && previous.pollState->isClosed && !incoming.pollState->isClosed)
+        incoming.pollState->isClosed = true;
+    return false;
 }
 
 QString serializeComposerMentions(const QString &value, const QVector<ComposerMention> &mentions)
