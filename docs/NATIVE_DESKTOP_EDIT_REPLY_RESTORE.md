@@ -97,7 +97,11 @@ restored flow reuses the existing composer reply chip labels).
    session and falls back to raw editing when a structural quote is unavailable.
    The native edit start is synchronous (QML menu action), so native restores
    immediately using the link label as the fallback sender name and upgrades the
-   chip asynchronously through the quote cache. Deleting the restored tab after an
+   chip asynchronously through the quote cache. The parsed label is retained per
+   restored tab and keeps answering the chip author while its origin lookup is
+   still in flight and, if the origin turns out to be unavailable or the lookup
+   keeps failing, for the whole session (review thread 4559371974) - the chip
+   never shows an empty author. Deleting the restored tab after an
    authoritative "unavailable" answer is deferred: the composer keeps the chip and
    the answer split, which never loses text (re-save round-trips the same quote).
 2. Legacy blockquote quoted content lines are not carried into the tab (the native
@@ -130,6 +134,9 @@ restored flow reuses the existing composer reply chip labels).
     and the re-save migrates the body to the `urn:quote` form;
   - a quoted origin outside the loaded window is fetched once via `GET
     /messages/?uuid=` and fills the chip author/excerpt asynchronously;
+  - while that lookup is pending (held response) - and after it reports the
+    origin unavailable - the chip and tab label show the label parsed from the
+    quote line, never an empty author;
   - a standalone `[Name](urn:quote:...)` line inside a fenced code block in the
     answer is code text: one tab is restored and the fenced answer round-trips
     verbatim through a re-save (fence-aware scanner, deviation 4).

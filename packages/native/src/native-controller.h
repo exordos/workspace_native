@@ -1193,6 +1193,10 @@ private:
     // empty and serialize their quote line from the quoted message.
     struct ReplyTab {
         QString id, message, createdAt, answer, reference;
+        // ReplyTab.fallbackAuthor is the sender label parsed from the restored quote
+        // line; it carries the chip author while the quoted origin is unresolved
+        // (pending lookup) or when the lookup reports the origin is unavailable.
+        QString fallbackAuthor;
         mutable QString authorMemo, plainMemo;
     };
     // A reply session parked under the conversationKey() that owns it while the

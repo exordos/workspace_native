@@ -10027,6 +10027,47 @@ private slots:
         QVERIFY(fixture.controller.replyTabs().isEmpty());
     }
 
+    // Review thread 4559371974: while a restored quote's origin is still
+    // pending - or turns out to be unavailable - the chip keeps the label
+    // parsed from the quote line instead of showing an empty author.
+    void inlineEditRestoredQuoteShowsTheParsedLabelWhileTheOriginIsPending()
+    {
+        // Outlives the deferred send closure (declared before the fixture).
+        std::function<void()> releaseLookup;
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString far = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d";
+        auto note = message(QStringLiteral("[Bobby](urn:quote:%1)\n\nmy answer").arg(far), returnedId);
+        note["created_at"] = "2026-01-02T10:00:01.000Z";
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET" && QUrlQuery(request.target).hasQueryItem("uuid")) {
+                // Authoritative miss, held in flight until the test releases it.
+                Response response{QJsonArray{}};
+                response.defer = [&releaseLookup](std::function<void()> send) { releaseLookup = std::move(send); };
+                return response;
+            }
+            return Response{QJsonArray{note}};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.replyMessageId(), far);
+        // The lookup has not been answered yet: chip and tab label answer with
+        // the label parsed from the quote line, never an empty author.
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QCOMPARE(fixture.controller.replyTabs().first().toMap().value("author").toString(), QString("Bobby"));
+        QVERIFY(fixture.controller.replyExcerpt().isEmpty());
+
+        QSignalSpy sessionChanged(&fixture.controller, &NativeController::replySessionChanged);
+        QVERIFY(sessionChanged.isValid());
+        QTRY_VERIFY(static_cast<bool>(releaseLookup)); // The GET is in flight and held.
+        releaseLookup(); releaseLookup = {};
+        QVERIFY(sessionChanged.wait(2000)); // The unavailable answer lands; the chip re-reads.
+        // An unresolvable origin keeps the stored label rather than blanking it.
+        QCOMPARE(fixture.controller.replyAuthor(), QString("Bobby"));
+        QCOMPARE(fixture.controller.replyTabs().first().toMap().value("author").toString(), QString("Bobby"));
+        QCOMPARE(fixture.controller.replyMessageId(), far);
+    }
+
     void quoteReferenceRowsResolveLocallyAndFetchAbsentOrigins()
     {
         Fixture fixture; fixture.aggregateMessages = true;
