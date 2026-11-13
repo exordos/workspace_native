@@ -994,6 +994,43 @@ ApplicationWindow {
         const date = new Date(String(value || ""));
         return isNaN(date.getTime()) ? "" : Qt.formatDateTime(date, "yyyy-MM-dd");
     }
+    // Issue #142: wheel distance parity with the reference client
+    // (docs/NATIVE_DESKTOP_WHEEL_SCROLL_FEEL.md). The reference never remaps
+    // the vertical wheel - one notch ends exactly the notch distance away
+    // (100 px in the measured reference contract, section 1). This replaces
+    // the flick-based Qt default for angle deltas (cadence-dependent
+    // acceleration, ~72 px per idle notch measured in the message list and
+    // ~22 px in the sidebar list) with the deterministic, velocity-free
+    // mapping, while the system's scroll-lines preference keeps scaling it.
+    // High-resolution pixel-delta input (touchpads) keeps Qt's own path: the
+    // window delivers synthesized pixel wheels straight to the Flickable
+    // under the pointer (touchpad grab semantics), where they drag 1:1 with
+    // the reported pixels after DPR normalization - the precise reference
+    // touchpad behavior, left untouched by the mapping.
+    readonly property real wheelPixelsPerNotch:
+        (Qt.styleHints && Qt.styleHints.wheelScrollLines > 0
+            ? Qt.styleHints.wheelScrollLines : 3) * 100 / 3
+    function scrollFlickableWithWheel(flick, wheel) {
+        // Returns whether the wheel was consumed by this list's own movement;
+        // anything this mapping does not move (including synthesized
+        // pixel-delta wheels, which belong to the Flickable's own precise
+        // touchpad path) keeps travelling to the Flickable, like the
+        // reference ScrollArea's non-passive hand-off at an edge.
+        if (wheel.angleDelta.y === 0
+                || wheel.pixelDelta.y !== 0 && wheel.phase !== Qt.NoScrollPhase)
+            return false
+        const dy = -wheel.angleDelta.y / 120 * root.wheelPixelsPerNotch
+        const lo = flick.originY
+        const hi = Math.max(lo,
+            flick.originY + flick.contentHeight + flick.bottomMargin - flick.height)
+        const target = Math.max(lo, Math.min(hi, flick.contentY + dy))
+        if (target === flick.contentY)
+            return false
+        if (flick.moving)
+            flick.flick(0, 0)
+        flick.contentY = target
+        return true
+    }
     function dayLabel(day) {
         if (day === messageDay(calendarDate))
             return qsTr("Today");
@@ -2660,6 +2697,18 @@ ApplicationWindow {
                 spacing: 2
                 clip: true
                 model: root.controller.streams
+                MouseArea {
+                    // Issue #142: sidebar wheel scroller (expanded topic rows
+                    // included - they are delegate children) using the same
+                    // measured reference contract as messageList; at an edge
+                    // the wheel propagates.
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    propagateComposedEvents: true
+                    onWheel: function (wheel) {
+                        wheel.accepted = root.scrollFlickableWithWheel(streamList, wheel)
+                    }
+                }
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                 }
@@ -3308,17 +3357,19 @@ ApplicationWindow {
                 onMovementStarted: { userScrollSeen = true; ++userScrollGeneration }
                 MouseArea {
                     // Wheel observer mirroring the reference handleWheel: it
-                    // marks the scroll intent, then propagates the event so the
-                    // Flickable keeps scrolling and delegates keep receiving
-                    // clicks (a WheelHandler inside a ListView would swallow the
-                    // wheel instead; verified against the wheel tests).
+                    // marks the scroll intent, then scrolls the measured
+                    // reference distance itself (root.scrollFlickableWithWheel,
+                    // issue #142) and only propagates the event when the list
+                    // did not move. A WheelHandler inside a ListView would
+                    // swallow the wheel instead; verified against the wheel
+                    // tests.
                     anchors.fill: parent
                     acceptedButtons: Qt.NoButton
                     propagateComposedEvents: true
-                    onWheel: {
+                    onWheel: function (wheel) {
                         messageList.userScrollSeen = true
                         ++messageList.userScrollGeneration
-                        wheel.accepted = false
+                        wheel.accepted = root.scrollFlickableWithWheel(messageList, wheel)
                     }
                 }
                 section.property: "dayKey"

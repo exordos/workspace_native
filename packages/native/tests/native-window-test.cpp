@@ -2092,6 +2092,117 @@ struct WindowRestoreFixture {
 };
 
 
+// Issue #142: shared scene for the wheel contract cases. 25 streams keep the
+// sidebar scrollable and the main stream + topic load one full page of 50
+// messages, so both target lists are scrollable without touching pagination
+// (the page carries no marker, so no prefetch fires). The destructor closes
+// the window exactly once, honoring the closeIncubatedTestWindow contract.
+struct NativeWindowScene {
+    Q_DISABLE_COPY(NativeWindowScene)
+    QTemporaryDir preferencesDirectory;
+    NativePreferences preferences;
+    MockServer server;
+    ApiClient api;
+    Session session;
+    NativeController controller;
+    QQmlApplicationEngine engine;
+    QQuickWindow *window = nullptr;
+    QMap<int, QJsonObject> history;
+
+    static QString streamAt(int index)
+    {
+        return index == 0 ? streamId
+            : QStringLiteral("84000000-0000-4000-8000-%1").arg(index, 12, 10, QLatin1Char('0'));
+    }
+    static QString messageUuid(int number)
+    {
+        return QStringLiteral("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+    }
+
+    NativeWindowScene()
+        : preferences(preferencesDirectory.filePath("preferences.ini")),
+          api(nullptr, true), session(&api), controller(&api, &session)
+    {
+        for (int number = 0; number < 50; ++number) {
+            auto entry = message(QStringLiteral("Wheel fixture %1").arg(number), messageUuid(number));
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            history.insert(number, entry);
+        }
+        const auto streamDto = [&](int index) {
+            return QJsonObject{{"uuid", streamAt(index)}, {"project_id", projectId},
+                {"name", QStringLiteral("Wheel fixture %1").arg(index)}, {"encryption", false},
+                {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", index == 0 ? QJsonValue(messageUuid(49)) : QJsonValue::Null}};
+        };
+        const auto topicDto = [&] {
+            return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Wheel"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", messageUuid(49)}};
+        };
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) {
+                QJsonArray streams;
+                for (int index = 0; index < 25; ++index) streams.append(streamDto(index));
+                return Response{streams};
+            }
+            if (path.endsWith("/streams/" + streamId)) return Response{streamDto(0)};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                if (!QUrlQuery(request.target).queryItemValue("page_marker").isEmpty())
+                    return Response{QJsonArray{}}; // end of history, no marker chain
+                QJsonArray page;
+                for (int number = 49; number >= 0; --number) page.append(history.value(number));
+                return Response{page};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                auto boundary = std::find_if(history.begin(), history.end(),
+                    [&id](const auto &entry) { return entry.value("uuid").toString() == id; });
+                if (boundary == history.end()) return Response{QJsonObject{}, 404};
+                for (auto it = history.begin(); it.key() <= boundary.key(); ++it)
+                    it.value()["read"] = true;
+                return Response{boundary.value()};
+            }
+            return sessionResponse(request);
+        };
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+    }
+    ~NativeWindowScene()
+    {
+        if (window)
+            closeIncubatedTestWindow(engine, window);
+    }
+    bool exposeWindow()
+    {
+        if (!window || !QTest::qWaitForWindowExposed(window))
+            return false;
+        window->requestActivate();
+        if (!QTest::qWaitForWindowActive(window))
+            return false;
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        if (!QTest::qWaitFor([&] { return session.projects().size() == 1; }, 5000))
+            return false;
+        session.selectProject(projectId);
+        if (!QTest::qWaitFor([&] { return controller.streams().size() == 25; }, 5000))
+            return false;
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 5000))
+            return false;
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        if (!QTest::qWaitFor([&] { return controller.messages().size() == 50; }, 5000))
+            return false;
+        auto *list = item(window->contentItem(), "messageList");
+        return list && QTest::qWaitFor([&] {
+            return !list->property("positioning").toBool() && list->property("atYEnd").toBool();
+        }, 5000);
+    }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -18318,6 +18429,166 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
     }
 
+
+    // Issue #142: the wheel distance must match the measured reference notch.
+    // The reference (workspace_ui) never remaps the vertical wheel:
+    // handleWheel (workspace-message-list-scroll.hook.ts:1235-1281) only
+    // observes intent and its suite normalizes one notch to deltaY = 100 px
+    // (workspace-message-list-scroll.hook.test.tsx:572). The measured native
+    // default before the change was ~72 px per idle notch with cadence-based
+    // acceleration (Qt 6.10.2 QQuickFlickable, section 2 of
+    // docs/NATIVE_DESKTOP_WHEEL_SCROLL_FEEL.md). The contract therefore is:
+    // one ±120 notch moves >= 99 px (the 100 px reference notch minus a 1 %
+    // tolerance), repeats stay equal (no cadence acceleration), and the list
+    // under the pointer is the only list that moves.
+    void wheelNotchScrollsMatchTheReferenceContract_data()
+    {
+        QTest::addColumn<QString>("target");
+        QTest::addColumn<int>("notchAngle"); // +120 scrolls up, -120 scrolls down
+        QTest::newRow("message-list") << QStringLiteral("messageList") << 120;
+        QTest::newRow("sidebar-list") << QStringLiteral("streamList") << -120;
+    }
+    void wheelNotchScrollsMatchTheReferenceContract()
+    {
+        QFETCH(QString, target);
+        QFETCH(int, notchAngle);
+        NativeWindowScene scene;
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *list = item(window->contentItem(), target);
+        auto *other = item(window->contentItem(),
+            target == QLatin1String("messageList") ? "streamList" : "messageList");
+        QVERIFY(list);
+        QVERIFY(other);
+        const auto settle = [list] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        const auto otherStart = other->property("contentY").toReal();
+        const auto start = list->property("contentY").toReal();
+        QTest::wheelEvent(window, center, QPoint(0, notchAngle));
+        QVERIFY(settle());
+        const auto first = list->property("contentY").toReal() - start;
+        QVERIFY2(qAbs(first) >= 99.0, qPrintable(QStringLiteral(
+            "one notch moved %1 px; the measured reference notch is 100 px "
+            "(docs/NATIVE_DESKTOP_WHEEL_SCROLL_FEEL.md section 1)").arg(first)));
+        QVERIFY2(qAbs(first) <= 140.0, qPrintable(QStringLiteral(
+            "one notch moved %1 px; a comfortable notch stays near the "
+            "100 px reference instead of overshooting it").arg(first)));
+        // A second isolated notch must cover the same distance: the reference
+        // maps deltas, it does not accelerate with input cadence.
+        QTest::wheelEvent(window, center, QPoint(0, notchAngle));
+        QVERIFY(settle());
+        const auto second = list->property("contentY").toReal() - (start + first);
+        QVERIFY2(qAbs(second - first) <= 1.0, qPrintable(QStringLiteral(
+            "notch distances drifted (%1 vs %2) instead of staying "
+            "cadence-independent").arg(first).arg(second)));
+        QVERIFY(qAbs(other->property("contentY").toReal() - otherStart) <= 0.01);
+    }
+
+    // Issue #142: the same measured notch distance must hold across direction
+    // changes and high-resolution pixel-delta input (touchpads), with no
+    // residual motion once the input stops ("predictable, responsive, and
+    // visually stable when changing direction or stopping").
+    void wheelDirectionReversalAndTouchpadStayPredictable_data()
+    {
+        QTest::addColumn<QString>("target");
+        QTest::addColumn<int>("notchAngle"); // +120 scrolls up, -120 scrolls down
+        QTest::newRow("message-list") << QStringLiteral("messageList") << 120;
+        QTest::newRow("sidebar-list") << QStringLiteral("streamList") << -120;
+    }
+    void wheelDirectionReversalAndTouchpadStayPredictable()
+    {
+        QFETCH(QString, target);
+        QFETCH(int, notchAngle);
+        NativeWindowScene scene;
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *list = item(window->contentItem(), target);
+        QVERIFY(list);
+        const auto settle = [list] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        // A synthesized high-resolution (touchpad-style) step: pixel delta
+        // only, with a real scroll phase.
+        const auto touchpadStep = [window](const QPointF &scenePos, int pixels) {
+            QWheelEvent event(scenePos, window->mapToGlobal(scenePos), QPoint(),
+                QPoint(0, pixels), Qt::NoButton, Qt::NoModifier,
+                Qt::ScrollUpdate, false, Qt::MouseEventSynthesizedBySystem);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        const auto start = list->property("contentY").toReal();
+        // One notch out (measured reference distance) and the exact reversal
+        // must land back on the start without lingering velocity.
+        QTest::wheelEvent(window, center, QPoint(0, notchAngle));
+        QVERIFY(settle());
+        const auto out = list->property("contentY").toReal() - start;
+        QVERIFY2(qAbs(out) >= 99.0, qPrintable(QStringLiteral(
+            "one notch moved %1 px; the measured reference notch is 100 px").arg(out)));
+        QVERIFY(!list->property("moving").toBool());
+        QTest::wheelEvent(window, center, QPoint(0, -notchAngle));
+        QVERIFY(settle());
+        QVERIFY2(qAbs(list->property("contentY").toReal() - start) <= 1.0, qPrintable(
+            QStringLiteral("the direction change did not retarget cleanly (contentY %1 -> %2)")
+                .arg(start).arg(list->property("contentY").toReal())));
+        // Touchpad steps (synthesized pixel deltas) belong to the Flickable's
+        // own DPR-aware 1:1 path (see root.scrollFlickableWithWheel). The
+        // contract here is determinism and sub-notch granularity: identical
+        // input produces identical movement smaller than a notch, a reversal
+        // undoes proportionally, and nothing drifts once the input stops.
+        const qreal stepDirection = notchAngle > 0 ? -1.0 : 1.0; // contentY sign per step
+        qreal stepSize = 0;
+        auto previous = list->property("contentY").toReal();
+        for (int step = 0; step < 3; ++step) {
+            touchpadStep(center, notchAngle > 0 ? 30 : -30);
+            QVERIFY(settle());
+            const auto moved = list->property("contentY").toReal() - previous;
+            QVERIFY2(moved * stepDirection > 0.5 && qAbs(moved) < 99.0, qPrintable(
+                QStringLiteral("touchpad step %1 moved %2 px; sub-notch steps must move the "
+                    "content in the input direction").arg(step).arg(moved)));
+            if (step > 0)
+                QVERIFY2(qAbs(moved - stepSize) <= 0.6, qPrintable(QStringLiteral(
+                    "identical touchpad steps drifted (%1 vs %2)").arg(stepSize).arg(moved)));
+            stepSize = moved;
+            previous = list->property("contentY").toReal();
+        }
+        touchpadStep(center, notchAngle > 0 ? -45 : 45);
+        QVERIFY(settle());
+        const auto reversed = list->property("contentY").toReal() - previous;
+        QVERIFY2(qAbs(reversed + 1.5 * stepSize) <= qAbs(stepSize) * 0.4, qPrintable(
+            QStringLiteral("the 45 px reversal did not undo 1.5 steps (%1 vs %2)")
+                .arg(reversed).arg(-1.5 * stepSize)));
+        const auto parked = list->property("contentY").toReal();
+        // Stopping is stable: nothing drifts once the input has stopped.
+        QTest::qWait(400);
+        QVERIFY(!list->property("moving").toBool());
+        QVERIFY2(qAbs(list->property("contentY").toReal() - parked) <= 0.01, qPrintable(
+            QStringLiteral("the list drifted after stopping (%1 -> %2)")
+                .arg(parked).arg(list->property("contentY").toReal())));
+    }
 };
 
 
