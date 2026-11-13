@@ -32,7 +32,7 @@ Item {
     }
     readonly property string inviteAvatarLetter:
         inviteTitle.length > 0 ? inviteTitle.charAt(0).toUpperCase() : "?"
-    readonly property string avatarUrl: String(presence.avatarUrl || "").trim()
+    readonly property string avatarUrl: String(invite.avatarUrl || "").trim()
     readonly property bool isLarge: variant !== "compact"
 
     // Large variant scrim + section (jitsi-call-incoming-large.ui.tsx:41-50).
@@ -129,7 +129,10 @@ Item {
         }
 
         // Figma button group 6176:36282: 514 x 52, gap 8, icon slot 40,
-        // inner gap 6, padding 16 (large.ui.tsx:85-142).
+        // inner gap 6, padding 16 (large.ui.tsx:85-142). At the reference
+        // card width the group is exactly 514 px (169 + 160 + 169 + 2 gaps);
+        // narrower cards split the available width by those proportions so
+        // the group never overflows the card (PR #257 finding 3).
         Row {
             id: largeButtons
             objectName: "incomingCallButtonRow"
@@ -139,12 +142,14 @@ Item {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 40 // py-10 at sm
             anchors.horizontalCenter: parent.horizontalCenter
+            readonly property real baseWidthSum: 498 // 169 + 160 + 169
+            readonly property real innerWidth: Math.max(0, width - spacing * 2)
 
             // "With video" checkbox-role toggle.
             Rectangle {
                 id: videoToggle
                 objectName: "incomingCallVideoToggle"
-                width: 169 // sm:w-[169px]
+                width: largeButtons.innerWidth * 169 / largeButtons.baseWidthSum
                 height: 52
                 radius: 8 // rounded-lg
                 // On: bg-call-green + black text; off: outlined surface.
@@ -161,11 +166,16 @@ Item {
                     color: presence.videoEnabled ? "black" : presence.colors["text-muted"]
                     font.pixelSize: 16 // text-base
                     anchors.verticalCenter: parent.verticalCenter
-                    x: 16 // px-4
+                    anchors.left: parent.left
+                    anchors.leftMargin: 16 + 40 + 6 // px-4 + icon slot + gap-1.5
+                    elide: Text.ElideRight
+                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
                 }
                 Image {
                     // call_incoming_video_toggle.svg renders at the full
-                    // 40 px icon slot (large.ui.tsx:99-103).
+                    // 40 px icon slot inside the button, matching the
+                    // Cancel/Accept icon slots (large.ui.tsx:99-103;
+                    // PR #257 finding 4).
                     objectName: "incomingCallVideoIcon"
                     source: "qrc:/workspace/icons/call_incoming_video_toggle.svg"
                     sourceSize.width: 40
@@ -173,8 +183,8 @@ Item {
                     width: 40
                     height: 40
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.right: parent.left
-                    anchors.rightMargin: -16 - 6 // padding + inner gap-1.5
+                    anchors.left: parent.left
+                    anchors.leftMargin: 16 // px-4
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -188,7 +198,7 @@ Item {
                 id: largeDecline
                 objectName: "incomingCallDeclineButton"
                 property string text: qsTr("Cancel")
-                width: 160 // sm:w-[160px]
+                width: largeButtons.innerWidth * 160 / largeButtons.baseWidthSum
                 height: 52
                 radius: 8
                 color: presence.colors["call-red"] // #e43535 light
@@ -201,7 +211,7 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 16 + 40 + 6 // px-4 + slot + gap-1.5
                     elide: Text.ElideRight
-                    width: parent.width - 16 - 40 - 6 - 16
+                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
                 }
                 Item {
                     // 40 px icon slot (INCOMING_CALL_ICON_SLOT_PX, :13).
@@ -236,7 +246,7 @@ Item {
                 id: largeAccept
                 objectName: "incomingCallAcceptButton"
                 property string text: qsTr("Accept")
-                width: 169 // sm:w-[169px]
+                width: largeButtons.innerWidth * 169 / largeButtons.baseWidthSum
                 height: 52
                 radius: 8
                 color: presence.colors["call-green"] // #26c038
@@ -249,7 +259,7 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 16 + 40 + 6
                     elide: Text.ElideRight
-                    width: parent.width - 16 - 40 - 6 - 16
+                    width: Math.max(0, parent.width - 16 - 40 - 6 - 16)
                 }
                 Item {
                     objectName: "incomingCallAcceptIconSlot"
