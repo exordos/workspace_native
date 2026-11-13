@@ -124,9 +124,11 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
     injectable embed factory (seam for the WebEngine view) and an
     `embedCreations` counter — the native mapping of the reference mount-count
     contract. Shell toggles never increment it.
-  - Participant count: injectable count/info providers; `participantJoined/
-    participantLeft` events and a focus-aware `QTimer` poll whose interval is
-    5000 ms focused / 30000 ms unfocused.
+  - Participant count: injectable count/info providers; `participantJoined/`
+    participantLeft events and a focus-aware `QTimer` reconcile poll owned by
+    the controller — started when the embed reaches Ready, cadence 5000 ms
+    focused / 30000 ms unfocused, restarted on focus changes and stopped on
+    close or load failure.
   - One-time config accessor (`startWithAudioMuted: true`,
     `prejoinConfig.enabled: false`, `startWithVideoMuted` per payload),
     allow-policy string, granted-flags set once at embed creation.
@@ -137,9 +139,19 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
   renders as a scrim overlay inside `Main.qml` (outside click/Escape route to
   `requestDismiss()`), minimized mode renders inside a frameless `Window`
   (tool surface above app content) bound to the controller bounds, with the
-  header row and the three states per the geometry above. The embed host is a
-  `Loader` activated once at `Ready`; the WebEngine view (per #160) grants the
-  four capabilities once and is a network seam that tests do not exercise.
+  header row and the three states per the geometry above. The embed surface
+  is a single `Loader` owned by `Main.qml`, activated as soon as the URL is
+  valid (while `Loading` — the WebEngine view's own `loadingChanged` events
+  drive `apiLoadSucceeded`/`apiLoadFailed`, so creation is never gated on
+  them) and re-parented between the expanded shell and the PiP window; one
+  WebEngine session per call survives every toggle (finding 2). Capture and
+  fullscreen permissions are granted only to the exact meeting origin via
+  `JitsiCallWindowController::isMeetingOrigin` (deny-by-default, finding 3).
+  The fullscreen control drives the app window's `FullScreen` visibility and
+  the window's external exits sync back through `syncFullscreen` (finding 4).
+  Default PiP bounds are mapped through the app window's screen position
+  (`defaultPipBounds(viewport, screenOrigin)`); user-placed bounds stay
+  screen-absolute (finding 6).
 - Wiring: `NativeController` exposes the window controller next to `calls`
   (`JitsiCallStore`); opening a call (card join or call start, #161) opens the
   shell with the active call payload; closing the shell calls
