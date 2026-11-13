@@ -1,3 +1,33 @@
+# Workspace Native 0.21.0 - Linux development preview
+
+- A call now starts from the people and conversations around you, not only from
+  a call card: a Call action joins the peer's profile card and the chat info
+  panel, and it creates the direct conversation on the spot when none exists
+  yet. A refusal cannot leave a call armed for later - declining an unusable
+  creation queues nothing, a call attempt started before a re-login can never
+  report into the new session, and for an encrypted direct message the action
+  stays disabled until the conversation's key is actually ready.
+- Calls now survive the real Qt WebEngine they run in. The meeting window reacts
+  to the browser's true load status, so a successful connect leaves *Loading*,
+  a failed one shows its reason and can be retried, and mic and camera requests
+  from the meeting are actually granted - only to the meeting's own origin,
+  while events arriving from any other frame or origin are dropped instead of
+  forging a roster change or a self-feeding readiness loop. Participant count
+  and roster now arrive through the external API's own wire events.
+- Polls got their foundation: poll payloads are parsed and validated against the
+  reference contract, survive cache round-trips, and the REST actions for
+  voting, closing a poll, changing settings, adding an option and listing
+  voters are wired with realtime merge. Poll bubbles themselves come in a
+  later release.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.20.0...0.21.0](https://github.com/exordos/workspace_native/compare/0.20.0...0.21.0)
+
+---
+
 # Workspace Native 0.20.0 - Linux development preview
 
 Three features ported from the reference desktop:
