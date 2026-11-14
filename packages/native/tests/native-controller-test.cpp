@@ -42,10 +42,13 @@
 #include <limits>
 #include <memory>
 #include <thread>
+#if defined(Q_OS_UNIX)
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
+#include "msvc-compat.h"
 
 using namespace workspace;
 using namespace workspace::test;
@@ -18409,6 +18412,9 @@ private slots:
 
     // Finding 1 (thread 4575150367): a stderr write failure must not gate
     // persistence — the line still has to reach the diagnostics file.
+    // Descriptor surgery on fd 2 is POSIX-only (round-2 finding 4575693897),
+    // so the case compiles and runs on Unix platforms only.
+#if defined(Q_OS_UNIX)
     void diagnosticsMessageHandlerAppendsToFileWhenStderrFails()
     {
         QTemporaryDir root;
@@ -18435,6 +18441,7 @@ private slots:
         QVERIFY2(text.contains(QStringLiteral("warning: stderr unavailable probe\n")),
                  qPrintable(text));
     }
+#endif // Q_OS_UNIX
 
     // Finding 2 (thread 4575150368): the procfs sources are Linux-only. This
     // guard keeps that gate on the provider: without it the ungated form
@@ -18458,23 +18465,111 @@ private slots:
                  "/proc access; the real-proc sanity asserts stay gated");
     }
 
+    // ------------------------------------------------------------------
+    // exordy fix-round-2 regression cases (PR #289 review findings).
+    // ------------------------------------------------------------------
+
+    // Finding 1 (thread 4575693897): the diagnostics block added POSIX-only
+    // headers and raw descriptor calls, which broke BUILD_TESTING on Windows.
+    // This source guard keeps that contract on the test file itself (it
+    // mirrors the Q_OS_LINUX source-gate case above and must fail on every
+    // platform): every POSIX header include and every line-leading raw POSIX
+    // call in this translation unit must sit inside a Q_OS_UNIX/Q_OS_LINUX/
+    // Q_OS_POSIX preprocessor guard. The platform-neutral code uses the
+    // portable wrappers in msvc-compat.h instead.
+    void diagnosticsTestPosixApisGuardedWithQosUnix()
+    {
+        QFile source(QStringLiteral(__FILE__));
+        QVERIFY2(source.open(QIODevice::ReadOnly | QIODevice::Text),
+                 qPrintable(QStringLiteral("cannot open %1")
+                                .arg(QDir::toNativeSeparators(QStringLiteral(__FILE__)))));
+        const QStringList lines =
+            QString::fromUtf8(source.readAll()).split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+        static const QVector<QString> posixIncludes {
+            QStringLiteral("<fcntl.h>"), QStringLiteral("<poll.h>"),
+            QStringLiteral("<sys/stat.h>"), QStringLiteral("<unistd.h>")
+        };
+        static const QRegularExpression ifRe(
+            QStringLiteral("^#[ \\t]*(if|ifdef|ifndef)\\b"));
+        static const QRegularExpression elseRe(
+            QStringLiteral("^#[ \\t]*(else|elif)\\b"));
+        static const QRegularExpression endRe(
+            QStringLiteral("^#[ \\t]*endif\\b"));
+        static const QRegularExpression callRe(QStringLiteral(
+            "^(?:::)?(?:pipe|dup2|dup|open|close|read|write|poll|fcntl|fflush|clearerr|fsync"
+            "|access|unlink|getpid|isatty)\\s*\\("));
+        QStringList unguardedIncludes;
+        QStringList unguardedCalls;
+        QVector<bool> guardStack; // one entry per open #if; true = Q_OS_UNIX-style guard
+        for (int i = 0; i < lines.size(); ++i) {
+            const QString raw = lines.at(i).trimmed();
+            if (raw.startsWith(QLatin1Char('#'))) {
+                bool directiveHandled = true;
+                if (ifRe.match(raw).hasMatch()) {
+                    guardStack.append(raw.contains(QLatin1String("Q_OS_UNIX"))
+                                      || raw.contains(QLatin1String("Q_OS_LINUX"))
+                                      || raw.contains(QLatin1String("Q_OS_POSIX")));
+                } else if (elseRe.match(raw).hasMatch()) {
+                    if (!guardStack.isEmpty())
+                        guardStack.last() = false; // #else/#elif branch is unguarded
+                } else if (endRe.match(raw).hasMatch()) {
+                    if (!guardStack.isEmpty())
+                        guardStack.removeLast();
+                } else {
+                    directiveHandled = false; // e.g. #include lines still need auditing
+                }
+                if (directiveHandled)
+                    continue;
+            }
+            bool guarded = !guardStack.isEmpty();
+            for (bool open : std::as_const(guardStack))
+                guarded = guarded && open;
+            if (guarded)
+                continue;
+            if (raw.startsWith(QLatin1String("#include"))) {
+                for (const QString &header : posixIncludes) {
+                    if (raw.contains(header))
+                        unguardedIncludes << QStringLiteral("line %1: %2").arg(i + 1).arg(raw);
+                }
+            } else if (callRe.match(raw).hasMatch()) {
+                unguardedCalls << QStringLiteral("line %1: %2").arg(i + 1).arg(raw.left(72));
+            }
+        }
+        QVERIFY2(unguardedIncludes.isEmpty(),
+                 qPrintable(QStringLiteral("POSIX-only includes must sit inside a "
+                                            "Q_OS_UNIX/Q_OS_LINUX guard:\n%1")
+                                .arg(unguardedIncludes.join(QLatin1Char('\n')))));
+        QVERIFY2(unguardedCalls.isEmpty(),
+                 qPrintable(QStringLiteral("raw POSIX descriptor calls must sit inside a "
+                                            "Q_OS_UNIX/Q_OS_LINUX guard; platform-neutral code "
+                                            "must use the msvc-compat.h wrappers instead:\n%1")
+                                .arg(unguardedCalls.join(QLatin1Char('\n')))));
+    }
+
     // Finding 3 (thread 4575150370): removing the handler must drain
     // in-flight handler calls on other threads before returning.
-    // Deterministic shape: stderr becomes a blocking pipe that nobody drains.
-    // After two ~30 KB filler console lines occupy the 64 KB pipe, the
-    // worker thread's 32 KB qWarning parks inside the handler's stderr write
-    // — an in-flight handler call for an unbounded time. A releaser starts
-    // draining the pipe 100 ms after the removal began: a synchronized
-    // removeNativeLogHandler() cannot return before that release lands (the
-    // in-flight call finishes and its line reaches the file), while the
-    // unsynchronized version returns immediately and would let this scope
-    // destroy the stack-owned sink under the still-parked handler.
+    // Round-2 shape (thread 4575693899): the case no longer assumes a 64 KiB
+    // pipe capacity. The reader is started before any write can block; the
+    // filler fills the pipe with O_NONBLOCK writes probed with 1-byte writes
+    // until EAGAIN (works at 4 KiB or 64 KiB); and on Linux the pipe is
+    // pinned to its 4 KiB minimum so the small-capacity path is always
+    // exercised. Once the pipe is full, stderr returns to blocking mode and
+    // the worker's 32 KB qWarning parks mid stderr write — an in-flight
+    // handler call for an unbounded time. The reader only starts draining
+    // 100 ms after the removal began: a synchronized removeNativeLogHandler()
+    // cannot return before that release lands (the in-flight call finishes
+    // and its line reaches the file), while the unsynchronized version
+    // returns immediately and would let this scope destroy the stack-owned
+    // sink under the still-parked handler. Descriptor work is POSIX-only
+    // (round-2 finding 4575693897), so the case compiles on Unix only.
+#if defined(Q_OS_UNIX)
     void diagnosticsMessageHandlerRemovalDrainsInFlightWrites()
     {
         QTemporaryDir root;
         QVERIFY(root.isValid());
         std::atomic<bool> workerReturned{false};
         std::atomic<bool> drainAtRemove{false};
+        std::atomic<bool> removalRequested{false};
         qint64 releaserDrained = 0;
 
         {
@@ -18483,23 +18578,74 @@ private slots:
 
             int consolePipe[2] = { -1, -1 };
             QVERIFY(::pipe(consolePipe) == 0);
+#ifdef Q_OS_LINUX
+            // Pin the pipe to the minimum size (4096 bytes, the value that
+            // made the pre-fix 64 KiB assumption hang) so the capacity
+            // independence below is asserted, not accidental.
+            ::fcntl(consolePipe[1], F_SETPIPE_SZ, 4096);
+#endif
             const int savedStderr = ::dup(STDERR_FILENO);
             QVERIFY(savedStderr >= 0);
             auto stderrGuard = qScopeGuard([&] {
-                fflush(stderr);
+                nativeTestFlushStderr();
                 ::dup2(savedStderr, STDERR_FILENO);
                 ::close(savedStderr);
                 ::close(consolePipe[0]);
                 ::close(consolePipe[1]);
-                clearerr(stderr);
+                nativeTestClearErr();
             });
-            fflush(stderr);
+            nativeTestFlushStderr();
             QVERIFY(::dup2(consolePipe[1], STDERR_FILENO) == STDERR_FILENO);
+            // Fill the pipe in nonblocking mode: no filler write can park the
+            // main thread regardless of pipe capacity.
+            const int blockingFlags = ::fcntl(consolePipe[1], F_GETFL, 0);
+            QVERIFY(blockingFlags >= 0);
+            QVERIFY(::fcntl(consolePipe[1], F_SETFL, blockingFlags | O_NONBLOCK) == 0);
 
             workspace::installNativeLogHandler(logs);
-            // ~60 KB fits the 64 KB pipe, so the main thread never parks.
-            qWarning().noquote() << QStringLiteral("filler ") + QString(30000, QLatin1Char('F'));
-            qWarning().noquote() << QStringLiteral("filler ") + QString(30000, QLatin1Char('G'));
+
+            // The reader exists before anything can block. It holds the pipe
+            // full until 100 ms after the removal began, then drains until
+            // the parked worker line has fully left the pipe.
+            std::thread releaser([&]() {
+                while (!removalRequested.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                // Release only 100 ms after the removal began: that is the
+                // window the synchronized removal must be seen waiting in.
+                QElapsedTimer holdClock;
+                holdClock.start();
+                while (holdClock.elapsed() < 100)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                char buf[16384];
+                QElapsedTimer clock;
+                clock.start();
+                while (clock.elapsed() < 5000) {
+                    const int n = nativeTestPollRead(consolePipe[0], buf, sizeof buf, 50);
+                    if (n < 0)
+                        break;
+                    releaserDrained += n;
+                    if (n == 0 && workerReturned.load())
+                        break;
+                }
+            });
+            auto releaserGuard = qScopeGuard([&] { releaser.join(); });
+
+            // Nonblocking filler lines occupy the pipe up to exactly its
+            // capacity; each iteration ends with a 1-byte probe that reports
+            // EAGAIN once the pipe is full. No capacity assumption anywhere.
+            const QByteArray probe(1, '\n');
+            for (int i = 0; i < 512; ++i) {
+                qWarning().noquote() << QStringLiteral("filler ")
+                                        + QString(8000, QLatin1Char('F'));
+                nativeTestFlushStderr();
+                if (::write(STDERR_FILENO, probe.constData(), probe.size()) != 1)
+                    break; // EAGAIN: the pipe is full at this capacity
+            }
+            // The filler left the stream in a would-block state; restore
+            // blocking writes and clear the error flag before the worker
+            // parks inside its stderr write.
+            QVERIFY(::fcntl(consolePipe[1], F_SETFL, blockingFlags) == 0);
+            nativeTestClearErr();
 
             std::thread worker([&]() {
                 qWarning().noquote() << QStringLiteral("worker in-flight line ")
@@ -18510,25 +18656,7 @@ private slots:
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             QVERIFY(!workerReturned.load()); // parked mid stderr write
 
-            std::thread releaser([&]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                char buf[16384];
-                QElapsedTimer clock;
-                clock.start();
-                // Drain until the worker's blocked line has fully left the
-                // pipe (60034 filler + 32033 worker bytes), with a bound.
-                while (releaserDrained < 91000 && clock.elapsed() < 3000) {
-                    struct pollfd pfd { consolePipe[0], POLLIN, 0 };
-                    if (::poll(&pfd, 1, 50) <= 0)
-                        continue;
-                    const ssize_t n = ::read(consolePipe[0], buf, sizeof buf);
-                    if (n < 0)
-                        break;
-                    releaserDrained += n;
-                }
-            });
-            auto releaserGuard = qScopeGuard([&] { releaser.join(); });
-
+            removalRequested.store(true);
             QElapsedTimer removalClock;
             removalClock.start();
             workspace::removeNativeLogHandler();
@@ -18544,7 +18672,9 @@ private slots:
                  "calls to drain before returning so no thread consults a "
                  "sink that removal has already cleared");
         QVERIFY(workerReturned.load());
-        QVERIFY(releaserDrained >= 91000);
+        // The worker's whole 32 KB line (plus the filler that filled the
+        // pipe) must have flowed through the reader: capacity-independent.
+        QVERIFY(releaserDrained >= 32000);
         const QString text = readDiagnosticsLog(
             root.path() + QStringLiteral("/workspace_logs/workspace.log"));
         QVERIFY2(text.contains(QStringLiteral("warning: filler ")), qPrintable(text.left(120)));
@@ -18552,6 +18682,7 @@ private slots:
                  "drained in-flight lines must reach the file");
         QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
     }
+#endif // Q_OS_UNIX
 };
 
 QTEST_MAIN(NativeControllerTest)
