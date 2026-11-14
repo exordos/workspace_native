@@ -3,8 +3,13 @@
 This slice creates an unencrypted native channel and preserves its selected
 initial members. It opens the verified stream aggregate after success. The
 aggregate has the existing choose-topic prompt; it does not acquire a default
-topic composer. Encrypted channel bootstrap, channel directory discovery and invitation management
-remain separate features. The sibling [ordinary direct-chat slice](NATIVE_DESKTOP_DIRECT_CHATS.md)
+topic composer. Channel directory discovery and invitation management
+remain separate features; the Protected channel (E2EE) creation path is
+specified in the sibling
+[encrypted channel creation slice](NATIVE_DESKTOP_ENCRYPTED_CHANNEL_CREATION.md),
+with key requests, grants and rotation governed by
+[the crypto acceptance doc](NATIVE_DESKTOP_CRYPTO.md).
+The sibling [ordinary direct-chat slice](NATIVE_DESKTOP_DIRECT_CHATS.md)
 uses the initial Start chat tab and shares the creation write gate.
 
 ## Contract and user intent

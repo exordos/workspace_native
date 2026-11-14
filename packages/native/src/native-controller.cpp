@@ -295,6 +295,8 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
             const QPointer<NativeController> lookupGuard(this);
             checkChatLifetime();
             if (!lookupGuard) return;
+            maybeResolveChannelCreateStages();
+            if (!lookupGuard) return;
             scheduleChatPreparation();
             if (!lookupGuard) return;
             const QPointer<NativeController> guard(this); emit stateChanged();
@@ -310,6 +312,10 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
         });
     }
     checkChatLifetime();
+    if (!lookupGuard) return;
+    // Issue #234 review fix r3: a vault attached to a fresh (restarted)
+    // controller adopts durable encrypted-create stages immediately.
+    maybeResolveChannelCreateStages();
     if (!lookupGuard) return;
     // Issue #222 review fix r2: quote records fetched before the vault existed
     // (or across a vault swap) decrypt against the newly bound key material.
@@ -2242,6 +2248,24 @@ std::optional<Stream> creationStreamDto(const QJsonObject &raw, const QString &p
     return parsed;
 }
 
+// Issue #234: an encrypted creation DTO must be a native channel owned by the
+// viewer and must echo exactly the frozen encrypted pair the request carried
+// (docs/NATIVE_DESKTOP_ENCRYPTED_CHANNEL_CREATION.md). The ordinary gate and
+// this gate share every other identity clause.
+std::optional<Stream> encryptedCreationStreamDto(const QJsonObject &raw, const QString &project,
+    const QString &viewer, const QString &keyUuid)
+{
+    const auto parsed = creationStreamDto(raw, project, viewer, false);
+    if (!parsed || raw.value("owner").toString() != viewer || parsed->role != "owner"
+        || raw.value("source_name").toString() != "native" || !raw.value("provider_uuid").toString().isEmpty()
+        || !raw.value("provider_identity").toString().isEmpty() || raw.value("private").toBool()
+        || !parsed->directUser.isEmpty() || parsed->archived
+        || !isUuid(raw.value("default_topic_uuid").toString())) return {};
+    if (!raw.value("encryption").toBool() || !isUuid(keyUuid)
+        || raw.value("current_encryption_key_uuid").toString() != keyUuid) return {};
+    return parsed;
+}
+
 bool creationBindings(const QJsonArray &rows, const QString &project, const QString &stream,
                       QSet<QString> *users)
 {
@@ -3107,6 +3131,7 @@ QVariantMap NativeController::channelCreationForm() const
     for (const auto &id : intent->members) members.append(id);
     return {{"attemptId", intent->uuid}, {"name", intent->name}, {"description", intent->description},
         {"inviteOnly", intent->inviteOnly}, {"announce", intent->announce}, {"memberUuids", members},
+        {"encrypted", intent->encrypted},
         {"confirmedStreamId", intent->confirmed ? intent->uuid : QString{}}, {"defaultTopicId", intent->defaultTopic},
         {"membersAttempted", intent->membersAttempted}, {"contextKey", intent->contextKey}};
 }
@@ -4088,7 +4113,8 @@ void NativeController::loseChannelCreationAccess(const QString &stream)
 }
 
 void NativeController::createChannel(const QString &name, const QString &description,
-                                     bool inviteOnly, bool announce, const QVariantList &memberUuids)
+                                     bool inviteOnly, bool announce, const QVariantList &memberUuids,
+                                     bool encrypted)
 {
     if (directChatBusy()) return;
     const auto owner = creationOwnerKey();
@@ -4099,7 +4125,10 @@ void NativeController::createChannel(const QString &name, const QString &descrip
     const auto trimmedName = sourceTrimmed(name), trimmedDescription = sourceTrimmed(description);
     intent.name = boundedText(trimmedName, 256) ? trimmedName : QString{};
     intent.description = boundedText(trimmedDescription, 10001) ? trimmedDescription : QString{};
-    intent.inviteOnly = inviteOnly; intent.announce = announce;
+    // An encrypted intent clears the exclusive flags exactly like the reference
+    // ("creates an encrypted channel ... and clears exclusive flags").
+    intent.inviteOnly = encrypted ? false : inviteOnly; intent.announce = encrypted ? false : announce;
+    intent.encrypted = encrypted;
     intent.contextKey = channelCreationContextKey();
     if (trimmedName.isEmpty() || !boundedText(trimmedName, 255))
         intent.error = tr("Enter a channel name with 1 to 255 characters.");
@@ -4124,19 +4153,37 @@ void NativeController::createChannel(const QString &name, const QString &descrip
             intent.error = tr("The selected channel members are invalid. Choose members from the current directory."); break;
         }
     }
+    // The initial group key is generated locally at admission (never crosses
+    // the wire; the backend only learns the generation UUID) and is frozen for
+    // exactly one attempt. Without the OS provider or the durable vault the
+    // request is rejected before any write, like the reference bootstrap.
+    if (intent.error.isEmpty() && encrypted) {
+        auto key = NativeChatCrypto::createGroupKey();
+        const bool usable = key && key.bytes.size() == 32;
+        if (!usable || !m_chatKeys || !m_chatKeys->available()) {
+            intent.error = tr("Encrypted channel creation is not available yet.");
+        } else {
+            intent.encryptionKey = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            intent.groupKey = key.bytes;
+        }
+        key.bytes.fill('\0');
+    }
     const auto formBytes = [](const ChannelCreation &entry) {
         return entry.name.toUtf8().size() + entry.description.toUtf8().size() + entry.members.size() * 40 + 512;
     };
     qint64 retained = formBytes(intent);
     for (auto it = m_channelCreations.begin(); it != m_channelCreations.end();) {
         if (it.key() != owner && !it->busy && (it->phase == "idle" || it->phase == "failed" || it->phase == "ready"))
-            it = m_channelCreations.erase(it);
+            { it->groupKey.fill('\0'); it = m_channelCreations.erase(it); }
         else { if (it.key() != owner) retained += formBytes(*it); ++it; }
     }
     if ((!m_channelCreations.contains(owner) && m_channelCreations.size() >= 32)
         || retained > NativeCacheService::MaximumQueuedBytes) {
+        intent.groupKey.fill('\0');
         report(tr("Resolve the earlier channel creation attempts before creating another channel.")); return;
     }
+    if (auto replaced = m_channelCreations.find(owner); replaced != m_channelCreations.end())
+        replaced->groupKey.fill('\0');
     m_channelCreations.insert(owner, intent);
     if (!intent.error.isEmpty()) { emit stateChanged(); return; }
     auto &accepted = m_channelCreations[owner];
@@ -4146,21 +4193,43 @@ void NativeController::createChannel(const QString &name, const QString &descrip
     const auto id = accepted.uuid;
     const auto ticket = accepted.ticket;
     const auto body = QJsonObject{{"uuid", id}, {"name", accepted.name}, {"description", accepted.description},
-        {"source_name", "native"}, {"invite_only", inviteOnly}, {"announce", announce},
-        {"encryption", false}, {"current_encryption_key_uuid", QJsonValue::Null}};
+        {"source_name", "native"}, {"invite_only", accepted.inviteOnly}, {"announce", accepted.announce},
+        {"encryption", accepted.encrypted},
+        {"current_encryption_key_uuid", accepted.encrypted ? QJsonValue(accepted.encryptionKey) : QJsonValue::Null}};
     if (!channelPhase(owner, id, ticket, QStringLiteral("creating"))) return;
+    // Review findings 4574928575/4574928581: durably stage the key and the
+    // recovery identities BEFORE the stream POST is dispatched. A process
+    // loss after the server accepted the channel must not lose the only copy
+    // of the group key; a later controller restart resolves the stage.
+    if (accepted.encrypted) {
+        NativeChatKeyVault::CreateStage stage{id, accepted.encryptionKey, accepted.groupKey,
+            QDateTime::currentMSecsSinceEpoch()};
+        const bool staged = m_chatKeys && m_chatKeys->available()
+            && m_chatKeys->putCreateStage(m_chatKeys->lease(), stage) == NativeChatKeyVault::Failure::None;
+        stage.clearSecrets();
+        if (!staged) {
+            finishChannelCreation(owner, id, ticket,
+                tr("Encrypted channel creation is not available yet."), QStringLiteral("failed"));
+            return;
+        }
+    }
     m_channelCreations[owner].dispatched = true;
     request("POST", messenger + "/streams/", body, {}, [this, owner, id, ticket](const ApiResult &result) {
         if (!channelCreationContext(owner, id, ticket)) return;
         auto &intent = m_channelCreations[owner];
         const auto raw = result.data.toObject();
-        const auto parsed = creationStreamDto(raw, m_session->project(), m_session->user(), true);
+        const auto parsed = intent.encrypted
+            ? encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), intent.encryptionKey)
+            : creationStreamDto(raw, m_session->project(), m_session->user(), true);
         if (!result.ok() || !parsed || parsed->uuid != id || parsed->name != intent.name
             || parsed->description != intent.description || raw.value("invite_only").toBool() != intent.inviteOnly
             || raw.value("announce").toBool() != intent.announce) {
             const bool failed = result.status == 400 || result.status == 401 || result.status == 403 || result.status == 404;
-            finishChannelCreation(owner, id, ticket, failed ? tr("Could not create the channel. %1").arg(result.error)
-                : tr("The channel creation status is unknown. Check status before trying again."),
+            const auto message = failed ? tr("Could not create the channel. %1").arg(result.error)
+                : intent.encrypted && result.ok()
+                    ? tr("The server did not confirm encrypted channel creation. Check status before trying again.")
+                    : tr("The channel creation status is unknown. Check status before trying again.");
+            finishChannelCreation(owner, id, ticket, message,
                 failed ? QStringLiteral("failed") : QStringLiteral("uncertain")); return;
         }
         intent.verifiedRequest = true;
@@ -4201,20 +4270,110 @@ void NativeController::confirmChannelCreation(const QString &owner, const QStrin
         if (!channelCreationContext(owner, id, ticket)) return;
         auto &intent = m_channelCreations[owner];
         const auto raw = result.data.toObject();
-        const auto parsed = creationStreamDto(raw, m_session->project(), m_session->user(), true);
+        const auto parsed = intent.encrypted
+            ? encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), intent.encryptionKey)
+            : creationStreamDto(raw, m_session->project(), m_session->user(), true);
         if (!result.ok() || !parsed || parsed->uuid != id
             || (!intent.verifiedRequest && (parsed->name != intent.name || parsed->description != intent.description
                 || raw.value("invite_only").toBool() != intent.inviteOnly || raw.value("announce").toBool() != intent.announce))) {
-            finishChannelCreation(owner, id, ticket, tr("The channel creation status is unknown. Check status before trying again.")); return;
+            finishChannelCreation(owner, id, ticket,
+                intent.encrypted && result.ok()
+                    ? tr("The server did not confirm encrypted channel creation. Check status before trying again.")
+                    : tr("The channel creation status is unknown. Check status before trying again.")); return;
         }
         if (revision != intent.revision) {
             if (reconcileChannelRead(owner, id, ticket, unsafeRevision, [this, owner, id, ticket] { confirmChannelCreation(owner, id, ticket); })) return;
             finishChannelCreation(owner, id, ticket, tr("The channel creation status is unknown. Check status before trying again.")); return;
         }
+        // The canonical GET made the stream UUID authoritative; the frozen
+        // initial key is committed to the durable vault now, before any
+        // membership or publication work (docs/NATIVE_DESKTOP_ENCRYPTED_CHANNEL_CREATION.md).
+        if (intent.encrypted && !intent.keyStored && !commitChannelKey(owner, id, ticket)) return;
+        if (!channelCreationContext(owner, id, ticket)) return;
         intent.verifiedRequest = intent.confirmed = true;
         intent.defaultTopic = raw.value("default_topic_uuid").toString();
         intent.acl = streamAcl(*parsed);
         loadChannelDefault(owner, id, ticket);
+    });
+}
+
+bool NativeController::commitChannelKey(const QString &owner, const QString &id, quint64 ticket)
+{
+    auto &intent = m_channelCreations[owner];
+    if (!m_chatKeys || !m_chatKeys->available() || intent.groupKey.size() != 32 || !isUuid(intent.encryptionKey)) {
+        finishChannelCreation(owner, id, ticket, tr("Encrypted channel creation is not available yet.")); return false;
+    }
+    const auto committed = m_chatKeys->put(m_chatKeys->lease(),
+        NativeChatKeyVault::Address{id, intent.encryptionKey}, intent.groupKey, 0);
+    if (committed != NativeChatKeyVault::Failure::None) {
+        finishChannelCreation(owner, id, ticket,
+            tr("Could not store the encrypted channel key. Check status before trying again.")); return false;
+    }
+    intent.keyStored = true;
+    intent.groupKey.fill('\0'); intent.groupKey.clear();
+    // The commit closes the durable stage: from here the vault alone holds
+    // the key. A failed clear only means a later scan re-verifies and no-ops.
+    m_chatKeys->clearCreateStage(m_chatKeys->lease(), id);
+    return true;
+}
+
+void NativeController::maybeResolveChannelCreateStages()
+{
+    // A restart resolves durable stages once per (owner, vault lease) pair:
+    // the vault open completes asynchronously after the session is ready, so
+    // this is invoked from vault attach, vault state changes and login.
+    // creationOwnerKey (not the https-only ownerKey) is the loopback-safe
+    // create-path identity already frozen into every channel creation intent.
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available() || creationOwnerKey().isEmpty()) return;
+    const auto lease = m_chatKeys->lease();
+    const auto token = creationOwnerKey() + QLatin1Char('/') + QString::number(lease.issuer)
+        + QLatin1Char('/') + QString::number(lease.generation);
+    if (m_channelStageToken == token) return;
+    m_channelStageToken = token;
+    QTimer::singleShot(0, this, [this, token] { resolveChannelCreateStages(token); });
+}
+
+void NativeController::resolveChannelCreateStages(const QString &token)
+{
+    if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+    auto stages = m_chatKeys->createStages(m_chatKeys->lease());
+    if (stages.failure != NativeChatKeyVault::Failure::None) return; // retried on the next init
+    QVector<PendingCreateStage> pending;
+    for (auto &stage : stages.values) {
+        bool live = false;
+        for (auto it = m_channelCreations.begin(); it != m_channelCreations.end(); ++it)
+            if (it->encrypted && it->uuid == stage.attempt) live = true;
+        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey});
+        stage.clearSecrets();
+    }
+    resolveNextChannelCreateStage(std::move(pending), token);
+}
+
+void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token)
+{
+    if (stages.isEmpty()) return;
+    if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+    auto stage = stages.takeFirst();
+    const auto lease = m_chatKeys->lease();
+    // The staged attempt uuid is the idempotent stream uuid the POST carried
+    // (and the id the echo must match), so the canonical GET under that uuid
+    // is the same verification the live path performs.
+    request("GET", messenger + "/streams/" + stage.attempt, {}, {},
+        [this, token, lease, stage, stages](const ApiResult &result) mutable {
+        auto wipe = qScopeGuard([&] { stage.groupKey.fill('\0'); });
+        if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+        const auto raw = result.data.toObject();
+        const auto parsed = encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), stage.key);
+        if (result.status == 404) {
+            // The POST never landed server-side: nothing left to recover.
+            m_chatKeys->clearCreateStage(lease, stage.attempt);
+        } else if (result.ok() && parsed && parsed->uuid == stage.attempt) {
+            const auto committed = m_chatKeys->put(lease,
+                NativeChatKeyVault::Address{stage.attempt, stage.key}, stage.groupKey, 0);
+            if (committed == NativeChatKeyVault::Failure::None) m_chatKeys->clearCreateStage(lease, stage.attempt);
+        }
+        // Any other answer keeps the stage intact for the next controller init.
+        resolveNextChannelCreateStage(stages, token);
     });
 }
 
@@ -4363,11 +4522,15 @@ void NativeController::loadChannelCatalog(const QString &owner, const QString &i
         const auto streamRevision = m_streamRevision;
         const auto creationRevision = m_channelCreations.value(owner).revision;
         const auto unsafeRevision = m_channelCreations.value(owner).unsafeRevision;
+        const auto encryptedIntent = m_channelCreations.value(owner).encrypted;
+        const auto frozenKeyUuid = m_channelCreations.value(owner).encryptionKey;
         QVector<Stream> streams; QSet<QString> ids; bool found = false;
         const auto expectedDefault = m_channelCreations.value(owner).defaultTopic;
         for (const auto &value : rows) {
             const auto raw = value.toObject(); const bool target = raw.value("uuid").toString() == id;
-            const auto parsed = creationStreamDto(raw, m_session->project(), m_session->user(), target);
+            const auto parsed = target && encryptedIntent
+                ? encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), frozenKeyUuid)
+                : creationStreamDto(raw, m_session->project(), m_session->user(), target);
             if (!value.isObject() || !parsed || ids.contains(parsed->uuid)
                 || (target && raw.value("default_topic_uuid").toString() != expectedDefault)) {
                 finishChannelCreation(owner, id, ticket, tr("The server returned an invalid channel list.")); return;
@@ -6269,6 +6432,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::signedOut, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
+    // Issue #234 review fix r3: a login that happens with an already-open
+    // vault re-checks durable encrypted-create stages (login-only restarts).
+    connect(m_session, &Session::authenticated, this, [this] { maybeResolveChannelCreateStages(); });
     // Issue #161: the Workspace meet host lives only as long as the session
     // does (reference per-owner store, cleared on logout).
     connect(m_session, &Session::authenticated, this, [this] { fetchCallMeetHost(); });

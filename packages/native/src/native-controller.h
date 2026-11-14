@@ -421,7 +421,7 @@ public:
     Q_INVOKABLE void checkDirectChat();
     Q_INVOKABLE void retryDirectChat();
     Q_INVOKABLE void createChannel(const QString &name, const QString &description,
-        bool inviteOnly, bool announce, const QVariantList &memberUuids);
+        bool inviteOnly, bool announce, const QVariantList &memberUuids, bool encrypted = false);
     Q_INVOKABLE void checkChannelCreation();
     Q_INVOKABLE void retryChannelMembers();
     Q_INVOKABLE void refreshChannelInfo();
@@ -820,6 +820,8 @@ private:
     struct ChannelCreation {
         QString uuid, name, description, phase = QStringLiteral("idle"), error;
         QString routeStream, routeTopic, contextKey, defaultTopic, acl;
+        QString encryptionKey;
+        QByteArray groupKey;
         QStringList members;
         QJsonArray topics;
         quint64 generation = 0, selection = 0, catalog = 0, revision = 0, unsafeRevision = 0, ticket = 0;
@@ -830,6 +832,7 @@ private:
         QPointer<NativeCacheService> cache;
         NativeCache::Lease lease;
         bool inviteOnly = false, announce = false, busy = false;
+        bool encrypted = false, keyStored = false;
         bool dispatched = false, verifiedRequest = false, confirmed = false, deleted = false, accessLost = false;
         bool membersAttempted = false, membersConfirmed = false, allowMembers = false, checkBindings = false;
     };
@@ -848,6 +851,17 @@ private:
                               quint64 unsafeRevision, std::function<void()> retry);
     void updateChannelDirectory(const QJsonArray &rows, bool authoritative);
     void confirmChannelCreation(const QString &owner, const QString &id, quint64 ticket);
+    bool commitChannelKey(const QString &owner, const QString &id, quint64 ticket);
+    // Review findings 4574928575/4574928581: after a restart the durable
+    // pre-dispatch stage is the only copy of a new encrypted channel's key.
+    // The first authenticated use of a vault scans the stages and resolves
+    // each pending attempt by fetching the stream under its staged identity,
+    // verifying the encrypted echo, committing the key, then clearing.
+    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; };
+    void maybeResolveChannelCreateStages();
+    void resolveChannelCreateStages(const QString &token);
+    void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token);
+    QString m_channelStageToken;
     void loadChannelDefault(const QString &owner, const QString &id, quint64 ticket);
     void checkChannelMembers(const QString &owner, const QString &id, quint64 ticket);
     void addChannelMembers(const QString &owner, const QString &id, quint64 ticket);

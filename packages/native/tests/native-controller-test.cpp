@@ -519,6 +519,45 @@ public:
     }
 };
 
+// Issue #234: the encrypted fixture echoes the encrypted creation fields back
+// exactly as the audited backend does: `encryption` and
+// `current_encryption_key_uuid` mirror the accepted stream POST, its POST
+// echo and every later canonical GET, unless a case corrupts them via
+// alterEncryptedPost (POST echo only) or alterGet (canonical GET only).
+class EncryptedChannelCreationFixture : public ChannelCreationFixture {
+public:
+    std::function<void(QJsonObject &)> alterEncryptedPost;
+    EncryptedChannelCreationFixture()
+    {
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [this, fallback](const Request &request) -> Response {
+            auto response = fallback(request);
+            if (request.method == "POST" && request.target.path() == "/api/workspace/v1/messenger/streams/") {
+                created["encryption"] = request.body.value("encryption");
+                created["current_encryption_key_uuid"] = request.body.value("current_encryption_key_uuid");
+                response.data = created;
+                if (alterEncryptedPost) { auto row = response.data.toObject(); alterEncryptedPost(row); response.data = row; }
+            }
+            return response;
+        };
+    }
+    // Attaches a durable chat key vault to the controller; every encrypted
+    // creation commits its key here. The vault owner is an https identity
+    // (canonicalOrigin requirement); the fixture server itself stays the
+    // synthetic http mock.
+    bool attachVault(NativeChatKeyVault &keys)
+    {
+        bool opened = false;
+        NativeChatKeyVault::Failure failure = NativeChatKeyVault::Failure::Unavailable;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { failure = value; opened = value == NativeChatKeyVault::Failure::None; });
+        const bool ok = QTest::qWaitFor([&opened] { return opened; }, 2000);
+        if (!ok) qWarning("vault open failed with code %d", int(failure));
+        if (ok) fixture.controller.useChatKeys(&keys);
+        return ok;
+    }
+};
+
 static const QString directId = "8c471e8b-a67b-5167-aeb7-b5ea70d13133";
 
 static QString expectedDirectId(const QString &peer, const QString &viewer = userId, const QString &project = projectId)
@@ -4751,6 +4790,288 @@ private slots:
         controller.retryChannelMembers(); QTRY_COMPARE(done.size(), 1);
         QCOMPARE(test.posts, 1); QCOMPARE(test.memberPosts, 1); QCOMPARE(test.bindingGets, 2);
         QCOMPARE(test.memberBodies.first(), QJsonObject({{"member", QJsonArray{channelMemberA, channelMemberB}}}));
+    }
+
+    // ---- Issue #234: encrypted channel creation (docs/NATIVE_DESKTOP_ENCRYPTED_CHANNEL_CREATION.md) ----
+
+    void encryptedChannelCreationSendsBootstrapKeyAndNavigates()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        QVERIFY(test.attachVault(keys));
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        const auto history = test.fixture.totalHistoryGets();
+        // The reference clears the exclusive flags for an encrypted intent.
+        controller.createChannel("  Protected channel  ", "  Frozen description  ", true, true, {channelMemberA}, true);
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QVERIFY2(controller.channelCreationPhase() == "ready",
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QCOMPARE(complete.size(), 1); QCOMPARE(test.posts, 1); QCOMPARE(test.memberPosts, 1);
+        const auto body = test.streamBodies.first();
+        const auto keyUuid = body.value("current_encryption_key_uuid").toString();
+        QVERIFY(isUuid(keyUuid));
+        QCOMPARE(body, QJsonObject({{"uuid", controller.channelCreationForm().value("attemptId").toString()},
+            {"name", "Protected channel"}, {"description", "Frozen description"}, {"source_name", "native"},
+            {"invite_only", false}, {"announce", false}, {"encryption", true}, {"current_encryption_key_uuid", keyUuid}}));
+        QCOMPARE(test.memberBodies.first(), QJsonObject({{"member", QJsonArray{channelMemberA}}}));
+        // The generated key is committed to the durable vault bound to the created stream.
+        const auto stream = controller.selectedStream();
+        const auto stored = keys.read(keys.lease(), {stream, keyUuid});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(stored.value.bytes.size(), 32);
+        // Success navigation matches the ordinary path: verified aggregate + choose-topic prompt.
+        QCOMPARE(controller.selectedStream(), test.created.value("uuid").toString());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(controller.conversationKind(), QString("stream"));
+        QTRY_COMPARE(test.fixture.totalHistoryGets() - history, 1);
+    }
+
+    void encryptedChannelCreationKeepsOneImmutableAttemptAcrossClicks()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        QVERIFY(test.attachVault(keys));
+        test.postDelay = 200; QSignalSpy complete(&controller, &NativeController::channelCreated);
+        controller.createChannel("Frozen intent", "", false, false, {}, true);
+        QTRY_VERIFY(controller.channelCreationBusy());
+        controller.createChannel("Ignored second click", "", true, true, {}, true);
+        QVERIFY(controller.channelCreationBusy());
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        // One POST for one intent; the frozen attempt uuid and key uuid are untouched.
+        QCOMPARE(test.posts, 1);
+        const auto attempt = controller.channelCreationForm().value("attemptId").toString();
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        QVERIFY(isUuid(attempt)); QVERIFY(isUuid(keyUuid));
+        // An unresolved (uncertain) intent cannot fork a second attempt either.
+        test.postDelay = 0; test.postStatus = 503; test.getStatus = 404;
+        const auto retry = controller.channelCreationForm();
+        QCOMPARE(retry.value("attemptId"), attempt);
+    }
+
+    void encryptedChannelCreationAmbiguousCheckCommitsKeyOnceWithoutSecondPost()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        QVERIFY(test.attachVault(keys));
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        test.postStatus = 503;
+        controller.createChannel("Ambiguous encrypted", "", false, false, {}, true);
+        QTRY_VERIFY(controller.channelCreationUncertain());
+        QCOMPARE(test.posts, 1);
+        const auto attempt = controller.channelCreationForm().value("attemptId").toString();
+        test.postStatus = 201; controller.checkChannelCreation();
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QVERIFY2(controller.channelCreationPhase() == "ready",
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QCOMPARE(test.posts, 1);
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        const auto stored = keys.read(keys.lease(), {test.created.value("uuid").toString(), keyUuid});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(complete.size(), 1);
+        QCOMPARE(controller.channelCreationForm().value("attemptId"), attempt);
+    }
+
+    void encryptedChannelCreationEchoMismatchStaysUncertainAndRecoversByCheck()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        QVERIFY(test.attachVault(keys));
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        const auto before = controller.selectedStream();
+        test.alterEncryptedPost = [](QJsonObject &row) { row["encryption"] = false; };
+        controller.createChannel("Unconfirmed encryption", "", false, false, {}, true);
+        QTRY_VERIFY(controller.channelCreationUncertain());
+        QVERIFY(controller.channelCreationError().contains("did not confirm", Qt::CaseInsensitive));
+        QCOMPARE(test.posts, 1); QCOMPARE(complete.size(), 0);
+        QCOMPARE(controller.selectedStream(), before); // no navigation
+        // The unconfirmed key was not committed; a GET-only check against the
+        // authoritative echo completes the same intent and commits the key.
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        test.alterEncryptedPost = {};
+        controller.checkChannelCreation();
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QVERIFY2(controller.channelCreationPhase() == "ready",
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QCOMPARE(test.posts, 1); QCOMPARE(complete.size(), 1);
+        QCOMPARE(test.gets, 1);
+        const auto stored = keys.read(keys.lease(), {test.created.value("uuid").toString(), keyUuid});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+    }
+
+    void encryptedChannelCreationReplacedRuntimeCannotPublish()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        QVERIFY(test.attachVault(keys));
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        test.postDelay = 300;
+        controller.createChannel("Replaced runtime", "", false, false, {}, true);
+        QTRY_VERIFY(controller.channelCreationBusy());
+        controller.logout();
+        QTest::qWait(600); // let the in-flight POST response land on a replaced runtime
+        QCOMPARE(complete.size(), 0);
+        QVERIFY(controller.channelCreationForm().isEmpty());
+        QCOMPARE(controller.channelCreationPhase(), QString("idle"));
+        QVERIFY(controller.selectedStream().isEmpty());
+        QVERIFY(!keys.available() || keys.listKeys(keys.lease(), test.created.value("uuid").toString()).values.isEmpty());
+    }
+
+    void encryptedChannelCreationWithoutCryptoStoreFailsLocally()
+    {
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        auto &controller = test.fixture.controller;
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        controller.createChannel("No vault", "", false, false, {}, true);
+        QVERIFY(!controller.channelCreationBusy());
+        QCOMPARE(test.posts, 0); QCOMPARE(complete.size(), 0);
+        QCOMPARE(controller.channelCreationPhase(), QString("idle"));
+        QVERIFY(!controller.channelCreationError().isEmpty());
+        // The ordinary path is untouched by the missing vault.
+        QSignalSpy ordinary(&controller, &NativeController::channelCreated);
+        controller.createChannel("Ordinary still works", "", false, false, {}, false);
+        QTRY_COMPARE(ordinary.size(), 1);
+    }
+
+    // Review findings 4574928575/4574928581 (critical): the stream POST has been
+    // dispatched and the server has created the encrypted channel, but the
+    // process ends before the canonical GET echo commits the key. A controller
+    // restart that shares the same vault and secret store must recover the
+    // frozen group key from durable state and commit it once the echo verifies.
+    void encryptedChannelCreationSurvivesProcessLossAfterDispatch()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        auto release = std::make_shared<std::function<void()>>();
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, release](const Request &request) -> Response {
+            auto response = inner(request);
+            if (request.method == "POST" && request.target.path() == "/api/workspace/v1/messenger/streams/")
+                response.defer = [release](std::function<void()> send) { *release = std::move(send); };
+            return response;
+        };
+        auto *first = new NativeController(&test.fixture.api, &test.fixture.session);
+        QPointer<NativeController> firstGuard(first), restartGuard, secondGuard;
+        const auto cleanup = qScopeGuard([&] {
+            delete firstGuard.data(); delete restartGuard.data(); delete secondGuard.data();
+        });
+        first->useChatKeys(&keys);
+        first->refresh(); QTRY_COMPARE(first->streams().size(), 1);
+        first->createChannel("Crash window", "", false, false, {}, true);
+        QTRY_COMPARE(test.posts, 1); // dispatched; the reply is still in flight
+        delete first; // the process ends between dispatch and the canonical GET
+        if (*release) (*release)(); *release = {}; // the stale reply lands with nobody listening
+        auto *restarted = new NativeController(&test.fixture.api, &test.fixture.session);
+        restartGuard = restarted;
+        restarted->useChatKeys(&keys);
+        const auto streamUuid = test.created.value("uuid").toString();
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        QVERIFY(isUuid(keyUuid));
+        // The recovery fetches the stream by the staged identity, verifies the
+        // encrypted echo and commits the key durably.
+        QVERIFY2(QTest::qWaitFor([&] {
+            auto stored = keys.read(keys.lease(), {streamUuid, keyUuid});
+            const bool ok = stored.failure == NativeChatKeyVault::Failure::None && stored.value.bytes.size() == 32;
+            stored.value.bytes.fill('\0');
+            return ok;
+        }, 5000), "recovered group key missing after restart");
+        const auto getsAfterRecovery = test.gets;
+        QVERIFY(getsAfterRecovery >= 1);
+        delete restarted; restartGuard = nullptr;
+        // The stage was cleared with the commit: another restart re-verifies nothing.
+        auto *secondRestart = new NativeController(&test.fixture.api, &test.fixture.session);
+        secondGuard = secondRestart;
+        secondRestart->useChatKeys(&keys);
+        QTest::qWait(400);
+        QCOMPARE(test.gets, getsAfterRecovery);
+        delete secondRestart; secondGuard = nullptr;
+    }
+
+    // Review finding 4574928581 (medium): the stage must exist durably while
+    // the POST is in flight, must survive a restart whose canonical echo does
+    // not verify (nothing may be committed from it), and must be cleared only
+    // by a successful commit so the next restart can finish the recovery.
+    void encryptedChannelCreationPendingStageSurvivesMismatchedEcho()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        auto release = std::make_shared<std::function<void()>>();
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, release](const Request &request) -> Response {
+            auto response = inner(request);
+            if (request.method == "POST" && request.target.path() == "/api/workspace/v1/messenger/streams/")
+                response.defer = [release](std::function<void()> send) { *release = std::move(send); };
+            return response;
+        };
+        auto *first = new NativeController(&test.fixture.api, &test.fixture.session);
+        QPointer<NativeController> firstGuard(first), restartGuard, finalGuard;
+        const auto cleanup = qScopeGuard([&] {
+            delete firstGuard.data(); delete restartGuard.data(); delete finalGuard.data();
+        });
+        first->useChatKeys(&keys);
+        first->refresh(); QTRY_COMPARE(first->streams().size(), 1);
+        first->createChannel("Mismatched echo", "", false, false, {}, true);
+        QTRY_COMPARE(test.posts, 1);
+        const auto attempt = test.streamBodies.first().value("uuid").toString();
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        const auto streamUuid = test.created.value("uuid").toString();
+        // The stage is durable before the POST response ever arrives: the
+        // crash window has a recoverable copy from the moment of dispatch.
+        const auto staged = keys.readCreateStage(keys.lease(), attempt);
+        QCOMPARE(staged.failure, NativeChatKeyVault::Failure::None);
+        QVERIFY(staged.value.has_value());
+        QCOMPARE(staged.value->key, keyUuid);
+        QCOMPARE(staged.value->groupKey.size(), 32);
+        delete first;
+        if (*release) (*release)(); *release = {};
+        // Restart with an echo that does not verify: recovery must neither
+        // commit the key nor clear the durable stage.
+        test.alterGet = [](QJsonObject &row) {
+            row["current_encryption_key_uuid"] = QStringLiteral("99999999-9999-4999-8999-999999999999");
+        };
+        auto *restarted = new NativeController(&test.fixture.api, &test.fixture.session);
+        restartGuard = restarted;
+        restarted->useChatKeys(&keys);
+        QTRY_COMPARE(test.gets, 1);
+        QTest::qWait(300); // let any (wrong) commit or clear settle
+        const auto uncommitted = keys.read(keys.lease(), {streamUuid, keyUuid});
+        QVERIFY(uncommitted.value.bytes.isEmpty());
+        const auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QCOMPARE(kept.failure, NativeChatKeyVault::Failure::None);
+        delete restarted; restartGuard = nullptr;
+        // A later restart against the authoritative echo completes the
+        // recovery: the key commits and the stage is cleared with it.
+        test.alterGet = {};
+        auto *settled = new NativeController(&test.fixture.api, &test.fixture.session);
+        finalGuard = settled;
+        settled->useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] {
+            auto stored = keys.read(keys.lease(), {streamUuid, keyUuid});
+            const bool ok = stored.failure == NativeChatKeyVault::Failure::None && stored.value.bytes.size() == 32;
+            stored.value.bytes.fill('\0');
+            return ok;
+        }, 5000), "stage recovery failed after the echo became authoritative");
+        const auto cleared = keys.readCreateStage(keys.lease(), attempt);
+        QCOMPARE(cleared.failure, NativeChatKeyVault::Failure::MissingKey);
+        QVERIFY(keys.createStages(keys.lease()).values.isEmpty());
+        delete settled; finalGuard = nullptr;
     }
 
     void channelMemberRecoveryPreservesTheConfirmedStreamAndFrozenSet_data()
