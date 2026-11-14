@@ -93,6 +93,30 @@ ApplicationWindow {
                 && rightDrawer.currentMode === "info"
                 && rightDrawer.currentChatScreen === ""
                 && rightDrawer.currentProfileOverride === ""
+                // Issue #243: a protected chat shows the encrypted presentation
+                // instead (reference right-panel-workspace-info.ui.tsx:829-845).
+                && !root.encryptedConversation
+        }
+        // Encrypted chat info (issue #243, docs/NATIVE_DESKTOP_E2EE_CHAT_INFO.md):
+        // the reference screen switch, mounted as the chat-info layer content.
+        // The shell keeps the chrome, so this layer only renders the active
+        // screen body and routes navigation back through openChatScreen.
+        NativeEncryptedChatInfo {
+            id: encryptedChatInfoLayer
+            objectName: "encryptedChatInfoLayer"
+            colors: root.colors
+            controller: root.controller
+            chatScreen: rightDrawer.currentChatScreen === "" ? "info" : rightDrawer.currentChatScreen
+            visible: rightDrawer.topLayerKind === "chat-info"
+                && rightDrawer.currentMode === "info"
+                && rightDrawer.currentProfileOverride === ""
+                && root.encryptedConversation
+            onScreenChange: function (screen) {
+                const scope = root.rightDrawerChatScope
+                rightDrawer.openChatScreen({ownerKey: scope.ownerKey,
+                    runtimeGeneration: scope.runtimeGeneration,
+                    streamUuid: scope.streamUuid, screen: screen})
+            }
         }
         // User profile content (issue #134, docs/NATIVE_DESKTOP_USER_PROFILE.md):
         // the chat-info profile override for other users and the account

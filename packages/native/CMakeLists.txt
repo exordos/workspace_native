@@ -108,7 +108,7 @@ qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeInboxPage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
@@ -134,6 +134,10 @@ foreach(icon key-granted key-rejected)
     set_source_files_properties("${service_icon}" PROPERTIES QT_RESOURCE_ALIAS "${icon}.svg")
     list(APPEND native_icon_files "${service_icon}")
 endforeach()
+# The protected chat info Settings tile uses the reference feature's own glyph.
+set(chat_info_icon "../web/src/features/encrypted-chat-info/assets/instant-mix.svg")
+set_source_files_properties("${chat_info_icon}" PROPERTIES QT_RESOURCE_ALIAS "instant-mix.svg")
+list(APPEND native_icon_files "${chat_info_icon}")
 qt_add_resources(workspace-native-ui native_icons PREFIX /workspace/icons
     BASE ../web/src/shared/assets/icons FILES ${native_icon_files})
 qt_add_resources(workspace-native-ui native_brand PREFIX /workspace/brand
