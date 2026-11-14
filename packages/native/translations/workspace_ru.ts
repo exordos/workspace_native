@@ -3370,4 +3370,15 @@
             <translation>Создать опрос</translation>
         </message>
     </context>
+    <context>
+        <name>NativeQuoteMediaThumbnail</name>
+        <message>
+            <source>Image</source>
+            <translation>Изображение</translation>
+        </message>
+        <message>
+            <source>Video</source>
+            <translation>Видео</translation>
+        </message>
+    </context>
 </TS>

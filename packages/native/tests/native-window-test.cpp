@@ -12839,7 +12839,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(bubbleThumb->property("width").toReal(), 48.0);
         QCOMPARE(bubbleThumb->property("radius").toReal(), 6.0);
         QCOMPARE(bubbleThumb->property("color").toString(), QString("#ffffff"));
-        QTRY_COMPARE(bubbleThumb->property("status").toString(), QString("ready"));
+        QTRY_COMPARE(bubbleThumb->property("mediaStatus").toString(), QString("ready"));
         auto *thumbImage = item(content, "quoteMediaThumbnail-" + quotingId + "-image"); QVERIFY(thumbImage);
         QVERIFY(!thumbImage->property("source").toString().isEmpty());
         QVERIFY(bubbleThumb->property("clip").toBool());
@@ -12862,7 +12862,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(replyThumb->isVisible());
         QCOMPARE(replyThumb->property("width").toReal(), 48.0);
         QCOMPARE(replyThumb->property("color").toString(), QString("#ffffff"));
-        QTRY_COMPARE(replyThumb->property("status").toString(), QString("ready"));
+        QTRY_COMPARE(replyThumb->property("mediaStatus").toString(), QString("ready"));
         auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
         QTRY_VERIFY2(!excerpt->property("visible").toBool(),
                      qPrintable(excerpt->property("text").toString()));
@@ -12922,7 +12922,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // the media label stays in the quote body and the text column keeps
         // the text-only x-offset instead of shifting for the box.
         auto *bubbleThumb = item(content, "quoteMediaThumbnail-" + quotingId); QVERIFY(bubbleThumb);
-        QTRY_COMPARE(bubbleThumb->property("status").toString(), QString("failed"));
+        QTRY_COMPARE(bubbleThumb->property("mediaStatus").toString(), QString("failed"));
         QTRY_VERIFY(!bubbleThumb->property("visible").toBool());
         auto *quoteBody = item(content, "quoteBodyHtml-" + quotingId); QVERIFY(quoteBody);
         QVERIFY2(quoteBody->property("text").toString().contains("broken.png"),
@@ -12942,7 +12942,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *notice = item(content, "replyNotice"); QVERIFY(notice);
         QTRY_VERIFY(notice->isVisible());
         auto *replyThumb = item(content, "replyMediaThumbnail"); QVERIFY(replyThumb);
-        QTRY_COMPARE(replyThumb->property("status").toString(), QString("failed"));
+        QTRY_COMPARE(replyThumb->property("mediaStatus").toString(), QString("failed"));
         QTRY_VERIFY(!replyThumb->property("visible").toBool());
         auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
         QTRY_VERIFY(excerpt->property("visible").toBool());
@@ -13018,7 +13018,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // Image-only quote: the body text drops the media token once the
         // preview is ready, so the thumbnail announces it instead.
         auto *imageThumb = item(content, "quoteMediaThumbnail-" + imageQuoteId); QVERIFY(imageThumb);
-        QTRY_COMPARE(imageThumb->property("status").toString(), QString("ready"));
+        QTRY_COMPARE(imageThumb->property("mediaStatus").toString(), QString("ready"));
         auto *imageBody = item(content, "quoteBodyHtml-" + imageQuoteId); QVERIFY(imageBody);
         QVERIFY2(!imageBody->property("text").toString().contains("solo.png"),
                  qPrintable(imageBody->property("text").toString()));
@@ -13028,7 +13028,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // Video-only quote: the badge box announces the media kind too.
         auto *videoThumb = item(content, "quoteMediaThumbnail-" + videoQuoteId); QVERIFY(videoThumb);
         QCOMPARE(videoThumb->property("kind").toString(), QString("video"));
-        QTRY_COMPARE(videoThumb->property("status").toString(), QString("ready"));
+        QTRY_COMPARE(videoThumb->property("mediaStatus").toString(), QString("ready"));
         auto *videoBody = item(content, "quoteBodyHtml-" + videoQuoteId); QVERIFY(videoBody);
         QVERIFY2(!videoBody->property("text").toString().contains("clip.mp4"),
                  qPrintable(videoBody->property("text").toString()));

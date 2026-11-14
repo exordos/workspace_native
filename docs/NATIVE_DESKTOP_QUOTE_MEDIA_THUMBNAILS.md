@@ -115,7 +115,7 @@ video**; anything else yields no thumbnail.
   radius 6 px, `colors["bg-elevated"]` fill, `Image.PreserveAspectCover` inside a
   clipped rounded mask (`object-cover`). It holds exactly one lease on
   `nativeMessageImages` while active and publishes
-  `status: "loading" | "ready" | "failed"`.
+  `mediaStatus: "loading" | "ready" | "failed"`.
 - **Frame wiring**: `replyQuoteFrame` and `messageQuoteFrame` keep their current
   chrome and wrap their contents in `RowLayout { spacing: 8; alignment stretch }`
   with the thumbnail as the first child when a media reference exists.
@@ -127,23 +127,28 @@ video**; anything else yields no thumbnail.
   media viewer strip already renders video slots
   (`qml/NativeMediaViewer.qml:352-390`) and is the one deliberate visual deviation
   from the reference `<video preload="metadata">` poster frame.
-- **Failure**: `status: "failed"` hides the thumbnail and keeps the text-only
-  layout (reference returns `null` on error), including the un-hidden media text.
+- **Failure**: `mediaStatus: "failed"` hides the thumbnail and keeps the text-only
+  layout (reference returns `null` on error), including the un-hidden media
+  text. The failure latches per urn, so a hidden box does not re-request the
+  same file just because hiding it re-evaluated the demand flag.
 - **Theme note**: the default `blue-cold` palette already carries the reference
   values (`NativeTheme.qml` `bg-elevated`: `#ffffff` light, `#222328` dark), so
   the token matches the reference exactly there. Non-`blue-cold` native palettes
   keep their own `bg-elevated` (`#ffffff` / `#333333`) — the deviation is accepted
   because the token, not the literal hex, is the contract.
-- **Accessibility**: the thumbnail is decorative (`Accessible.ignored`), the
-  quoted author line stays the accessible name of the frame.
+- **Accessibility**: the thumbnail is decorative while loading or failed (the
+  visible media label carries the meaning then); once the preview is ready the
+  media label leaves the text, so the box itself takes the accessible name
+  `Image`/`Video` (exo-review round 1). The quoted author line stays the
+  header text of the frame either way.
 
 ## States
 
 | State | Reference | Native |
 | --- | --- | --- |
 | No media reference | text-only frame | text-only frame |
-| Media reference, loading | 48 px elevated box, media label still in text | same (`status: loading`) |
-| Ready | picture (object-cover), media label dropped from text | same (`status: ready`) |
+| Media reference, loading | 48 px elevated box, media label still in text | same (`mediaStatus: loading`) |
+| Ready | picture (object-cover), media label dropped from text | same (`mediaStatus: ready`) |
 | Failed | no box, media label back | same (`status: failed`) |
 | Forward snapshot / selected text | never a thumbnail | never a thumbnail |
 
