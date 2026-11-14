@@ -136,10 +136,13 @@ foreach(icon key-granted key-rejected)
     set_source_files_properties("${service_icon}" PROPERTIES QT_RESOURCE_ALIAS "${icon}.svg")
     list(APPEND native_icon_files "${service_icon}")
 endforeach()
-# The protected chat info Settings tile uses the reference feature's own glyph.
-set(chat_info_icon "../web/src/features/encrypted-chat-info/assets/instant-mix.svg")
-set_source_files_properties("${chat_info_icon}" PROPERTIES QT_RESOURCE_ALIAS "instant-mix.svg")
-list(APPEND native_icon_files "${chat_info_icon}")
+# The protected chat info Settings tile and the key screen rotate button use
+# the reference feature's own glyphs.
+foreach(chat_feature_icon IN ITEMS instant-mix cached)
+    set(chat_feature_icon_path "../web/src/features/encrypted-chat-info/assets/${chat_feature_icon}.svg")
+    set_source_files_properties("${chat_feature_icon_path}" PROPERTIES QT_RESOURCE_ALIAS "${chat_feature_icon}.svg")
+    list(APPEND native_icon_files "${chat_feature_icon_path}")
+endforeach()
 qt_add_resources(workspace-native-ui native_icons PREFIX /workspace/icons
     BASE ../web/src/shared/assets/icons FILES ${native_icon_files})
 qt_add_resources(workspace-native-ui native_brand PREFIX /workspace/brand
@@ -338,6 +341,10 @@ if(BUILD_TESTING)
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
+    # The key-management fixture mounts the durable vault through a loopback TLS
+    # gateway (issue #244), which needs the same synthetic-CA openssl grant.
+    target_compile_definitions(native-controller-test PRIVATE
+        WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
     # Actual local TLS/h2 transport regressions. Existing QtTest failOnWarning policy is untouched.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         find_package(Python3 REQUIRED COMPONENTS Interpreter)

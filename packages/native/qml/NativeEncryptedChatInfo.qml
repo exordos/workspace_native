@@ -19,7 +19,14 @@ Item {
     required property var controller
     // "info" | "settings" | "key" | "local-key" (encrypted-chat-info.types.ts:3).
     property string chatScreen: "info"
+    // Locale name for the joined date labels (Main.qml binds preferences.locale).
+    property string localeName: "en"
+    // Opened saved-key uuid on the local-key screen (drawer currentChatKeyUuid).
+    property string keyUuid: ""
+    // The reference collapsible starts collapsed (LocalKeys useState(false)).
+    property bool localKeysExpanded: false
     signal screenChange(string screen)
+    signal localKeyOpen(string keyUuid)
     // The member add affordance routes to the shared add-members dialog through
     // Main.qml (the ordinary layer owns the one dialog instance).
     signal addMembersRequested()
@@ -29,7 +36,13 @@ Item {
     // Reset the scroll position whenever the active screen changes: the flows
     // have different heights, and a retained offset can leave the shorter
     // screen scrolled out of view (reference remounts per screen).
-    onChatScreenChanged: pageScroll.contentY = 0
+    onChatScreenChanged: {
+        pageScroll.contentY = 0
+        // Reveal-driven key enumeration (#197 convention: never fetch hidden);
+        // the durable vault read is synchronous (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md).
+        if (page.keyScreen || page.localKeyScreen)
+            page.controller.refreshChatLocalKeys()
+    }
 
     // The shell reveals this layer only while it is on top, so a hidden layer
     // never fetches (#197). Reveal re-reads the info projection like the
@@ -42,7 +55,11 @@ Item {
         const info = page.controller.channelInfoStream
         return info && info.id ? String(info.id) : ""
     }
-    function refresh() { page.controller.refreshChannelInfo() }
+    function refresh() {
+        page.controller.refreshChannelInfo()
+        if (page.keyScreen || page.localKeyScreen)
+            page.controller.refreshChatLocalKeys()
+    }
     Connections {
         target: page.controller
         function onStateChanged() {
@@ -68,6 +85,48 @@ Item {
     readonly property bool settingsScreen: page.chatScreen === "settings"
     readonly property bool keyScreen: page.chatScreen === "key"
     readonly property bool localKeyScreen: page.chatScreen === "local-key"
+
+    // ---- Key management projections (issue #244) ----
+    readonly property var chatEncryption: controller.encryption
+    readonly property var keyInventory: controller.chatKeyInventory
+    readonly property string inventoryState: keyInventory && keyInventory.state ? String(keyInventory.state) : "loading"
+    readonly property string inventoryError: keyInventory && keyInventory.error ? String(keyInventory.error) : ""
+    readonly property var inventoryKeys: keyInventory && keyInventory.keys ? keyInventory.keys : []
+    readonly property string currentKeyUuid: chatEncryption && chatEncryption.currentKeyUuid
+        ? String(chatEncryption.currentKeyUuid) : ""
+    readonly property bool hasCurrentKey: currentKeyUuid.length > 0
+    // Reference currentKeyMissing (connected ui:344-349): key known, inventory
+    // loaded and no local row carries it.
+    readonly property bool currentKeyMissing: inventoryState === "ready" && hasCurrentKey
+        && !page.hasLocalRowFor(currentKeyUuid)
+    readonly property string requestedKeyUuid: chatEncryption && String(chatEncryption.state || "") === "requested"
+        && chatEncryption.keyUuid ? String(chatEncryption.keyUuid) : ""
+    // The row opened on the local-key screen (null while loading/unknown/deleted).
+    readonly property var localKeyRow: {
+        if (page.keyUuid.length === 0)
+            return null
+        const keys = page.inventoryKeys
+        for (let index = 0; index < keys.length; ++index)
+            if (String(keys[index].keyUuid) === page.keyUuid)
+                return keys[index]
+        return null
+    }
+    function hasLocalRowFor(keyUuid) {
+        const keys = page.inventoryKeys
+        for (let index = 0; index < keys.length; ++index)
+            if (String(keys[index].keyUuid) === keyUuid)
+                return true
+        return false
+    }
+    // joined-style labels (formatDateJoined / localKeyDateUnknown fallbacks).
+    function keyDateLabel(isoDate, unknownText) {
+        const value = String(isoDate || "")
+        return value.length > 0 ? page.controller.formatChatKeyDate(value, page.localeName) : unknownText
+    }
+    function shortKeyUuid(keyUuid) {
+        const value = String(keyUuid)
+        return value.slice(0, 8) + "\u2026" + value.slice(-4)
+    }
 
     // channel.participants / channel.online (i18next plural forms, ru one/few/many).
     function participantsLabel(count) {
@@ -120,8 +179,12 @@ Item {
         // screen's flow would let the shorter screen scroll past its end.
         contentHeight: (page.infoScreen
                 ? Math.max(infoFlow.y + infoFlow.height, membersSection.y + membersSection.height)
-                : Math.max(settingsFlow.y + settingsFlow.height,
-                    page.keyScreen || page.localKeyScreen ? 16 : 0)) + 16
+                : page.keyScreen
+                    ? Math.max(keySummaryFlow.y + keySummaryFlow.height,
+                        keyLocalSection.y + keyLocalSection.height)
+                    : page.localKeyScreen
+                        ? localKeyFlow.y + localKeyFlow.height
+                        : settingsFlow.y + settingsFlow.height) + 16
         boundsBehavior: Flickable.StopAtBounds
 
         // ---- Info screen (encrypted-chat-info.ui.tsx:562-627) ----
@@ -668,22 +731,687 @@ Item {
             }
         }
 
-        // Key screens are scaffolded empty; issue #244 owns their content.
-        Item {
-            objectName: "encryptedChatKeyScreen"
+        // ---- Key screen: KeySummary (encrypted-chat-info.ui.tsx:87-129) ----
+        // section.space-y-3.px-4 inside the ScrollArea gap-5 py-4 flow.
+        Column {
+            id: keySummaryFlow
+            objectName: "encryptedChatKeySummary"
             x: 16
             y: 16
             width: pageScroll.width - 32
-            height: 0
+            spacing: 12
             visible: page.keyScreen
+            Accessible.name: qsTr("Encryption keys")
+
+            TextEdit {
+                id: keyClipboard
+                objectName: "encryptedChatKeyClipboard"
+                width: 0; height: 0
+                opacity: 0
+                text: ""
+            }
+
+            // Present-key block (space-y-2).
+            Column {
+                objectName: "encryptedChatKeyPresentBlock"
+                width: keySummaryFlow.width
+                spacing: 8
+                visible: page.hasCurrentKey
+                // flex items-center justify-between gap-2 text-sm text-text-muted
+                Item {
+                    width: parent.width
+                    height: 20
+                    Text {
+                        objectName: "encryptedChatKeyUuidLabel"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Current key ID")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        color: page.colors["text-muted"]
+                    }
+                    Button {
+                        id: keyCopyButton
+                        objectName: "encryptedChatKeyCopyButton"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 24; height: 24
+                        padding: 0
+                        hoverEnabled: true
+                        display: AbstractButton.IconOnly
+                        Accessible.name: qsTr("Copy key ID")
+                        icon.source: "qrc:/workspace/icons/copy.svg"
+                        icon.width: 24; icon.height: 24
+                        icon.color: page.colors["text-muted"]
+                        background: Rectangle {
+                            radius: 4
+                            color: keyCopyButton.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                        }
+                        // Reference onCopyKey writes the UUID through the
+                        // clipboard helper guarded by the runtime scope; the
+                        // native drawer is already scoped to the viewed stream.
+                        onClicked: {
+                            keyClipboard.text = page.currentKeyUuid
+                            keyClipboard.selectAll()
+                            keyClipboard.copy()
+                        }
+                    }
+                }
+                // rounded-lg bg-card-bg px-2 py-1.5 text-sm leading-5 truncate
+                Rectangle {
+                    objectName: "encryptedChatKeyChip"
+                    width: parent.width
+                    height: 32
+                    radius: 8
+                    color: page.colors["card-bg"]
+                    Text {
+                        objectName: "encryptedChatKeyUuid"
+                        x: 8
+                        width: parent.width - 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 20
+                        text: page.currentKeyUuid
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                        elide: Text.ElideRight
+                        color: page.colors["text-primary"]
+                    }
+                }
+                // createdLabel: e2ee.keyCreatedAt over the earliest announcement.
+                Text {
+                    objectName: "encryptedChatKeyCreated"
+                    width: parent.width
+                    height: visible ? 16 : 0
+                    visible: page.chatEncryption && String(page.chatEncryption.keyAnnouncedAt || "").length > 0
+                    text: visible
+                        ? qsTr("Created: %1").arg(page.controller.formatChatKeyDate(
+                            String(page.chatEncryption.keyAnnouncedAt), page.localeName))
+                        : ""
+                    textFormat: Text.PlainText
+                    font.pixelSize: 14
+                    lineHeightMode: Text.FixedHeight; lineHeight: 16
+                    elide: Text.ElideRight
+                    color: page.colors["text-muted"]
+                }
+            }
+
+            Text {
+                objectName: "encryptedChatKeyUnavailable"
+                visible: !page.hasCurrentKey
+                width: keySummaryFlow.width
+                text: qsTr("Key unavailable")
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                color: page.colors["text-muted"]
+            }
+
+            // fullWidth rotate button (Button md: h-9, rounded-lg, leading 20 px
+            // cached.svg) - the reference canRotateKey affordance.
+            Button {
+                id: reissueButton
+                objectName: "encryptedChatReissueButton"
+                visible: page.chatEncryption && page.chatEncryption.canRotate === true
+                width: keySummaryFlow.width
+                height: 36
+                padding: 0
+                hoverEnabled: true
+                enabled: page.chatEncryption && !page.chatEncryption.busy
+                    && page.chatEncryption.reissueBusy !== true
+                Accessible.name: qsTr("Reissue key")
+                contentItem: Item {
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Image {
+                            source: "qrc:/workspace/icons/cached.svg"
+                            sourceSize.width: 20; sourceSize.height: 20
+                            width: 20; height: 20
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Reissue key")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: page.colors["on-accent"]
+                        }
+                    }
+                }
+                background: Rectangle {
+                    radius: 8
+                    color: page.colors["accent"]
+                    opacity: reissueButton.enabled ? (reissueButton.down ? 0.8 : 1) : 0.5
+                }
+                onClicked: page.controller.reissueChatKey()
+            }
+
+            // Action failures surface inline (native has no drawer toast layer).
+            Text {
+                objectName: "encryptedChatKeyActionError"
+                visible: page.chatEncryption && String(page.chatEncryption.actionError || "").length > 0
+                width: keySummaryFlow.width
+                text: page.chatEncryption ? String(page.chatEncryption.actionError) : ""
+                textFormat: Text.PlainText
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                color: page.colors["notice-base"]
+                Accessible.role: Accessible.AlertMessage
+            }
         }
+
+        // ---- Key screen: LocalKeys section (encrypted-chat-info.ui.tsx:130-230) ----
+        // section.space-y-2.border-t.border-border-subtle.pt-3 spans the viewport
+        // width; its blocks carry the 16 px inset internally.
         Item {
+            id: keyLocalSection
+            objectName: "encryptedChatLocalKeysSection"
+            x: 0
+            y: keySummaryFlow.y + keySummaryFlow.height + 20
+            width: pageScroll.width
+            height: localKeysFlow.y + localKeysFlow.height
+            visible: page.keyScreen
+
+            Rectangle {
+                objectName: "encryptedChatLocalKeysDivider"
+                width: parent.width
+                height: 1
+                color: page.colors["border-subtle"]
+            }
+            Column {
+                id: localKeysFlow
+                objectName: "encryptedChatLocalKeysFlow"
+                y: 13 // pt-3
+                width: parent.width
+                spacing: 8
+
+                // currentKeyMissing block: hint + request-current-key recovery.
+                Column {
+                    objectName: "encryptedChatCurrentKeyMissing"
+                    visible: page.currentKeyMissing
+                    width: parent.width
+                    spacing: 8
+                    leftPadding: 16
+                    rightPadding: 16
+                    bottomPadding: 8
+                    Text {
+                        objectName: "encryptedChatCurrentKeyMissingHint"
+                        width: parent.width
+                        text: qsTr("The current key is missing from this device.")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                        color: page.colors["text-muted"]
+                    }
+                    Button {
+                        id: requestCurrentKeyButton
+                        objectName: "encryptedChatRequestCurrentKeyButton"
+                        width: parent.width - parent.leftPadding - parent.rightPadding
+                        height: 36
+                        padding: 0
+                        hoverEnabled: true
+                        enabled: page.chatEncryption && page.chatEncryption.canRequest === true
+                        Accessible.name: qsTr("Request current key")
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Request current key")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: page.colors["accent"]
+                            opacity: requestCurrentKeyButton.enabled ? 1 : 0.5
+                        }
+                        background: Rectangle {
+                            radius: 8
+                            color: "transparent"
+                            border.width: 1
+                            border.color: page.colors["accent"]
+                            opacity: requestCurrentKeyButton.enabled ? 1 : 0.5
+                        }
+                        onClicked: page.controller.requestChatKey("")
+                    }
+                    Text {
+                        objectName: "encryptedChatCurrentKeyRequested"
+                        visible: page.requestedKeyUuid.length > 0
+                            && page.requestedKeyUuid === page.currentKeyUuid
+                        width: parent.width
+                        text: qsTr("Request sent. Waiting for the key.")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        color: page.colors["text-muted"]
+                    }
+                }
+
+                // Collapsible PanelMenuRow (44 px), chevron 20.
+                Button {
+                    id: localKeysToggle
+                    objectName: "encryptedChatLocalKeysToggle"
+                    width: parent.width
+                    height: 44
+                    padding: 0
+                    hoverEnabled: true
+                    Accessible.name: qsTr("Keys on this device (%1)").arg(page.inventoryKeys.length)
+                    Accessible.expanded: page.localKeysExpanded
+                    contentItem: Item {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 20
+                        Text {
+                            objectName: "encryptedChatLocalKeysToggleLabel"
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Keys on this device (%1)").arg(page.inventoryKeys.length)
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: page.colors["text-primary"]
+                        }
+                        NativeIconButton {
+                            objectName: "encryptedChatLocalKeysChevron"
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 20; height: 20
+                            padding: 0
+                            colors: page.colors
+                            asset: "chevron-down.svg"
+                            glyphSize: 20
+                            rotation: page.localKeysExpanded ? 180 : 0
+                            enabled: false
+                            opacity: 1
+                            icon.color: page.colors["text-muted"]
+                            Accessible.ignored: true
+                        }
+                    }
+                    background: Rectangle {
+                        radius: 6
+                        color: localKeysToggle.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                    }
+                    onClicked: page.localKeysExpanded = !page.localKeysExpanded
+                }
+
+                // Loading / error / empty / list, gated by the expanded state.
+                Text {
+                    objectName: "encryptedChatLocalKeysLoading"
+                    visible: page.localKeysExpanded && page.inventoryState === "loading"
+                    width: parent.width
+                    leftPadding: 16
+                    text: qsTr("Loading…")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    color: page.colors["text-muted"]
+                }
+                Text {
+                    objectName: "encryptedChatLocalKeysError"
+                    visible: page.localKeysExpanded && page.inventoryState === "error"
+                    width: parent.width
+                    leftPadding: 16
+                    text: page.inventoryError
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    color: page.colors["notice-base"]
+                    Accessible.role: Accessible.AlertMessage
+                }
+                Button {
+                    id: localKeysRetry
+                    objectName: "encryptedChatLocalKeysRetry"
+                    visible: page.localKeysExpanded && page.inventoryState === "error"
+                    width: implicitContentWidth + 24
+                    height: 32
+                    leftPadding: 12; rightPadding: 12
+                    topPadding: 0; bottomPadding: 0
+                    Accessible.name: qsTr("Retry")
+                    text: qsTr("Retry")
+                    font.pixelSize: 12
+                    palette.buttonText: page.colors["text-primary"]
+                    background: Rectangle {
+                        radius: 8
+                        color: page.colors["card-bg-active"]
+                    }
+                    onClicked: page.controller.refreshChatLocalKeys()
+                }
+                Text {
+                    objectName: "encryptedChatLocalKeysEmpty"
+                    visible: page.localKeysExpanded && page.inventoryState === "ready"
+                        && page.inventoryKeys.length === 0
+                    width: parent.width
+                    leftPadding: 16
+                    text: qsTr("No saved keys for this chat on this device.")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    color: page.colors["text-muted"]
+                }
+                Column {
+                    objectName: "encryptedChatLocalKeysList"
+                    visible: page.localKeysExpanded && page.inventoryState === "ready"
+                        && page.inventoryKeys.length > 0
+                    width: parent.width
+                    Repeater {
+                        model: page.inventoryKeys
+                        delegate: Button {
+                            id: localKeyRowButton
+                            required property var modelData
+                            objectName: "encryptedChatLocalKeyRow-" + String(modelData.keyUuid)
+                            width: parent.width
+                            height: 50
+                            padding: 0
+                            hoverEnabled: true
+                            Accessible.name: qsTr("Saved key") + ": " + String(modelData.keyUuid)
+                            contentItem: Item {
+                                anchors.fill: parent
+                                Column {
+                                    id: localKeyRowColumn
+                                    x: 16
+                                    width: parent.width - 16 - 16 - 8 - 16
+                                    y: 8
+                                    spacing: 2
+                                    Item {
+                                        width: parent.width
+                                        height: 16
+                                        Text {
+                                            id: localKeyRowBadge
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: localKeyRowButton.modelData.isCurrent
+                                                ? qsTr("Current") : qsTr("Historical")
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 12
+                                            color: localKeyRowButton.modelData.isCurrent
+                                                ? page.colors["accent"] : page.colors["text-muted"]
+                                        }
+                                        Text {
+                                            objectName: "encryptedChatLocalKeyRowUuid-" + String(localKeyRowButton.modelData.keyUuid)
+                                            anchors.left: parent.left
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Math.max(0, parent.width - localKeyRowBadge.implicitWidth - 8)
+                                            text: page.shortKeyUuid(localKeyRowButton.modelData.keyUuid)
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 12
+                                            font.family: "monospace"
+                                            elide: Text.ElideRight
+                                            color: page.colors["text-primary"]
+                                        }
+                                    }
+                                    Text {
+                                        objectName: "encryptedChatLocalKeyRowAdded-" + String(localKeyRowButton.modelData.keyUuid)
+                                        width: parent.width
+                                        height: 16
+                                        text: qsTr("Added: %1").arg(page.keyDateLabel(
+                                            localKeyRowButton.modelData.addedAt, qsTr("Unknown")))
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight; lineHeight: 16
+                                        elide: Text.ElideRight
+                                        color: page.colors["text-muted"]
+                                    }
+                                }
+                                NativeIconButton {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 16; height: 16
+                                    padding: 0
+                                    colors: page.colors
+                                    asset: "chevron-right.svg"
+                                    glyphSize: 16
+                                    enabled: false
+                                    opacity: 1
+                                    icon.color: page.colors["text-muted"]
+                                    Accessible.ignored: true
+                                }
+                            }
+                            background: Rectangle {
+                                color: localKeyRowButton.hovered
+                                    ? page.colors["sidebar-item-hover"] : "transparent"
+                            }
+                            onClicked: page.localKeyOpen(String(localKeyRowButton.modelData.keyUuid))
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Local-key screen: LocalKeyDetails (encrypted-chat-info.ui.tsx:231-301) ----
+        Column {
+            id: localKeyFlow
             objectName: "encryptedChatLocalKeyScreen"
             x: 16
             y: 16
             width: pageScroll.width - 32
-            height: 0
+            spacing: 20
             visible: page.localKeyScreen
+            Accessible.name: qsTr("Saved key")
+
+            Text {
+                objectName: "encryptedChatLocalKeyLoading"
+                visible: page.inventoryState === "loading"
+                width: parent.width
+                text: qsTr("Loading…")
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                color: page.colors["text-muted"]
+            }
+            Column {
+                objectName: "encryptedChatLocalKeyErrorBlock"
+                visible: page.inventoryState === "error"
+                width: parent.width
+                spacing: 12
+                Text {
+                    objectName: "encryptedChatLocalKeyError"
+                    width: parent.width
+                    text: page.inventoryError
+                    textFormat: Text.PlainText
+                    font.pixelSize: 14
+                    wrapMode: Text.Wrap
+                    color: page.colors["notice-base"]
+                    Accessible.role: Accessible.AlertMessage
+                }
+                Button {
+                    objectName: "encryptedChatLocalKeyErrorRetry"
+                    width: implicitContentWidth + 24
+                    height: 32
+                    leftPadding: 12; rightPadding: 12
+                    topPadding: 0; bottomPadding: 0
+                    text: qsTr("Retry")
+                    font.pixelSize: 12
+                    Accessible.name: qsTr("Retry")
+                    palette.buttonText: page.colors["text-primary"]
+                    background: Rectangle { radius: 8; color: page.colors["card-bg-active"] }
+                    onClicked: page.controller.refreshChatLocalKeys()
+                }
+            }
+            Text {
+                objectName: "encryptedChatLocalKeyUnavailable"
+                visible: page.inventoryState === "ready" && page.localKeyRow === null
+                width: parent.width
+                text: qsTr("This key is no longer saved on this device.")
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                wrapMode: Text.Wrap
+                color: page.colors["text-muted"]
+            }
+
+            Column {
+                objectName: "encryptedChatLocalKeyDetails"
+                visible: page.localKeyRow !== null
+                width: parent.width
+                spacing: 20
+
+                Column {
+                    width: parent.width
+                    spacing: 8
+                    Text {
+                        objectName: "encryptedChatLocalKeyUuidLabel"
+                        width: parent.width
+                        text: qsTr("Key ID")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        color: page.colors["text-muted"]
+                    }
+                    // select-text break-all rounded-lg bg-card-bg px-2 py-2 font-mono text-sm
+                    Rectangle {
+                        width: parent.width
+                        radius: 8
+                        color: page.colors["card-bg"]
+                        height: localKeyUuidValue.height + 16
+                        Text {
+                            id: localKeyUuidValue
+                            objectName: "encryptedChatLocalKeyUuid"
+                            x: 8
+                            width: parent.width - 16
+                            y: 8
+                            text: page.localKeyRow ? String(page.localKeyRow.keyUuid) : ""
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.family: "monospace"
+                            wrapMode: Text.WrapAnywhere
+                            color: page.colors["text-primary"]
+                            selectByMouse: true
+                        }
+                    }
+                    Text {
+                        objectName: "encryptedChatLocalKeyState"
+                        width: parent.width
+                        text: page.localKeyRow && page.localKeyRow.isCurrent
+                            ? qsTr("Current") : qsTr("Historical")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        color: page.localKeyRow && page.localKeyRow.isCurrent
+                            ? page.colors["accent"] : page.colors["text-muted"]
+                    }
+                }
+
+                // dl.space-y-3: dt text-text-muted / dd mt-1.
+                Column {
+                    width: parent.width
+                    spacing: 12
+                    Column {
+                        width: parent.width
+                        spacing: 4
+                        Text {
+                            objectName: "encryptedChatLocalKeyAnnouncedLabel"
+                            width: parent.width
+                            text: qsTr("Announced in chat")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            color: page.colors["text-muted"]
+                        }
+                        Text {
+                            objectName: "encryptedChatLocalKeyAnnouncedValue"
+                            width: parent.width
+                            text: page.localKeyRow
+                                ? page.keyDateLabel(page.localKeyRow.announcedAt,
+                                    qsTr("Not found in loaded history"))
+                                : ""
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-primary"]
+                        }
+                    }
+                    Column {
+                        width: parent.width
+                        spacing: 4
+                        Text {
+                            objectName: "encryptedChatLocalKeyAddedLabel"
+                            width: parent.width
+                            text: qsTr("Added to this device")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            color: page.colors["text-muted"]
+                        }
+                        Text {
+                            objectName: "encryptedChatLocalKeyAddedValue"
+                            width: parent.width
+                            text: page.localKeyRow
+                                ? page.keyDateLabel(page.localKeyRow.addedAt, qsTr("Unknown"))
+                                : ""
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-primary"]
+                        }
+                    }
+                }
+
+                Button {
+                    id: requestLocalKeyButton
+                    objectName: "encryptedChatRequestLocalKeyButton"
+                    width: parent.width
+                    height: 36
+                    padding: 0
+                    hoverEnabled: true
+                    enabled: page.chatEncryption && page.chatEncryption.canRequest === true
+                    Accessible.name: qsTr("Request this key again")
+                    contentItem: Text {
+                        anchors.centerIn: parent
+                        text: qsTr("Request this key again")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        font.weight: Font.Medium
+                        color: page.colors["accent"]
+                        opacity: requestLocalKeyButton.enabled ? 1 : 0.5
+                    }
+                    background: Rectangle {
+                        radius: 8
+                        color: "transparent"
+                        border.width: 1
+                        border.color: page.colors["accent"]
+                        opacity: requestLocalKeyButton.enabled ? 1 : 0.5
+                    }
+                    onClicked: page.controller.requestChatKey(page.keyUuid)
+                }
+                Text {
+                    objectName: "encryptedChatLocalKeyRequested"
+                    visible: page.requestedKeyUuid.length > 0 && page.requestedKeyUuid === page.keyUuid
+                    width: parent.width
+                    text: qsTr("Request sent. The saved key remains available.")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    color: page.colors["text-muted"]
+                }
+                Button {
+                    id: deleteLocalKeyButton
+                    objectName: "encryptedChatDeleteLocalKeyButton"
+                    width: parent.width
+                    height: 36
+                    padding: 0
+                    hoverEnabled: true
+                    Accessible.name: qsTr("Delete from this device")
+                    contentItem: Text {
+                        anchors.centerIn: parent
+                        text: qsTr("Delete from this device")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        font.weight: Font.Medium
+                        color: page.colors["notice-base"]
+                    }
+                    background: Rectangle {
+                        radius: 8
+                        color: deleteLocalKeyButton.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                    }
+                    // The reference confirmation dialog is not ported yet
+                    // (design doc deviation 1); the action itself is identical.
+                    onClicked: page.controller.deleteChatLocalKey(page.keyUuid)
+                }
+                Text {
+                    objectName: "encryptedChatLocalKeyActionError"
+                    visible: page.chatEncryption && String(page.chatEncryption.actionError || "").length > 0
+                    width: parent.width
+                    text: page.chatEncryption ? String(page.chatEncryption.actionError) : ""
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    color: page.colors["notice-base"]
+                    Accessible.role: Accessible.AlertMessage
+                }
+            }
         }
     }
 }
