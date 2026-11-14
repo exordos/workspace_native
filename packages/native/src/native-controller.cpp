@@ -12550,6 +12550,8 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
         if (!guard) return;
         emit stateChanged();
         emit messageSent(parsed->uuid, stream, topic);
+        // The poll-specific completion the create dialog correlates with.
+        emit pollCreated(parsed->uuid, stream, topic);
     });
 }
 
