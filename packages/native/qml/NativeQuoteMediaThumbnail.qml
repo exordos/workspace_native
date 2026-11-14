@@ -25,13 +25,14 @@ Rectangle {
     property bool active: true
 
     property string imageUrl: ""
-    property bool imageReady: false
     property bool imageFailed: false
     property var lease: null
     property int refreshTicket: 0
 
+    // The manager only publishes a URL after a verified decode, so a non-empty
+    // URL is the native equivalent of the reference `ready` status.
     readonly property string status: kind === "video" ? "ready"
-        : imageFailed ? "failed" : imageReady ? "ready" : "loading"
+        : imageFailed ? "failed" : imageUrl.length > 0 ? "ready" : "loading"
     readonly property bool wantsLease: active && visible && images !== null
         && kind !== "video" && urn.length > 0
     readonly property bool maskingSupported: GraphicsInfo.api !== GraphicsInfo.Software
@@ -61,7 +62,6 @@ Rectangle {
         const wanted = thumb.wantsLease ? images : null
         if (!wanted) {
             if (imageUrl.length > 0) imageUrl = ""
-            if (imageReady) imageReady = false
             if (imageFailed) imageFailed = false
             if (previous) previous.manager.release(previous.token)
             return
@@ -72,7 +72,6 @@ Rectangle {
             return
         }
         if (previous) previous.manager.release(previous.token)
-        if (imageReady) imageReady = false
         if (imageFailed) imageFailed = false
         const token = wanted.acquire(urn)
         // The urn can change synchronously inside acquire()'s network kick-off.
@@ -84,6 +83,10 @@ Rectangle {
         updateState()
     }
 
+    // Demand can flip through any of the inputs below, and a QML binding only
+    // re-evaluates the flag itself, so the lease work keys off `wantsLease` and
+    // keeps the individual handlers for the same-value edge cases.
+    onWantsLeaseChanged: refresh()
     onUrnChanged: refresh()
     onKindChanged: refresh()
     onActiveChanged: refresh()
@@ -131,7 +134,7 @@ Rectangle {
         smooth: true
         fillMode: Image.PreserveAspectCrop
         visible: thumb.kind !== "video" && thumb.imageUrl.length > 0
-        onStatusChanged: if (status === Image.Ready) thumb.imageReady = true
+        onStatusChanged: if (status === Image.Error) thumb.imageFailed = true
         layer.enabled: visible && status === Image.Ready && thumb.maskingSupported
         layer.effect: MultiEffect {
             autoPaddingEnabled: false
