@@ -19119,6 +19119,196 @@ QTRY_VERIFY(create->property("enabled").toBool());
             + QLatin1String("?text=bravo%20charlie")), qPrintable(wire));
         QVERIFY2(wire.endsWith(QLatin1String("\n\npicked that")), qPrintable(wire));
     }
+    // Issue #218 review r2, finding 1: the persistent body selection must not
+    // outlive its bubble. The reference keeps a single document selection, so
+    // activating a selection in one bubble clears the selections left in the
+    // others (workspace-message-body-interactions.hook.ts:97-116); a Reply
+    // menu opened on the first bubble then quotes that bubble's whole message,
+    // never the stale fragment from before the newer selection.
+    void replyMenuQuotesOnlyTheCurrentBubbleSelection()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError|Binding loop detected).*"));
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const QString xId = QStringLiteral("11111111-1111-4111-8111-111111111111");
+        const QString yId = QStringLiteral("22222222-2222-4222-8222-222222222222");
+        const QString xText = QStringLiteral("Alpha bravo charlie delta echo");
+        const QString yText = QStringLiteral("Golf hotel india juliett kilo");
+        auto x = message(xText, xId); x["is_own"] = false;
+        auto y = message(yText, yId); y["is_own"] = false;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{x, y}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Stale selection teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *bodyX = visibleItem(content, "message-content-" + xId); QVERIFY(bodyX);
+        auto *bodyY = visibleItem(content, "message-content-" + yId); QVERIFY(bodyY);
+        QTRY_VERIFY(bodyX->property("selectByMouse").toBool());
+        QTRY_VERIFY(bodyY->property("selectByMouse").toBool());
+
+        const auto rectAt = [&engine](QQuickItem *body, int position) {
+            const auto bodyValue = engine.toScriptValue(body);
+            const auto rect = bodyValue.property("positionToRectangle").call({QJSValue(position)});
+            return QRectF(rect.property("x").toNumber(), rect.property("y").toNumber(),
+                rect.property("width").toNumber(), rect.property("height").toNumber());
+        };
+        const auto dragSelect = [window, &rectAt](QQuickItem *body, int from, int to) {
+            const QPointF start = rectAt(body, from).topLeft() + QPointF(1.0, 5.0);
+            const QPointF end = rectAt(body, to).topRight() + QPointF(-1.0, 5.0);
+            QTest::mousePress(window, Qt::LeftButton, {}, body->mapToScene(start).toPoint());
+            QTest::mouseMove(window, body->mapToScene(end).toPoint());
+            QTest::mouseRelease(window, Qt::LeftButton, {}, body->mapToScene(end).toPoint());
+        };
+
+        // Select in bubble X, then a newer selection in bubble Y.
+        dragSelect(bodyX, xText.indexOf("bravo"), xText.indexOf("charlie") + 7);
+        QTRY_COMPARE(bodyX->property("selectedText").toString(), QString("bravo charlie"));
+        dragSelect(bodyY, yText.indexOf("hotel"), yText.indexOf("india") + 5);
+        QTRY_COMPARE(bodyY->property("selectedText").toString(), QString("hotel india"));
+        // Finding A: X dropped its persistent selection the moment Y's became
+        // active, so no stale fragment can be snapshotted from it.
+        QTRY_VERIFY2(bodyX->property("selectedText").toString().isEmpty(),
+            qPrintable(bodyX->property("selectedText").toString()));
+
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction"));
+        QVERIFY(replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        auto *bubbleX = item(content, "message-" + xId); QVERIFY(bubbleX);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubbleX->mapToScene(QPointF(bubbleX->width() / 2, bubbleX->height() / 2)).toPoint());
+        QTRY_VERIFY(replyAction->isVisible());
+        click(window, replyAction);
+        QTRY_VERIFY(notice->isVisible());
+        // The quote is the whole bubble message, not the stale two-word fragment.
+        QCOMPARE(excerpt->property("text").toString(), xText);
+
+        // The newer selection stays quotable from its own bubble.
+        auto *bubbleY = item(content, "message-" + yId); QVERIFY(bubbleY);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubbleY->mapToScene(QPointF(bubbleY->width() / 2, bubbleY->height() / 2)).toPoint());
+        QTRY_VERIFY(replyAction->isVisible());
+        click(window, replyAction);
+        QTRY_COMPARE(excerpt->property("text").toString(), QString("hotel india"));
+
+        // Clearing the selection in Y leaves no fragment for Y's menu either.
+        dragSelect(bodyY, yText.indexOf("india"), yText.indexOf("india"));
+        QTRY_VERIFY(bodyY->property("selectedText").toString().isEmpty());
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubbleY->mapToScene(QPointF(bubbleY->width() / 2, bubbleY->height() / 2)).toPoint());
+        QTRY_VERIFY(replyAction->isVisible());
+        click(window, replyAction);
+        QCOMPARE(excerpt->property("text").toString(), yText);
+    }
+    // Issue #218 review r2, finding 2: dragging across paragraphs makes
+    // TextEdit.selectedText encode the paragraph break as U+2029; the quote
+    // fragment handed to the controller must carry the selected text's
+    // newline so the wire serializes %0A and never U+2029.
+    void crossParagraphBubbleSelectionQuotesWithNewlines()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError|Binding loop detected).*"));
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const QString bodyText = QStringLiteral("Alpha bravo charlie\n\ndelta echo foxtrot");
+        auto origin = message(bodyText, messageId);
+        origin["is_own"] = false;
+        QJsonObject posted; int posts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++posts; posted = request.body;
+                return {message(posted.value("payload").toObject().value("content").toString(), returnedId), 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Cross paragraph selection teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 1, 3000);
+        auto *content = window->contentItem();
+        auto *body = visibleItem(content, "message-content-" + messageId); QVERIFY(body);
+        QTRY_VERIFY(body->property("selectByMouse").toBool());
+        // Positions come from the rendered document itself (getText shares the
+        // selectedText numbering, where the paragraph break is a single
+        // U+2029 between the two paragraph blocks).
+        const auto bodyValue = engine.toScriptValue(body);
+        const auto doc = bodyValue.property("getText").call({QJSValue(0), QJSValue(1000000)}).toString();
+        QVERIFY2(doc.contains(QChar(0x2029)), qPrintable(doc));
+        const auto rectAt = [&bodyValue](int position) {
+            const auto rect = bodyValue.property("positionToRectangle").call({QJSValue(position)});
+            return QRectF(rect.property("x").toNumber(), rect.property("y").toNumber(),
+                rect.property("width").toNumber(), rect.property("height").toNumber());
+        };
+        const QPointF start = rectAt(doc.indexOf("bravo")).topLeft() + QPointF(1.0, 5.0);
+        const QPointF end = rectAt(doc.indexOf("echo") + 4).topRight() + QPointF(-1.0, 5.0);
+        QTest::mousePress(window, Qt::LeftButton, {}, body->mapToScene(start).toPoint());
+        QTest::mouseMove(window, body->mapToScene(end).toPoint());
+        QTest::mouseRelease(window, Qt::LeftButton, {}, body->mapToScene(end).toPoint());
+        const auto selected = body->property("selectedText").toString();
+        QVERIFY2(selected.contains(QChar(0x2029)), qPrintable(selected));
+
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction"));
+        QVERIFY(replyAction);
+        QTRY_VERIFY(replyAction->isVisible());
+        click(window, replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QVERIFY2(!excerpt->property("text").toString().contains(QChar(0x2029)),
+            qPrintable(excerpt->property("text").toString()));
+
+        // The wire carries the fragment with its newline, not a paragraph mark.
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QInputMethodEvent typed; typed.setCommitString("picked that");
+        QCoreApplication::sendEvent(composer, &typed);
+        auto *sendButton = window->findChild<QObject *>("sendButton"); QVERIFY(sendButton);
+        QTRY_VERIFY(sendButton->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(sendButton));
+        QTRY_COMPARE(posts, 1);
+        const auto wire = posted.value("payload").toObject().value("content").toString();
+        QVERIFY2(wire.contains(QStringLiteral("urn:quote:") + messageId
+            + QLatin1String("?text=bravo%20charlie%0Adelta%20echo")), qPrintable(wire));
+        QVERIFY2(!wire.contains(QLatin1String("E2%80%A9")) && !wire.contains(QLatin1String("e2%80a9")),
+            qPrintable(wire));
+    }
 };
 
 

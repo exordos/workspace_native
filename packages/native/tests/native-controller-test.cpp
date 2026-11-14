@@ -9074,10 +9074,12 @@ private slots:
             .arg(messageId), restoreId);
         QJsonObject posted; int posts = 0;
         const auto savedContent = [&]{ return posted.value("payload").toObject().value("content").toString(); };
+        fixture.aggregateMessages = true;
         fixture.messages = [&](const Request &request) -> Response {
             const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target).query(QUrl::FullyEncoded);
             if (request.method == "POST") { ++posts; posted = request.body; return {message(savedContent(), returnedId), 201}; }
-            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{note, secretNote, restored}};
+            if (request.method == "GET" && (query.contains("uuid=") || path.endsWith("/messages/"))) return {QJsonArray{note, secretNote, restored}};
             return {message(savedContent(), returnedId)};
         };
         QVERIFY(fixture.start());
@@ -9099,6 +9101,7 @@ private slots:
         QVERIFY(fixture.controller.beginReply(messageId, QString()));
         fixture.controller.send();
         QTRY_COMPARE(posts, 1);
+        QTRY_VERIFY(!fixture.controller.busy());
         QCOMPARE(savedContent(), QString("[Bobby](urn:quote:%1)\n\nanswer").arg(messageId));
 
         // A selection serializes percent-encoded (Cyrillic and reserved chars).
@@ -9107,6 +9110,7 @@ private slots:
         QTRY_VERIFY(fixture.controller.canSend());
         fixture.controller.send();
         QTRY_COMPARE(posts, 2);
+        QTRY_VERIFY(!fixture.controller.busy());
         QVERIFY2(savedContent().contains(QStringLiteral("urn:quote:") + messageId
             + QStringLiteral("?text=%D0%BC%D0%B8%D1%80%20%26%20%3Cx%3E")), qPrintable(savedContent()));
 
@@ -9143,6 +9147,59 @@ private slots:
         // the next save; this lane only added the visible-fragment half.
         fixture.controller.cancelEditMessage();
         QVERIFY(fixture.controller.editingMessageId().isEmpty());
+    }
+
+    // Issue #218 review r2, finding 2: the body TextEdit hands the menu
+    // snapshot its selectedText, where TextEdit encodes paragraph breaks as
+    // U+2029 (and hard line breaks as U+2028). The serialized quote fragment
+    // must carry the selected text's newlines: urn:quote:...?text=<...%0A...>,
+    // never the raw paragraph separators.
+    void replySelectionParagraphSeparatorsSerializeAsNewlines()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        auto note = message("First line\nsecond line", messageId);
+        note["is_own"] = false; note["author_uuid"] = peerId;
+        QJsonObject posted; int posts = 0;
+        const auto savedContent = [&]{ return posted.value("payload").toObject().value("content").toString(); };
+        fixture.aggregateMessages = true;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target).query(QUrl::FullyEncoded);
+            if (request.method == "POST") { ++posts; posted = request.body; return {message(savedContent(), returnedId), 201}; }
+            if (request.method == "GET" && (query.contains("uuid=") || path.endsWith("/messages/"))) return {QJsonArray{note}};
+            return {message(savedContent(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+
+        // A U+2029 paragraph break (multi-paragraph drag) serializes as %0A.
+        QVERIFY(fixture.controller.beginReply(messageId, QStringLiteral("line\u2029second")));
+        const auto rows = fixture.controller.replyTabs().toList();
+        QVERIFY2(!rows.first().toMap().value("label").toString().contains(QChar(0x2029)),
+            qPrintable(rows.first().toMap().value("label").toString()));
+        fixture.controller.setDraft("note");
+        QTRY_VERIFY(fixture.controller.canSend());
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 1);
+        QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY2(savedContent().contains(QStringLiteral("urn:quote:") + messageId
+            + QStringLiteral("?text=line%0Asecond")), qPrintable(savedContent()));
+        QVERIFY2(!savedContent().contains(QLatin1String("E2%80%A9"))
+            && !savedContent().contains(QLatin1String("e2%80a9")), qPrintable(savedContent()));
+
+        // A U+2028 hard line break normalizes the same way.
+        QVERIFY(fixture.controller.beginReply(messageId, QStringLiteral("line\u2028second")));
+        fixture.controller.setDraft("note");
+        QTRY_VERIFY(fixture.controller.canSend());
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 2);
+        QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY2(savedContent().contains(QStringLiteral("urn:quote:") + messageId
+            + QStringLiteral("?text=line%0Asecond")), qPrintable(savedContent()));
+        QVERIFY2(!savedContent().contains(QLatin1String("E2%80%A8"))
+            && !savedContent().contains(QLatin1String("e2%80a8")), qPrintable(savedContent()));
     }
 
     // An inline (non-leading) urn:quote anchor stays in the body text for the

@@ -8906,9 +8906,14 @@ QString normalizedReplySelection(const QString &content, const QString &selected
     // (revealed text must never leave as a quote line, bubble-presentation
     // .ui.tsx:636-639) drops the selection; the reply then quotes the whole
     // message instead.
-    if (selectedText.trimmed().isEmpty()) return {};
+    // Issue #218 review r2: TextEdit reports paragraph/line breaks as
+    // U+2029/U+2028; the serialized fragment carries newlines instead.
+    auto selection = selectedText;
+    selection.replace(QChar(0x2029), QLatin1Char('\n'));
+    selection.replace(QChar(0x2028), QLatin1Char('\n'));
+    if (selection.trimmed().isEmpty()) return {};
     if (content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
-    return selectedText;
+    return selection;
 }
 } // namespace
 

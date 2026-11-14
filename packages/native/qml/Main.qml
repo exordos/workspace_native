@@ -469,6 +469,37 @@ ApplicationWindow {
     // menu Reply quotes exactly what was selected when the menu appeared,
     // even if the live selection is lost before the click lands.
     property string menuSelectedText: ""
+    // Issue #218 review r2: the reference keeps a single live document
+    // selection, so a body selection becoming active clears the persistent
+    // selections left in the other bubbles (workspace-message-body-
+    // interactions.hook.ts:97-116). Bubbles register their TextEdit here
+    // whenever a selection becomes active; entries for destroyed delegates
+    // are pruned lazily when touched.
+    property var bodySelectionBodies: ({})
+    function noteBodySelection(messageId, body) {
+        if (!body || String(body.selectedText || "").length === 0)
+            return;
+        const key = String(messageId);
+        const bodies = root.bodySelectionBodies;
+        const stale = [];
+        for (const other in bodies) {
+            if (other === key)
+                continue;
+            const held = bodies[other];
+            try {
+                if (held && held.selectionStart !== held.selectionEnd)
+                    held.select(held.selectionEnd, held.selectionEnd);
+            } catch (error) {
+                stale.push(other);
+            }
+        }
+        for (const gone of stale)
+            delete bodies[gone];
+        bodies[key] = body;
+    }
+    function forgetBodySelection(messageId) {
+        delete root.bodySelectionBodies[String(messageId)];
+    }
     property string menuMessageContent: ""
     property bool menuMessageOwn: false
     property Item menuMessageAnchor: null
@@ -1076,7 +1107,10 @@ ApplicationWindow {
         root.menuStream = root.controller.selectedStream;
         root.menuTopic = root.controller.selectedTopic;
         root.menuMessageId = message.id;
-        root.menuSelectedText = String(selectedText || "");
+        // TextEdit encodes paragraph breaks as U+2029 and hard breaks as
+        // U+2028; the fragment travels to the controller carrying the
+        // selected text's own newlines (issue #218 review r2).
+        root.menuSelectedText = String(selectedText || "").replace(/[\u2028\u2029]/g, "\n");
         root.menuMessageContent = message.content;
         root.menuMessageOwn = Boolean(message.own);
         root.menuMessageAnchor = anchor || null;
@@ -5124,6 +5158,11 @@ ApplicationWindow {
                                 selectByMouse: !messageRow.keyControl
                                 cursorVisible: false
                                 persistentSelection: true
+                                // Issue #218 review r2: a selection becoming
+                                // active here clears the other bubbles'
+                                // persistent selections (noteBodySelection).
+                                onSelectedTextChanged: root.noteBodySelection(messageRow.modelData.id, messageBody)
+                                Component.onDestruction: root.forgetBodySelection(messageRow.modelData.id)
                                 bottomPadding: messageRow.inlineMeta ? 2 : 0
                                 height: contentHeight + topPadding + bottomPadding
                                 Accessible.ignored: true
