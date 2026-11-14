@@ -4742,6 +4742,62 @@ ApplicationWindow {
                                         onLinkActivated: link => root.openReference(link)
                                         color: root.colors["text-primary"]
                                     }
+                                    // Issue #222: decrypt-aware quote sub-states (reference
+                                    // workspace_ui 230e02b workspace-message-quote.ui.tsx:123-143 +
+                                    // encrypted-message-placeholder.ui.tsx geometry), mirrored from
+                                    // the bubble's encrypted-placeholder-* row without restyle.
+                                    // "preparing" renders the author header with no body, so it
+                                    // needs no node here.
+                                    Item {
+                                        id: quoteLockedPlaceholder
+                                        objectName: "quote-locked-" + messageRow.modelData.id
+                                        visible: String(messageRow.modelData.quoteStatus) === "locked"
+                                        width: Math.min(480, root.width * 0.6, parent.width)
+                                        height: 36
+                                        clip: true
+                                        Accessible.role: Accessible.StaticText
+                                        Accessible.name: qsTr("Key required")
+                                        Item {
+                                            anchors.fill: parent
+                                            readonly property bool blurSupported: GraphicsInfo.api !== GraphicsInfo.Software && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown && GraphicsInfo.api !== GraphicsInfo.Null
+                                            layer.enabled: visible && blurSupported
+                                            layer.effect: MultiEffect { objectName: "quote-locked-effect-" + messageRow.modelData.id; blurEnabled: true; blurMax: 36; blur: 1 }
+                                            Rectangle { objectName: "quote-locked-bar-wide-" + messageRow.modelData.id; y: 6; width: parent.width * 0.92; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
+                                            Rectangle { objectName: "quote-locked-bar-narrow-" + messageRow.modelData.id; y: 22; width: parent.width * 0.65; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
+                                            Accessible.ignored: true
+                                        }
+                                    }
+                                    Row {
+                                        id: quoteDecryptErrorRow
+                                        objectName: "quote-error-" + messageRow.modelData.id
+                                        visible: String(messageRow.modelData.quoteStatus) === "error"
+                                        width: parent.width; height: Math.max(36, quoteDecryptErrorText.implicitHeight); spacing: 8
+                                        NativeIconButton {
+                                            colors: root.colors; asset: "warning.svg"; glyphSize: 16
+                                            width: 16; height: 20; padding: 0; enabled: false; opacity: 1
+                                            icon.color: root.colors["text-muted"]; Accessible.ignored: true
+                                        }
+                                        Text {
+                                            id: quoteDecryptErrorText
+                                            objectName: "quote-error-text-" + messageRow.modelData.id
+                                            width: Math.max(0, parent.width - 32 - (quoteDecryptRetry.visible ? quoteDecryptRetry.implicitWidth : 0))
+                                            text: qsTr("Could not decrypt message"); textFormat: Text.PlainText
+                                            font.pixelSize: 14; color: root.colors["text-muted"]; wrapMode: Text.Wrap
+                                            Accessible.role: Accessible.AlertMessage
+                                        }
+                                        // Issue #222: the inline Retry re-runs the origin's per-message
+                                        // decrypt (#221 path) through the shared controller guard, so a
+                                        // bubble Retry and this one can never double-decrypt; disabled
+                                        // while the uuid is in flight.
+                                        InlineDecryptRetryAction {
+                                            id: quoteDecryptRetry
+                                            objectName: "quote-retry-" + messageRow.modelData.id
+                                            text: qsTr("Retry")
+                                            Accessible.name: text
+                                            enabled: root.controller.decryptRetryPendingUuids.indexOf(String(messageRow.modelData.quoteId)) < 0
+                                            onClicked: root.controller.retryMessageDecrypt(String(messageRow.modelData.quoteId))
+                                        }
+                                    }
                                 }
                             }
                             Row {

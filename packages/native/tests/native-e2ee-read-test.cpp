@@ -9506,17 +9506,16 @@ private slots:
         QVERIFY2(qAbs(narrow->width() - locked->width() * 0.65) <= 1.0, qPrintable(QStringLiteral("narrow bar %1").arg(narrow->width())));
         auto *header = encryptedUiItem(window, "quoteHeaderText-" + replyId); QVERIFY(header);
         QCOMPARE(header->property("text").toString(), QString("Alice"));
-        auto *body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
-        QVERIFY(!body || !body->isVisible());
+        QVERIFY(!encryptedUiItem(window, "quoteBodyHtml-" + replyId));
         // The origin key lands: the bars leave and the decrypted text substitutes.
         QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, 0),
             NativeChatKeyVault::Failure::None);
         QTRY_VERIFY(displayed(f.controller, replyId).value("quoteStatus").toString() == QLatin1String("ready"));
         QTRY_VERIFY(encryptedUiItem(window, "quoteBodyHtml-" + replyId));
-        body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
+        auto *body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
         QVERIFY(body->isVisible());
         QVERIFY(body->property("text").toString().contains("Origin secret body"));
-        QVERIFY(!encryptedUiItem(window, "quote-locked-" + replyId)->isVisible());
+        QVERIFY(!encryptedUiItem(window, "quote-locked-" + replyId));
         const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
     }
 
