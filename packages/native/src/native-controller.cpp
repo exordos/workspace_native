@@ -9045,13 +9045,41 @@ QVariantList NativeController::messages() const
             quoteSelection = quote->text;
             displayContent = quote->rest;
             const auto fallback = quoteLabel.isEmpty() ? tr("Quote") : quoteLabel;
-            if (const auto *origin = findMessage(quoteId); origin && origin->kind == "markdown") {
+            const auto *origin = findMessage(quoteId);
+            if (origin && origin->kind == QLatin1String("markdown")) {
                 quoteStatus = QStringLiteral("ready");
                 quoteAuthorName = userDisplayName(origin->author, fallback);
                 quoteContent = origin->content;
+            } else if (origin && origin->kind == QLatin1String("e2ee")) {
+                // Issue #222 (docs/NATIVE_DESKTOP_QUOTE_E2EE_STATES.md): an encrypted
+                // origin projects the chat-prepared decryption state, mirroring the
+                // reference quote body (workspace_ui 230e02b
+                // workspace-message-quote.ui.tsx:123-143): the author header is kept
+                // and the body renders preparing (nothing), locked ("Key required"
+                // bars), or error (Retry) until the ready text substitutes the body.
+                quoteAuthorName = userDisplayName(origin->author, fallback);
+                const auto originPrepared = m_chatPrepared.constFind(origin->uuid);
+                if (!canReadChat) {
+                    quoteStatus = QStringLiteral("locked");
+                } else if (originPrepared == m_chatPrepared.cend()
+                        || originPrepared->hash != chatPayloadHash(*origin)) {
+                    quoteStatus = QStringLiteral("preparing");
+                } else if (originPrepared->state == ChatKeyAvailability::Present) {
+                    quoteStatus = QStringLiteral("ready");
+                    quoteContent = originPrepared->content;
+                } else {
+                    quoteStatus = originPrepared->state == ChatKeyAvailability::Missing
+                        ? QStringLiteral("locked") : QStringLiteral("error");
+                }
             } else if (const auto record = m_quotes.constFind(quoteId); record != m_quotes.cend()) {
                 if (record->missing) {
                     quoteStatus = QStringLiteral("unavailable");
+                } else if (record->decrypt) {
+                    // Issue #222 deviation D1: an encrypted origin fetched outside the
+                    // loaded windows keeps the locked presentation until the origin
+                    // itself is loaded (the loaded-window branch above then wins).
+                    quoteStatus = QStringLiteral("locked");
+                    quoteAuthorName = userDisplayName(record->authorId, fallback);
                 } else {
                     quoteStatus = QStringLiteral("ready");
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
@@ -11725,6 +11753,12 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
                 record.authorId = parsed->author;
                 record.content = parsed->content;
+            } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee") {
+                // Issue #222: a durable encrypted origin is not an authoritative miss
+                // (the reference keeps it decrypt-aware). The row renders the locked
+                // "Key required" state until the chat-prepared pipeline covers it.
+                record.authorId = parsed->author;
+                record.decrypt = true;
             } else {
                 record.missing = true;
             }
@@ -12023,7 +12057,10 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                     updated.content = message->content;
                     // Confirmed payload edits flow into cached quote previews that
                     // reference this message from other conversations (review #119).
-                    if (auto quoteIt = m_quotes.find(id); quoteIt != m_quotes.end() && !quoteIt->missing) {
+                    // Issue #222: decrypt-pending encrypted records carry no display
+                    // content; ciphertext must never flow into a quote preview.
+                    if (auto quoteIt = m_quotes.find(id); quoteIt != m_quotes.end()
+                            && !quoteIt->missing && !quoteIt->decrypt) {
                         quoteIt->content = message->content;
                         quoteIt->authorId = message->author;
                     }
