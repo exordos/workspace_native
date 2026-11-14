@@ -18570,6 +18570,11 @@ private slots:
         std::atomic<bool> workerReturned{false};
         std::atomic<bool> drainAtRemove{false};
         std::atomic<bool> removalRequested{false};
+        // Exit-path contract (thread 4575792864): every exit, success or a
+        // failed assertion, must release the reader BEFORE joining it (and
+        // before joining the worker), or an early failure joins a releaser
+        // still waiting for removalRequested and the case hangs forever.
+        std::atomic<bool> cleanupRequested{false};
         qint64 releaserDrained = 0;
 
         {
@@ -18608,13 +18613,16 @@ private slots:
             // full until 100 ms after the removal began, then drains until
             // the parked worker line has fully left the pipe.
             std::thread releaser([&]() {
-                while (!removalRequested.load())
+                while (!removalRequested.load() && !cleanupRequested.load())
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 // Release only 100 ms after the removal began: that is the
                 // window the synchronized removal must be seen waiting in.
+                // On the cleanup exit path (an assertion failed before the
+                // removal was requested) drain immediately: a parked worker
+                // must be released so its join below cannot hang either.
                 QElapsedTimer holdClock;
                 holdClock.start();
-                while (holdClock.elapsed() < 100)
+                while (removalRequested.load() && holdClock.elapsed() < 100)
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 char buf[16384];
                 QElapsedTimer clock;
@@ -18628,7 +18636,11 @@ private slots:
                         break;
                 }
             });
-            auto releaserGuard = qScopeGuard([&] { releaser.join(); });
+            auto releaserGuard = qScopeGuard([&] {
+                cleanupRequested.store(true);
+                if (releaser.joinable())
+                    releaser.join();
+            });
 
             // Nonblocking filler lines occupy the pipe up to exactly its
             // capacity; each iteration ends with a 1-byte probe that reports
@@ -18652,7 +18664,16 @@ private slots:
                                         + QString(32000, QLatin1Char('W'));
                 workerReturned.store(true);
             });
-            auto workerGuard = qScopeGuard([&] { worker.join(); });
+            auto workerGuard = qScopeGuard([&] {
+                // Runs before releaserGuard (reverse declaration order):
+                // release + drain first so a parked worker can finish, then
+                // join both threads.
+                cleanupRequested.store(true);
+                if (releaser.joinable())
+                    releaser.join();
+                if (worker.joinable())
+                    worker.join();
+            });
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             QVERIFY(!workerReturned.load()); // parked mid stderr write
 

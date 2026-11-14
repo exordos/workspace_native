@@ -148,4 +148,9 @@ compile under `Q_OS_UNIX`; and the drain case is pipe-capacity independent —
 its reader starts before any write can block, the filler fills the pipe with
 `O_NONBLOCK` writes probed until `EAGAIN` (no 64 KiB assumption), and on
 Linux the pipe is pinned to its 4 KiB minimum (`F_SETPIPE_SZ`) so the
-small-capacity regression path is always exercised.
+small-capacity regression path is always exercised. Every exit path of the
+drain case (success or a failed assertion before the removal was requested)
+must set the cleanup flag so the reader releases and drains before the
+releaser and worker joins — otherwise an early failure joins a releaser still
+waiting for `removalRequested` and hangs the case forever (PR #289,
+thread 4575792864).
