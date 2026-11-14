@@ -344,11 +344,29 @@ QVariantMap NativeController::encryption() const
     const bool verified = ownedNative && m_catalogVerified;
     const bool issuing = m_chatKeyResponse && m_chatKeyResponse->busy;
     const bool canRequest = verified && !m_chatBusy && !issuing && chatContext(m_chatEpoch, m_selection);
+    // Issue #244: key screen sources. createdLabel uses the earliest key_announced
+    // date of the current generation among loaded messages; rotation right maps
+    // to the channel owner/administrator (reference getRights().canRotate).
+    QString keyAnnouncedAt;
+    if (verified && stream->security && isUuid(stream->security->currentKey)) {
+        QDateTime earliest;
+        const auto want = stream->security->currentKey.toLower();
+        for (const auto &message : m_messages) {
+            if (message.kind != QLatin1String("key_announced") || !message.crypto || !message.created.isValid()
+                || message.crypto->keyUuid.toLower() != want) continue;
+            if (!earliest.isValid() || message.created < earliest) earliest = message.created;
+        }
+        if (earliest.isValid()) keyAnnouncedAt = earliest.toString(Qt::ISODateWithMs);
+    }
     return {{"available", chatVaultMatches()}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
-        {"busy", m_chatBusy || issuing}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
+        {"busy", m_chatBusy || issuing || m_chatReissueBusy}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
         {"keyRequests", chatKeyRequestsMetadata()}, {"keyResponse", chatKeyResponseMetadata()},
         {"storeOpening", m_chatKeyStoreOpening}, {"pendingSend", pendingSendMetadata()},
         {"currentKeyUuid", verified ? stream->security->currentKey : QString{}},
+        {"keyAnnouncedAt", keyAnnouncedAt},
+        {"canRotate", verified && stream->security && isUuid(stream->security->currentKey)
+            && QStringList{"owner", "administrator"}.contains(stream->role)},
+        {"reissueBusy", m_chatReissueBusy}, {"actionError", m_chatKeyActionError},
         {"sendingKeyUuid", verified && m_chatCurrentKeyState != ChatKeyAvailability::Unknown
             && chatContext(m_chatEpoch, m_selection) ? m_chatSendKey : QString{}},
         {"canRequest", canRequest},
@@ -528,6 +546,150 @@ void NativeController::ensureChatAuthority(ChatAuthorityCallback done)
 void NativeController::requestChatKey(const QString &keyUuid) { startChatRequest(keyUuid, false, false); }
 void NativeController::checkChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, false); }
 void NativeController::retryChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, true); }
+
+// Issue #244 (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md): the reference
+// selector keeps the EARLIEST key_announced date per key UUID among loaded
+// messages (encrypted-chat-info-selector.lib.ts:88-96); both the createdLabel
+// and the local-key announcedLabel read from it.
+namespace {
+QMap<QString, QString> earliestKeyAnnouncements(const QVector<Message> &messages)
+{
+    QMap<QString, QDateTime> earliest;
+    for (const auto &message : messages) {
+        if (message.kind != QLatin1String("key_announced") || !message.crypto || !message.created.isValid()) continue;
+        const auto key = message.crypto->keyUuid.toLower();
+        if (key.isEmpty()) continue;
+        const auto found = earliest.constFind(key);
+        if (found == earliest.constEnd() || message.created < found.value()) earliest.insert(key, message.created);
+    }
+    QMap<QString, QString> result;
+    for (auto it = earliest.constBegin(); it != earliest.constEnd(); ++it)
+        result.insert(it.key(), it.value().toString(Qt::ISODateWithMs));
+    return result;
+}
+} // namespace
+
+QVariantMap NativeController::chatKeyInventory() const
+{
+    return m_chatLocalKeysInventory;
+}
+
+QString NativeController::formatChatKeyDate(const QString &isoDate, const QString &localeName)
+{
+    if (isoDate.isEmpty()) return {};
+    const auto parsed = QDateTime::fromString(isoDate, Qt::ISODateWithMs);
+    if (!parsed.isValid()) return isoDate;
+    const auto locale = localeName.compare(QLatin1String("ru"), Qt::CaseInsensitive) == 0
+        ? QLocale(QLocale::Russian)
+        : localeName.compare(QLatin1String("en"), Qt::CaseInsensitive) == 0
+            ? QLocale(QLocale::English)
+            : QLocale::system();
+    auto joined = locale.toString(parsed.date(),
+        locale.language() == QLocale::Russian ? QStringLiteral("d MMM yyyy") : QStringLiteral("MMM d, yyyy"));
+    if (locale.language() == QLocale::Russian) joined += QStringLiteral(" г.");
+    return joined;
+}
+
+void NativeController::refreshChatLocalKeys()
+{
+    const auto *stream = currentStream();
+    const QString current = stream && stream->security ? stream->security->currentKey.toLower() : QString();
+    const auto loadFailure = [this] {
+        m_chatLocalKeysInventory = {{"state", QStringLiteral("error")},
+            {"error", tr("Could not load keys from this device.")}, {"keys", QVariantList{}}};
+        emit stateChanged();
+    };
+    if (m_chatKeyStoreOpening) {
+        m_chatLocalKeysInventory = {{"state", QStringLiteral("loading")}, {"error", QString{}}, {"keys", QVariantList{}}};
+        emit stateChanged();
+        return;
+    }
+    if (!chatVaultMatches() || !stream || !stream->encrypted) { loadFailure(); return; }
+    const auto announcements = earliestKeyAnnouncements(m_messages);
+    const auto listed = m_chatKeys->listKeys(m_chatVaultLease, m_stream);
+    if (listed.failure != NativeChatKeyVault::Failure::None) { loadFailure(); return; }
+    QVariantList rows;
+    for (const auto &entry : listed.values) {
+        const auto key = entry.key.toLower();
+        rows.append(QVariantMap{{"keyUuid", key},
+            {"isCurrent", isUuid(current) && key == current},
+            {"addedAt", entry.receivedAt > 0
+                ? QDateTime::fromMSecsSinceEpoch(entry.receivedAt).toString(Qt::ISODateWithMs) : QString{}},
+            {"announcedAt", announcements.value(key)}});
+    }
+    // The reference sorts current-first, stable within the group; the vault
+    // enumerates newest received first, so the projection owns the order.
+    std::stable_sort(rows.begin(), rows.end(), [](const QVariant &left, const QVariant &right) {
+        return left.toMap().value("isCurrent").toBool() && !right.toMap().value("isCurrent").toBool();
+    });
+    m_chatLocalKeysInventory = {{"state", QStringLiteral("ready")}, {"error", QString{}}, {"keys", rows}};
+    emit stateChanged();
+}
+
+void NativeController::reissueChatKey()
+{
+    const QPointer<NativeController> lookupGuard(this);
+    checkChatLifetime();
+    if (!lookupGuard) return;
+    if (m_chatBusy || m_chatReissueBusy || (m_chatKeyResponse && m_chatKeyResponse->busy)
+        || !chatReadAllowed() || !chatVaultMatches() || !currentStream() || !currentStream()->encrypted
+        || !currentStream()->security || !isUuid(currentStream()->security->currentKey)) return;
+    if (!QStringList{"owner", "administrator"}.contains(currentStream()->role)) return;
+    const auto epoch = m_chatEpoch, selection = m_selection;
+    m_chatReissueBusy = true; m_chatKeyActionError.clear(); emit stateChanged();
+    ensureChatAuthority([this, epoch, selection](bool okay, const QString &) {
+        const QPointer<NativeController> guard(this);
+        if (!guard) return;
+        if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
+        const auto failReissue = [this] {
+            m_chatReissueBusy = false;
+            m_chatKeyActionError = tr("Could not reissue the encryption key. Please try again.");
+            emit stateChanged();
+        };
+        // The reference right gate (getRights().canRotate) lives in the crypto
+        // session; natively the rotation right is the channel owner/administrator.
+        if (!okay || !chatVaultMatches() || !currentStream() || !currentStream()->security
+            || !isUuid(currentStream()->security->currentKey)
+            || !QStringList{"owner", "administrator"}.contains(m_chatAuthority.role)) { failReissue(); return; }
+        auto generation = NativeChatCrypto::createGroupKey();
+        if (!generation) { wipeChatBytes(generation.bytes); failReissue(); return; }
+        const auto newKey = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const NativeChatKeyVault::Address address{m_stream, newKey};
+        const auto staged = m_chatKeys->put(m_chatVaultLease, address, generation.bytes, 0);
+        wipeChatBytes(generation.bytes);
+        if (staged != NativeChatKeyVault::Failure::None) { failReissue(); return; }
+        const QJsonObject payload{{"kind", "key_announced"}, {"key_uuid", newKey}};
+        const QJsonObject body{{"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+            {"stream_uuid", m_stream}, {"topic_uuid", m_chatAuthority.defaultTopic}, {"payload", payload}};
+        request("POST", messenger + "/messages/", body, {}, [this, newKey, epoch, selection](const ApiResult &result) {
+            if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
+            m_chatReissueBusy = false;
+            if (!result.ok()) {
+                m_chatKeyActionError = tr("Could not reissue the encryption key. Please try again.");
+                emit stateChanged();
+                return;
+            }
+            // The stream's current key flips when the stream update lands
+            // through the regular realtime/refresh path; the new generation is
+            // already durable and shows up as an inventory row.
+            if (m_chatLocalKeysInventory.value("state").toString() == QLatin1String("ready")) refreshChatLocalKeys();
+            else emit stateChanged();
+        });
+    });
+}
+
+void NativeController::deleteChatLocalKey(const QString &keyUuid)
+{
+    const auto key = keyUuid.toLower();
+    const auto failDelete = [this] {
+        m_chatKeyActionError = tr("Could not delete the key from this device. Please try again.");
+        emit stateChanged();
+    };
+    if (!isUuid(key) || !chatVaultMatches() || !currentStream() || !currentStream()->encrypted) { failDelete(); return; }
+    if (m_chatKeys->remove(m_chatVaultLease, {m_stream, key}) != NativeChatKeyVault::Failure::None) { failDelete(); return; }
+    m_chatKeyActionError.clear();
+    refreshChatLocalKeys();
+}
 
 void NativeController::startChatRequest(const QString &keyUuid, bool checking, bool retrying)
 {
