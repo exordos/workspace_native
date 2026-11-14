@@ -1059,6 +1059,7 @@ private:
     // point outside the loaded window; docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md).
     QString replyQuotedContent(const QString &id) const;
     void scheduleQuoteFetch(const QString &id) const;
+    void refreshQuoteOriginDecryptions();
     const Message *editableMessage(const QString &id) const;
     void reset();
     void forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done);
@@ -1297,7 +1298,17 @@ private:
     // parked memos come from exactly the same data the banner renders from.
     std::optional<QString> replyPlainFor(const QString &id) const;
     void primeReplyTabMemos(QList<ReplyTab> &tabs) const;
-    struct QuoteRecord { QString authorId, content; bool missing = false; bool decrypt = false; };
+    struct QuoteRecord {
+        QString authorId, content;
+        bool missing = false, decrypt = false;
+        // Issue #222 review fix r2: a fetched encrypted origin keeps its
+        // decryptable payload plus the last chat-prepared decrypt result, so
+        // the quote frame reaches ready/error without the origin loading into
+        // a conversation window.
+        std::optional<Message> origin;
+        PreparedChatMessage prepared;
+        bool hasPrepared = false;
+    };
     mutable QHash<QString, QuoteRecord> m_quotes;
     // Transport failures stay retriable (reference loader keeps "stale" out of
     // the resolved store); value = earliest epoch-ms to re-issue the lookup.

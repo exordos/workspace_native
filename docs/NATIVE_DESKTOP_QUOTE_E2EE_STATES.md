@@ -143,10 +143,18 @@ For a message whose leading line is a quote reference with origin `id`:
      placeholder title.
 3. Store hit from `GET /messages/?uuid=`: unchanged for markdown
    (`ready`/`unavailable`); an e2ee DTO is no longer cached as an
-   authoritative miss - `QuoteRecord` gains `bool decrypt` and the row
-   renders `locked` (see Deviations D1). A transport failure remains
-   retriable with the existing 3 s backoff + self-heal timer (unchanged);
-   only an empty/invalid answer stays `missing`.
+   authoritative miss. `QuoteRecord` keeps `bool decrypt` plus the fetched
+   decryptable payload, and the lookup runs the same single-row decrypt
+   (`decryptChatMessageRow`, the #221 presentation helper) when the vault
+   is readable. The projection maps that result exactly like the loaded
+   window branch: `Present` -> `ready` with the decrypted text, `Missing`
+   -> `locked`, `Error` -> `error`, unreadable vault -> `locked`. When key
+   material lands after the lookup, the vault `keyMaterialChanged` event
+   re-runs the same decrypt for decrypt-pending store records (see
+   Deviations D1), so the frame reaches `ready`/`error` without the origin
+   ever loading into a window. A transport failure remains
+   retriable with the existing 3 s backoff + self-heal timer (unchanged and
+   never cached as a miss); only an empty/invalid answer stays `missing`.
 4. Unknown origin -> `loading` + one deduplicated lookup (unchanged).
 
 The single-message retry path stays the controller's shipped
@@ -198,16 +206,15 @@ stays green without catalog edits.
 
 ## Deviations from Source (named and justified)
 
-- **D1 - out-of-window e2ee origin**: a quoted origin fetched by
-  `GET /messages/?uuid=` that is not part of a loaded conversation window
-  renders the locked "Key required" placeholder instead of being decrypted
-  locally. The reference's `useMessagePresentation` runs its presentation
-  pipeline over the store record; the native single-message decrypt state is
-  by contract the chat-prepared `m_chatPrepared` entry (issue scope: "reuse
-  chat-prepared decryption state"), which exists only for loaded windows.
-  The moment the origin is actually loaded (opening its conversation or
-  jumping to it), the loaded-window branch takes precedence and the state
-  machine resolves normally.
+- **D1 - decrypt carrier for out-of-window e2ee origins** (review fix r2):
+  the round-1 deviation (a fetched encrypted origin stayed locked until the
+  origin loaded into a conversation window) is resolved: the store record
+  now retains its payload and decrypt result and runs the identical
+  single-row decrypt that `prepareChatSlice` performs for window rows
+  (`decryptChatMessageRow`), re-run on vault `keyMaterialChanged`. The
+  carrier stays separate from `m_chatPrepared`, which is window-scoped and
+  pruned and must not retain out-of-window rows. Once the origin is loaded
+  the loaded-window branch takes precedence as before.
 - **D2 - `preparing` visibility**: the native transient (history loaded,
   slice not yet run) is not separately observable in tests; it shares the
   author-header-no-body rendering contract with the reference and is
@@ -229,8 +236,10 @@ Controller (core, `tests/native-e2ee-read-test.cpp`, `native-native-e2ee-read`):
   `retryMessageDecrypt(origin)` runs the per-message retry (in-flight
   membership, repair -> `ready`);
 - origin missing from history: transport failure keeps the lookup retriable
-  (no cached miss); an e2ee lookup answer marks `decrypt` (renders `locked`),
-  an empty answer still marks `unavailable`;
+  (no cached miss); an e2ee lookup answer keeps the decryptable payload:
+  `locked` with no key, `ready` + decrypted text once the origin key lands,
+  `error` on wrong material, all while the origin stays out of the loaded
+  window; an empty answer still marks `unavailable`;
 - existing markdown quote/reply expectations unchanged (native-controller
   quote/reply functions keep passing).
 
