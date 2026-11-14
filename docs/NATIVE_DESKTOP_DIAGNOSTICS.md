@@ -75,7 +75,17 @@ never abort the app, they return `false`/empty.
   the same line through `appendLogLine` (deviation note: `qInstallMessageHandler`
   replaces Qt's default handler, so console output is reproduced explicitly
   rather than chained, because the previous handler pointer may be the private
-  default). `formatMessageLine(QtMsgType, message)` is exposed for tests.
+  default). The console reproduction is best-effort: a failed stderr write
+  never gates the diagnostics file append (fix round 1, thread 4575150367).
+  Handler and install/remove synchronize on one process-wide recursive
+  `QReadWriteLock`: the handler holds the read side while it consults the sink,
+  and `removeNativeLogHandler()` restores the default handler first, then
+  takes the write side — which only returns once in-flight handler calls on
+  other threads have drained — before clearing the sink pointer, so callers
+  may destroy the sink immediately after (fix round 1, thread 4575150370).
+  The recursive mode lets a nested log from a thread already inside the
+  handler re-enter without self-deadlock. `formatMessageLine(QtMsgType,
+  message)` is exposed for tests.
 - `memorySnapshot()` (Q_INVOKABLE, returns `QVariantMap`) mirrors
   `diagnostics:getMemorySnapshot` with portable Linux procfs sources; the proc
   root is injectable for tests (default `/proc`):
@@ -95,10 +105,11 @@ never abort the app, they return `false`/empty.
 - `main` keeps the reference key name but only reports `rss`/`size`: V8
   heap breakdowns (heapTotal/heapUsed/external) have no /proc equivalent.
   `rss`/`workingSetSize` are the portable RSS figures.
-- Platform portability note: procfs sources exist on Linux only. On other
-  platforms `memorySnapshot()` still returns the full key set with zero
-  values (a future task can map `mach`/`psapi` sources); Linux is the
-  acceptance target, so procfs is authoritative there.
+- Platform portability note: procfs sources exist on Linux only, and
+  `memorySnapshot()` reads them solely under `Q_OS_LINUX`; on other platforms
+  it returns the full key set with zero values and performs no `/proc` access
+  at all (fix round 1, thread 4575150368; a future task can map `mach`/`psapi`
+  sources). Linux is the acceptance target, so procfs is authoritative there.
 - The rotated-file and line-length budgets, names, sanitize class and ISO
   prefix are reproduced 1:1 (parity-preserving per the issue).
 
@@ -121,4 +132,10 @@ newline termination, empty-after-sanitize rejection, control-char stripping
 (0x07/0x1B), 32768-char truncation, rotation at exactly 1 MiB (and not at
 1 MiB − 1), rotated file overwritten not duplicated (no `workspace.log.2`),
 snapshot key set and values from fixture proc files, real-/proc sanity on
-Linux, and the message-handler line formatting.
+Linux, and the message-handler line formatting. The fix-round-1 cases
+(PR #289) add: a stderr-write failure still appends the line to the file; the
+provider's `Q_OS_LINUX` procfs gate is source-guarded and the procfs-positive
+asserts (fixture values and real-/proc) stay gated while the key set and the
+missing-source zero-degradation run on every platform; and `removeNativeLogHandler()`
+drains an in-flight handler call parked in another thread before returning
+(the worker parks deterministically on a full stderr pipe).
