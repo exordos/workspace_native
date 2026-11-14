@@ -9,6 +9,7 @@
 #include "native-drafts.h"
 #include "native-deeplink.h"
 #include "native-instance.h"
+#include "native-logging.h"
 #include "native-updater.h"
 #include "native-preferences.h"
 #include "realtime-client.h"
@@ -22,6 +23,7 @@
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QTimer>
 #include <QWindow>
 #include <openssl/ssl.h>
@@ -74,6 +76,11 @@ int main(int argc, char **argv)
     }
     app.setQuitOnLastWindowClosed(false);
     QQuickStyle::setStyle("Basic");
+    // Diagnostics log file (issue #77): every qInfo/qWarning line is also
+    // appended to workspace_logs/workspace.log with the reference rotation.
+    workspace::NativeLogging diagnosticsLog;
+    workspace::installNativeLogHandler(diagnosticsLog);
+    const auto removeLogHandler = qScopeGuard(&workspace::removeNativeLogHandler);
     workspace::NativeInstance instance;
     const auto outcome = instance.acquireOrActivate(startupDeepLink);
     if (outcome == workspace::NativeInstance::Outcome::Secondary) return 0;
