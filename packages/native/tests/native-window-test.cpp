@@ -12872,7 +12872,172 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(replyThumb->property("color").toString(), QString("#222328"));
     }
 
+    // Exo-review round 1 finding (issue #217): a download that fails must
+    // restore the text-only layout in both quote frames - no empty 48 px
+    // box may remain, and the media label stays in the excerpt.
+    void failedQuoteMediaPreviewRestoresTheTextOnlyLayout()
+    {
+        QTest::failOnWarning();
+        const QString fileId = "99999999-9999-4999-8999-999999999993";
+        const QString urn = "urn:image:" + fileId
+            + "?name=broken.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message("![broken.png](" + urn + ")", messageId);
+        origin["is_own"] = false;
+        const QString quotingId = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c";
+        const auto quoting = message(QString("[Peer](urn:quote:%1)\n\nanswer body").arg(messageId), quotingId);
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/"))
+                return Response{QJsonObject{}, 404};
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{origin, quoting}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("quote-fail.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Quote media failure window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-quote-fail", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+
+        // Bubble frame: the download fails, so the empty thumbnail hides and
+        // the media label stays in the quote body and the text column keeps
+        // the text-only x-offset instead of shifting for the box.
+        auto *bubbleThumb = item(content, "quoteMediaThumbnail-" + quotingId); QVERIFY(bubbleThumb);
+        QTRY_COMPARE(bubbleThumb->property("status").toString(), QString("failed"));
+        QTRY_VERIFY(!bubbleThumb->property("visible").toBool());
+        auto *quoteBody = item(content, "quoteBodyHtml-" + quotingId); QVERIFY(quoteBody);
+        QVERIFY2(quoteBody->property("text").toString().contains("broken.png"),
+                 qPrintable(quoteBody->property("text").toString()));
+        QVERIFY(quoteBody->property("visible").toBool());
+        QVERIFY(quoteBody->parentItem());
+        QTRY_COMPARE(quoteBody->parentItem()->x(), 10.0);
+
+        // Composer preface: same fallback - the excerpt keeps the media
+        // label and no empty box leads the frame.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction"));
+        QVERIFY(replyAction);
+        click(window, replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        auto *replyThumb = item(content, "replyMediaThumbnail"); QVERIFY(replyThumb);
+        QTRY_COMPARE(replyThumb->property("status").toString(), QString("failed"));
+        QTRY_VERIFY(!replyThumb->property("visible").toBool());
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QTRY_VERIFY(excerpt->property("visible").toBool());
+        QVERIFY2(excerpt->property("text").toString().contains("broken.png"),
+                 qPrintable(excerpt->property("text").toString()));
+    }
+
+    // Exo-review round 1 finding (issue #217): a media-only quote has no
+    // visible text body once the preview is ready, so the thumbnail itself
+    // must carry the media description for assistive technology.
+    void mediaOnlyQuoteKeepsItsMediaDescriptionForAssistiveTechnology()
+    {
+        QTest::failOnWarning();
+        const QString imageFileId = "99999999-9999-4999-8999-999999999994";
+        const auto png = avatarProbePng(false);
+        const QString imageUrn = "urn:image:" + imageFileId
+            + "?name=solo.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        const QString videoUuid = "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e";
+        const QString videoUrn = "urn:video:" + videoUuid
+            + "?name=clip.mp4&content_type=video%2Fmp4&w=32&h=18&size=30";
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto imageOrigin = message("![solo.png](" + imageUrn + ")", messageId);
+        imageOrigin["is_own"] = false;
+        const QString videoOriginId = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+        auto videoOrigin = message("![clip.mp4](" + videoUrn + ")", videoOriginId);
+        videoOrigin["is_own"] = false;
+        const QString imageQuoteId = "2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b";
+        const QString videoQuoteId = "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a";
+        const auto imageQuoting = message(QString("[Peer](urn:quote:%1)").arg(messageId), imageQuoteId);
+        const auto videoQuoting = message(QString("[Peer](urn:quote:%1)").arg(videoOriginId), videoQuoteId);
+        auto metadata = avatarProbeMetadata(imageFileId, png);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "solo.png";
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QString filePath = "/api/workspace/v1/messenger/files/" + imageFileId;
+            if (path.startsWith("/api/workspace/v1/messenger/files/")) {
+                if (path == filePath) return Response{metadata};
+                if (path == filePath + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{imageOrigin, imageQuoting, videoOrigin, videoQuoting}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("quote-a11y.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Quote media accessibility window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-quote-a11y", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 4);
+        auto *content = window->contentItem();
+        QAccessible::setActive(true);
+
+        // Image-only quote: the body text drops the media token once the
+        // preview is ready, so the thumbnail announces it instead.
+        auto *imageThumb = item(content, "quoteMediaThumbnail-" + imageQuoteId); QVERIFY(imageThumb);
+        QTRY_COMPARE(imageThumb->property("status").toString(), QString("ready"));
+        auto *imageBody = item(content, "quoteBodyHtml-" + imageQuoteId); QVERIFY(imageBody);
+        QVERIFY2(!imageBody->property("text").toString().contains("solo.png"),
+                 qPrintable(imageBody->property("text").toString()));
+        auto *imageAccessible = QAccessible::queryAccessibleInterface(imageThumb); QVERIFY(imageAccessible);
+        QCOMPARE(imageAccessible->text(QAccessible::Name), QString("Image"));
+
+        // Video-only quote: the badge box announces the media kind too.
+        auto *videoThumb = item(content, "quoteMediaThumbnail-" + videoQuoteId); QVERIFY(videoThumb);
+        QCOMPARE(videoThumb->property("kind").toString(), QString("video"));
+        QTRY_COMPARE(videoThumb->property("status").toString(), QString("ready"));
+        auto *videoBody = item(content, "quoteBodyHtml-" + videoQuoteId); QVERIFY(videoBody);
+        QVERIFY2(!videoBody->property("text").toString().contains("clip.mp4"),
+                 qPrintable(videoBody->property("text").toString()));
+        auto *videoAccessible = QAccessible::queryAccessibleInterface(videoThumb); QVERIFY(videoAccessible);
+        QCOMPARE(videoAccessible->text(QAccessible::Name), QString("Video"));
+    }
+
     // Multi-reply tab strip (issue #200, docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
+
     // one row per tab once a second quote joins, and closing one pill cancels
     // only that tab (workspace-reply.ui.tsx at workspace_ui 61dacef).
     void replyTabStripShowsRowsAndCloseCancelsOnlyThatTab()
