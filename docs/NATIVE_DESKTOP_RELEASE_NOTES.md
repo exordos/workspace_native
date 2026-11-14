@@ -1,3 +1,26 @@
+# Workspace Native 0.23.0 - Linux development preview
+
+Two surfaces ported from the reference desktop:
+
+- Reply and quoted-message previews now lead with a media thumbnail: when the
+  quoted message contains an image or a video, the composer reply preface and
+  the in-bubble quote frame show a rounded 48 px preview of the first image
+  (first video when the message carries only video), matching the reference
+  geometry. A media preview that fails to resolve falls back to the previous
+  text-only quote layout, and quotes that contain only media keep their media
+  description audible for assistive technology.
+- Nested quote frames are settled to their final geometry before the message
+  list restores its scroll position, so viewport restoration no longer races
+  quote measurement when opening topics with deep quote chains.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.22.0...0.23.0](https://github.com/exordos/workspace_native/compare/0.22.0...0.23.0)
+
+---
+
 # Workspace Native 0.22.0 - Linux development preview
 
 Two surfaces ported from the reference desktop:
