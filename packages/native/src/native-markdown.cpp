@@ -135,14 +135,15 @@ bool NativeMarkdown::openExternal(const QString &target) const
     return parsed.value("kind") == "external" && QDesktopServices::openUrl(QUrl(parsed.value("url").toString()));
 }
 
-QVariantMap NativeMarkdown::render(const QString &markdown)
+QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
 {
     // The message contract counts Unicode code points, while QString::size()
     // counts UTF-16 units. Bound the scan before accepting surrogate pairs.
     // The gallery collector shares this exact guard (withinMessageDisplayLimit).
     if (!withinMessageDisplayLimit(markdown))
         return {{"html", tr("Message is too large to display.")}, {"plain", tr("Message is too large to display.")}};
-    const auto cacheKey = QString::fromLatin1(QCryptographicHash::hash(markdown.toUtf8(), QCryptographicHash::Sha256).toHex());
+    const auto cacheKey = QString::fromLatin1(QCryptographicHash::hash(markdown.toUtf8(), QCryptographicHash::Sha256).toHex())
+        + (hideMedia ? QStringLiteral("|media-hidden") : QString());
     if (m_cache.contains(cacheKey))
         return m_cache.value(cacheKey);
     MessageDocument document;
@@ -204,7 +205,19 @@ QVariantMap NativeMarkdown::render(const QString &markdown)
     for (auto it = fragments.crbegin(); it != fragments.crend(); ++it) {
         auto format = it->format;
         auto text = it->text;
-        if (secretFragment(format)) {
+        // Issue #217: a quote preview that already shows the media thumbnail hides
+        // the media token itself (reference hiddenWorkspaceMediaFileUuids), so the
+        // renderer drops the fragment instead of printing its alt/"Image" label.
+        const auto hiddenTarget = hideMedia
+            ? (format.isImageFormat() ? format.toImageFormat().name()
+               : (format.isAnchor() ? format.anchorHref() : QString()))
+            : QString();
+        const auto hiddenKind = hiddenTarget.isEmpty()
+            ? QString() : reference(hiddenTarget).value(QLatin1String("kind")).toString();
+        if (hideMedia && (hiddenKind == QLatin1String("image") || hiddenKind == QLatin1String("video"))) {
+            text = QString();
+            format = QTextCharFormat{};
+        } else if (secretFragment(format)) {
             text = tr("Encrypted fragment");
             format = QTextCharFormat{};
         } else if (format.isImageFormat()) {
@@ -302,8 +315,13 @@ QVariantList NativeMarkdown::mediaReferences(const QString &markdown) const
                 continue;
             const auto parsed = reference(target);
             const auto kind = parsed.value("kind").toString();
-            if (kind == QLatin1String("image") || kind == QLatin1String("video"))
-                result.append(parsed);
+            if (kind == QLatin1String("image") || kind == QLatin1String("video")) {
+                // Consumers that render the reference need the original urn back,
+                // the parse map only keeps the file uuid (issue #217 thumbnail).
+                auto entry = parsed;
+                entry.insert(QStringLiteral("reference"), target);
+                result.append(entry);
+            }
         }
     }
     return result;

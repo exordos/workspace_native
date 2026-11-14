@@ -11584,6 +11584,61 @@ QString NativeController::replyExcerpt() const
     return text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
 }
 
+QString NativeController::replyMediaUrn() const
+{
+    const auto *tab = activeReplyTab();
+    if (!tab) return {};
+    return mediaPreviewReference(replyQuotedContent(tab->message))
+        .value(QLatin1String("urn")).toString();
+}
+
+QString NativeController::replyMediaKind() const
+{
+    const auto *tab = activeReplyTab();
+    if (!tab) return {};
+    return mediaPreviewReference(replyQuotedContent(tab->message))
+        .value(QLatin1String("kind")).toString();
+}
+
+QString NativeController::replyMediaSummary() const
+{
+    const auto *tab = activeReplyTab();
+    if (!tab) return {};
+    const auto content = replyQuotedContent(tab->message);
+    if (content.isEmpty()) return {};
+    // The source summary shown once the thumbnail is ready hides every media
+    // token (message-composer-reply-quote-preview.ui.tsx:74-83 at workspace_ui
+    // 230e02b8), then applies the same 80-character QUOTE_PREVIEW_MAX summary.
+    static NativeMarkdown summaryRenderer;
+    auto text = summaryRenderer.render(content, true).value(QLatin1String("plain")).toString().simplified();
+    static constexpr int maximumCharacters = 80;
+    static constexpr int markerLength = 3;
+    if (text.size() > maximumCharacters)
+        text = text.left(maximumCharacters - markerLength).trimmed() + QStringLiteral("...");
+    return text;
+}
+
+QVariantMap NativeController::mediaPreviewReference(const QString &markdown) const
+{
+    // messenger-workspace-message-body-files.lib.ts:22-35: walk the body's media
+    // references in document order - the first image wins, otherwise the first
+    // video. Empty map means "no thumbnail", the frame stays text-only.
+    if (markdown.isEmpty()) return {};
+    static NativeMarkdown picker;
+    QVariantMap video;
+    for (const auto &entry : picker.mediaReferences(markdown)) {
+        const auto reference = entry.toMap();
+        const auto urn = reference.value(QLatin1String("reference")).toString();
+        if (urn.isEmpty()) continue;
+        const auto kind = reference.value(QLatin1String("kind")).toString();
+        if (kind == QLatin1String("image"))
+            return {{QStringLiteral("urn"), urn}, {QStringLiteral("kind"), kind}};
+        if (kind == QLatin1String("video") && video.isEmpty())
+            video = {{QStringLiteral("urn"), urn}, {QStringLiteral("kind"), kind}};
+    }
+    return video;
+}
+
 QVariantList NativeController::replyTabs() const
 {
     // Strip model rows (workspace-reply.ui.tsx getTabLabel): "Name: <excerpt>"

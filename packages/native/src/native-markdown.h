@@ -13,7 +13,10 @@ class NativeMarkdown final : public QObject {
     Q_OBJECT
 public:
     explicit NativeMarkdown(QObject *parent = nullptr) : QObject(parent) {}
-    Q_INVOKABLE QVariantMap render(const QString &markdown);
+    // hideMedia drops every image/video reference from the rendered document
+    // (reference hiddenWorkspaceMediaFileUuids, issue #217): the body keeps its
+    // text and loses the media label the renderer would otherwise print.
+    Q_INVOKABLE QVariantMap render(const QString &markdown, bool hideMedia = false);
     Q_INVOKABLE QVariantMap reference(const QString &target) const;
     Q_INVOKABLE bool openExternal(const QString &target) const;
     // Workspace image/video references found in a message body in document

@@ -145,6 +145,10 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList replyTabs READ replyTabs NOTIFY replySessionChanged)
     Q_PROPERTY(QString replyAuthor READ replyAuthor NOTIFY replySessionChanged)
     Q_PROPERTY(QString replyExcerpt READ replyExcerpt NOTIFY replySessionChanged)
+    // Quote/reply media preview (issue #217, docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md).
+    Q_PROPERTY(QString replyMediaUrn READ replyMediaUrn NOTIFY replySessionChanged)
+    Q_PROPERTY(QString replyMediaKind READ replyMediaKind NOTIFY replySessionChanged)
+    Q_PROPERTY(QString replyMediaSummary READ replyMediaSummary NOTIFY replySessionChanged)
     Q_PROPERTY(bool canCompose READ canCompose NOTIFY stateChanged)
     Q_PROPERTY(bool canSend READ canSend NOTIFY stateChanged)
     Q_PROPERTY(bool canLoadOlder READ canLoadOlder NOTIFY stateChanged)
@@ -488,6 +492,12 @@ public:
     QString replyMessageId() const;
     QString replyAuthor() const;
     QString replyExcerpt() const;
+    // Media preview of the quoted body: first image wins, else first video
+    // (issue #217). Empty when the quote carries no media reference.
+    QString replyMediaUrn() const;
+    QString replyMediaKind() const;
+    QString replyMediaSummary() const;
+    Q_INVOKABLE QVariantMap mediaPreviewReference(const QString &markdown) const;
     QVariantList replyTabs() const;
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);

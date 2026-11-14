@@ -8967,6 +8967,89 @@ private slots:
         QCOMPARE(row.value("quoteStatus").toString(), QString("ready"));
     }
 
+    // Issue #217 (docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md): the quoted body
+    // picks one preview reference exactly like the source
+    // (messenger-workspace-message-body-files.lib.ts:22-35 at workspace_ui
+    // 230e02b8) - the first image wins, otherwise the first video.
+    void quotePreviewPicksFirstImageThenFirstVideo()
+    {
+        Fixture fixture; QVERIFY(fixture.start());
+        const QString image = "urn:image:6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b61"
+            "?name=first.png&content_type=image%2Fpng&w=20&h=20&size=20";
+        const QString other = "urn:image:6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b62"
+            "?name=second.png&content_type=image%2Fpng&w=20&h=20&size=20";
+        const QString clip = "urn:video:6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b63"
+            "?name=clip.mp4&content_type=video%2Fmp4&w=32&h=18&size=30";
+
+        const auto single = fixture.controller.mediaPreviewReference("![first.png](" + image + ")");
+        QCOMPARE(single.value("urn").toString(), image);
+        QCOMPARE(single.value("kind").toString(), QString("image"));
+
+        // Document order keeps the first image when several attachments follow.
+        const auto several = fixture.controller.mediaPreviewReference(
+            "Body\n\n![first.png](" + image + ")\n\n![second.png](" + other + ")");
+        QCOMPARE(several.value("urn").toString(), image);
+
+        // A video that comes first never wins over a later image.
+        const auto mixed = fixture.controller.mediaPreviewReference(
+            "Body\n\n![clip.mp4](" + clip + ")\n\n![first.png](" + image + ")");
+        QCOMPARE(mixed.value("urn").toString(), image);
+        QCOMPARE(mixed.value("kind").toString(), QString("image"));
+
+        // Without an image the first video is the preview.
+        const auto video = fixture.controller.mediaPreviewReference("Body\n\n![clip.mp4](" + clip + ")");
+        QCOMPARE(video.value("urn").toString(), clip);
+        QCOMPARE(video.value("kind").toString(), QString("video"));
+
+        QVERIFY(fixture.controller.mediaPreviewReference("Plain body only").isEmpty());
+        QVERIFY(fixture.controller.mediaPreviewReference(QString()).isEmpty());
+    }
+
+    // The composer reply preface carries the picked reference and the summary the
+    // source shows once the thumbnail is ready: every media markdown token is
+    // dropped from the text (message-composer-reply-quote-preview.ui.tsx:74-83).
+    void replyPreviewSummarizesWithoutTheMediaLabelOnceReady()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        const QString image = "urn:image:6b6b6b6b-6b6b-4b6b-8b6b-6b6b6b6b6b64"
+            "?name=shot.png&content_type=image%2Fpng&w=20&h=20&size=20";
+        auto note = message("Peer caption\n\n![shot.png](" + image + ")", messageId);
+        note["is_own"] = false; note["author_uuid"] = peerId;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        QVERIFY(fixture.start());
+
+        QVERIFY(fixture.controller.beginReply(messageId));
+        QCOMPARE(fixture.controller.replyMediaUrn(), image);
+        QCOMPARE(fixture.controller.replyMediaKind(), QString("image"));
+        // Before the thumbnail arrives the media label stays in the summary.
+        QVERIFY(fixture.controller.replyExcerpt().contains("shot.png"));
+        // Once it is ready the media token is hidden from the summary.
+        QCOMPARE(fixture.controller.replyMediaSummary(), QString("Peer caption"));
+    }
+
+    void replyPreviewWithoutMediaHasNoThumbnail()
+    {
+        Fixture fixture;
+        auto note = message("Plain peer note", messageId);
+        note["is_own"] = false;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginReply(messageId));
+        QVERIFY(fixture.controller.replyMediaUrn().isEmpty());
+        QVERIFY(fixture.controller.replyMediaKind().isEmpty());
+        // With no media token to hide the summary is the ordinary excerpt.
+        QCOMPARE(fixture.controller.replyMediaSummary(), fixture.controller.replyExcerpt());
+    }
+
     // An inline (non-leading) urn:quote anchor stays in the body text for the
     // markdown renderer, and openMessageInChat resolves the origin for the click.
     void replyAnchorInsideTheBodyStaysRenderableAndNavigable()
