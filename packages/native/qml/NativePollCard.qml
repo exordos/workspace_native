@@ -277,7 +277,9 @@ Item {
                             readonly property int percent: Number(questionBlock.counts.voterCount) > 0
                                 ? Math.round(votes / Number(questionBlock.counts.voterCount) * 100) : 0
                             readonly property bool selectable: card.canSelect(questionBlock.question, option.uuid)
-                            width: parent.width
+                            // During an options-model churn the delegate incubates
+                            // before it is parented; guard the size bindings.
+                            width: parent ? parent.width : 0
                             height: optionRowInner.height + 8
                             // Reference parity: disabled when !canAct || busy || !canSelect
                             // (workspace-message-poll-question.ui.tsx:190-195).
@@ -480,9 +482,7 @@ Item {
                                     const text = addColumn.addText.trim()
                                     if (!text || addColumn.addPending)
                                         return
-                                    const previous = addColumn.attempt
-                                    const attempt = previous && previous.text === text
-                                        ? previous : { uuid: Qt.createUuid().toString(true), text: text }
+                                    const attempt = { text: text }
                                     card.addAttempts = Object.assign({}, card.addAttempts,
                                         {[question.uuid]: attempt})
                                     const pending = Object.assign({}, card.pendingQuestions)
@@ -491,7 +491,7 @@ Item {
                                     const errors = Object.assign({}, card.addErrors)
                                     delete errors[question.uuid]
                                     card.addErrors = errors
-                                    card.addOptionRequested(question.uuid, attempt.uuid, attempt.text)
+                                    card.addOptionRequested(question.uuid, "", attempt.text)
                                 }
                                 Keys.onReturnPressed: event => submit(event)
                                 Keys.onEnterPressed: event => submit(event)

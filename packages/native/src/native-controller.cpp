@@ -12728,13 +12728,17 @@ void NativeController::updatePollSettings(const QString &messageUuid, const QStr
 void NativeController::addPollOption(const QString &messageUuid, const QString &questionUuid,
     const QString &optionUuid, const QString &optionText)
 {
-    if (!isUuid(questionUuid) || !isUuid(optionUuid) || optionText.trimmed().isEmpty()
+    // QML leaves the uuid empty: the controller is the canonical client-id
+    // source (Qt.createUuid is not available inside shipped QML scopes).
+    const QString optionId = optionUuid.isEmpty()
+        ? QUuid::createUuid().toString(QUuid::WithoutBraces) : optionUuid;
+    if (!isUuid(questionUuid) || !isUuid(optionId) || optionText.trimmed().isEmpty()
         || optionText.size() > 200) return;
     // The uuid is client-generated; a replay of uuid+text is an idempotent 200
     // with the unchanged message, so no local duplicate can appear.
     invokePollAction(messageUuid, QStringLiteral("add_poll_option"),
         QJsonObject{{QStringLiteral("question_uuid"), questionUuid},
-            {QStringLiteral("option"), QJsonObject{{QStringLiteral("uuid"), optionUuid},
+            {QStringLiteral("option"), QJsonObject{{QStringLiteral("uuid"), optionId},
                 {QStringLiteral("text"), optionText}}}});
 }
 

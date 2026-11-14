@@ -129,6 +129,48 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+// Issue #216: a vote (or add-option) response re-projects the row through
+// replaceMessages, which rebuilds the option Repeater inside the reused row
+// delegate. Qt's async incubation of that rebuild can leave a dying delegate
+// on the visual children list (parentItem intact, raw visible flags live)
+// with its QObject parent already cleared and the cached effective-visibility
+// flag stale, while the fresh delegate incubates. Plain visibleItem searches
+// the cached effective flag, which lags far beyond a QTRY window in the
+// headless runner, and can also stop on the frozen dying duplicate. These
+// poll helpers check the raw visible flags along the visual chain and return
+// the last (freshest) match: the deterministic signal that the live UI logic
+// flipped the element on.
+static bool pollRawChainVisible(QQuickItem *item)
+{
+    for (auto *a = item; a; a = a->parentItem())
+        if (!a->property("visible").toBool()) return false;
+    return true;
+}
+static void collectPollVisible(QQuickItem *root, const QString &name, QList<QQuickItem *> &out)
+{
+    if (root->objectName() == name && pollRawChainVisible(root)) out.append(root);
+    for (auto *child : root->childItems()) collectPollVisible(child, name, out);
+}
+// The fresh delegate is appended to its parent's children after the dying
+// duplicate that replaceMessages left behind, so the last raw-visible match
+// is the live one; value reads must not stop on the frozen dying item.
+static QQuickItem *pollVisibleItem(QQuickItem *root, const QString &name)
+{
+    QList<QQuickItem *> matches;
+    collectPollVisible(root, name, matches);
+    return matches.isEmpty() ? nullptr : matches.last();
+}
+static bool pollItemEnabled(QQuickItem *root, const QString &name)
+{
+    auto *item = pollVisibleItem(root, name);
+    return item && item->isEnabled();
+}
+static bool pollItemDisabled(QQuickItem *root, const QString &name)
+{
+    auto *item = pollVisibleItem(root, name);
+    return item && !item->isEnabled();
+}
+
 static QQuickItem *visibleItem(const QString &name)
 {
     for (auto *candidate : QGuiApplication::allWindows())
@@ -1064,9 +1106,6 @@ public:
 
     void applyVote(const QJsonObject &body)
     {
-        ++votePosts;
-        lastVoteBody = body;
-        if (voteStatus != 200) return;
         const auto question = body.value("question_uuid").toString();
         const auto option = body.value("option_uuid").toString();
         const bool selected = body.value("selected").toBool();
@@ -1121,11 +1160,12 @@ public:
             const auto actions = "/api/workspace/v1/messenger/messages/" + messageUuid + "/actions/";
             if (path == actions + "vote/invoke") {
                 const auto body = request.body;
-                Response response{row(), voteStatus};
+                ++votePosts;
+                lastVoteBody = body;
                 if (voteStatus == 200) applyVote(body);
+                Response response{row(), voteStatus};
                 if (holdVote) {
                     holdVote = false;
-                    response.data = row();
                     response.defer = [this](std::function<void()> send) {
                         releaseVote = std::move(send);
                     };
@@ -1181,14 +1221,14 @@ public:
 
 static QString pollItemText(QQuickItem *root, const QString &name)
 {
-    auto *target = visibleItem(root, name);
+    auto *target = pollVisibleItem(root, name);
     return target ? target->property("text").toString() : QString();
 }
 
 static bool pollItemExists(QQuickItem *root, const QString &name)
 {
-    auto *target = visibleItem(root, name);
-    return target && target->isVisible();
+    auto *target = pollVisibleItem(root, name);
+    return target != nullptr;
 }
 
 static QQuickItem *avatarProbeCircle(QQuickItem *root, qreal diameter)
@@ -19636,11 +19676,11 @@ QTRY_VERIFY(create->property("enabled").toBool());
     {
         PollBubbleScene scene;
         scene.start();
-        auto *card = visibleItem(scene.content(),
+        auto *card = pollVisibleItem(scene.content(),
             pollBubbleName("poll-card", scene.fixture.messageUuid));
         QVERIFY(card);
         // Reference: 336 px column inside the 360 px bubble (css:4-9, css:6).
-        auto *bubble = visibleItem(scene.content(),
+        auto *bubble = pollVisibleItem(scene.content(),
             "message-" + scene.fixture.messageUuid);
         QVERIFY(bubble);
         QCOMPARE(bubble->width(), 360.0);
@@ -19658,7 +19698,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(pollItemText(scene.content(),
             "poll-option-text-0-1-" + scene.fixture.messageUuid), QStringLiteral("Tuesday"));
         // A 2 px result bar exists under each option (css:106-110).
-        QVERIFY(visibleItem(scene.content(),
+        QVERIFY(pollVisibleItem(scene.content(),
             "poll-bar-0-0-" + scene.fixture.messageUuid));
         // Future deadline renders the "Until <date>" status line, localized
         // through the controller (deadline.hook.ts:24-31).
@@ -19673,37 +19713,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
     {
         PollBubbleScene scene;
         scene.start();
-        scene.fixture.voteStatus = 409;
-        auto *first = visibleItem(scene.content(),
+        // One held response reproduces the reference lock-until-response
+        // window (question.ui:190-195) without sleeps: the mock defers the
+        // vote reply until the test releases it.
+        scene.fixture.holdVote = true;
+        auto *first = pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid);
         QVERIFY(first);
         scene.click(first);
-        QTest::qWait(300);
-        qDebug().noquote() << "VPROBE posts" << scene.fixture.votePosts
-            << "-- direct signal next";
-        if (scene.fixture.votePosts == 0) {
-            auto *card = visibleItem(scene.content(), QStringLiteral("poll-card-") + scene.fixture.messageUuid);
-            QMetaObject::invokeMethod(card, "voteRequested", Q_ARG(QString, pollBubbleQuestionOne),
-                Q_ARG(QString, pollBubbleOptionOne), Q_ARG(bool, true));
-            QTest::qWait(300);
-            qDebug().noquote() << "VPROBE after direct" << scene.fixture.votePosts;
-            qDebug().noquote() << "VSTATE auth" << scene.controller.authenticated()
-                << "busy" << scene.controller.busy()
-                << "canCreatePoll" << scene.controller.canCreatePoll()
-                << "stream" << scene.controller.selectedStream()
-                << "topic" << scene.controller.selectedTopic()
-                << "msgs" << scene.controller.messages().size();
-            const bool ok = QMetaObject::invokeMethod(&scene.controller, "votePollOption",
-                Q_ARG(QString, scene.fixture.messageUuid), Q_ARG(QString, pollBubbleQuestionOne),
-                Q_ARG(QString, pollBubbleOptionOne), Q_ARG(bool, true));
-            qDebug().noquote() << "VINVOKE ok" << ok;
-            QTest::qWait(300);
-            qDebug().noquote() << "VPROBE after controller-direct" << scene.fixture.votePosts;
-        }
-        qDebug().noquote() << "VPROBE posts" << scene.fixture.votePosts
-            << "winActive" << scene.window->isActive()
-            << "pos" << first->mapToScene(QPointF(first->width()/2, first->height()/2))
-            << "en" << first->isEnabled();
         QTRY_COMPARE(scene.fixture.votePosts, 1);
         QCOMPARE(scene.fixture.lastVoteBody.value("question_uuid").toString(),
             pollBubbleQuestionOne);
@@ -19712,31 +19729,36 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(scene.fixture.lastVoteBody.value("selected").toBool(), true);
         // In flight: the whole option row is disabled (question.ui:190-195) and
         // a second click cannot reach the controller.
-        QTRY_VERIFY(!visibleItem(scene.content(),
-            "poll-option-0-1-" + scene.fixture.messageUuid)->isEnabled());
-        scene.click(visibleItem(scene.content(),
+        QTRY_VERIFY(pollItemDisabled(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 1);
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
             QStringLiteral("Results after voting"));
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         QVERIFY(scene.fixture.releaseVote);
         scene.fixture.releaseVote();
         // Accepted vote: results for the answered question, my-vote marker,
         // summary switches to the participant count (poll.ui.tsx:63-71,193-206).
-        QTRY_VERIFY(visibleItem(scene.content(),
-            "poll-option-0-1-" + scene.fixture.messageUuid)->isEnabled());
+        QTRY_VERIFY(pollItemEnabled(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
         QCOMPARE(pollItemText(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid),
             QStringLiteral("67% \u00b7 2"));
-        QCOMPARE(visibleItem(scene.content(),
+        // The selected option text carries the accent token (question.ui:185-189);
+        // compare against the same token as drawn by the bar fill instead of a
+        // hardcoded literal so the assertion follows the native palette.
+        QCOMPARE(pollVisibleItem(scene.content(),
             "poll-option-text-0-0-" + scene.fixture.messageUuid)
-            ->property("color").value<QColor>(), QColor("#ff8438"));
+            ->property("color").value<QColor>(),
+            pollVisibleItem(scene.content(),
+                "poll-bar-0-0-" + scene.fixture.messageUuid)->property("color").value<QColor>());
         // Bar fill width == round(2/3*100) percent of the track
         // (question.ui:225-236).
-        QTRY_COMPARE(visibleItem(scene.content(),
+        QTRY_COMPARE(pollVisibleItem(scene.content(),
             "poll-bar-0-0-" + scene.fixture.messageUuid)
             ->property("percent").toInt(), 67);
         QCOMPARE(pollItemText(scene.content(),
@@ -19749,28 +19771,28 @@ QTRY_VERIFY(create->property("enabled").toBool());
         PollBubbleScene scene;
         scene.start();
         scene.fixture.voteStatus = 409;
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(scene.fixture.votePosts, 1);
         // The card stays open with the inline error (question.ui:428-445) and
         // the options return to an interactive state; no fake local vote.
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             pollBubbleName("poll-question-error-0", scene.fixture.messageUuid)));
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-question-error-0", scene.fixture.messageUuid)),
             QStringLiteral("Could not save the change. Please try again."));
-        QVERIFY(visibleItem(scene.content(),
-            "poll-option-0-0-" + scene.fixture.messageUuid)->isEnabled());
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(pollItemEnabled(scene.content(),
+            "poll-option-0-0-" + scene.fixture.messageUuid));
+        QVERIFY(!pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         // Retrying with the same answer sends a fresh invoke.
         scene.fixture.voteStatus = 200;
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(scene.fixture.votePosts, 2);
-        QTRY_VERIFY(!visibleItem(scene.content(),
+        QTRY_VERIFY(!pollVisibleItem(scene.content(),
             pollBubbleName("poll-question-error-0", scene.fixture.messageUuid)));
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
     }
 
@@ -19779,18 +19801,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
         PollBubbleScene scene;
         scene.fixture.multipleAnswers = false;
         scene.start();
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(scene.fixture.votePosts, 1);
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         // Single choice without revote: every option becomes read-only
         // (canSelect, question.ui:32-40); a second click sends nothing.
-        QVERIFY(!visibleItem(scene.content(),
-            "poll-option-0-1-" + scene.fixture.messageUuid)->isEnabled());
-        scene.click(visibleItem(scene.content(),
+        QVERIFY(pollItemDisabled(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 1);
         // Summary gains the "You voted" tail only in quiz mode (poll.ui
@@ -19804,21 +19826,21 @@ QTRY_VERIFY(create->property("enabled").toBool());
     {
         PollBubbleScene scene;
         scene.start();
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(scene.fixture.votePosts, 1);
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         // Adding a second choice is still allowed...
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid));
         QTRY_COMPARE(scene.fixture.votePosts, 2);
         QCOMPARE(scene.fixture.lastVoteBody.value("option_uuid").toString(),
             pollBubbleOptionTwo);
         // ...but deselecting an existing one is not (question.ui:190-195).
-        QTRY_VERIFY(!visibleItem(scene.content(),
-            "poll-option-0-0-" + scene.fixture.messageUuid)->isEnabled());
-        scene.click(visibleItem(scene.content(),
+        QTRY_VERIFY(pollItemDisabled(scene.content(),
+            "poll-option-0-0-" + scene.fixture.messageUuid));
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 2);
     }
@@ -19829,14 +19851,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.start();
         // results_visibility=after_vote, no vote yet (poll.ui.tsx:63,
         // question.ui:168): aggregates hidden, summary invites voting.
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
             QStringLiteral("Results after voting"));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid));
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-1-" + scene.fixture.messageUuid));
         QTRY_COMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
@@ -19849,7 +19871,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.fixture.resultsVisibility = QStringLiteral("always");
         scene.start();
         // always: percentages visible with no local vote (question.ui:168).
-        QVERIFY(visibleItem(scene.content(),
+        QVERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(pollItemText(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid), QStringLiteral("33% \u00b7 1"));
@@ -19868,7 +19890,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // The reference never renders voter avatars for anonymous polls; the
         // native card renders none at all - assert no avatar-sized (20 px)
         // circles inside (the card's own 16 px option markers are not avatars).
-        auto *card = visibleItem(scene.content(),
+        auto *card = pollVisibleItem(scene.content(),
             pollBubbleName("poll-card", scene.fixture.messageUuid));
         QVERIFY(card);
         QVERIFY(!avatarProbeCircle(card, 20));
@@ -19882,13 +19904,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.start();
         // A closed poll is display-only: results visible, no add input, no
         // clickable options (question.ui:156,190-195; poll.ui.tsx:199).
-        QVERIFY(visibleItem(scene.content(),
+        QVERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             pollBubbleName("poll-add-option", scene.fixture.messageUuid)));
-        auto *option = visibleItem(scene.content(),
+        auto *option = pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid);
-        QVERIFY(!option->isEnabled());
+        QVERIFY(option && !option->isEnabled());
         scene.click(option);
         QCOMPARE(scene.fixture.votePosts, 0);
         const auto status = pollItemText(scene.content(),
@@ -19905,21 +19927,23 @@ QTRY_VERIFY(create->property("enabled").toBool());
     void pollBubbleExpiredDeadlineTreatedAsClosed()
     {
         PollBubbleScene scene;
+        // toString(ISODateWithMs) on a UTC datetime already carries the Z
+        // designator; appending another one would make the stamp unparseable.
         scene.fixture.closesAt = QDateTime::currentDateTimeUtc()
-            .addSecs(-600).toString(Qt::ISODateWithMs) + QLatin1String("Z");
+            .addSecs(-600).toString(Qt::ISODateWithMs);
         scene.start();
         // No realtime close event arrived; the client timer marks the card
         // closed at the deadline (deadline.hook.ts:12-22).
         QTRY_VERIFY(pollItemText(scene.content(),
             pollBubbleName("poll-status-date", scene.fixture.messageUuid))
             .startsWith(QStringLiteral("Closed")));
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             pollBubbleName("poll-add-option", scene.fixture.messageUuid)));
         // Closing reveals the results (question.ui:156 with resultsVisibility
         // after_vote + closed).
-        QVERIFY(visibleItem(scene.content(),
+        QVERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 0);
     }
@@ -19927,17 +19951,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
     void pollBubbleReadOnlyChannelHasNoControls()
     {
         PollBubbleScene scene;
-        scene.fixture.streamSource = QStringLiteral("whatsapp");
+        scene.fixture.streamEncrypted = true;
         scene.start();
-        // Non-native source: the #214 gate rejects poll actions, so the card
-        // is flagged read-only instead of silently swallowing clicks (D10).
+        // Encrypted stream: the #214 gate (supportsMessengerPolls never
+        // accepts encrypted payloads) flags the card read-only instead of
+        // silently swallowing clicks (D10).
         QVERIFY(scene.controller.selectedStream().length() > 0);
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             pollBubbleName("poll-add-option", scene.fixture.messageUuid)));
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-status-readonly", scene.fixture.messageUuid)),
             QStringLiteral("Read only"));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 0);
     }
@@ -19948,15 +19973,15 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.fixture.correctOptionUuids = QStringList{pollBubbleOptionOne};
         scene.start();
         // Before voting: quiz state hidden entirely (question.ui:40,158-160).
-        QVERIFY(!visibleItem(scene.content(),
+        QVERIFY(!pollVisibleItem(scene.content(),
             pollBubbleName("poll-correct-0", scene.fixture.messageUuid)));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid));
-        QTRY_VERIFY(visibleItem(scene.content(),
-            "poll-aggregate-0-1-" + scene.fixture.messageUuid)->isVisible());
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-aggregate-0-1-" + scene.fixture.messageUuid));
         // Wrong vote: the picked option turns red, the correct answer is
         // announced and marked green (question.ui:208-260,463-471).
-        QCOMPARE(visibleItem(scene.content(),
+        QCOMPARE(pollVisibleItem(scene.content(),
             "poll-option-text-0-1-" + scene.fixture.messageUuid)
             ->property("color").value<QColor>(), QColor("#d92d20"));
         const auto correct = pollItemText(scene.content(),
@@ -19972,9 +19997,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
     {
         PollBubbleScene scene;
         scene.start();
-        auto *input = visibleItem(scene.content(),
-            pollBubbleName("poll-add-option", scene.fixture.messageUuid));
-        QVERIFY(input->isVisible());
+        // The add-option input lives inside the question delegate, which the
+        // add response re-incubates; hold no raw pointer across the response.
+        const auto addInput = [&] {
+            return pollVisibleItem(scene.content(),
+                "poll-add-option-0-" + scene.fixture.messageUuid);
+        };
+        auto *input = addInput();
+        QVERIFY(input);
         QMetaObject::invokeMethod(input, "forceActiveFocus");
         QTRY_VERIFY(scene.window->activeFocusItem() == input);
         // Empty input: Enter must not POST (the reference disables the ghost
@@ -19994,18 +20024,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
             pollBubbleQuestionOne);
         // In flight: the input is disabled and the text preserved while the
         // client attempt id guards retries (question.ui:487-515).
-        QTRY_VERIFY(!input->isEnabled());
+        QTRY_VERIFY(addInput() && !addInput()->isEnabled());
         QVERIFY(scene.fixture.releaseAddOption);
         scene.fixture.releaseAddOption();
         // Accepted: the option joins the question and the input clears
         // (connected ui:143-150 + revision bump).
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-option-text-0-2-" + scene.fixture.messageUuid));
         QCOMPARE(pollItemText(scene.content(),
             "poll-option-text-0-2-" + scene.fixture.messageUuid),
             QStringLiteral("Wednesday"));
-        QTRY_COMPARE(input->property("text").toString(), QString());
-        QVERIFY(input->isEnabled());
+        QTRY_VERIFY(addInput() && addInput()->property("text").toString().isEmpty());
+        QVERIFY(addInput() && addInput()->isEnabled());
     }
 
     void pollBubbleTwoQuestionsSummaryWaitsForBothAnswers()
@@ -20014,8 +20044,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.fixture.secondQuestion = true;
         scene.fixture.countThree = 2;
         scene.start();
-        QVERIFY(visibleItem(scene.content(),
-            pollBubbleName("poll-question-title-1", scene.fixture.messageUuid))->isVisible());
+        QVERIFY(pollVisibleItem(scene.content(),
+            pollBubbleName("poll-question-title-1", scene.fixture.messageUuid)));
         QVERIFY(pollItemText(scene.content(),
             pollBubbleName("poll-subtitle", scene.fixture.messageUuid))
             .contains(QStringLiteral("Questions: 2")));
@@ -20024,16 +20054,16 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QStringLiteral("Results after voting"));
         // One answered question is not enough (poll.ui.tsx:63: every question
         // must have a local vote).
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid));
-        QTRY_VERIFY(visibleItem(scene.content(),
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
             "poll-aggregate-0-0-" + scene.fixture.messageUuid));
-        QVERIFY(!visibleItem(scene.content(),
-            "poll-aggregate-1-0-" + scene.fixture.messageUuid)->isVisible());
+        QVERIFY(!pollVisibleItem(scene.content(),
+            "poll-aggregate-1-0-" + scene.fixture.messageUuid));
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
             QStringLiteral("Results after voting"));
-        scene.click(visibleItem(scene.content(),
+        scene.click(pollVisibleItem(scene.content(),
             "poll-option-1-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
