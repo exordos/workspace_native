@@ -17970,6 +17970,354 @@ QTRY_VERIFY(create->property("enabled").toBool());
             != bodies.at(0).value(QStringLiteral("uuid")).toString());
     }
 
+    // ---- exo-review findings on the poll create dialog (PR #266) ----
+
+    // Shared scroll/click pair for controls below the form fold: dispatches
+    // against window-root coordinates only after the target sits inside the
+    // Flickable viewport (same pattern as pollCreateDialogDeadlineMustBeFuture).
+    static void pollFormBringIntoView(QQuickItem *flick, QQuickItem *windowContent,
+        QQuickItem *target)
+    {
+        for (int pass = 0; pass < 80; ++pass) {
+            QTest::qWait(25);
+            const qreal contentH = flick->property("contentHeight").toReal();
+            const qreal maxScroll = qMax(0.0, contentH - flick->height());
+            const qreal centerY = target->mapToItem(windowContent,
+                QPointF(0, target->height() / 2)).y();
+            const qreal viewTop = flick->mapToItem(windowContent, QPointF(0, 0)).y();
+            if (target->isVisible() && centerY > viewTop + 2.0
+                && centerY < viewTop + flick->height() - 2.0)
+                return;
+            const qreal inContent = target->mapToItem(flick, QPointF(0, 0)).y();
+            flick->setProperty("contentY",
+                qBound(0.0, inContent - flick->height() / 2.0, maxScroll));
+        }
+        QFAIL("the poll form target never came into view");
+    }
+
+    static void pollFormClick(QQuickWindow *window, QQuickItem *target)
+    {
+        const QPointF center = target->mapToItem(window->contentItem(),
+            QPointF(target->width() / 2, target->height() / 2));
+        QTest::mouseClick(window, Qt::LeftButton, {}, center.toPoint());
+    }
+
+    // Finding 1: a pending create is an uncertain send; Cancel must not dismiss
+    // the dialog (and strand the attempt) while the request is in flight.
+    void pollCreateDialogCannotBeCancelledWhileSendPending()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const QString createdId = QStringLiteral("a9a9a9a9-0002-4a9a-8a9a-a9a9a9a9a9a9");
+        QVector<QJsonObject> pollBodies;
+        std::function<void()> releasePoll;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                pollBodies.append(request.body);
+                Response response{pollCreateDto(createdId), 201};
+                response.defer = [&](std::function<void()> send) { releasePoll = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-create-cancel.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll cancel-pending window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(!controller.busy());
+        click(window, visibleItem(window->contentItem(), "pollButton"));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
+        dialog->findChildren<QObject *>("pollAnswerField").at(0)->setProperty("text", "First");
+        QTRY_COMPARE(dialog->findChildren<QObject *>("pollAnswerField").size(), 2);
+        dialog->findChildren<QObject *>("pollAnswerField").at(1)->setProperty("text", "Second");
+        auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
+        QTRY_VERIFY(create->property("enabled").toBool());
+        click(window, create);
+        QTRY_VERIFY_WITH_TIMEOUT(pollBodies.size() == 1, 3000);
+        QTRY_VERIFY(dialog->property("pending").toBool());
+        auto *cancel = window->findChild<QQuickItem *>("pollCancelButton"); QVERIFY(cancel);
+        // The close affordances are locked while the create is in flight.
+        QTRY_VERIFY_WITH_TIMEOUT(!cancel->property("enabled").toBool(), 3000);
+        pollFormClick(window, cancel);
+        QTest::qWait(250);
+        QVERIFY(dialog->property("visible").toBool());
+        QVERIFY(dialog->property("pending").toBool());
+        // The confirmed create then closes the dialog normally.
+        QVERIFY(releasePoll); releasePoll(); releasePoll = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
+    }
+
+    // Finding 2: only the poll's own create completion may close the dialog.
+    // A previously started text send completing must leave it pending.
+    void pollCreateDialogIgnoresUnrelatedMessageCompletion()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const QString createdId = QStringLiteral("a9a9a9a9-0003-4a9a-8a9a-a9a9a9a9a9a9");
+        QVector<QJsonObject> pollBodies, textBodies;
+        QJsonObject textSaved;
+        std::function<void()> releaseText, releasePoll;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                const auto kind = request.body.value("payload").toObject()
+                    .value("kind").toString();
+                if (kind == QLatin1String("markdown")) {
+                    textBodies.append(request.body);
+                    const auto canonical = QUuid::createUuidV5(QUuid(topicId),
+                        request.body.value("uuid").toString().toUtf8())
+                        .toString(QUuid::WithoutBraces);
+                    textSaved = message(request.body.value("payload").toObject()
+                        .value("content").toString(), canonical);
+                    textSaved["user_uuid"] = userId;
+                    textSaved["updated_at"] = textSaved.value("created_at");
+                    Response response{textSaved, 201};
+                    response.defer = [&](std::function<void()> send) { releaseText = std::move(send); };
+                    return response;
+                }
+                pollBodies.append(request.body);
+                Response response{pollCreateDto(createdId), 201};
+                response.defer = [&](std::function<void()> send) { releasePoll = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && !textSaved.isEmpty()
+                && path == "/api/workspace/v1/messenger/messages/"
+                    + textSaved.value("uuid").toString())
+                return {textSaved};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-create-unrelated.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll unrelated-completion window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(!controller.busy());
+        click(window, visibleItem(window->contentItem(), "pollButton"));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
+        dialog->findChildren<QObject *>("pollAnswerField").at(0)->setProperty("text", "First");
+        QTRY_COMPARE(dialog->findChildren<QObject *>("pollAnswerField").size(), 2);
+        dialog->findChildren<QObject *>("pollAnswerField").at(1)->setProperty("text", "Second");
+        auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
+        QTRY_VERIFY(create->property("enabled").toBool());
+        click(window, create);
+        QTRY_VERIFY_WITH_TIMEOUT(pollBodies.size() == 1, 3000);
+        QTRY_VERIFY(dialog->property("pending").toBool());
+        // Kick off an unrelated text send and let it complete while the poll
+        // create is still in flight.
+        auto *composer = window->findChild<QObject *>("messageComposer"); QVERIFY(composer);
+        composer->setProperty("text", "Unrelated completion");
+        QMetaObject::invokeMethod(&controller, "send");
+        QTRY_VERIFY_WITH_TIMEOUT(textBodies.size() == 1, 3000);
+        QVERIFY(releaseText); releaseText(); releaseText = nullptr;
+        const auto canonicalTextId = textSaved.value("uuid").toString();
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            for (const auto &row : controller.messages())
+                if (row.toMap().value(QStringLiteral("id")).toString() == canonicalTextId) return true;
+            return false;
+        }(), 3000);
+        QTest::qWait(300); // messageSent has been dispatched with the merge
+        // The unrelated completion must not close the pending poll dialog.
+        QVERIFY(dialog->property("visible").toBool());
+        QVERIFY(dialog->property("pending").toBool());
+        // The poll's own completion does close it.
+        QVERIFY(releasePoll); releasePoll(); releasePoll = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
+    }
+
+    // Finding 3: counts above the server limit (20 questions / 20 answers)
+    // must be caught in the form: inline error, Create disabled, submit blocked,
+    // and the draft stays correctable.
+    void pollCreateDialogEnforcesServerLimits()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const QString createdId = QStringLiteral("a9a9a9a9-0004-4a9a-8a9a-a9a9a9a9a9a9");
+        QVector<QJsonObject> pollBodies;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                pollBodies.append(request.body);
+                return {pollCreateDto(createdId), 201};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-create-limits.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll limits window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(!controller.busy());
+        click(window, visibleItem(window->contentItem(), "pollButton"));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
+        const auto filledAnswers = [dialog]() {
+            int filled = 0;
+            for (auto *field : dialog->findChildren<QObject *>("pollAnswerField"))
+                if (!field->property("text").toString().trimmed().isEmpty()) ++filled;
+            return filled;
+        };
+        for (int row = 0; row < 21; ++row) {
+            QTRY_VERIFY_WITH_TIMEOUT(
+                dialog->findChildren<QObject *>("pollAnswerField").size() > row, 3000);
+            dialog->findChildren<QObject *>("pollAnswerField").at(row)
+                ->setProperty("text", "Option " + QString::number(row + 1));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(filledAnswers() == 21, 3000);
+        auto *limitError = window->findChild<QObject *>("pollLimitErrorLabel"); QVERIFY(limitError);
+        QTRY_VERIFY_WITH_TIMEOUT(limitError->property("visible").toBool(), 3000);
+        auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
+        QVERIFY(!create->property("enabled").toBool());
+        // Submitting is blocked outright: no request, no stuck pending state.
+        QMetaObject::invokeMethod(dialog, "submit");
+        QTest::qWait(250);
+        QVERIFY(!dialog->property("pending").toBool());
+        QVERIFY(pollBodies.isEmpty());
+        // The draft stays correctable: dropping one answer clears the error.
+        auto *flick = window->findChild<QQuickItem *>("pollFormFlickable"); QVERIFY(flick);
+        QList<QQuickItem *> visibleRemoves;
+        for (auto *button : dialog->findChildren<QQuickItem *>("pollAnswerRemoveButton"))
+            if (button->isVisible() && button->isEnabled()) visibleRemoves.append(button);
+        QCOMPARE(visibleRemoves.size(), 21);
+        auto *lastRemove = visibleRemoves.last();
+        pollFormBringIntoView(flick, window->contentItem(), lastRemove);
+        pollFormClick(window, lastRemove);
+        QTRY_VERIFY_WITH_TIMEOUT(filledAnswers() == 20, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!limitError->property("visible").toBool(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(create->property("enabled").toBool(), 3000);
+        // The add-question control also caps the form at the server limit.
+        auto *add = window->findChild<QQuickItem *>("pollAddQuestionButton"); QVERIFY(add);
+        for (int extra = 0; extra < 25; ++extra)
+            QMetaObject::invokeMethod(dialog, "addQuestion");
+        QCOMPARE(dialog->property("sectionCount").toInt(), 20);
+        QTRY_VERIFY_WITH_TIMEOUT(!add->property("enabled").toBool(), 3000);
+    }
+
+    // Finding 4: a deadline that expires while the dialog sits open must be
+    // revalidated at submission and blocked inline, never silently dropped.
+    void pollCreateDialogRevalidatesExpiredDeadlineOnSubmit()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const QString createdId = QStringLiteral("a9a9a9a9-0005-4a9a-8a9a-a9a9a9a9a9a9");
+        QVector<QJsonObject> pollBodies;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                pollBodies.append(request.body);
+                return {pollCreateDto(createdId), 201};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-create-expiry.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll deadline-expiry window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(!controller.busy());
+        click(window, visibleItem(window->contentItem(), "pollButton"));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
+        dialog->findChildren<QObject *>("pollAnswerField").at(0)->setProperty("text", "First");
+        QTRY_COMPARE(dialog->findChildren<QObject *>("pollAnswerField").size(), 2);
+        dialog->findChildren<QObject *>("pollAnswerField").at(1)->setProperty("text", "Second");
+        auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
+        QTRY_VERIFY(create->property("enabled").toBool());
+        click(window, window->findChild<QQuickItem *>("pollSettingsButton"));
+        auto *flick = window->findChild<QQuickItem *>("pollFormFlickable"); QVERIFY(flick);
+        auto *deadlineAction = window->findChild<QQuickItem *>("pollDeadlineAction"); QVERIFY(deadlineAction);
+        pollFormBringIntoView(flick, window->contentItem(), deadlineAction);
+        pollFormClick(window, deadlineAction);
+        auto *dateField = window->findChild<QObject *>("pollDeadlineDateField"); QVERIFY(dateField);
+        auto *timeField = window->findChild<QObject *>("pollDeadlineTimeField"); QVERIFY(timeField);
+        QTRY_VERIFY(dateField->property("visible").toBool());
+        // A deadline a few seconds ahead is valid when it is entered.
+        const QDateTime soon = QDateTime::currentDateTime().addSecs(4);
+        dateField->setProperty("text", soon.toString("yyyy-MM-dd"));
+        timeField->setProperty("text", soon.toString("HH:mm:ss"));
+        QTRY_VERIFY_WITH_TIMEOUT(create->property("enabled").toBool(), 3000);
+        auto *invalid = window->findChild<QObject *>("pollDeadlineInvalidLabel"); QVERIFY(invalid);
+        // Without any further interaction the form notices the expiry passing.
+        QTRY_VERIFY_WITH_TIMEOUT(invalid->property("visible").toBool(), 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(!create->property("enabled").toBool(), 3000);
+        // Submission after the expiry is blocked inline, not silently sent
+        // with the deadline dropped.
+        QMetaObject::invokeMethod(dialog, "submit");
+        QTest::qWait(250);
+        QVERIFY(!dialog->property("pending").toBool());
+        QVERIFY(pollBodies.isEmpty());
+        QVERIFY(dialog->property("visible").toBool());
+        // A corrected future deadline is accepted and travels with the poll.
+        dateField->setProperty("text", "2099-01-01");
+        timeField->setProperty("text", "10:00");
+        QTRY_VERIFY_WITH_TIMEOUT(create->property("enabled").toBool(), 3000);
+        pollFormClick(window, create);
+        QTRY_VERIFY_WITH_TIMEOUT(pollBodies.size() == 1, 3000);
+        QVERIFY(!pollBodies.at(0).value(QStringLiteral("payload")).toObject()
+            .value(QStringLiteral("closes_at")).isNull());
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
+    }
+
 };
 
 
