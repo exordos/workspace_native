@@ -217,7 +217,11 @@ chrome (title, back, close), exactly as the reference shell does, so
    4574939220): `contentY` is reset to 0 whenever `chatScreen` changes, and
    `contentHeight` is bound to the ACTIVE screen only, never summing the hidden
    settings flow (a returned-to info screen must be short enough that no
-   off-view scroll can exist).
+   off-view scroll can exist). On the info screen the member section is part of
+   the active flow, so the section carries an explicit
+   `height: membersFlow.y + membersFlow.height` (reviewer finding 4575277281):
+   with a bare `Item` (height 0) the `contentHeight` binding ended at the
+   section's top and member rows below the viewport were unreachable.
 
 ## Tests (issue acceptance)
 
@@ -263,7 +267,14 @@ the drawer through `rightDrawer.openInfo()` exactly like the window group does.
    `encryption=false` keeps the ordinary `channelInfoLayer` visible with its own
    avatar/title and no `protectedChat*` item, proving the ordinary drawer is
    untouched.
-4. `native-native-locale`: every new `qsTr` string in the
+4. `uiEncryptedChatInfoMemberListScrollsToEnd` (reviewer finding 4575277281):
+   the scene fixture takes an optional member-row count and serves twenty
+   binding rows with distinct user ids, so the member flow is taller than the
+   drawer viewport. The case pins that `contentHeight` equals the measured
+   `protectedChatMembersFlow` bottom plus the 16 px bottom padding (the section
+   height includes its flow), and that at max contentY the last member card is
+   fully inside the viewport - the member list scrolls to its end.
+5. `native-native-locale`: every new `qsTr` string in the
    `NativeEncryptedChatInfo` context is reviewed in
    `packages/native/translations/workspace_ru.ts` (ru texts asserted in 1-2,
    en texts come from the same catalog keys' sources).
