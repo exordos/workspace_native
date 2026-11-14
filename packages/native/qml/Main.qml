@@ -4547,7 +4547,22 @@ ApplicationWindow {
                                 visible: String(messageRow.modelData.quoteId || "").length > 0
                                     && !messageRow.keyControl && !messageRow.encryptedLocked
                                 width: parent.width
-                                height: messageQuoteContents.height + 12
+                                // Media preview leading the quote frame (issue #217,
+                                // docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md):
+                                // first image, else first video, never for a
+                                // selected-text quote (quote.ui.tsx:257-294).
+                                readonly property bool quoteMediaAllowed:
+                                    String(messageRow.modelData.quoteStatus) === "ready"
+                                    && String(messageRow.modelData.quoteText || "").length === 0
+                                readonly property var quoteMedia: quoteMediaAllowed
+                                    ? root.controller.mediaPreviewReference(String(messageRow.modelData.quoteContent || ""))
+                                    : ({})
+                                readonly property string quoteMediaUrn: String(quoteMedia.urn || "")
+                                readonly property string quoteMediaKind: String(quoteMedia.kind || "")
+                                readonly property bool quoteMediaShown: messageQuoteThumbnail.visible
+                                    && messageQuoteThumbnail.status === "ready"
+                                height: Math.max(messageQuoteContents.height,
+                                    messageQuoteThumbnail.visible ? 48 : 0) + 12
                                 radius: 6
                                 color: Qt.alpha(root.colors["bg"], 0.35)
                                 MouseArea {
@@ -4562,19 +4577,33 @@ ApplicationWindow {
                                     radius: 1
                                     color: root.colors.accent
                                 }
+                                NativeQuoteMediaThumbnail {
+                                    id: messageQuoteThumbnail
+                                    objectName: "quoteMediaThumbnail-" + messageRow.modelData.id
+                                    visible: messageQuoteFrame.quoteMediaUrn.length > 0
+                                    colors: root.colors
+                                    images: root.messageImages
+                                    urn: messageQuoteFrame.quoteMediaUrn
+                                    kind: messageQuoteFrame.quoteMediaKind
+                                    x: 10
+                                    y: 6
+                                    height: parent.height - 12
+                                }
                                 readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready"
                                     && String(messageRow.modelData.quoteText || "").length === 0
-                                    ? String(root.markdown.render(String(messageRow.modelData.quoteContent)).html)
+                                    ? String(root.markdown.render(String(messageRow.modelData.quoteContent),
+                                        messageQuoteFrame.quoteMediaShown).html)
                                         .replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
                                     : ""
                                 Column {
                                     id: messageQuoteContents
-                                    x: 10
-                                    width: parent.width - 18
+                                    x: messageQuoteThumbnail.visible ? 66 : 10
+                                    width: parent.width - (messageQuoteThumbnail.visible ? 74 : 18)
                                     y: 6
                                     spacing: 2
                                     Text {
                                         id: quoteAuthor
+                                        objectName: "quoteHeaderText-" + messageRow.modelData.id
                                         width: parent.width
                                         text: String(messageRow.modelData.quoteStatus) === "unavailable"
                                             ? qsTr("Message unavailable")
@@ -4610,6 +4639,7 @@ ApplicationWindow {
                                     }
                                     Text {
                                         id: quoteBody
+                                        objectName: "quoteBodyHtml-" + messageRow.modelData.id
                                         visible: messageQuoteFrame.quoteHtml.length > 0
                                         width: parent.width
                                         text: messageQuoteFrame.quoteHtml
@@ -5948,7 +5978,10 @@ ApplicationWindow {
                         Rectangle {
                             id: replyQuoteFrame
                             Layout.fillWidth: true
-                            Layout.preferredHeight: replyQuoteContents.height + 12
+                            // The 48 px media thumbnail sets the minimum frame
+                            // height, exactly like the reference self-stretch box.
+                            Layout.preferredHeight: Math.max(replyQuoteContents.height,
+                                replyMediaThumbnail.visible ? 48 : 0) + 12
                             radius: 6
                             color: root.colors["composer-outer"]
                             Rectangle {
@@ -5959,10 +5992,22 @@ ApplicationWindow {
                                 radius: 1
                                 color: root.colors.accent
                             }
+                            NativeQuoteMediaThumbnail {
+                                id: replyMediaThumbnail
+                                objectName: "replyMediaThumbnail"
+                                visible: root.controller.replyMediaUrn.length > 0
+                                colors: root.colors
+                                images: root.messageImages
+                                urn: root.controller.replyMediaUrn
+                                kind: root.controller.replyMediaKind
+                                x: 10
+                                y: 6
+                                height: parent.height - 12
+                            }
                             Column {
                                 id: replyQuoteContents
-                                x: 10
-                                width: replyQuoteFrame.width - 18
+                                x: replyMediaThumbnail.visible ? 66 : 10
+                                width: replyQuoteFrame.width - (replyMediaThumbnail.visible ? 74 : 18)
                                 y: 6
                                 spacing: 2
                                 Text {
@@ -5983,7 +6028,12 @@ ApplicationWindow {
                                     objectName: "replyExcerptText"
                                     width: parent.width
                                     visible: text.length > 0
-                                    text: root.controller.replyExcerpt
+                                    // Once the thumbnail is painted the media token
+                                    // leaves the summary (reference
+                                    // hiddenWorkspaceMediaFileUuids, issue #217).
+                                    text: replyMediaThumbnail.status === "ready"
+                                        ? root.controller.replyMediaSummary
+                                        : root.controller.replyExcerpt
                                     textFormat: Text.PlainText
                                     font.pixelSize: 14
                                     lineHeightMode: Text.FixedHeight
