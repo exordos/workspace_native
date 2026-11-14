@@ -3480,4 +3480,79 @@
             <translation>Сохранение ответа…</translation>
         </message>
     </context>
+    <context>
+        <name>NativeEncryptedChatInfo</name>
+        <message numerus="yes">
+            <source>%n participant</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n participants</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n online</source>
+            <translation>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+            </translation>
+        </message>
+        <message>
+            <source>Protected chat</source>
+            <translation>Защищённый чат</translation>
+        </message>
+        <message>
+            <source>Call</source>
+            <translation>Позвонить</translation>
+        </message>
+        <message>
+            <source>Settings</source>
+            <translation>Настройки</translation>
+        </message>
+        <message>
+            <source>Channel name</source>
+            <translation>Название канала</translation>
+        </message>
+        <message>
+            <source>Description (optional)</source>
+            <translation>Описание</translation>
+        </message>
+        <message>
+            <source>No description</source>
+            <translation>Без описания</translation>
+        </message>
+        <message>
+            <source>Channel details are currently read-only.</source>
+            <translation>Параметры канала пока доступны только для просмотра.</translation>
+        </message>
+        <message>
+            <source>Encryption keys</source>
+            <translation>Ключи шифрования</translation>
+        </message>
+        <message>
+            <source>Channel type</source>
+            <translation>Тип канала</translation>
+        </message>
+        <message>
+            <source>Closed, protected history</source>
+            <translation>Закрытый, защищённая история переписки</translation>
+        </message>
+        <message>
+            <source>Open</source>
+            <translation>Открытый</translation>
+        </message>
+        <message>
+            <source>Members</source>
+            <translation>Участники</translation>
+        </message>
+    </context>
 </TS>
