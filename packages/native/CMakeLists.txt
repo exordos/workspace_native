@@ -287,6 +287,10 @@ if(BUILD_TESTING)
         add_test(NAME native-${test} COMMAND ${test}-test)
         set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
         if(test STREQUAL "native-controller")
+            # The diagnostics source-contract guard (fix-round-1 finding 2)
+            # reads the shipped provider source from the source tree.
+            target_compile_definitions(${test}-test PRIVATE
+                WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/native-logging.cpp")
             # Include Archive/placement and creation HTTP/lifecycle cases in the complete suite.
             # This is the whole-suite budget, not a request timeout. The poll-creation retry
             # cases (#215) took the solo runtime to 697s against the old 700s ceiling; 780s
