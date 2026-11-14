@@ -20256,9 +20256,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
             pollBubbleOptionTwo);
     }
 
-    // exo-review finding 4571525936 (round 3): Main.qml caps poll bubbles
-    // at 88 % of the available message width, so the card column must size
-    // to the card, not to a fixed 336 px.
+    // exo-review finding 4571525936 (rounds 3-4): Main.qml caps poll bubbles
+    // at 88 % of the available message width, so the card column sizes to the
+    // card, not to a fixed 336 px. Round 4: the a042ca2 text floor kept the
+    // option label positive but left the result aggregate on the same line,
+    // so on a very narrow bubble the aggregate still extended past the card.
+    // Every result row's aggregate block must keep its right edge inside the
+    // card content width and clear of the option label at every width.
     void pollBubbleNarrowCardKeepsContentInside()
     {
         PollBubbleScene scene;
@@ -20267,32 +20271,48 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *card = pollVisibleItem(scene.content(),
             pollBubbleName("poll-card", scene.fixture.messageUuid));
         QVERIFY(card);
-        card->setWidth(280);
-        QTest::qWait(120); // positioners re-polish on the next frame
-        auto *row = pollVisibleItem(scene.content(),
-            "poll-option-0-0-" + scene.fixture.messageUuid);
-        QVERIFY(row);
-        QVERIFY2(row->width() <= card->width() + 1,
-            qPrintable(QStringLiteral("option row %1 px overflows the %2 px card")
-                .arg(row->width()).arg(card->width())));
-        auto *text = pollVisibleItem(scene.content(),
-            "poll-option-text-0-0-" + scene.fixture.messageUuid);
-        auto *aggregate = pollVisibleItem(scene.content(),
-            "poll-aggregate-0-0-" + scene.fixture.messageUuid);
-        QVERIFY(text && aggregate);
-        const qreal aggregateRight = aggregate->mapToItem(row, QPointF(aggregate->width(), 0)).x();
-        QVERIFY2(aggregateRight <= row->width() + 1,
-            qPrintable(QStringLiteral("result aggregate ends at %1 px, row is %2 px")
-                .arg(aggregateRight).arg(row->width())));
-        QVERIFY(text->width() >= 24);
-        // Pathological narrow: the text keeps a positive floor instead of
-        // collapsing to a negative width.
-        card->setWidth(96);
-        QTest::qWait(120);
-        auto *narrowText = pollVisibleItem(scene.content(),
-            "poll-option-text-0-0-" + scene.fixture.messageUuid);
-        QVERIFY(narrowText);
-        QVERIFY2(narrowText->width() >= 24, qPrintable(QStringLiteral("option text collapsed to %1 px").arg(narrowText->width())));
+        // Sweep from just under the reference 336 px column down to a
+        // pathological bubble width.
+        for (const qreal width : {320.0, 280.0, 240.0, 200.0, 160.0, 120.0, 96.0}) {
+            card->setWidth(width);
+            QTest::qWait(120); // positioners re-polish on the next frame
+            auto *sizedCard = pollVisibleItem(scene.content(),
+                pollBubbleName("poll-card", scene.fixture.messageUuid));
+            QVERIFY(sizedCard);
+            QCOMPARE(sizedCard->width(), width);
+            for (int option = 0; option < 2; ++option) {
+                auto *row = pollVisibleItem(scene.content(),
+                    QStringLiteral("poll-option-0-%1-").arg(option)
+                        + scene.fixture.messageUuid);
+                auto *text = pollVisibleItem(scene.content(),
+                    QStringLiteral("poll-option-text-0-%1-").arg(option)
+                        + scene.fixture.messageUuid);
+                auto *aggregate = pollVisibleItem(scene.content(),
+                    QStringLiteral("poll-aggregate-0-%1-").arg(option)
+                        + scene.fixture.messageUuid);
+                QVERIFY(row && text && aggregate);
+                QVERIFY2(row->width() <= sizedCard->width() + 1,
+                    qPrintable(QStringLiteral("at %1 px: option row %2 px overflows the card")
+                        .arg(width).arg(row->width())));
+                const qreal aggregateRight =
+                    aggregate->mapToItem(sizedCard, QPointF(aggregate->width(), 0)).x();
+                QVERIFY2(aggregateRight <= sizedCard->width() + 1,
+                    qPrintable(QStringLiteral("at %1 px: result aggregate of option %2 ends at %3 px, "
+                        "past the card content width")
+                        .arg(width).arg(option).arg(aggregateRight)));
+                const QRectF textRect =
+                    text->mapRectToItem(sizedCard, QRectF(0, 0, text->width(), text->height()));
+                const QRectF aggregateRect = aggregate->mapRectToItem(
+                    sizedCard, QRectF(0, 0, aggregate->width(), aggregate->height()));
+                QVERIFY2(!textRect.intersects(aggregateRect),
+                    qPrintable(QStringLiteral("at %1 px: result aggregate [%2, %3] overlaps the option label [%4, %5]")
+                        .arg(width).arg(aggregateRect.left()).arg(aggregateRect.right())
+                        .arg(textRect.left()).arg(textRect.right())));
+                QVERIFY2(text->width() >= 24,
+                    qPrintable(QStringLiteral("at %1 px: option text collapsed to %2 px")
+                        .arg(width).arg(text->width())));
+            }
+        }
     }
 
     // exo-review finding 4571961640 (round 3): a retained add attempt on one
