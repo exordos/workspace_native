@@ -21,7 +21,8 @@ oracle is `workspace_ui` at sha `230e02b8b0273dee556a406746d122180a68b3e7`:
 
 The REST foundation already merged in #214 (`docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md`):
 `NativeController::sendPoll`, `supportsMessengerPolls`, `canCreatePoll` and the
-`pollActionFailed(messageUuid, action, detail)` signal (`http-<status>` detail).
+`pollActionFailed(messageUuid, action, detail, questionUuid)` signal (`http-<status>` detail;
+`questionUuid` is empty for create failures).
 
 ## Composer trigger
 

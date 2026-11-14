@@ -30,13 +30,16 @@ Item {
     // The embed host wires voteRequested straight to the controller; the card
     // tracks the in-flight state itself (the reference locks the question
     // before the request leaves, question.ui:190-195).
-    onVoteRequested: questionUuid => card.markPending(questionUuid)
+    onVoteRequested: questionUuid => card.markPending(questionUuid, "vote")
 
     // Transient local state, keyed by question uuid. In-flight locks release
     // on their own request completion (pollActionSucceeded / pollActionFailed
     // below); a poll_state revision change only retires stale error text.
     // Drafts and add attempts live on the card, keyed by question, so an
     // unrelated revision or a delegate re-incubation never loses them.
+    // A pending entry records the pending request's action ("vote" or
+    // "add_poll_option") as well as the question, so a failure can release
+    // exactly the lock its own request set (exo-review 4571961640).
     property var pendingQuestions: ({})
     property var questionErrors: ({})
     property var addErrors: ({})
@@ -126,9 +129,9 @@ Item {
             deadlineTimer.stop()
         }
     }
-    function markPending(questionUuid) {
+    function markPending(questionUuid, action) {
         const next = Object.assign({}, card.pendingQuestions)
-        next[questionUuid] = true
+        next[questionUuid] = action
         card.pendingQuestions = next
         const errors = Object.assign({}, card.questionErrors)
         delete errors[questionUuid]
@@ -153,32 +156,35 @@ Item {
 
     // Success is observed through the poll_state revision change (the response
     // merged by the controller); failures arrive via pollActionFailed for this
-    // message. Native tracks in-flight votes per message granularity because
-    // the controller signal identifies the message, not the question
-    // (deviation D9 in the design doc).
+    // message. Both completions identify their own question: the vote and add
+    // bodies carry question_uuid, so a lock belongs to exactly one request
+    // (a stale add attempt on another question can never release a vote's
+    // lock, exo-review 4571961640).
     Connections {
         target: card.controller
         enabled: card.controller !== null
-        function onPollActionFailed(messageUuid, action, detail) {
+        function onPollActionFailed(messageUuid, action, detail, questionUuid) {
             if (messageUuid !== card.messageUuid)
                 return
+            if (action !== "vote" && action !== "add_poll_option")
+                return
+            // Release only the failed request's own lock: the pending entry
+            // records which action set it, so an add failure cannot clear a
+            // vote lock on the same or another question (the stale add
+            // attempt map is a retry cache, not a pending marker).
+            if (card.pendingQuestions[questionUuid] !== action)
+                return
+            const pending = Object.assign({}, card.pendingQuestions)
+            delete pending[questionUuid]
+            card.pendingQuestions = pending
             if (action === "vote") {
-                const failed = Object.keys(card.pendingQuestions)
                 const errors = Object.assign({}, card.questionErrors)
-                failed.forEach(questionUuid => { errors[questionUuid] = qsTr("Could not save the change. Please try again.") })
+                errors[questionUuid] = qsTr("Could not save the change. Please try again.")
                 card.questionErrors = errors
-                card.pendingQuestions = ({})
-            } else if (action === "add_poll_option") {
-                Object.keys(card.pendingQuestions).forEach(questionUuid => {
-                    if (!card.addAttempts[questionUuid])
-                        return
-                    const errors = Object.assign({}, card.addErrors)
-                    errors[questionUuid] = qsTr("Could not add the option. Try again.")
-                    card.addErrors = errors
-                    const pending = Object.assign({}, card.pendingQuestions)
-                    delete pending[questionUuid]
-                    card.pendingQuestions = pending
-                })
+            } else {
+                const errors = Object.assign({}, card.addErrors)
+                errors[questionUuid] = qsTr("Could not add the option. Try again.")
+                card.addErrors = errors
             }
         }
         // Own-request completion (exo-review 4571525925): this request's own
@@ -562,7 +568,7 @@ Item {
                                             {[question.uuid]: attempt})
                                     }
                                     const pending = Object.assign({}, card.pendingQuestions)
-                                    pending[question.uuid] = true
+                                    pending[question.uuid] = "add_poll_option"
                                     card.pendingQuestions = pending
                                     const errors = Object.assign({}, card.addErrors)
                                     delete errors[question.uuid]

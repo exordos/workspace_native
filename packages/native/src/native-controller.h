@@ -585,7 +585,8 @@ signals:
     void messageSent(QString id, QString stream, QString topic);
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
     // ---- Issue #214 polls foundation signals ----
-    void pollActionFailed(QString messageUuid, QString action, QString detail);
+    void pollActionFailed(QString messageUuid, QString action, QString detail,
+        QString questionUuid);
     // #216 round 3: the response of one action request was applied
     // (poll_state merged). Vote/add carry the affected question uuid so the
     // bubble releases only the lock its own request set - an unrelated poll
