@@ -1020,13 +1020,26 @@ ApplicationWindow {
                 || wheel.pixelDelta.y !== 0 && wheel.phase !== Qt.NoScrollPhase)
             return false
         const dy = -wheel.angleDelta.y / 120 * root.wheelPixelsPerNotch
+        // An outward wheel that cannot move the list (already pinned at the
+        // requested edge) must stay unconsumed so an outer scroller under the
+        // pointer still receives it, like the reference ScrollArea's
+        // non-passive hand-off. Compare against the list's own reachable
+        // contentY range, with a half-pixel tolerance so a settled list that
+        // rests on a fractional edge (contentHeight rounding, DPR alignment)
+        // is not falsely treated as movable.
+        const minY = flick.originY - flick.topMargin
+        const maxY = flick.originY
+            + Math.max(0, flick.contentHeight - flick.height) + flick.bottomMargin
+        const settled = Math.min(Math.max(flick.contentY + dy, minY), maxY)
+        if (Math.abs(settled - flick.contentY) < 0.5)
+            return false
         if (flick.moving)
             flick.flick(0, 0)
         // Out-of-range targets settle through Flickable.returnToBounds()
         // instead of a hand-rolled clamp: programmatic contentY writes do not
         // refresh atYBeginning/atYEnd or the drag extents on their own, so
         // the same fixup the flick path relied on must stay in charge.
-        flick.contentY = flick.contentY + dy
+        flick.contentY = settled
         flick.returnToBounds()
         return true
     }

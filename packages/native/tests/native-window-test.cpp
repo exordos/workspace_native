@@ -18545,13 +18545,23 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 return !list->property("moving").toBool() && stable.elapsed() >= 50;
             }, 1500);
         };
-        // A synthesized high-resolution (touchpad-style) step: pixel delta
-        // only, with a real scroll phase.
-        const auto touchpadStep = [window](const QPointF &scenePos, int pixels) {
-            QWheelEvent event(scenePos, window->mapToGlobal(scenePos), QPoint(),
-                QPoint(0, pixels), Qt::NoButton, Qt::NoModifier,
+        // A synthesized high-resolution (touchpad-style) step (issue #142
+        // review): the step value arrives in pixelDelta - the old fixture
+        // wrongly fed the step through angleDelta, so the notch mapping ran
+        // and the pixel-delta preservation path was never exercised. A small
+        // matching angle delta rides along (real XCB touchpad events carry
+        // both): it is sub-notch on purpose, so any regression that consumes
+        // pixel-phase wheels would show up as a notch-scale remap. Spontaneous
+        // wheel events arrive pre-ignored (the delivery agent ignores them at
+        // entry), so the fixture does the same and reads the flag back.
+        const auto touchpadStep = [window](const QPointF &scenePos, int pixels, int peekAngle) {
+            QWheelEvent event(scenePos, window->mapToGlobal(scenePos), QPoint(0, pixels),
+                QPoint(0, peekAngle), Qt::NoButton, Qt::NoModifier,
                 Qt::ScrollUpdate, false, Qt::MouseEventSynthesizedBySystem);
+            event.setAccepted(false);
             QCoreApplication::sendEvent(window, &event);
+            QTest::qWait(20);
+            return event.isAccepted();
         };
         const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
         QTest::mouseMove(window, center.toPoint());
@@ -18569,40 +18579,133 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY2(qAbs(list->property("contentY").toReal() - start) <= 1.0, qPrintable(
             QStringLiteral("the direction change did not retarget cleanly (contentY %1 -> %2)")
                 .arg(start).arg(list->property("contentY").toReal())));
-        // Touchpad steps (synthesized pixel deltas) belong to the Flickable's
-        // own DPR-aware 1:1 path (see root.scrollFlickableWithWheel). The
-        // contract here is determinism and sub-notch granularity: identical
-        // input produces identical movement smaller than a notch, a reversal
-        // undoes proportionally, and nothing drifts once the input stops.
-        const qreal stepDirection = notchAngle > 0 ? -1.0 : 1.0; // contentY sign per step
-        qreal stepSize = 0;
-        auto previous = list->property("contentY").toReal();
+        // The step value now rides in pixelDelta (fixture above), and a
+        // scroll-phase wheel must never be consumed by the reference notch
+        // mapping: root.scrollFlickableWithWheel preserves it for the
+        // Flickable's own pixel path. The assertions are not vacuous - a
+        // regression back to the old angle-delta feeding would remap every
+        // ±30/∓45 angle component at notch scale (25 px and 37 px steps), so
+        // (a) each delivered event must still be unaccepted afterwards (an
+        // outer region can keep receiving the wheels) and (b) contentY must
+        // never move at notch scale. After the gesture the list must still
+        // answer a real notch with the measured reference distance.
+        const int stepPixels = notchAngle > 0 ? 30 : -30; // sub-notch, away from the resting edge
+        const auto pinned = list->property("contentY").toReal();
         for (int step = 0; step < 3; ++step) {
-            touchpadStep(center, notchAngle > 0 ? 30 : -30);
-            QVERIFY(settle());
-            const auto moved = list->property("contentY").toReal() - previous;
-            QVERIFY2(moved * stepDirection > 0.5 && qAbs(moved) < 99.0, qPrintable(
-                QStringLiteral("touchpad step %1 moved %2 px; sub-notch steps must move the "
-                    "content in the input direction").arg(step).arg(moved)));
-            if (step > 0)
-                QVERIFY2(qAbs(moved - stepSize) <= 0.6, qPrintable(QStringLiteral(
-                    "identical touchpad steps drifted (%1 vs %2)").arg(stepSize).arg(moved)));
-            stepSize = moved;
-            previous = list->property("contentY").toReal();
+            const bool consumed = touchpadStep(center, stepPixels, stepPixels);
+            QVERIFY2(!consumed, qPrintable(QStringLiteral(
+                "a scroll-phase pixel step was consumed by the notch mapping (step %1): the "
+                "pixel delta must be preserved for the Flickable's own touchpad path")
+                .arg(step)));
+            QVERIFY2(qAbs(list->property("contentY").toReal() - pinned) <= 0.6, qPrintable(
+                QStringLiteral("pixel step %1 moved the list by %2 px; a preserved pixel "
+                    "delta must not be remapped through the notch mapping")
+                    .arg(step).arg(list->property("contentY").toReal() - pinned)));
         }
-        touchpadStep(center, notchAngle > 0 ? -45 : 45);
+        const bool reversedConsumed = touchpadStep(center, stepPixels > 0 ? -45 : 45,
+            stepPixels > 0 ? -45 : 45);
+        QVERIFY2(!reversedConsumed,
+            "the 45 px reversal step must stay preserved just like the forward steps");
+        QVERIFY2(qAbs(list->property("contentY").toReal() - pinned) <= 0.6,
+            "the reversal step must not remap through the notch mapping either");
+        // Preservation left the list fully usable: a real notch now still
+        // scrolls the measured reference distance from where the pixel steps
+        // left the content untouched (the notch handler settles any residual
+        // velocity the bare pixel events left on the Flickable). The notch
+        // write is synchronous, so a fixed wait replaces settle(): bare
+        // pixel-phase events without a gesture begin can leave the Flickable
+        // flag a "moving" state that no velocity animation backs.
+        QTest::wheelEvent(window, center, QPoint(0, notchAngle));
+        QTest::qWait(150);
+        QVERIFY2(qAbs(list->property("contentY").toReal() - pinned) >= 99.0, qPrintable(
+            QStringLiteral("the notch after the preserved pixel steps moved %1 px; the "
+                "measured reference notch is 100 px")
+                .arg(qAbs(list->property("contentY").toReal() - pinned))));
+    }
+
+    // Issue #142 review: an outward angle wheel that cannot move the list
+    // (the list is already pinned at the requested edge) must not be consumed
+    // by the notch mapping, so an outer scroller under the pointer still
+    // receives it - the reference's non-passive hand-off at an edge. The
+    // observable is the delivered event's acceptance: the wheel observer sets
+    // wheel.accepted from root.scrollFlickableWithWheel, Qt Quick's Flickable
+    // re-ignores angle wheels that run into its own edge, and the delivery
+    // agent starts every wheel event ignored - so an event that is still
+    // unaccepted after delivery means no item under the pointer consumed it,
+    // which is exactly what lets an outer Flickable receive the scroll.
+    void wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove_data()
+    {
+        QTest::addColumn<QString>("target");
+        QTest::addColumn<int>("edgeNotchAngle"); // outward notch at the pinned edge
+        QTest::newRow("message-list-at-bottom") << QStringLiteral("messageList") << -120;
+        QTest::newRow("sidebar-list-at-top") << QStringLiteral("streamList") << 120;
+    }
+    void wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove()
+    {
+        QFETCH(QString, target);
+        QFETCH(int, edgeNotchAngle);
+        NativeWindowScene scene;
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *list = item(window->contentItem(), target);
+        QVERIFY(list);
+        const auto settle = [list] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        // Pin the list at the edge the notch points out of. exposeWindow has
+        // already tail-pinned the message list (atYEnd); the sidebar list has
+        // not been scrolled at all, so it sits at its top edge.
+        if (edgeNotchAngle > 0) {
+            QVERIFY2(QTest::qWaitFor(
+                [&] { return list->property("contentY").toReal() <= 0.01; }, 5000),
+                qPrintable(QStringLiteral("the %1 fixture did not rest at its top edge")
+                    .arg(target)));
+        } else {
+            QVERIFY2(list->property("atYEnd").toBool(),
+                "the message list fixture did not rest at its bottom edge");
+        }
+        const auto start = list->property("contentY").toReal();
+        QWheelEvent wheel(center, window->mapToGlobal(center), QPoint(),
+            QPoint(0, edgeNotchAngle), Qt::NoButton, Qt::NoModifier,
+            Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &wheel);
+        // QQuickWindow::event reports "handled" for every wheel event (the
+        // delivery agent owns the type), so the sendEvent return value says
+        // nothing. The delivery agent ignores every incoming wheel event and
+        // only an item consuming it re-accepts it, so the event's own flag
+        // after delivery is the exact "did anything under the pointer
+        // consume it" observable an outer Flickable would key on.
+        const bool consumed = wheel.isAccepted();
+        QVERIFY2(!consumed, qPrintable(QStringLiteral(
+            "an outward notch at a pinned edge was consumed by the notch mapping: the list "
+            "cannot move in that direction, so an outer scroller under the pointer is "
+            "starved (target %1, notch %2)").arg(target).arg(edgeNotchAngle)));
         QVERIFY(settle());
-        const auto reversed = list->property("contentY").toReal() - previous;
-        QVERIFY2(qAbs(reversed + 1.5 * stepSize) <= qAbs(stepSize) * 0.4, qPrintable(
-            QStringLiteral("the 45 px reversal did not undo 1.5 steps (%1 vs %2)")
-                .arg(reversed).arg(-1.5 * stepSize)));
-        const auto parked = list->property("contentY").toReal();
-        // Stopping is stable: nothing drifts once the input has stopped.
-        QTest::qWait(400);
+        // The list stayed put and healthy at the edge (no deadlock).
+        QVERIFY2(qAbs(list->property("contentY").toReal() - start) <= 0.01, qPrintable(
+            QStringLiteral("the pinned list moved off its edge (%1 -> %2)")
+                .arg(start).arg(list->property("contentY").toReal())));
         QVERIFY(!list->property("moving").toBool());
-        QVERIFY2(qAbs(list->property("contentY").toReal() - parked) <= 0.01, qPrintable(
-            QStringLiteral("the list drifted after stopping (%1 -> %2)")
-                .arg(parked).arg(list->property("contentY").toReal())));
+        // The hand-off is directional, not a blanket ignore: the same notch
+        // back into the movable direction still scrolls the list the measured
+        // reference distance.
+        QTest::wheelEvent(window, center, QPoint(0, -edgeNotchAngle));
+        QVERIFY(settle());
+        QVERIFY2(qAbs(list->property("contentY").toReal() - start) >= 99.0, qPrintable(
+            QStringLiteral("the inward notch stopped working (contentY %1 -> %2)")
+                .arg(start).arg(list->property("contentY").toReal())));
     }
 };
 
