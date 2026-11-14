@@ -153,10 +153,28 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   are cleansed from the intent.
 - Deviation from React staging order: the reference stages the key before the
   POST because its storage accepts a creation id without a stream. The native
-  vault key address binds `stream + generation`, so the native commit can only
-  happen after the stream UUID is authoritative. The observable contract
-  (key never crosses the wire, exactly one committed key per created stream,
-  failure keeps the dialog open) is preserved.
+  key address binds `stream + generation`, so the key COMMIT can only happen
+  after the stream UUID is authoritative. Durability is still closed before
+  dispatch through a separate pre-dispatch stage record (next bullet). The
+  observable contract (key never crosses the wire, exactly one committed key
+  per created stream, failure keeps the dialog open) is preserved.
+- Durable pre-dispatch stage (review findings 4574928575/4574928581): before
+  the stream POST is dispatched the controller writes
+  `NativeChatKeyVault::putCreateStage(lease, {attemptUuid, keyUuid, groupKey,
+  createdAt})`. The attempt uuid is the idempotent stream uuid the POST body
+  carries, so the pair `(attempt, key uuid)` is the complete recovery
+  identity. If the stage write fails, creation is rejected locally before any
+  request ("Encrypted channel creation is not available yet."). The stage is
+  cleared only after the canonical GET echo verified and the key committed
+  (in `commitChannelKey`, best-effort). Recovery: the first authenticated use
+  of a vault (controller init with an attached vault, vault open completing
+  after login, or a login with an already-open vault) scans
+  `createStages(lease)` once per owner and vault lease, skips attempts that
+  still have a live in-memory intent, and for each pending stage performs the
+  canonical `GET /streams/<attempt>`: a verified encrypted echo commits the
+  key and clears the stage; a `404` (the POST never landed) clears the stage;
+  any other answer keeps the stage for the next controller init. The staged
+  key never appears in logs or QML and is cleansed after use.
 - `channelCreationForm()` additionally exposes `encrypted`, which is what the
   QML layer uses to restore one immutable encrypted intent across dialog
   close/reopen for unresolved phases (the existing unresolved-form retention
@@ -194,7 +212,11 @@ forced `false` exclusive flags; one immutable attempt uuid and one immutable
 key uuid across repeated clicks; the vault commit of the generated key for
 the created stream; an encryption echo mismatch ending `uncertain` without
 navigation; a definite POST failure keeping the intent retryable with a new
-uuid; and a replaced runtime (logout during the POST) publishing nothing.
+uuid; a replaced runtime (logout during the POST) publishing nothing; and the
+durable crash window: with the POST reply deferred, destroying the controller
+after dispatch and creating a fresh controller on the same vault recovers and
+commits the key (verified echo), keeps the stage uncommitted (mismatched
+echo), and re-verifies nothing once the stage was cleared by the commit.
 
 `native-window-test.cpp` (group `native-native-window`) covers: the switch is
 present, enabled and interactive; turning it on clears and disables
