@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMutexLocker>
+#include <QReadWriteLock>
 #include <QStandardPaths>
 
 #include <cstdio>
@@ -31,22 +32,31 @@ const char *messageLevelName(QtMsgType type)
 
 NativeLogging *g_messageLogSink = nullptr;
 
+// Readers (the message handler) consult the sink concurrently; the recursive
+// mode keeps a nested log emitted from a thread that already holds the read
+// side from deadlocking with itself. removeNativeLogHandler() takes the write
+// side, which waits until in-flight handler calls have drained before the
+// sink pointer is cleared and the caller may destroy the sink (review round
+// 1 thread 4575150370).
+QReadWriteLock g_sinkLock(QReadWriteLock::Recursive);
+
 // qInstallMessageHandler replaces Qt's default handler, so the console output
 // is reproduced explicitly (stderr, like the Qt default) instead of chained.
+// The console reproduction is best-effort: a stderr failure never gates the
+// diagnostics file append (review round 1 thread 4575150367).
 void nativeMessageHandler(QtMsgType type, const QMessageLogContext &context,
                           const QString &message)
 {
     Q_UNUSED(context);
+    QReadLocker locker(&g_sinkLock);
+    NativeLogging *sink = g_messageLogSink;
     const QString line = NativeLogging::formatMessageLine(type, message);
     const QByteArray utf8 = line.toUtf8();
-    // The console reproduction is best-effort: a failed stderr write must
-    // never gate the diagnostics file append (review round 1, thread
-    // 4575150367).
     if (fwrite(utf8.constData(), 1, size_t(utf8.size()), stderr) == size_t(utf8.size()))
         fputc('\n', stderr);
     (void)fflush(stderr);
-    if (g_messageLogSink)
-        g_messageLogSink->appendLogLine(line);
+    if (sink)
+        sink->appendLogLine(line);
 }
 
 [[maybe_unused]] qint64 parseProcKbValue(const QByteArray &contents, const QByteArray &key)
@@ -164,7 +174,7 @@ QVariantMap NativeLogging::memorySnapshot() const
     // Portable procfs sources (Linux is the acceptance target; other platforms
     // keep the same key set with zero values — see the design doc note). The
     // proc reads stay behind Q_OS_LINUX so non-Linux builds never touch /proc
-    // (review round 1, thread 4575150368).
+    // (review round 1 thread 4575150368).
     qint64 rssKb = 0;
     qint64 sizeKb = 0;
     qint64 peakRssKb = 0;
@@ -211,13 +221,18 @@ QString NativeLogging::formatMessageLine(QtMsgType type, const QString &message)
 
 void installNativeLogHandler(NativeLogging &logging)
 {
+    QWriteLocker locker(&g_sinkLock);
     g_messageLogSink = &logging;
     qInstallMessageHandler(nativeMessageHandler);
 }
 
 void removeNativeLogHandler()
 {
+    // Route new messages away first, then wait for handler calls already in
+    // flight on other threads to drain before clearing the sink; only after
+    // this returns may the caller destroy the sink object (thread 4575150370).
     qInstallMessageHandler(nullptr);
+    QWriteLocker locker(&g_sinkLock);
     g_messageLogSink = nullptr;
 }
 
