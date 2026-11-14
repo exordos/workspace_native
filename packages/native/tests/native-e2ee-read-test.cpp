@@ -1068,9 +1068,26 @@ struct ProtectedChatInfoScene {
     // viewer's own row and the Issuer row the viewer may remove as stream owner.
     const QString memberBindingUuid = QStringLiteral("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     const QString ownerBindingUuid = QStringLiteral("eeeeeeee-eeee-4eee-8eee-000000000011");
-    ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted)
+    // Rows beyond the first two (memberRows > 2) are synthetic "Scroll Member"
+    // cards appended to make the member flow taller than the drawer viewport
+    // (the scroll contract); each carries a distinct binding/user uuid because
+    // the binding-page contract rejects repeated user ids.
+    const int memberRowCount;
+    QString scrollMemberBindingUuid(int index) const
+    {
+        return QStringLiteral("f1000000-0000-4000-8000-%1").arg(index, 12, 16, QChar('0'));
+    }
+    QString scrollMemberUserUuid(int index) const
+    {
+        return QStringLiteral("f2000000-0000-4000-8000-%1").arg(index, 12, 16, QChar('0'));
+    }
+    QString scrollMemberName(int index) const
+    {
+        return QStringLiteral("Scroll Member %1").arg(index, 2, 10, QChar('0'));
+    }
+    ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted, int memberRows = 2)
         : f(), preferences(f.directory.filePath(QStringLiteral("chat-info-%1-%2.ini").arg(locale, mode))),
-          language(locale), palette(mode)
+          language(locale), palette(mode), memberRowCount(memberRows)
     {
         f.stream = fullEncryptedStream();
         f.stream["current_encryption_key_uuid"] = OtherGeneration;
@@ -1094,12 +1111,20 @@ struct ProtectedChatInfoScene {
             auto response = previous(request);
             const auto path = request.target.path();
             if (request.method == "GET" && path == "/api/workspace/v1/messenger/stream_bindings/") {
-                response.data = QJsonArray{
+                QJsonArray rows{
                     chatInfoBindingRow(memberBindingUuid, userId, "member"),
                     chatInfoBindingRow(ownerBindingUuid, Issuer, "owner")};
+                for (int index = 3; index <= memberRowCount; ++index)
+                    rows.append(chatInfoBindingRow(scrollMemberBindingUuid(index),
+                        scrollMemberUserUuid(index), "member"));
+                response.data = rows;
             } else if (path == "/api/workspace/v1/users/") {
-                response.data = QJsonArray{chatInfoUserRow(userId, "Active Member", "active"),
+                QJsonArray users{chatInfoUserRow(userId, "Active Member", "active"),
                     chatInfoUserRow(Issuer, "Quiet Owner", "offline")};
+                for (int index = 3; index <= memberRowCount; ++index)
+                    users.append(chatInfoUserRow(scrollMemberUserUuid(index),
+                        scrollMemberName(index), index % 2 == 0 ? "active" : "offline"));
+                response.data = users;
             } else if (request.method == "DELETE"
                 && path.startsWith("/api/workspace/v1/messenger/stream_bindings/")) {
                 // Member removal settles with the accepted no-content reply, the
@@ -10285,6 +10310,60 @@ private slots:
             "the info screen must not stay scrolled out of view");
         QVERIFY2(scroll->property("contentHeight").toReal() <= scroll->height() + 1.0,
             "contentHeight must cover only the active screen");
+    }
+
+    // Reviewer finding 4575277281: when the protected drawer's member flow
+    // exceeds the viewport the member section must grow the scroll content, so
+    // the last member card stays reachable at the maximum scroll offset. The
+    // fixture serves twenty binding rows (48 px cards + 4 px gaps), which is
+    // taller than the drawer viewport at the shell's 1440x900 window.
+    void uiEncryptedChatInfoMemberListScrollsToEnd() {
+        ProtectedChatInfoScene scene("en", "dark", true, 20);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat member scroll window did not close", __FILE__, __LINE__);
+        });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatMembersBlock"));
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 20);
+        auto *scroll = scene.require("protectedChatScroll"); QVERIFY(scroll);
+        const QString lastCardName =
+            QStringLiteral("protectedChatMember-") + scene.scrollMemberBindingUuid(20);
+        QTRY_VERIFY(scene.item(lastCardName));
+        // Precondition: the member fixture really overflows the viewport (same
+        // pattern as the settings-screen scroll case).
+        QTRY_VERIFY2(scroll->property("contentHeight").toReal() > scroll->height() + 40.0,
+            "the member fixture must be taller than the drawer viewport");
+        auto *membersFlow = scene.require("protectedChatMembersFlow"); QVERIFY(membersFlow);
+        // The content height is the member flow bottom plus the 16 px bottom
+        // padding: the section height includes its flow, not just its top.
+        const qreal flowBottom = scroll->mapFromItem(membersFlow,
+            QPointF(0.0, membersFlow->height())).y() + scroll->property("contentY").toReal();
+        QVERIFY2(qAbs(scroll->property("contentHeight").toReal() - (flowBottom + 16.0)) <= 1.0,
+            qPrintable(QStringLiteral("contentHeight %1 must be the member flow bottom %2 plus 16 px padding")
+                .arg(scroll->property("contentHeight").toReal()).arg(flowBottom)));
+        // Scrolling to the very end keeps the last member card inside the
+        // viewport: max contentY is contentHeight minus the viewport height,
+        // and a frame settles the content offset before the geometry is read.
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        QVERIFY(frame.isValid());
+        const qreal maxContentY = qMax(qreal(0.0),
+            scroll->property("contentHeight").toReal() - scroll->height());
+        QVERIFY2(maxContentY > 1.0,
+            "a member list taller than the viewport must actually scroll");
+        scroll->setProperty("contentY", maxContentY);
+        auto *lastCard = scene.require(lastCardName); QVERIFY(lastCard);
+        frame.clear();
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const qreal lastCardTop = scroll->mapFromItem(lastCard, QPointF(0.0, 0.0)).y();
+        QVERIFY2(lastCardTop >= -1.0, "the last card must not overshoot above the viewport");
+        const qreal lastCardBottom =
+            scroll->mapFromItem(lastCard, QPointF(0.0, lastCard->height())).y();
+        QVERIFY2(lastCardBottom <= scroll->height() + 1.0,
+            qPrintable(QStringLiteral("the last member card bottom %1 must be reachable inside the viewport %2")
+                .arg(lastCardBottom).arg(scroll->height())));
     }
 
     void uiEncryptedChatInfoGateKeepsOrdinaryInfo() {
