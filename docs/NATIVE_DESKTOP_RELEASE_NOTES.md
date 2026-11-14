@@ -1,3 +1,32 @@
+# Workspace Native 0.22.0 - Linux development preview
+
+Two surfaces ported from the reference desktop:
+
+- Polls are now created without leaving the composer: the composer's poll icon
+  opens the creation dialog, where you add the question and answer options, set
+  an optional closing deadline and create the poll. Creation is retry-safe - an
+  unstable network cannot duplicate a poll, and a retried send reuses the same
+  identity - while a send is in flight the dialog keeps its shape: closing and
+  cancelling stay locked until the server answers, an unrelated message arriving
+  cannot dismiss it, oversized question or option lists are rejected by the form
+  instead of silently pending, and an expired deadline is refused rather than
+  quietly dropped. Poll messages render as the poll placeholder for now; the
+  interactive poll bubble arrives in a later release.
+- The mouse wheel scrolls the way the reference desktop does: one notch moves
+  the message list or the channel sidebar by the measured reference distance of
+  100 px, repeat notches no longer accelerate, and touchpad scrolls keep their
+  fine-grained native path. When a list is already at its end, an outward wheel
+  is handed back instead of swallowed, so surrounding content can still receive
+  it.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.21.1...0.22.0](https://github.com/exordos/workspace_native/compare/0.21.1...0.22.0)
+
+---
+
 # Workspace Native 0.21.1 - Linux development preview
 
 One fix for existing behavior:
