@@ -1064,35 +1064,54 @@ struct ProtectedChatInfoScene {
     const QString language;
     const QString palette;
     QQuickWindow *window = nullptr;
+    // Member management is exercised through the two served binding rows: the
+    // viewer's own row and the Issuer row the viewer may remove as stream owner.
+    const QString memberBindingUuid = QStringLiteral("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    const QString ownerBindingUuid = QStringLiteral("eeeeeeee-eeee-4eee-8eee-000000000011");
     ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted)
         : f(), preferences(f.directory.filePath(QStringLiteral("chat-info-%1-%2.ini").arg(locale, mode))),
           language(locale), palette(mode)
     {
         f.stream = fullEncryptedStream();
         f.stream["current_encryption_key_uuid"] = OtherGeneration;
+        // The viewer owns the stream: the member block shows the add affordance
+        // and may remove the other member (reference member.canRemove selector).
+        f.stream["role"] = "owner";
         if (!encrypted) {
             f.stream["encryption"] = false;
             f.stream["current_encryption_key_uuid"] = QJsonValue::Null;
             f.cipher["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Synthetic ordinary history"}};
         }
-        const auto previous = f.http.handler;
-        f.http.handler = [previous](const Request &request) {
-            auto response = previous(request);
-            const auto path = request.target.path();
-            if (request.method == "GET" && path == "/api/workspace/v1/messenger/stream_bindings/") {
-                response.data = QJsonArray{
-                    chatInfoBindingRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", userId, "member"),
-                    chatInfoBindingRow("eeeeeeee-eeee-4eee-8eee-000000000011", Issuer, "owner")};
-            } else if (path == "/api/workspace/v1/users/") {
-                response.data = QJsonArray{chatInfoUserRow(userId, "Active Member", "active"),
-                    chatInfoUserRow(Issuer, "Quiet Owner", "offline")};
-            }
-            return response;
-        };
     }
     bool open()
     {
         if (!f.start()) return false;
+        // Fixture::start() installs the shared handler, so the channel-info
+        // completions can only be wrapped afterwards: the drawer scenes need
+        // binding rows and directory statuses the base fixture does not serve.
+        const auto previous = f.http.handler;
+        f.http.handler = [this, previous](const Request &request) {
+            auto response = previous(request);
+            const auto path = request.target.path();
+            if (request.method == "GET" && path == "/api/workspace/v1/messenger/stream_bindings/") {
+                response.data = QJsonArray{
+                    chatInfoBindingRow(memberBindingUuid, userId, "member"),
+                    chatInfoBindingRow(ownerBindingUuid, Issuer, "owner")};
+            } else if (path == "/api/workspace/v1/users/") {
+                response.data = QJsonArray{chatInfoUserRow(userId, "Active Member", "active"),
+                    chatInfoUserRow(Issuer, "Quiet Owner", "offline")};
+            } else if (request.method == "DELETE"
+                && path.startsWith("/api/workspace/v1/messenger/stream_bindings/")) {
+                // Member removal settles with the accepted no-content reply, the
+                // same contract the ordinary drawer's window cases exercise.
+                return Response{QJsonObject{}, 204};
+            }
+            return response;
+        };
+        // The startup directory page was served by the base fixture (empty), so
+        // the Refresh action re-reads it now that the scene answers with real
+        // users - the same snapshot path a reconnect uses.
+        f.controller.refresh();
         preferences.setOwner(f.controller.ownerKey());
         preferences.setLocale(language);
         preferences.setMode(palette);
@@ -10023,9 +10042,12 @@ private slots:
         // The three lines are 8 px apart and vertically centred on the avatar.
         const auto captionRect = scene.rect("protectedChatCaption", drawer);
         const auto countsRect = scene.rect("protectedChatCounts", drawer);
+        // Line boxes are 20 / 16 px tall with mt-2 (8 px) between them.
+        QCOMPARE(scene.rect("protectedChatTitle", drawer).value("height").toDouble(), qreal(20));
+        QCOMPARE(captionRect.value("height").toDouble(), qreal(16));
         QVERIFY(qAbs(captionRect.value("y").toDouble()
-            - (scene.rect("protectedChatTitle", drawer).value("y").toDouble() + 20)) <= 1);
-        QVERIFY(qAbs(countsRect.value("y").toDouble() - (captionRect.value("y").toDouble() + 16)) <= 1);
+            - (scene.rect("protectedChatTitle", drawer).value("y").toDouble() + 20 + 8)) <= 1);
+        QVERIFY(qAbs(countsRect.value("y").toDouble() - (captionRect.value("y").toDouble() + 16 + 8)) <= 1);
         QVERIFY(qAbs(countsRect.value("x").toDouble() - captionRect.value("x").toDouble()) <= 1);
         QVERIFY(qAbs(captionRect.value("x").toDouble() - (avatarRect.value("x").toDouble() + 64 + 16)) <= 1);
         // Action row: two equal 48 px tiles, 8 px apart, 20 px below the identity block.
@@ -10047,10 +10069,100 @@ private slots:
             locale == "ru" ? QString("Позвонить") : QString("Call"));
         QCOMPARE(scene.accessible("protectedChatSettingsButton"),
             locale == "ru" ? QString("Настройки") : QString("Settings"));
+        // ---- Member management (reference MemberList :416-480, mounted last on
+        // the info screen; the reference keeps member management available in the
+        // protected drawer). The drawer reveal loads the binding page. ----
+        QTRY_VERIFY(scene.item("protectedChatMembersBlock"));
+        const auto scrollRect = scene.rect("protectedChatScroll", drawer);
+        const auto membersBlock = scene.rect("protectedChatMembersBlock", drawer);
+        // The section spans the scroll viewport (the reference section has no
+        // own padding) and starts one 20 px block gap below the action row.
+        QVERIFY(qAbs(membersBlock.value("x").toDouble() - scrollRect.value("x").toDouble()) <= 1);
+        QVERIFY(qAbs(membersBlock.value("width").toDouble() - scrollRect.value("width").toDouble()) <= 1);
+        QVERIFY(qAbs(membersBlock.value("y").toDouble()
+            - (settingsRect.value("y").toDouble() + 48 + 20)) <= 1);
+        // border-t (1 px) then pt-5 (20 px) places the 32 px heading row.
+        QCOMPARE(scene.rect("protectedChatMembersDivider", drawer).value("height").toDouble(), qreal(1));
+        const auto headingRow = scene.rect("protectedChatMembersHeadingRow", drawer);
+        QVERIFY(qAbs(headingRow.value("y").toDouble() - (membersBlock.value("y").toDouble() + 21)) <= 1);
+        QCOMPARE(headingRow.value("height").toDouble(), qreal(32));
+        // h3 text-base font-medium px-4: 16 px Medium at the 24 px content inset.
+        QCOMPARE(scene.text("protectedChatMembersHeading"),
+            locale == "ru" ? QString("Участники") : QString("Members"));
+        QCOMPARE(scene.fontPixelSize("protectedChatMembersHeading"), 16);
+        QCOMPARE(scene.color("protectedChatMembersHeading"), QColor(mode == "dark" ? "#ffffff" : "#1b1b1d"));
+        QVERIFY(qAbs(scene.rect("protectedChatMembersHeading", drawer).value("x").toDouble() - 24) <= 1);
+        // The add affordance (person_add 24 inside a 32 px hit area) sits at the
+        // right inset for the stream owner and opens the shared add dialog.
+        auto *addButton = scene.require("protectedChatAddButton"); QVERIFY(addButton);
+        QCOMPARE(addButton->size(), QSizeF(32, 32));
+        QCOMPARE(addButton->property("glyphSize").toInt(), 24);
+        QCOMPARE(addButton->property("asset").toString(), QString("person_add.svg"));
+        QCOMPARE(scene.accessible("protectedChatAddButton"),
+            locale == "ru" ? QString("Добавить участников") : QString("Add members"));
+        const auto addRect = scene.rect("protectedChatAddButton", drawer);
+        QVERIFY(qAbs(addRect.value("x").toDouble()
+            - (scrollRect.value("x").toDouble() + scrollRect.value("width").toDouble() - 16 - 32)) <= 1);
+        QVERIFY(qAbs(addRect.value("y").toDouble() - (headingRow.value("y").toDouble() + 8)) <= 1);
+        // Two WorkspaceMemberCard rows (ul space-y-1 px-2): 48 px cards inside a
+        // 8 px side inset, carrying name, role, status secondary and presence.
+        const auto ownCard = scene.rect(
+            QStringLiteral("protectedChatMember-") + scene.memberBindingUuid, drawer);
+        const auto peerCard = scene.rect(
+            QStringLiteral("protectedChatMember-") + scene.ownerBindingUuid, drawer);
+        QCOMPARE(ownCard.value("height").toDouble(), qreal(48));
+        QCOMPARE(peerCard.value("height").toDouble(), qreal(48));
+        QVERIFY(qAbs(ownCard.value("x").toDouble() - (scrollRect.value("x").toDouble() + 8)) <= 1);
+        QVERIFY(qAbs(ownCard.value("width").toDouble()
+            - (scrollRect.value("width").toDouble() - 16)) <= 1);
+        QVERIFY(qAbs(peerCard.value("y").toDouble()
+            - (ownCard.value("y").toDouble() + 48 + 4)) <= 1);
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid),
+            QString("Active Member"));
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberRole-") + scene.memberBindingUuid),
+            locale == "ru" ? QString("Участник") : QString("Member"));
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberSecondary-") + scene.memberBindingUuid),
+            locale == "ru" ? QString("В сети") : QString("online"));
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberName-") + scene.ownerBindingUuid),
+            QString("Quiet Owner"));
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberRole-") + scene.ownerBindingUuid),
+            locale == "ru" ? QString("Владелец") : QString("Owner"));
+        QCOMPARE(scene.text(QStringLiteral("protectedChatMemberSecondary-") + scene.ownerBindingUuid),
+            locale == "ru" ? QString("Не в сети") : QString("offline"));
+        // Presence dots: 8 px, active green over the offline fallback (both
+        // users carry a status, so neither card hides its dot).
+        auto *ownDot = scene.require(
+            QStringLiteral("protectedChatMemberPresence-") + scene.memberBindingUuid);
+        QVERIFY(ownDot);
+        QCOMPARE(ownDot->size(), QSizeF(8, 8));
+        QCOMPARE(ownDot->property("visible").toBool(), true);
+        // Remove affordances: own row and (as stream owner) the peer row.
+        QCOMPARE(scene.accessible(QStringLiteral("protectedChatRemove-") + scene.memberBindingUuid),
+            locale == "ru" ? QString("Удалить из канала: Active Member")
+                           : QString("Remove from channel: Active Member"));
+        QCOMPARE(scene.accessible(QStringLiteral("protectedChatRemove-") + scene.ownerBindingUuid),
+            locale == "ru" ? QString("Удалить из канала: Quiet Owner")
+                           : QString("Remove from channel: Quiet Owner"));
+        // The add affordance opens the shared add-members dialog (the same
+        // component the ordinary drawer uses, wired through Main.qml).
+        encryptedUiClick(addButton);
+        QTRY_VERIFY2(scene.item("addMembersDialog"), "the add button must open the shared dialog");
+        encryptedUiClick(scene.require("addMembersClose"));
+        QTRY_VERIFY(!scene.item("addMembersDialog"));
+        // Removing the peer settles through the DELETE endpoint, drops the row
+        // and refreshes the identity counts line.
+        encryptedUiClick(scene.require(
+            QStringLiteral("protectedChatRemove-") + scene.ownerBindingUuid));
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 1);
+        QTRY_VERIFY(!scene.item(QStringLiteral("protectedChatMember-") + scene.ownerBindingUuid));
+        QTRY_COMPARE(scene.text("protectedChatCounts"),
+            locale == "ru" ? QString("1 участник, 1 в сети") : QString("1 participant, 1 online"));
         qInfo().noquote() << "PROTECTED_CHAT_INFO" << QJsonDocument(QJsonObject{
             {"locale", locale}, {"mode", mode}, {"avatar", avatarRect}, {"title",
                 scene.rect("protectedChatTitle", drawer)}, {"caption", captionRect},
-            {"counts", countsRect}, {"call", callRect}, {"settings", settingsRect}}).toJson(QJsonDocument::Compact);
+            {"counts", countsRect}, {"call", callRect}, {"settings", settingsRect},
+            {"membersBlock", membersBlock}, {"membersHeading", headingRow},
+            {"ownCard", ownCard}, {"peerCard", peerCard}}).toJson(QJsonDocument::Compact);
     }
 
     void uiEncryptedChatInfoSettingsScreenNavigation_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
@@ -10064,6 +10176,8 @@ private slots:
         });
         scene.openChatInfo();
         QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        // The reveal loads the member page: the settings rows show real counts.
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
         QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 1);
         // Activating Settings pushes the settings screen onto the chat-info layer.
         encryptedUiClick(scene.require("protectedChatSettingsButton"));
@@ -10071,9 +10185,16 @@ private slots:
         QVERIFY(!scene.item("protectedChatIdentity"));
         QCOMPARE(scene.evaluate("rightDrawer.currentChatScreen").toString(), QString("settings"));
         QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 2);
-        // Re-activating Settings dedupes instead of growing the Back loop.
-        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        // Re-activating the same screen through the shell callback dedupes
+        // instead of growing the Back loop. The info-screen tile is unmounted
+        // while the settings screen is on top, so the callback is driven
+        // directly - exactly what the tile's onScreenChange handler emits.
+        QVERIFY(scene.evaluate("rightDrawer.openChatScreen({"
+            "ownerKey: root.rightDrawerChatScope.ownerKey,"
+            " runtimeGeneration: root.rightDrawerChatScope.runtimeGeneration,"
+            " streamUuid: root.rightDrawerChatScope.streamUuid, screen: 'settings'})").isNull());
         QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 2);
+        QCOMPARE(scene.evaluate("rightDrawer.currentChatScreen").toString(), QString("settings"));
         // Read-only dl: channel name and description (reference ChannelSettings).
         QCOMPARE(scene.text("protectedChatNameLabel"),
             locale == "ru" ? QString("Название канала") : QString("Channel name"));
@@ -10117,7 +10238,34 @@ private slots:
         QVERIFY(scene.f.controller.applyRealtimeEvent(changed));
         QTRY_COMPARE(scene.text("protectedChatDescriptionValue"),
             locale == "ru" ? QString("Без описания") : QString("No description"));
+        // Scroll contract: a long description makes the settings screen taller
+        // than the viewport; scrolling it and returning to the shorter info
+        // screen must reset the offset, and the content height must never
+        // expose the hidden screen beside the active one.
+        scene.f.stream["description"] = QString("encrypted history fixture ").repeated(80);
+        auto longChanged = cryptoEvent(scene.f.stream);
+        auto longPayload = longChanged.value("payload").toObject();
+        longPayload["kind"] = "stream.updated";
+        longChanged["payload"] = longPayload;
+        QVERIFY(scene.f.controller.applyRealtimeEvent(longChanged));
+        QTRY_VERIFY(scene.text("protectedChatDescriptionValue").size() > 1000);
+        auto *scroll = scene.require("protectedChatScroll"); QVERIFY(scroll);
+        QTRY_VERIFY2(scroll->property("contentHeight").toReal() > scroll->height() + 40.0,
+            "the settings screen must be tall enough to scroll");
+        scroll->setProperty("contentY", 120);
+        QCOMPARE(scroll->property("contentY").toReal(), qreal(120));
+        // Back from settings returns to the info screen, starting at the top:
+        // the info content is shorter than the viewport, so a correct content
+        // height leaves no scroll offset to retain.
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        QVERIFY2(scroll->property("contentY").toReal() < 1.0,
+            "the info screen must not stay scrolled out of view");
+        QVERIFY2(scroll->property("contentHeight").toReal() <= scroll->height() + 1.0,
+            "contentHeight must cover only the active screen");
         // Back from settings returns to the info screen.
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
         encryptedUiClick(scene.require("nativeRightDrawerBack"));
         QTRY_VERIFY(scene.item("protectedChatIdentity"));
         QVERIFY(!scene.item("protectedChatSettingsScreen"));
@@ -10149,6 +10297,7 @@ private slots:
         // encryption=false keeps the ordinary presentation untouched.
         QVERIFY(!scene.item("encryptedChatInfoLayer"));
         QVERIFY(!scene.item("protectedChatAvatar"));
+        QVERIFY(!scene.item("protectedChatMembersBlock"));
         QVERIFY(scene.item("channelInfoAvatar"));
         QVERIFY(scene.item("channelInfoTitle"));
         QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
