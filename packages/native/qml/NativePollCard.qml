@@ -72,8 +72,12 @@ Item {
             return ""
         return closed ? qsTr("Closed %1").arg(label) : qsTr("Until %1").arg(label)
     }
+    // Reference parity, repo idiom for plurals without an English catalog:
+    // one qsTr per source form (same as the channel-info member counts).
     readonly property string summaryText: summaryVisible
-        ? qsTr("%n participant", "", pollVoterCount) + (quiz ? " \u00b7 " + qsTr("You voted") : "")
+        ? ((pollVoterCount === 1 ? qsTr("%n participant", "", pollVoterCount)
+            : qsTr("%n participants", "", pollVoterCount))
+        + (quiz ? " \u00b7 " + qsTr("You voted") : ""))
         : qsTr("Results after voting")
 
     function selectedFor(question) {
