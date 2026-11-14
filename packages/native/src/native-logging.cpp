@@ -39,10 +39,12 @@ void nativeMessageHandler(QtMsgType type, const QMessageLogContext &context,
     Q_UNUSED(context);
     const QString line = NativeLogging::formatMessageLine(type, message);
     const QByteArray utf8 = line.toUtf8();
-    if (fwrite(utf8.constData(), 1, size_t(utf8.size()), stderr) != size_t(utf8.size()))
-        return;
-    fputc('\n', stderr);
-    const int flushResult [[maybe_unused]] = fflush(stderr);
+    // The console reproduction is best-effort: a failed stderr write must
+    // never gate the diagnostics file append (review round 1, thread
+    // 4575150367).
+    if (fwrite(utf8.constData(), 1, size_t(utf8.size()), stderr) == size_t(utf8.size()))
+        fputc('\n', stderr);
+    (void)fflush(stderr);
     if (g_messageLogSink)
         g_messageLogSink->appendLogLine(line);
 }
