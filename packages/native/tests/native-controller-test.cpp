@@ -1,6 +1,11 @@
 #include "native-controller.h"
 #include "native-auth-guard.h"
+#include "native-logging.h"
 #include "native-preferences.h"
+#include <QDir>
+#include <QFileInfo>
+#include <QRegularExpression>
+#include <QVariantList>
 #include <QDateTime>
 #include <QNetworkRequest>
 #include "file-client.h"
@@ -18135,6 +18140,246 @@ private slots:
         controller.logout();
         QTRY_VERIFY(!controller.authenticated());
         QVERIFY2(crypto.count() >= 1, "chat key teardown must notify call crypto availability");
+    }
+
+private:
+    static bool seedDiagnosticsLog(const QString &path, int bytes, char filler)
+    {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        file.write(QByteArray(bytes, filler));
+        return file.error() == QFileDevice::NoError;
+    }
+
+    static QString readDiagnosticsLog(const QString &path, bool *ok = nullptr)
+    {
+        QFile file(path);
+        const bool opened = file.open(QIODevice::ReadOnly);
+        if (ok) *ok = opened;
+        return opened ? QString::fromUtf8(file.readAll()) : QString();
+    }
+
+private slots:
+    // Diagnostics providers (issue #77, docs/NATIVE_DESKTOP_DIAGNOSTICS.md):
+    // measured reference contract from workspace_ui main.ts:112-182/1228-1267.
+    void diagnosticsLogPathLayoutUnderInjectedRoot()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        const QString dir = root.path() + QStringLiteral("/workspace_logs");
+        QCOMPARE(logs.logDirectoryPath(), dir);
+        QCOMPARE(logs.filePath(), dir + QStringLiteral("/workspace.log"));
+        QCOMPARE(logs.rotatedFilePath(), dir + QStringLiteral("/workspace.log.1"));
+        QVERIFY(!QFileInfo::exists(dir));
+        QCOMPARE(logs.getFilePath(), dir + QStringLiteral("/workspace.log"));
+        QVERIFY2(QFileInfo::exists(dir), "getFilePath must ensure the log directory");
+        QVERIFY(logs.appendLogLine(QStringLiteral("first")));
+        const QString text = readDiagnosticsLog(logs.filePath());
+        QVERIFY2(text.endsWith(QStringLiteral("first\n")), qPrintable(text));
+    }
+
+    void diagnosticsLogLineUsesIsoPrefixAndNewlineTerminatedLines()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QVERIFY(logs.appendLogLine(QStringLiteral("hello world")));
+        QString text = readDiagnosticsLog(logs.filePath());
+        QVERIFY2(text.endsWith(QLatin1Char('\n')), "lines must be newline-terminated");
+        const QRegularExpression isoLine(
+            QStringLiteral("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z hello world\\n$"));
+        QVERIFY2(isoLine.match(text).hasMatch(),
+                 qPrintable(QStringLiteral("unexpected log line: %1").arg(text)));
+        // Empty-after-sanitize lines are rejected and write nothing.
+        QVERIFY(!logs.appendLogLine(QString()));
+        QVERIFY(!logs.appendLogLine(QStringLiteral("   \t ")));
+        QVERIFY(!logs.appendLogLine(QString(QChar(0x07))));
+        text = readDiagnosticsLog(logs.filePath());
+        QCOMPARE(text.count(QLatin1Char('\n')), 1);
+        // Every appended line persists: 40 appends leave 40 timestamped lines.
+        for (int i = 0; i < 40; ++i)
+            QVERIFY(logs.appendLogLine(QStringLiteral("line-%1").arg(i)));
+        text = readDiagnosticsLog(logs.filePath());
+        QCOMPARE(text.count(QLatin1Char('\n')), 41);
+        QVERIFY(text.contains(QStringLiteral("line-39")));
+    }
+
+    void diagnosticsLogStripsControlChars()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QString noisy = QStringLiteral("bell");
+        noisy += QChar(0x07);
+        noisy += QStringLiteral(" esc");
+        noisy += QChar(0x1B);
+        noisy += QStringLiteral(" nul");
+        noisy += QChar(0x00);
+        noisy += QStringLiteral(" del");
+        noisy += QChar(0x7F);
+        noisy += QStringLiteral(" keep\ttab");
+        QVERIFY(logs.appendLogLine(noisy));
+        QString text = readDiagnosticsLog(logs.filePath());
+        text = text.section(QLatin1Char(' '), 1);
+        text.chop(1); // trailing newline
+        QCOMPARE(text, QStringLiteral("bell esc nul del keep\ttab"));
+    }
+
+    void diagnosticsLogTruncatesTo32768Chars()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QVERIFY(logs.appendLogLine(QString(40000, QLatin1Char('a'))));
+        QString text = readDiagnosticsLog(logs.filePath());
+        text = text.section(QLatin1Char(' '), 1);
+        text.chop(1); // trailing newline
+        QCOMPARE(text.size(), qsizetype(NativeLogging::MaxLogLineLength));
+        QVERIFY(text == QString(int(NativeLogging::MaxLogLineLength), QLatin1Char('a')));
+    }
+
+    void diagnosticsLogRotatesAtExactlyOneMegabyte()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QVERIFY(!logs.getFilePath().isEmpty());
+        const qint64 boundary = NativeLogging::MaxLogFileBytes;
+        QCOMPARE(boundary, qint64(1048576));
+        // 1 MiB minus one byte: the append stays in place, no rotation yet.
+        QVERIFY(seedDiagnosticsLog(logs.filePath(), int(boundary - 1), 'x'));
+        QVERIFY(logs.appendLogLine(QStringLiteral("under-boundary")));
+        QVERIFY(!QFileInfo::exists(logs.rotatedFilePath()));
+        // Exactly 1 MiB: the next append rotates workspace.log to .1 first.
+        QVERIFY(seedDiagnosticsLog(logs.filePath(), int(boundary), 'x'));
+        QVERIFY(logs.appendLogLine(QStringLiteral("at-boundary")));
+        QVERIFY(QFileInfo::exists(logs.rotatedFilePath()));
+        QCOMPARE(QFileInfo(logs.rotatedFilePath()).size(), boundary);
+        const QString text = readDiagnosticsLog(logs.filePath());
+        QVERIFY2(!text.contains(QLatin1Char('x')), "rotated content must leave workspace.log");
+        QVERIFY2(text.endsWith(QStringLiteral("at-boundary\n")), qPrintable(text));
+    }
+
+    void diagnosticsLogRotatedFileOverwrittenNotDuplicated()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QVERIFY(!logs.getFilePath().isEmpty());
+        const int boundary = int(NativeLogging::MaxLogFileBytes);
+        QVERIFY(seedDiagnosticsLog(logs.filePath(), boundary, 'A'));
+        QVERIFY(logs.appendLogLine(QStringLiteral("first")));
+        QVERIFY(QFileInfo::exists(logs.rotatedFilePath()));
+        QVERIFY(seedDiagnosticsLog(logs.filePath(), boundary, 'B'));
+        QVERIFY(logs.appendLogLine(QStringLiteral("second")));
+        QDir dir(logs.logDirectoryPath());
+        const QStringList names = dir.entryList(QDir::Files);
+        QCOMPARE(names.size(), 2);
+        QVERIFY(names.contains(QStringLiteral("workspace.log")));
+        QVERIFY(names.contains(QStringLiteral("workspace.log.1")));
+        const QString rotated = readDiagnosticsLog(logs.rotatedFilePath());
+        QVERIFY(rotated.startsWith('B'));
+        QVERIFY(!rotated.startsWith('A'));
+    }
+
+    void diagnosticsMemorySnapshotMatchesShapeAndFixtureValues()
+    {
+        QTemporaryDir root;
+        QTemporaryDir proc;
+        QVERIFY(root.isValid());
+        QVERIFY(proc.isValid());
+        QVERIFY(QDir(proc.path()).mkpath(QStringLiteral("self")));
+        {
+            QFile status(proc.path() + QStringLiteral("/self/status"));
+            QVERIFY(status.open(QIODevice::WriteOnly));
+            status.write("Name:\tworkspace-native\nPid:\t4242\nVmSize:\t   20480 kB\n"
+                         "VmHWM:\t   9216 kB\nVmRSS:\t   8192 kB\nThreads:\t7\n");
+        }
+        {
+            QFile meminfo(proc.path() + QStringLiteral("/meminfo"));
+            QVERIFY(meminfo.open(QIODevice::WriteOnly));
+            meminfo.write("MemTotal:        8388608 kB\nMemFree:          524288 kB\n"
+                          "MemAvailable:    4194304 kB\nSwapTotal:       1048576 kB\n");
+        }
+        NativeLogging logs(root.path());
+        logs.setProcRoot(proc.path());
+        const QVariantMap snapshot = logs.memorySnapshot();
+        const QRegularExpression iso(QStringLiteral(
+            "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"));
+        QVERIFY(iso.match(snapshot.value("collectedAt").toString()).hasMatch());
+        const QVariantMap main = snapshot.value("main").toMap();
+        QCOMPARE(main.value("rss").toLongLong(), qint64(8192) * 1024);
+        QCOMPARE(main.value("size").toLongLong(), qint64(20480) * 1024);
+        const QVariantMap system = snapshot.value("system").toMap();
+        QCOMPARE(system.value("total").toLongLong(), qint64(8388608));
+        QCOMPARE(system.value("free").toLongLong(), qint64(524288));
+        QCOMPARE(system.value("available").toLongLong(), qint64(4194304));
+        const QVariantList processes = snapshot.value("processes").toList();
+        QCOMPARE(processes.size(), 1);
+        const QVariantMap self = processes.first().toMap();
+        QVERIFY(self.value("pid").toInt() > 0);
+        QCOMPARE(self.value("type").toString(), QStringLiteral("Main"));
+        const QVariantMap memory = self.value("memory").toMap();
+        QCOMPARE(memory.value("workingSetSize").toLongLong(), qint64(8192));
+        QCOMPARE(memory.value("peakWorkingSetSize").toLongLong(), qint64(9216));
+        QCOMPARE(snapshot.value("totalWorkingSetKb").toLongLong(), qint64(8192));
+        // Missing proc sources degrade to the same key set with zero values.
+        NativeLogging degraded(root.path());
+        degraded.setProcRoot(root.path() + QStringLiteral("/missing-proc"));
+        const QVariantMap flat = degraded.memorySnapshot();
+        QVERIFY(iso.match(flat.value("collectedAt").toString()).hasMatch());
+        QCOMPARE(flat.value("main").toMap().value("rss").toLongLong(), qint64(0));
+        QCOMPARE(flat.value("system").toMap().value("total").toLongLong(), qint64(0));
+        QCOMPARE(flat.value("processes").toList().size(), 1);
+        QCOMPARE(flat.value("totalWorkingSetKb").toLongLong(), qint64(0));
+    }
+
+    void diagnosticsMemorySnapshotRealProcSanity()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        const QVariantMap snapshot = logs.memorySnapshot();
+        QVERIFY(snapshot.value("main").toMap().value("rss").toLongLong() > 0);
+        const QVariantMap system = snapshot.value("system").toMap();
+        QVERIFY(system.value("total").toLongLong() > 0);
+        QVERIFY(system.value("available").toLongLong() > 0);
+        QVERIFY(system.value("available").toLongLong() <= system.value("total").toLongLong());
+        const QVariantList processes = snapshot.value("processes").toList();
+        QCOMPARE(processes.size(), 1);
+        const QVariantMap self = processes.first().toMap();
+        QCOMPARE(self.value("pid").toInt(), QCoreApplication::applicationPid());
+        QCOMPARE(self.value("type").toString(), QStringLiteral("Main"));
+        QVERIFY(self.value("memory").toMap().value("workingSetSize").toLongLong() > 0);
+        QVERIFY(snapshot.value("totalWorkingSetKb").toLongLong() > 0);
+    }
+
+    void diagnosticsMessageHandlerLineFormatAndFileWiring()
+    {
+        QCOMPARE(NativeLogging::formatMessageLine(QtDebugMsg, QStringLiteral("d")),
+                 QStringLiteral("debug: d"));
+        QCOMPARE(NativeLogging::formatMessageLine(QtInfoMsg, QStringLiteral("i")),
+                 QStringLiteral("info: i"));
+        QCOMPARE(NativeLogging::formatMessageLine(QtWarningMsg, QStringLiteral("w")),
+                 QStringLiteral("warning: w"));
+        QCOMPARE(NativeLogging::formatMessageLine(QtCriticalMsg, QStringLiteral("c")),
+                 QStringLiteral("critical: c"));
+        QCOMPARE(NativeLogging::formatMessageLine(QtFatalMsg, QStringLiteral("f")),
+                 QStringLiteral("fatal: f"));
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        workspace::installNativeLogHandler(logs);
+        qWarning("native diagnostics wiring probe");
+        qInfo("native diagnostics info probe");
+        workspace::removeNativeLogHandler();
+        const QString text = readDiagnosticsLog(logs.filePath());
+        QVERIFY2(text.contains(QStringLiteral("warning: native diagnostics wiring probe\n")),
+                 qPrintable(text));
+        QVERIFY2(text.contains(QStringLiteral("info: native diagnostics info probe\n")),
+                 qPrintable(text));
     }
 };
 
