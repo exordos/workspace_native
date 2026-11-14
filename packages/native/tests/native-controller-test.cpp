@@ -38,8 +38,14 @@
 #include <QWebSocket>
 #include <QWebSocketServer>
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <memory>
+#include <thread>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -18380,6 +18386,155 @@ private slots:
                  qPrintable(text));
         QVERIFY2(text.contains(QStringLiteral("info: native diagnostics info probe\n")),
                  qPrintable(text));
+    }
+    // ------------------------------------------------------------------
+    // exordy fix-round-1 regression cases (PR #289 review findings).
+    // ------------------------------------------------------------------
+
+    // Finding 1 (thread 4575150367): a stderr write failure must not gate
+    // persistence — the line still has to reach the diagnostics file.
+    void diagnosticsMessageHandlerAppendsToFileWhenStderrFails()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        NativeLogging logs(root.path());
+        QVERIFY(!logs.getFilePath().isEmpty());
+        workspace::installNativeLogHandler(logs);
+        // Repoint fd 2 at a read-only descriptor so every stderr write fails
+        // with EBADF (stderr is unbuffered, so fwrite reports the failure).
+        const int savedStderr = ::dup(STDERR_FILENO);
+        QVERIFY(savedStderr >= 0);
+        const int readOnly = ::open(logs.logDirectoryPath().toLocal8Bit().constData(), O_RDONLY);
+        QVERIFY(readOnly >= 0);
+        fflush(stderr);
+        QVERIFY(::dup2(readOnly, STDERR_FILENO) == STDERR_FILENO);
+        ::close(readOnly);
+        qWarning("stderr unavailable probe");
+        workspace::removeNativeLogHandler();
+        QVERIFY(::dup2(savedStderr, STDERR_FILENO) == STDERR_FILENO);
+        ::close(savedStderr);
+        fflush(stderr);
+        clearerr(stderr);
+        const QString text = readDiagnosticsLog(logs.filePath());
+        QVERIFY2(text.contains(QStringLiteral("warning: stderr unavailable probe\n")),
+                 qPrintable(text));
+    }
+
+    // Finding 2 (thread 4575150368): the procfs sources are Linux-only. This
+    // guard keeps that gate on the provider: without it the ungated form
+    // reaches for /proc on platforms where the values are legitimately zero.
+    void diagnosticsMemorySnapshotProcfsSourcesGateWithQosLinux()
+    {
+        QFile source(QStringLiteral(WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE));
+        QVERIFY2(source.open(QIODevice::ReadOnly | QIODevice::Text),
+                 qPrintable(QStringLiteral("cannot open %1")
+                                .arg(QLatin1String(WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE))));
+        const QString text = QString::fromUtf8(source.readAll());
+        const int start = text.indexOf(
+            QStringLiteral("QVariantMap NativeLogging::memorySnapshot() const"));
+        QVERIFY2(start >= 0, "memorySnapshot() definition not found in the diagnostics source");
+        const int end = text.indexOf(QLatin1String("\n}"), start);
+        QVERIFY(end > start);
+        const QString body = text.mid(start, end - start);
+        QVERIFY2(body.contains(QLatin1String("Q_OS_LINUX")),
+                 "memorySnapshot() must read procfs only under Q_OS_LINUX so "
+                 "non-Linux builds keep the documented zero-value shape with no "
+                 "/proc access; the real-proc sanity asserts stay gated");
+    }
+
+    // Finding 3 (thread 4575150370): removing the handler must drain
+    // in-flight handler calls on other threads before returning.
+    // Deterministic shape: stderr becomes a blocking pipe that nobody drains.
+    // After two ~30 KB filler console lines occupy the 64 KB pipe, the
+    // worker thread's 32 KB qWarning parks inside the handler's stderr write
+    // — an in-flight handler call for an unbounded time. A releaser starts
+    // draining the pipe 100 ms after the removal began: a synchronized
+    // removeNativeLogHandler() cannot return before that release lands (the
+    // in-flight call finishes and its line reaches the file), while the
+    // unsynchronized version returns immediately and would let this scope
+    // destroy the stack-owned sink under the still-parked handler.
+    void diagnosticsMessageHandlerRemovalDrainsInFlightWrites()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        std::atomic<bool> workerReturned{false};
+        std::atomic<bool> drainAtRemove{false};
+        qint64 releaserDrained = 0;
+
+        {
+            NativeLogging logs(root.path());
+            QVERIFY(!logs.getFilePath().isEmpty());
+
+            int consolePipe[2] = { -1, -1 };
+            QVERIFY(::pipe(consolePipe) == 0);
+            const int savedStderr = ::dup(STDERR_FILENO);
+            QVERIFY(savedStderr >= 0);
+            auto stderrGuard = qScopeGuard([&] {
+                fflush(stderr);
+                ::dup2(savedStderr, STDERR_FILENO);
+                ::close(savedStderr);
+                ::close(consolePipe[0]);
+                ::close(consolePipe[1]);
+                clearerr(stderr);
+            });
+            fflush(stderr);
+            QVERIFY(::dup2(consolePipe[1], STDERR_FILENO) == STDERR_FILENO);
+
+            workspace::installNativeLogHandler(logs);
+            // ~60 KB fits the 64 KB pipe, so the main thread never parks.
+            qWarning().noquote() << QStringLiteral("filler ") + QString(30000, QLatin1Char('F'));
+            qWarning().noquote() << QStringLiteral("filler ") + QString(30000, QLatin1Char('G'));
+
+            std::thread worker([&]() {
+                qWarning().noquote() << QStringLiteral("worker in-flight line ")
+                                        + QString(32000, QLatin1Char('W'));
+                workerReturned.store(true);
+            });
+            auto workerGuard = qScopeGuard([&] { worker.join(); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            QVERIFY(!workerReturned.load()); // parked mid stderr write
+
+            std::thread releaser([&]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                char buf[16384];
+                QElapsedTimer clock;
+                clock.start();
+                // Drain until the worker's blocked line has fully left the
+                // pipe (60034 filler + 32033 worker bytes), with a bound.
+                while (releaserDrained < 91000 && clock.elapsed() < 3000) {
+                    struct pollfd pfd { consolePipe[0], POLLIN, 0 };
+                    if (::poll(&pfd, 1, 50) <= 0)
+                        continue;
+                    const ssize_t n = ::read(consolePipe[0], buf, sizeof buf);
+                    if (n < 0)
+                        break;
+                    releaserDrained += n;
+                }
+            });
+            auto releaserGuard = qScopeGuard([&] { releaser.join(); });
+
+            QElapsedTimer removalClock;
+            removalClock.start();
+            workspace::removeNativeLogHandler();
+            const qint64 removalWaitMs = removalClock.elapsed();
+            // Draining means the removal waited for the parked in-flight
+            // call; the only release happens 100 ms after the removal starts.
+            drainAtRemove.store(removalWaitMs >= 50);
+            qInfo("post-removal diagnostics line"); // default handler only
+        } // threads joined and stderr restored by the scope guards
+
+        QVERIFY2(drainAtRemove.load(),
+                 "removeNativeLogHandler() must wait for in-flight handler "
+                 "calls to drain before returning so no thread consults a "
+                 "sink that removal has already cleared");
+        QVERIFY(workerReturned.load());
+        QVERIFY(releaserDrained >= 91000);
+        const QString text = readDiagnosticsLog(
+            root.path() + QStringLiteral("/workspace_logs/workspace.log"));
+        QVERIFY2(text.contains(QStringLiteral("warning: filler ")), qPrintable(text.left(120)));
+        QVERIFY2(text.contains(QStringLiteral("worker in-flight line")),
+                 "drained in-flight lines must reach the file");
+        QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
     }
 };
 
