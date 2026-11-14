@@ -1297,7 +1297,7 @@ private:
     // parked memos come from exactly the same data the banner renders from.
     std::optional<QString> replyPlainFor(const QString &id) const;
     void primeReplyTabMemos(QList<ReplyTab> &tabs) const;
-    struct QuoteRecord { QString authorId, content; bool missing = false; };
+    struct QuoteRecord { QString authorId, content; bool missing = false; bool decrypt = false; };
     mutable QHash<QString, QuoteRecord> m_quotes;
     // Transport failures stay retriable (reference loader keeps "stale" out of
     // the resolved store); value = earliest epoch-ms to re-issue the lookup.

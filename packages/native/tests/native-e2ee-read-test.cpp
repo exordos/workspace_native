@@ -5428,6 +5428,112 @@ private slots:
         QVERIFY(!f || f->controller.decryptRetryPendingUuids().isEmpty());
     }
 
+    // Issue #222: a quoted e2ee origin inside the opened encrypted conversation
+    // follows the chat-prepared decryption states (locked -> ready, error plus
+    // the per-message retry path) instead of collapsing into "unavailable".
+    void e2eeQuoteOriginFollowsChatPreparedDecryptionStates()
+    {
+        auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
+        auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
+        auto wrongKey = NativeChatCrypto::createGroupKey(); QVERIFY(wrongKey);
+        const auto wipeKeys = qScopeGuard([&] {
+            replyKey.bytes.fill(0); replyKey.bytes.clear();
+            originKey.bytes.fill(0); originKey.bytes.clear();
+            wrongKey.bytes.fill(0); wrongKey.bytes.clear();
+        });
+        const QString originId = "d1d1d1d1-1111-4111-8111-111111111111";
+        const QString replyId = "d2d2d2d2-2222-4222-8222-222222222222";
+        auto originSealed = NativeChatCrypto::encryptMessage(originKey.bytes,
+            "Origin secret body", {streamId, OtherGeneration}); QVERIFY(originSealed);
+        auto replySealed = NativeChatCrypto::encryptMessage(replyKey.bytes,
+            QStringLiteral("[Alice](urn:quote:%1)\n\nmy answer").arg(originId).toUtf8(),
+            {streamId, returnedId}); QVERIFY(replySealed);
+        const auto wipeSeals = qScopeGuard([&] {
+            originSealed.bytes.fill(0); originSealed.bytes.clear();
+            replySealed.bytes.fill(0); replySealed.bytes.clear();
+        });
+        auto origin = message({}, originId);
+        origin["author_uuid"] = Issuer; origin["is_own"] = false;
+        origin["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", OtherGeneration},
+            {"content", QString::fromLatin1(originSealed.bytes.toBase64())}};
+        auto reply = message({}, replyId);
+        reply["author_uuid"] = Issuer; reply["is_own"] = false;
+        reply["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(replySealed.bytes.toBase64())}};
+        Fixture f; f.stream = fullEncryptedStream();
+        const auto normal = f.http.handler;
+        f.http.handler = [&, origin, reply](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
+                return Response{QJsonArray{origin, reply}, 200};
+            return normal(request);
+        };
+        // Manual start: this fixture conversation holds two history rows (start() pins one).
+        f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.projects().size() == 1; }, 2000), "projects");
+        f.controller.openProject(projectId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.streams().size() == 1; }, 2000), "streams");
+        f.controller.selectStream(streamId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
+        f.controller.selectTopic(topicId);
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 2; }, 2000), "history");
+        bool opened = false;
+        f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
+            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QVERIFY2(QTest::qWaitFor([&] { return opened; }, 2000), "vault");
+        f.controller.useChatKeys(&f.vault);
+
+        // Without any key both rows are missing: the encrypted reply body keeps the
+        // quote reference inside ciphertext, so the row publishes no quote frame.
+        QTRY_COMPARE(displayed(f.controller, replyId).value("encryptionState").toString(), QString("missing"));
+        QVERIFY(displayed(f.controller, replyId).value("quoteId").toString().isEmpty());
+        QVERIFY(!displayed(f.controller, replyId).value("content").toString().contains("urn:quote"));
+
+        // The reply key lands: the reply decrypts, and the still key-less origin is
+        // the reference's "Key required" placeholder, never an authoritative miss.
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, replyKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(displayed(f.controller, replyId).value("decrypted").toBool());
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("locked"));
+        auto row = displayed(f.controller, replyId);
+        QCOMPARE(row.value("quoteId").toString(), originId);
+        QCOMPARE(row.value("quoteAuthorName").toString(), QString("Alice"));
+        QVERIFY(row.value("quoteContent").toString().isEmpty());
+        QCOMPARE(row.value("displayContent").toString(), QString("my answer"));
+
+        // The origin key resolves: the decrypted text substitutes the placeholder
+        // (reference workspace-message-quote.ui.tsx:252-256 at 230e02b).
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
+
+        // Wrong material for the origin generation is a decrypt error, and the
+        // quote's Retry accepts exactly the per-message retry path for the origin.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        const auto slot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, wrongKey.bytes, slot.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        f.controller.retryMessageDecrypt(originId);
+        QVERIFY(f.controller.decryptRetryPendingUuids().contains(originId));
+        QCOMPARE(transitions.size(), 1);
+        f.controller.retryMessageDecrypt(originId); // in-flight repeats are dropped
+        QCOMPARE(transitions.size(), 1);
+        QTRY_COMPARE(transitions.size(), 2);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+
+        // Repaired material returns the frame to ready with the decrypted text.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        const auto repairedSlot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, repairedSlot.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
+    }
+
 #ifdef WORKSPACE_NATIVE_E2EE_UI
     // Additive UI capability rows. Core invokable is never called directly here.
     void uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount_data()
@@ -9309,6 +9415,215 @@ private slots:
         QVERIFY(!encryptedUiItem(window, "encrypted-error-" + messageId));
         QVERIFY(!encryptedUiItem(window, "encrypted-retry-" + messageId));
         QVERIFY(encryptedUiItem(window, "message-content-" + messageId));
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
+    }
+
+    // Issue #222 window slice: a decrypted reply quoting an encrypted origin
+    // renders the reference "Key required" bars before the origin key resolves
+    // (workspace_ui 230e02b workspace-message-quote.ui.tsx:123-143 + the
+    // encrypted-message-placeholder.ui.tsx geometry) and the decrypted text
+    // after it lands (:252-256).
+    void uiE2eeQuoteFrameLockedBarsResolveToDecryptedText_data() {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
+    }
+    void uiE2eeQuoteFrameLockedBarsResolveToDecryptedText() {
+        QFETCH(QString, locale);
+        auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
+        auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
+        const auto wipeKeys = qScopeGuard([&] {
+            replyKey.bytes.fill(0); replyKey.bytes.clear();
+            originKey.bytes.fill(0); originKey.bytes.clear();
+        });
+        const QString originId = "d1d1d1d1-1111-4111-8111-111111111111";
+        const QString replyId = "d2d2d2d2-2222-4222-8222-222222222222";
+        auto originSealed = NativeChatCrypto::encryptMessage(originKey.bytes,
+            "Origin secret body", {streamId, OtherGeneration}); QVERIFY(originSealed);
+        auto replySealed = NativeChatCrypto::encryptMessage(replyKey.bytes,
+            QStringLiteral("[Alice](urn:quote:%1)\n\nmy answer").arg(originId).toUtf8(),
+            {streamId, returnedId}); QVERIFY(replySealed);
+        const auto wipeSeals = qScopeGuard([&] {
+            originSealed.bytes.fill(0); originSealed.bytes.clear();
+            replySealed.bytes.fill(0); replySealed.bytes.clear();
+        });
+        auto origin = message({}, originId);
+        origin["author_uuid"] = Issuer; origin["is_own"] = false;
+        origin["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", OtherGeneration},
+            {"content", QString::fromLatin1(originSealed.bytes.toBase64())}};
+        auto reply = message({}, replyId);
+        reply["author_uuid"] = Issuer; reply["is_own"] = false;
+        reply["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(replySealed.bytes.toBase64())}};
+        Fixture f; f.stream = fullEncryptedStream();
+        const auto normal = f.http.handler;
+        f.http.handler = [&, origin, reply](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
+                return Response{QJsonArray{origin, reply}, 200};
+            return normal(request);
+        };
+        f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.projects().size() == 1; }, 2000), "projects");
+        f.controller.openProject(projectId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.streams().size() == 1; }, 2000), "streams");
+        f.controller.selectStream(streamId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
+        f.controller.selectTopic(topicId);
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 2; }, 2000), "history");
+        bool opened = false;
+        f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
+            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QVERIFY2(QTest::qWaitFor([&] { return opened; }, 2000), "vault");
+        f.controller.useChatKeys(&f.vault);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("encryptionState").toString(), QString("missing"));
+        NativePreferences preferences(f.directory.filePath("ui-quote.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Visual window teardown did not observe inactive focus before close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto accessibleName = [](QQuickItem *target) {
+            for (auto *child : target->children())
+                if (!child->inherits("QQuickItem") && child->metaObject()->indexOfProperty("name") != -1)
+                    return child->property("name").toString();
+            return QString{};
+        };
+        // Reply key only: the frame opens with the locked bars, no body, and the
+        // author header kept (reference :126-131; the bars mirror the bubble row).
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, replyKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(encryptedUiItem(window, "message-quote-" + replyId));
+        QTRY_VERIFY(encryptedUiItem(window, "quote-locked-" + replyId));
+        auto *locked = encryptedUiItem(window, "quote-locked-" + replyId); QVERIFY(locked);
+        QCOMPARE(locked->height(), qreal(36));
+        QCOMPARE(accessibleName(locked), locale == "ru" ? QString::fromUtf8("Нужен ключ") : QString("Key required"));
+        auto *wide = encryptedUiItem(window, "quote-locked-bar-wide-" + replyId); QVERIFY(wide);
+        auto *narrow = encryptedUiItem(window, "quote-locked-bar-narrow-" + replyId); QVERIFY(narrow);
+        QCOMPARE(wide->height(), qreal(8)); QCOMPARE(narrow->height(), qreal(8));
+        QVERIFY2(qAbs(wide->width() - locked->width() * 0.92) <= 1.0, qPrintable(QStringLiteral("wide bar %1").arg(wide->width())));
+        QVERIFY2(qAbs(narrow->width() - locked->width() * 0.65) <= 1.0, qPrintable(QStringLiteral("narrow bar %1").arg(narrow->width())));
+        auto *header = encryptedUiItem(window, "quoteHeaderText-" + replyId); QVERIFY(header);
+        QCOMPARE(header->property("text").toString(), QString("Alice"));
+        auto *body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
+        QVERIFY(!body || !body->isVisible());
+        // The origin key lands: the bars leave and the decrypted text substitutes.
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(displayed(f.controller, replyId).value("quoteStatus").toString() == QLatin1String("ready"));
+        QTRY_VERIFY(encryptedUiItem(window, "quoteBodyHtml-" + replyId));
+        body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
+        QVERIFY(body->isVisible());
+        QVERIFY(body->property("text").toString().contains("Origin secret body"));
+        QVERIFY(!encryptedUiItem(window, "quote-locked-" + replyId)->isVisible());
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
+    }
+
+    // Issue #222: the forced-decrypt-error quote frame carries the ghost Retry
+    // (reference :132-140) wired to the per-message decrypt retry path; the
+    // repair replaces the row body with the decrypted text.
+    void uiE2eeQuoteErrorFrameRetryRepairsTheOrigin_data() {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
+    }
+    void uiE2eeQuoteErrorFrameRetryRepairsTheOrigin() {
+        QFETCH(QString, locale);
+        auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
+        auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
+        auto wrongKey = NativeChatCrypto::createGroupKey(); QVERIFY(wrongKey);
+        const auto wipeKeys = qScopeGuard([&] {
+            replyKey.bytes.fill(0); replyKey.bytes.clear();
+            originKey.bytes.fill(0); originKey.bytes.clear();
+            wrongKey.bytes.fill(0); wrongKey.bytes.clear();
+        });
+        const QString originId = "d1d1d1d1-1111-4111-8111-111111111111";
+        const QString replyId = "d2d2d2d2-2222-4222-8222-222222222222";
+        auto originSealed = NativeChatCrypto::encryptMessage(originKey.bytes,
+            "Origin secret body", {streamId, OtherGeneration}); QVERIFY(originSealed);
+        auto replySealed = NativeChatCrypto::encryptMessage(replyKey.bytes,
+            QStringLiteral("[Alice](urn:quote:%1)\n\nmy answer").arg(originId).toUtf8(),
+            {streamId, returnedId}); QVERIFY(replySealed);
+        const auto wipeSeals = qScopeGuard([&] {
+            originSealed.bytes.fill(0); originSealed.bytes.clear();
+            replySealed.bytes.fill(0); replySealed.bytes.clear();
+        });
+        auto origin = message({}, originId);
+        origin["author_uuid"] = Issuer; origin["is_own"] = false;
+        origin["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", OtherGeneration},
+            {"content", QString::fromLatin1(originSealed.bytes.toBase64())}};
+        auto reply = message({}, replyId);
+        reply["author_uuid"] = Issuer; reply["is_own"] = false;
+        reply["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(replySealed.bytes.toBase64())}};
+        Fixture f; f.stream = fullEncryptedStream();
+        const auto normal = f.http.handler;
+        f.http.handler = [&, origin, reply](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
+                return Response{QJsonArray{origin, reply}, 200};
+            return normal(request);
+        };
+        f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.projects().size() == 1; }, 2000), "projects");
+        f.controller.openProject(projectId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.streams().size() == 1; }, 2000), "streams");
+        f.controller.selectStream(streamId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
+        f.controller.selectTopic(topicId);
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 2; }, 2000), "history");
+        bool opened = false;
+        f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
+            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QVERIFY2(QTest::qWaitFor([&] { return opened; }, 2000), "vault");
+        f.controller.useChatKeys(&f.vault);
+        // Reply key plus wrong origin material: the origin row is a decrypt error.
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, replyKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, wrongKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        NativePreferences preferences(f.directory.filePath("ui-quote-error.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Visual window teardown did not observe inactive focus before close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *row = encryptedUiItem(window, "quote-error-" + replyId); QVERIFY(row);
+        QVERIFY2(row->height() >= 36.0, qPrintable(QStringLiteral("quote error row height %1").arg(row->height())));
+        auto *errorText = encryptedUiItem(window, "quote-error-text-" + replyId); QVERIFY(errorText);
+        QCOMPARE(errorText->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("Не удалось расшифровать") : QString("Could not decrypt message"));
+        auto *retry = encryptedUiItem(window, "quote-retry-" + replyId); QVERIFY(retry);
+        QVERIFY(retry->isEnabled());
+        QCOMPARE(retry->property("text").toString(), locale == "ru" ? QString::fromUtf8("Повторить") : QString("Retry"));
+        QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
+        QVERIFY(transitions.isValid());
+        // The Retry click runs the per-message decrypt path for the ORIGIN uuid;
+        // the button is disabled while that decrypt is in flight (#221 pattern).
+        bool disabledAtStart = false;
+        const auto watchInFlight = QObject::connect(&f.controller, &NativeController::decryptRetryStateChanged, [&] {
+            if (f.controller.decryptRetryPendingUuids().contains(originId))
+                disabledAtStart = !retry->isEnabled();
+        });
+        const auto stopWatching = qScopeGuard([watchInFlight] { QObject::disconnect(watchInFlight); });
+        encryptedUiClick(retry);
+        QVERIFY2(disabledAtStart, "Quote Retry must be disabled while its decrypt is in flight");
+        QTRY_COMPARE(transitions.size(), 2); // exactly one re-decrypt cycle for one click
+        QTRY_VERIFY(retry->isEnabled());
+        QVERIFY(row->isVisible());
+        // Repairing the material replaces the row body with the decrypted text.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        const auto slot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, slot.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(displayed(f.controller, replyId).value("quoteStatus").toString() == QLatin1String("ready"));
+        QTRY_VERIFY(!row->isVisible());
+        auto *body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
+        QVERIFY(body && body->isVisible());
+        QVERIFY(body->property("text").toString().contains("Origin secret body"));
         const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss(); QVERIFY(closed);
     }
     void uiEncryptedOsRetryDoesNotSendAKeyRequest() {

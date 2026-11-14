@@ -10526,6 +10526,40 @@ private slots:
             .value("quoteText").toString(), QString("kept selection"));
     }
 
+    // Issue #222: a fetched encrypted origin is not an authoritative miss. The
+    // lookup stores it as a decrypt-pending record and the row renders the
+    // locked "Key required" quote state instead of "Message unavailable".
+    void quoteLookupOfEncryptedOriginRendersTheLockedState()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString encOrigin = "6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f";
+        auto quoted = message(QString("[Ema](urn:quote:%1)\n\nanswer").arg(encOrigin), returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto query = QUrlQuery(request.target);
+            if (query.hasQueryItem("uuid")) {
+                if (query.queryItemValue("uuid") == encOrigin)
+                    return Response{QJsonArray{QJsonObject{
+                        {"uuid", encOrigin}, {"project_id", projectId}, {"stream_uuid", streamId},
+                        {"topic_uuid", secondTopicId}, {"author_uuid", "7f7f7f7f-7f7f-4f7f-8f7f-7f7f7f7f7f7f"},
+                        {"is_own", false}, {"read", true}, {"starred", false},
+                        {"created_at", "2026-01-02T10:00:00.000Z"},
+                        {"payload", QJsonObject{{"kind", "e2ee"},
+                            {"key_uuid", "8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e"},
+                            {"content", "ZmFrZS1lbnZlbG9wZQ=="}}}}}};
+                return Response{QJsonArray{}};
+            }
+            return Response{QJsonArray{quoted}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("loading"));
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("locked"));
+        const auto row = modelMessage(fixture.controller, returnedId);
+        QCOMPARE(row.value("quoteId").toString(), encOrigin);
+        QCOMPARE(row.value("quoteAuthorName").toString(), QString("Ema"));
+        QVERIFY(row.value("quoteContent").toString().isEmpty());
+        QCOMPARE(row.value("displayContent").toString(), QString("answer"));
+    }
+
     void openMessageInChatAnchorsLoadedMessagesAndReportsUnknownOnes()
     {
         Fixture fixture; fixture.aggregateMessages = true;
