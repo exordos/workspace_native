@@ -902,6 +902,36 @@ static QByteArray freezeProbeStandalonePng()
     return bytes;
 }
 
+// #141: parent-side parser for the FREEZEPROBE report lines the probe child
+// prints (one line per monitored window: repeat-switch opens three). Returns
+// the reasons the child's output must fail the freeze probe case; empty
+// means the reports are acceptable.
+static QStringList freezeProbeReportProblems(const QString &output)
+{
+    QStringList problems;
+    QString line;
+    for (const auto &candidate : output.split(QLatin1Char('\n'))) {
+        if (candidate.contains(QStringLiteral("FREEZEPROBE"))) {
+            line = candidate;
+            break;
+        }
+    }
+    if (line.isEmpty())
+        return {QStringLiteral("child produced no FREEZEPROBE report:\n%1").arg(output)};
+    const auto field = [&line](const QString &key) {
+        return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
+    };
+    if (field(QStringLiteral("settled")) != QLatin1String("1"))
+        problems << QStringLiteral("layout was not settled through the end of the monitor window: %1").arg(line);
+    if (field(QStringLiteral("settleMs")).toInt() > 5000)
+        problems << QStringLiteral("layout settled slower than the 5s budget: %1").arg(line);
+    if (field(QStringLiteral("maxRssKib")).toLongLong() >= 1500000)
+        problems << QStringLiteral("child peaked over the 1.5 GiB memory budget: %1").arg(line);
+    if (field(QStringLiteral("ticks")).toLongLong() < 50)
+        problems << QStringLiteral("event loop heartbeat starved (fewer than 50 ticks): %1").arg(line);
+    return problems;
+}
+
 // A markdown row carrying one standalone image (media viewer tests, issue #8).
 static QJsonObject mediaViewerRow(const QString &uuid, const QString &fileUuid, qint64 byteSize)
 {
@@ -20706,24 +20736,52 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 .arg(scenario).arg(process.exitCode())
                 .arg(process.exitStatus() == QProcess::CrashExit ? 1 : 0)
                 .toUtf8().constData());
-        QString line;
-        for (const auto &candidate : output.split(QLatin1Char('\n'))) {
-            if (candidate.contains(QStringLiteral("FREEZEPROBE"))) {
-                line = candidate;
-                break;
-            }
-        }
-        QVERIFY2(!line.isEmpty(), QStringLiteral("scenario=%1 child produced no FREEZEPROBE report\n%2")
-            .arg(scenario, output).toUtf8().constData());
-        const auto field = [&line](const QString &key) {
-            return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
-        };
-        qDebug().noquote() << "freeze probe" << scenario << line;
-        QVERIFY2(field("settled") == "1", QStringLiteral("scenario=%1 layout was not settled through the end of the monitor window\n%2")
-            .arg(scenario, line).toUtf8().constData());
-        QVERIFY2(field("settleMs").toInt() <= 5000, line.toUtf8().constData());
-        QVERIFY2(field("maxRssKib").toLongLong() < 1500000, line.toUtf8().constData());
-        QVERIFY2(field("ticks").toLongLong() >= 50, line.toUtf8().constData());
+        for (const auto &candidate : output.split(QLatin1Char('\n')))
+            if (candidate.contains(QStringLiteral("FREEZEPROBE")))
+                qDebug().noquote() << "freeze probe" << scenario << candidate;
+        const QStringList problems = freezeProbeReportProblems(output);
+        QVERIFY2(problems.isEmpty(), QStringLiteral("scenario=%1 freeze probe rejected the child reports\n%2\n%3")
+            .arg(scenario, output, problems.join(QLatin1Char('\n'))).toUtf8().constData());
+    }
+
+    // The repeat-switch scenario opens three monitor windows (initial open +
+    // two topic switches) and the child prints one FREEZEPROBE report per
+    // window, but the parent-side parser historically consumed only the
+    // first: a later window reporting a failed heartbeat or settle check
+    // would pass the case silently (exordos review on #141). Drive the exact
+    // parser the parent uses with synthetic reports — forcing a scene-level
+    // injection that breaks only a later monitor window is not practical.
+    void freezeProbeParentConsumesAllMonitorReports()
+    {
+        const QString good = QStringLiteral(
+            "FREEZEPROBE phase=repeat-switch settled=1 settleMs=840 unstable=6 lateMoves=0 ticks=178 maxRssKib=262144");
+        // A single healthy report passes; an output with no report does not.
+        QVERIFY(freezeProbeReportProblems(good).isEmpty());
+        QVERIFY(!freezeProbeReportProblems(QStringLiteral("PASS : NativeLivelockWindowWorker::livelockPhase()")).isEmpty());
+
+        // Second of three windows never stays settled to the end.
+        QVERIFY(!freezeProbeReportProblems(QStringList{
+            good,
+            QStringLiteral("FREEZEPROBE phase=repeat-switch settled=0 settleMs=840 unstable=38 lateMoves=12 ticks=161 maxRssKib=262144"),
+            good}.join(QLatin1Char('\n'))).isEmpty());
+
+        // Third window's event-loop heartbeat starves after the switch back.
+        QVERIFY(!freezeProbeReportProblems(QStringList{
+            good, good,
+            QStringLiteral("FREEZEPROBE phase=repeat-switch settled=1 settleMs=840 unstable=6 lateMoves=0 ticks=7 maxRssKib=262144")}
+            .join(QLatin1Char('\n'))).isEmpty());
+
+        // Third window blows the memory budget during the switch back.
+        QVERIFY(!freezeProbeReportProblems(QStringList{
+            good, good,
+            QStringLiteral("FREEZEPROBE phase=repeat-switch settled=1 settleMs=840 unstable=6 lateMoves=0 ticks=178 maxRssKib=1610612736")}
+            .join(QLatin1Char('\n'))).isEmpty());
+
+        // Second window settles only after the 5s budget.
+        QVERIFY(!freezeProbeReportProblems(QStringList{
+            good,
+            QStringLiteral("FREEZEPROBE phase=repeat-switch settled=1 settleMs=6900 unstable=6 lateMoves=0 ticks=178 maxRssKib=262144"),
+            good}.join(QLatin1Char('\n'))).isEmpty());
     }
 };
 
