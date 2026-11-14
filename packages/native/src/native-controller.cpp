@@ -3146,9 +3146,15 @@ QVariantMap NativeController::channelInfoStream() const
     // avatar falls back to the shared Avatar background token.
     const auto color = stream->color
         ? QString("#%1").arg(*stream->color, 6, 16, QChar('0')) : QString{};
+    // Issue #243: the protected chat info projection needs the same two DTO
+    // facts the reference reads - `private` drives channelTypeLabel (reference
+    // stream.isPrivate) and `source_name` is the encryption-source witness.
+    const auto sourceName = stream->security
+        ? stream->security->source : QString{};
     return {{"id", stream->uuid}, {"title", stream->name}, {"description", stream->description},
         {"color", color}, {"notificationMode", stream->notificationMode},
-        {"owner", stream->role == "owner"}};
+        {"owner", stream->role == "owner"}, {"private", stream->privateStream},
+        {"sourceName", sourceName}};
 }
 
 QVariantList NativeController::channelInfoMembers() const
