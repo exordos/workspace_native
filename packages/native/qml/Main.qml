@@ -4560,7 +4560,7 @@ ApplicationWindow {
                                 readonly property string quoteMediaUrn: String(quoteMedia.urn || "")
                                 readonly property string quoteMediaKind: String(quoteMedia.kind || "")
                                 readonly property bool quoteMediaShown: messageQuoteThumbnail.visible
-                                    && messageQuoteThumbnail.status === "ready"
+                                    && messageQuoteThumbnail.mediaStatus === "ready"
                                 height: Math.max(messageQuoteContents.height,
                                     messageQuoteThumbnail.visible ? 48 : 0) + 12
                                 radius: 6
@@ -4580,7 +4580,9 @@ ApplicationWindow {
                                 NativeQuoteMediaThumbnail {
                                     id: messageQuoteThumbnail
                                     objectName: "quoteMediaThumbnail-" + messageRow.modelData.id
-                                    visible: messageQuoteFrame.quoteMediaUrn.length > 0
+                                    // Demand only: the component hides itself
+                                    // on a failed load (issue #217 exo-review).
+                                    demand: messageQuoteFrame.quoteMediaUrn.length > 0
                                     colors: root.colors
                                     images: root.messageImages
                                     urn: messageQuoteFrame.quoteMediaUrn
@@ -5995,7 +5997,9 @@ ApplicationWindow {
                             NativeQuoteMediaThumbnail {
                                 id: replyMediaThumbnail
                                 objectName: "replyMediaThumbnail"
-                                visible: root.controller.replyMediaUrn.length > 0
+                                // Demand only: the component hides itself on a
+                                // failed load (issue #217 exo-review).
+                                demand: root.controller.replyMediaUrn.length > 0
                                 colors: root.colors
                                 images: root.messageImages
                                 urn: root.controller.replyMediaUrn
@@ -6031,7 +6035,7 @@ ApplicationWindow {
                                     // Once the thumbnail is painted the media token
                                     // leaves the summary (reference
                                     // hiddenWorkspaceMediaFileUuids, issue #217).
-                                    text: replyMediaThumbnail.status === "ready"
+                                    text: replyMediaThumbnail.mediaStatus === "ready"
                                         ? root.controller.replyMediaSummary
                                         : root.controller.replyExcerpt
                                     textFormat: Text.PlainText
