@@ -5534,6 +5534,99 @@ private slots:
         QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
     }
 
+    // Issue #222 review fix r2: the single-message lookup keeps the fetched
+    // encrypted origin's payload and runs it through the chat-prepared decrypt
+    // presentation path, so a quote of an origin that never loads into the
+    // conversation window reaches ready with the decrypted text once the key
+    // is available (and error on bad material) instead of staying locked.
+    void e2eeQuoteOriginFetchedOutsideWindowFollowsDecryptStates()
+    {
+        auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
+        auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
+        auto wrongKey = NativeChatCrypto::createGroupKey(); QVERIFY(wrongKey);
+        const auto wipeKeys = qScopeGuard([&] {
+            replyKey.bytes.fill(0); replyKey.bytes.clear();
+            originKey.bytes.fill(0); originKey.bytes.clear();
+            wrongKey.bytes.fill(0); wrongKey.bytes.clear();
+        });
+        const QString originId = "d3d3d3d3-3333-4333-8333-333333333333";
+        const QString replyId = "d4d4d4d4-4444-4444-8444-444444444444";
+        auto originSealed = NativeChatCrypto::encryptMessage(originKey.bytes,
+            "Origin secret body", {streamId, OtherGeneration}); QVERIFY(originSealed);
+        auto replySealed = NativeChatCrypto::encryptMessage(replyKey.bytes,
+            QStringLiteral("[Alice](urn:quote:%1)\n\nmy answer").arg(originId).toUtf8(),
+            {streamId, returnedId}); QVERIFY(replySealed);
+        const auto wipeSeals = qScopeGuard([&] {
+            originSealed.bytes.fill(0); originSealed.bytes.clear();
+            replySealed.bytes.fill(0); replySealed.bytes.clear();
+        });
+        auto origin = message({}, originId);
+        origin["author_uuid"] = Issuer; origin["is_own"] = false;
+        origin["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", OtherGeneration},
+            {"content", QString::fromLatin1(originSealed.bytes.toBase64())}};
+        auto reply = message({}, replyId);
+        reply["author_uuid"] = Issuer; reply["is_own"] = false;
+        reply["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(replySealed.bytes.toBase64())}};
+        Fixture f; f.stream = fullEncryptedStream();
+        const auto normal = f.http.handler;
+        // The origin is deliberately NOT part of the loaded conversation: only
+        // the uuid= single-message lookup (scheduleQuoteFetch) resolves it.
+        f.http.handler = [&, origin, reply](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                const QUrlQuery query(request.target);
+                if (query.hasQueryItem("uuid")) return Response{QJsonArray{origin}, 200};
+                return Response{QJsonArray{reply}, 200};
+            }
+            return normal(request);
+        };
+        f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.projects().size() == 1; }, 2000), "projects");
+        f.controller.openProject(projectId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.streams().size() == 1; }, 2000), "streams");
+        f.controller.selectStream(streamId);
+        QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
+        f.controller.selectTopic(topicId);
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 1; }, 2000), "history");
+        bool opened = false;
+        f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
+            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QVERIFY2(QTest::qWaitFor([&] { return opened; }, 2000), "vault");
+        f.controller.useChatKeys(&f.vault);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("encryptionState").toString(), QString("missing"));
+
+        // The reply key lands: the frame resolves the out-of-window origin via
+        // the lookup; without the origin key it renders the locked state.
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, replyKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(displayed(f.controller, replyId).value("decrypted").toBool());
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("locked"));
+        QCOMPARE(displayed(f.controller, replyId).value("quoteAuthorName").toString(), QString("Alice"));
+
+        // The origin key lands while the origin stays out of the window: the
+        // fetched payload re-runs through the decrypt path and the frame
+        // reaches ready with the decrypted text (RED before the fix: locked).
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, 0),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
+        QVERIFY(f.controller.messages().size() == 1); // the origin never entered the window
+
+        // Wrong material for the origin key renders the decrypt error state;
+        // repaired material returns the frame to ready.
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        const auto slot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, wrongKey.bytes, slot.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+        const auto repaired = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, repaired.value.deletionRevision),
+            NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
+    }
+
 #ifdef WORKSPACE_NATIVE_E2EE_UI
     // Additive UI capability rows. Core invokable is never called directly here.
     void uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount_data()
