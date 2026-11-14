@@ -1,3 +1,29 @@
+# Workspace Native 0.24.0 - Linux development preview
+
+Two surfaces ported from the reference desktop:
+
+- Poll bubbles are now fully interactive. Click any option to vote and the
+  bubble updates in place with the vote count, per-option percentage and the
+  participant line, anonymous polls keep voters hidden from the aggregate, and
+  the closing deadline shows on the card. The poll owner can add a new option
+  inline; an option under creation keeps its identity across retries, so an
+  unstable network cannot duplicate it. Narrow windows are covered down to the
+  smallest supported bubble: when a result row runs out of room, the aggregate
+  drops onto its own line instead of overflowing the bubble.
+- Replying can now quote exactly what you selected. Drag to highlight text
+  inside a message bubble and pick Reply: the composer preface and the sent
+  quote carry the selected fragment (line breaks preserved); a whitespace-only
+  or encrypted selection falls back to quoting the whole message, matching the
+  reference behavior.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `bash install.sh`.
+
+[Full changelog: 0.23.0...0.24.0](https://github.com/exordos/workspace_native/compare/0.23.0...0.24.0)
+
+---
+
 # Workspace Native 0.23.0 - Linux development preview
 
 Two surfaces ported from the reference desktop:
