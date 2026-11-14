@@ -363,60 +363,76 @@ Item {
                             Item {
                                 id: optionRowInner
                                 width: parent.width
-                                height: Math.max(28, optionText.height)
+                                // Round 4 (exo-review 4571525936): the aggregate
+                                // keeps the option line only while the option
+                                // text still holds its 24 px floor beside it;
+                                // under that width the aggregate drops to its own
+                                // line below the label, so its right edge can
+                                // never extend past the card column on a very
+                                // narrow bubble.
+                                readonly property real textLeft: optionMarker.width + 8
+                                readonly property bool aggregateInline: !optionAggregate.visible
+                                    || width - textLeft - 8 - optionAggregate.implicitWidth >= 24
+                                height: Math.max(28, optionText.height
+                                    + (optionAggregate.visible && !aggregateInline
+                                        ? 2 + optionAggregate.height : 0))
 
-                                Row {
-                                    id: optionChoice
-                                    width: parent.width
-                                    spacing: 8
-
-                                    Rectangle {
-                                        id: optionMarker
-                                        width: 16
-                                        height: 16
-                                        anchors.verticalCenter: optionText.verticalCenter
-                                        radius: 8
-                                        color: optionRow.selected || optionRow.correct
-                                            ? (optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"])
-                                            : "transparent"
-                                        border.width: optionRow.selected || optionRow.correct ? 0 : 1
-                                        border.color: optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"]
-                                        opacity: optionRow.enabled || questionBlock.busy ? 1 : 0.4
-                                        Text {
-                                            anchors.centerIn: parent
-                                            visible: optionRow.selected || optionRow.correct
-                                            text: "\u2713"
-                                            textFormat: Text.PlainText
-                                            font.pixelSize: 11
-                                            color: "white"
-                                        }
-                                    }
+                                Rectangle {
+                                    id: optionMarker
+                                    x: 0
+                                    width: 16
+                                    height: 16
+                                    anchors.verticalCenter: optionText.verticalCenter
+                                    radius: 8
+                                    color: optionRow.selected || optionRow.correct
+                                        ? (optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"])
+                                        : "transparent"
+                                    border.width: optionRow.selected || optionRow.correct ? 0 : 1
+                                    border.color: optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"]
+                                    opacity: optionRow.enabled || questionBlock.busy ? 1 : 0.4
                                     Text {
-                                        id: optionText
-                                        objectName: "poll-option-text-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                        width: Math.max(24, parent.width - optionMarker.width - 8
-                                            - (optionAggregate.visible ? optionAggregate.implicitWidth + 8 : 0))
-                                        text: String(option.text)
+                                        anchors.centerIn: parent
+                                        visible: optionRow.selected || optionRow.correct
+                                        text: "\u2713"
                                         textFormat: Text.PlainText
-                                        wrapMode: Text.Wrap
-                                        font.pixelSize: 14
-                                        lineHeightMode: Text.FixedHeight
-                                        lineHeight: 17
-                                        color: optionRow.correct ? card.colors["indicator-green"]
-                                            : (optionRow.wrong ? card.colors["danger"]
-                                                : (optionRow.selected ? card.colors["accent"]
-                                                    : card.colors["text-primary"]))
-                                    }
-                                    Text {
-                                        id: optionAggregate
-                                        objectName: "poll-aggregate-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                        visible: questionBlock.results
-                                        text: String(optionRow.percent) + "% \u00b7 " + String(optionRow.votes)
-                                        textFormat: Text.PlainText
-                                        font.pixelSize: 14
-                                        color: card.colors["text-secondary"]
+                                        font.pixelSize: 11
+                                        color: "white"
                                     }
                                 }
+                                Text {
+                                    id: optionText
+                                    objectName: "poll-option-text-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+                                    x: optionRowInner.textLeft
+                                    width: Math.max(24, optionRowInner.width - optionRowInner.textLeft
+                                        - (optionAggregate.visible && optionRowInner.aggregateInline
+                                            ? optionAggregate.implicitWidth + 8 : 0))
+                                    text: String(option.text)
+                                    textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap
+                                    font.pixelSize: 14
+                                    lineHeightMode: Text.FixedHeight
+                                    lineHeight: 17
+                                    color: optionRow.correct ? card.colors["indicator-green"]
+                                        : (optionRow.wrong ? card.colors["danger"]
+                                            : (optionRow.selected ? card.colors["accent"]
+                                                : card.colors["text-primary"]))
+                                }
+                                Text {
+                                    id: optionAggregate
+                                    objectName: "poll-aggregate-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+                                    visible: questionBlock.results
+                                    x: optionRowInner.aggregateInline
+                                        ? optionText.x + optionText.width + 8 : optionText.x
+                                    y: optionRowInner.aggregateInline ? 0 : optionText.height + 2
+                                    width: optionRowInner.aggregateInline
+                                        ? implicitWidth
+                                        : Math.min(implicitWidth, optionRowInner.width - optionText.x)
+                                    text: String(optionRow.percent) + "% \u00b7 " + String(optionRow.votes)
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    color: card.colors["text-secondary"]
+                                }
+
                                 MouseArea {
                                     anchors.fill: parent
                                     onClicked: optionRow.activate()
