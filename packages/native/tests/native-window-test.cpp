@@ -12776,6 +12776,102 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "message-quote-" + quoteOnlyId)->isVisible());
     }
 
+    // Issue #217 (docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md): a quoted message
+    // that carries a media preview shows a 48 px thumbnail as the leading element
+    // of both quote frames - the composer reply preface and the received bubble -
+    // and the media markdown text leaves the summary once the picture is ready.
+    void quotedMediaMessageShowsAThumbnailInBothPreviewFrames()
+    {
+        QTest::failOnWarning();
+        const QString fileId = "99999999-9999-4999-8999-999999999992";
+        const auto png = avatarProbePng(false);
+        const QString urn = "urn:image:" + fileId
+            + "?name=shot.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message("![shot.png](" + urn + ")", messageId);
+        origin["is_own"] = false;
+        const QString quotingId = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d";
+        const auto quoting = message(QString("[Peer](urn:quote:%1)\n\nanswer body").arg(messageId), quotingId);
+        auto metadata = avatarProbeMetadata(fileId, png);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QString filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (path.startsWith("/api/workspace/v1/messenger/files/")) {
+                if (path == filePath) return Response{metadata};
+                if (path == filePath + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{origin, quoting}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("quote-media.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Quote media window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-quote-media", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+
+        // The received quote frame paints the preview inside a 48 px square.
+        auto *bubbleThumb = item(content, "quoteMediaThumbnail-" + quotingId); QVERIFY(bubbleThumb);
+        QTRY_VERIFY(bubbleThumb->isVisible());
+        QCOMPARE(bubbleThumb->property("width").toReal(), 48.0);
+        QCOMPARE(bubbleThumb->property("radius").toReal(), 6.0);
+        QCOMPARE(bubbleThumb->property("color").toString(), QString("#ffffff"));
+        QTRY_COMPARE(bubbleThumb->property("status").toString(), QString("ready"));
+        auto *thumbImage = item(content, "quoteMediaImage-" + quotingId); QVERIFY(thumbImage);
+        QVERIFY(!thumbImage->property("source").toString().isEmpty());
+        QVERIFY(thumbImage->property("clip").toBool());
+        // The media markdown text is gone from the quote body once it is ready.
+        auto *quoteBody = item(content, "quoteBodyHtml-" + quotingId); QVERIFY(quoteBody);
+        QVERIFY2(!quoteBody->property("text").toString().contains("shot.png"),
+                 qPrintable(quoteBody->property("text").toString()));
+
+        // The same reference leads the composer reply preface and drops the media
+        // label from the excerpt once the thumbnail is ready.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction"));
+        QVERIFY(replyAction);
+        click(window, replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        auto *replyThumb = item(content, "replyMediaThumbnail"); QVERIFY(replyThumb);
+        QTRY_VERIFY(replyThumb->isVisible());
+        QCOMPARE(replyThumb->property("width").toReal(), 48.0);
+        QCOMPARE(replyThumb->property("color").toString(), QString("#ffffff"));
+        QTRY_COMPARE(replyThumb->property("status").toString(), QString("ready"));
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QTRY_VERIFY2(!excerpt->property("visible").toBool(),
+                     qPrintable(excerpt->property("text").toString()));
+
+        // Dark palette keeps the reference surface value for the thumbnail box.
+        preferences.setMode("dark");
+        QTRY_COMPARE(replyThumb->property("color").toString(), QString("#222328"));
+    }
+
     // Multi-reply tab strip (issue #200, docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
     // one row per tab once a second quote joins, and closing one pill cancels
     // only that tab (workspace-reply.ui.tsx at workspace_ui 61dacef).
