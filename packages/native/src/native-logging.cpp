@@ -49,7 +49,7 @@ void nativeMessageHandler(QtMsgType type, const QMessageLogContext &context,
         g_messageLogSink->appendLogLine(line);
 }
 
-qint64 parseProcKbValue(const QByteArray &contents, const QByteArray &key)
+[[maybe_unused]] qint64 parseProcKbValue(const QByteArray &contents, const QByteArray &key)
 {
     const QList<QByteArray> lines = contents.split('\n');
     for (const QByteArray &line : lines) {
@@ -63,7 +63,7 @@ qint64 parseProcKbValue(const QByteArray &contents, const QByteArray &key)
     return 0;
 }
 
-QByteArray readProcFile(const QString &path)
+[[maybe_unused]] QByteArray readProcFile(const QString &path)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
@@ -162,19 +162,32 @@ void NativeLogging::rotateLogsIfNeeded()
 QVariantMap NativeLogging::memorySnapshot() const
 {
     // Portable procfs sources (Linux is the acceptance target; other platforms
-    // keep the same key set with zero values — see the design doc note).
+    // keep the same key set with zero values — see the design doc note). The
+    // proc reads stay behind Q_OS_LINUX so non-Linux builds never touch /proc
+    // (review round 1, thread 4575150368).
+    qint64 rssKb = 0;
+    qint64 sizeKb = 0;
+    qint64 peakRssKb = 0;
+    qint64 memTotalKb = 0;
+    qint64 memFreeKb = 0;
+    qint64 memAvailableKb = 0;
+#if defined(Q_OS_LINUX)
     const QByteArray status = readProcFile(m_procRoot + QStringLiteral("/self/status"));
     const QByteArray meminfo = readProcFile(m_procRoot + QStringLiteral("/meminfo"));
-    const qint64 rssKb = parseProcKbValue(status, "VmRSS");
-    const qint64 sizeKb = parseProcKbValue(status, "VmSize");
-    const qint64 peakRssKb = parseProcKbValue(status, "VmHWM");
+    rssKb = parseProcKbValue(status, "VmRSS");
+    sizeKb = parseProcKbValue(status, "VmSize");
+    peakRssKb = parseProcKbValue(status, "VmHWM");
+    memTotalKb = parseProcKbValue(meminfo, "MemTotal");
+    memFreeKb = parseProcKbValue(meminfo, "MemFree");
+    memAvailableKb = parseProcKbValue(meminfo, "MemAvailable");
+#endif
     QVariantMap mainMemory;
     mainMemory.insert("rss", rssKb * 1024);   // bytes, like process.memoryUsage()
     mainMemory.insert("size", sizeKb * 1024);
     QVariantMap system;
-    system.insert("total", parseProcKbValue(meminfo, "MemTotal"));
-    system.insert("free", parseProcKbValue(meminfo, "MemFree"));
-    system.insert("available", parseProcKbValue(meminfo, "MemAvailable"));
+    system.insert("total", memTotalKb);
+    system.insert("free", memFreeKb);
+    system.insert("available", memAvailableKb);
     QVariantMap selfMemory;
     selfMemory.insert("workingSetSize", rssKb);          // kB, like getAppMetrics()
     selfMemory.insert("peakWorkingSetSize", peakRssKb);

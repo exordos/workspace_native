@@ -18315,6 +18315,14 @@ private slots:
         const QRegularExpression iso(QStringLiteral(
             "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"));
         QVERIFY(iso.match(snapshot.value("collectedAt").toString()).hasMatch());
+        const QVariantList processes = snapshot.value("processes").toList();
+        QCOMPARE(processes.size(), 1);
+        const QVariantMap self = processes.first().toMap();
+        QVERIFY(self.value("pid").toInt() > 0);
+        QCOMPARE(self.value("type").toString(), QStringLiteral("Main"));
+#ifdef Q_OS_LINUX
+        // Procfs-backed values exist only on Linux (the provider reads /proc
+        // solely under Q_OS_LINUX; other platforms return zero values).
         const QVariantMap main = snapshot.value("main").toMap();
         QCOMPARE(main.value("rss").toLongLong(), qint64(8192) * 1024);
         QCOMPARE(main.value("size").toLongLong(), qint64(20480) * 1024);
@@ -18322,15 +18330,11 @@ private slots:
         QCOMPARE(system.value("total").toLongLong(), qint64(8388608));
         QCOMPARE(system.value("free").toLongLong(), qint64(524288));
         QCOMPARE(system.value("available").toLongLong(), qint64(4194304));
-        const QVariantList processes = snapshot.value("processes").toList();
-        QCOMPARE(processes.size(), 1);
-        const QVariantMap self = processes.first().toMap();
-        QVERIFY(self.value("pid").toInt() > 0);
-        QCOMPARE(self.value("type").toString(), QStringLiteral("Main"));
         const QVariantMap memory = self.value("memory").toMap();
         QCOMPARE(memory.value("workingSetSize").toLongLong(), qint64(8192));
         QCOMPARE(memory.value("peakWorkingSetSize").toLongLong(), qint64(9216));
         QCOMPARE(snapshot.value("totalWorkingSetKb").toLongLong(), qint64(8192));
+#endif
         // Missing proc sources degrade to the same key set with zero values.
         NativeLogging degraded(root.path());
         degraded.setProcRoot(root.path() + QStringLiteral("/missing-proc"));
@@ -18348,18 +18352,30 @@ private slots:
         QVERIFY(root.isValid());
         NativeLogging logs(root.path());
         const QVariantMap snapshot = logs.memorySnapshot();
-        QVERIFY(snapshot.value("main").toMap().value("rss").toLongLong() > 0);
-        const QVariantMap system = snapshot.value("system").toMap();
-        QVERIFY(system.value("total").toLongLong() > 0);
-        QVERIFY(system.value("available").toLongLong() > 0);
-        QVERIFY(system.value("available").toLongLong() <= system.value("total").toLongLong());
+        // Key-set stability is platform-independent...
+        QVERIFY(snapshot.contains(QStringLiteral("collectedAt")));
+        QVERIFY(snapshot.contains(QStringLiteral("main")));
+        QVERIFY(snapshot.contains(QStringLiteral("system")));
+        QVERIFY(snapshot.contains(QStringLiteral("processes")));
+        QVERIFY(snapshot.contains(QStringLiteral("totalWorkingSetKb")));
         const QVariantList processes = snapshot.value("processes").toList();
         QCOMPARE(processes.size(), 1);
         const QVariantMap self = processes.first().toMap();
         QCOMPARE(self.value("pid").toInt(), QCoreApplication::applicationPid());
         QCOMPARE(self.value("type").toString(), QStringLiteral("Main"));
+#ifdef Q_OS_LINUX
+        // Positive procfs values exist only on Linux; the provider reads
+        // /proc solely under Q_OS_LINUX and other platforms return the same
+        // keys with zero values (see docs/NATIVE_DESKTOP_DIAGNOSTICS.md and
+        // the Q_OS_LINUX source gate guard case).
+        QVERIFY(snapshot.value("main").toMap().value("rss").toLongLong() > 0);
+        const QVariantMap system = snapshot.value("system").toMap();
+        QVERIFY(system.value("total").toLongLong() > 0);
+        QVERIFY(system.value("available").toLongLong() > 0);
+        QVERIFY(system.value("available").toLongLong() <= system.value("total").toLongLong());
         QVERIFY(self.value("memory").toMap().value("workingSetSize").toLongLong() > 0);
         QVERIFY(snapshot.value("totalWorkingSetKb").toLongLong() > 0);
+#endif
     }
 
     void diagnosticsMessageHandlerLineFormatAndFileWiring()
