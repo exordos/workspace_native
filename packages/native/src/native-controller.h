@@ -872,7 +872,7 @@ private:
     // The first authenticated use of a vault scans the stages and resolves
     // each pending attempt by fetching the stream under its staged identity,
     // verifying the encrypted echo, committing the key, then clearing.
-    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; };
+    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; bool dispatchAttempted = true; };
     void maybeResolveChannelCreateStages();
     void resolveChannelCreateStages(const QString &token);
     void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token,
