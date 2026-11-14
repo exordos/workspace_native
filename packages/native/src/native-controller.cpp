@@ -12655,14 +12655,14 @@ void NativeController::invokePollAction(const QString &messageUuid, const QStrin
     // Action requests sit outside the conversation loading states, like the
     // reaction and read endpoints.
     request("POST", messenger + "/messages/" + messageUuid + "/actions/" + action + "/invoke",
-        body, {}, [this, guard, messageUuid, action, generation, context](const ApiResult &result) {
+        body, {}, [this, guard, messageUuid, action, body, generation, context](const ApiResult &result) {
         if (!guard || generation != m_api->generation()) return;
-        applyPollMutation(messageUuid, action, result, context);
+        applyPollMutation(messageUuid, action, body, result, context);
     });
 }
 
 bool NativeController::applyPollMutation(const QString &messageUuid, const QString &action,
-    const ApiResult &result, const ProjectionContext &context)
+    const QJsonObject &body, const ApiResult &result, const ProjectionContext &context)
 {
     const auto fail = [this, &messageUuid, &action](const QString &detail) {
         emit pollActionFailed(messageUuid, action, detail);
@@ -12694,6 +12694,13 @@ bool NativeController::applyPollMutation(const QString &messageUuid, const QStri
     projectCanonical(result.data.toObject(), fields, context);
     const QPointer<NativeController> guard(this);
     emit messagesChanged();
+    // Per-request completion for the bubble (#216 round 3): the vote and
+    // add-option bodies identify their question, so the card releases the
+    // lock that specific request set instead of any revision bump.
+    const QString questionUuid = action == QLatin1String("vote")
+        || action == QLatin1String("add_poll_option")
+        ? body.value(QLatin1String("question_uuid")).toString() : QString();
+    emit pollActionSucceeded(messageUuid, action, questionUuid);
     if (guard) emit stateChanged();
     return true;
 }

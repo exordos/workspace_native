@@ -167,10 +167,15 @@ Could not add the option. Try again., Could not load the poll.
   anonymity/read-only flags, and forwards voting/add-option intents to the
   controller signals (`votePollOption`, `addPollOption`).
 - In-flight and error state live in the card: the card keys pending votes by
-  question, clears them when the row's poll `state.revision` changes (success
-  path) or when `controller.pollActionFailed(messageUuid, "vote")` arrives
-  (failure path). This mirrors the reference per-question pending set without
-  adding state to the controller.
+  question and releases a lock when its own request completes -
+  `controller.pollActionSucceeded(messageUuid, "vote"|"add_poll_option",
+  questionUuid)` on success (round 3), `controller.pollActionFailed` on
+  failure. A poll `state.revision` change from an unrelated update retires
+  only stale error text, never an in-flight lock. This mirrors the reference
+  per-question pending set without adding state to the controller. The
+  add-option draft and its client option uuid live on the card keyed by
+  question (not on the delegate), so re-incubations and unrelated revisions
+  keep the unsubmitted text and the retry-replay uuid.
 - Date label: `NativeController::formatPollDate(QString isoDateTime)` formats
   with the app locale (`QLocale()`, set by `applyLanguage`): en
   `12 December, 09:00`, ru `12 декабря, 09:00`.
@@ -206,3 +211,11 @@ Could not add the option. Try again., Could not load the poll.
   that message and marks them with the inline error. The reference isolates
   the error to the originating question; concurrent in-flight votes on two
   questions of one message are the only case where this differs visibly.
+- D10 Success completion is per-request: `pollActionSucceeded` carries the
+  request's question uuid (vote/add bodies identify it), so a lock releases
+  only on its own response and an unrelated poll revision can never release
+  an in-flight lock (round-3 review 4571525925).
+- D11 `Qt.createUuid` is unavailable in shipped QML scopes, and retries must
+  replay one client option uuid, so the card generates a v4-shaped uuid with
+  `Math.random` and keeps it on the attempt (idempotent uuid+text replay);
+  the controller still generates one when QML passes none.
