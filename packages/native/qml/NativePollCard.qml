@@ -537,6 +537,7 @@ Item {
 
     Item {
         id: statusRow
+        objectName: "poll-status-row-" + card.messageUuid
         visible: card.statusDateText.length > 0 || card.readOnly
         width: cardColumn.width - card.timeInset
         height: Math.max(16, statusDateText.height)
