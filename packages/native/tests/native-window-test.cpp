@@ -528,6 +528,36 @@ public:
     }
 };
 
+// A secret store whose missing entries report NotFound, so the vault can
+// provision its master key on first open (WindowSecrets reports empty
+// values as a successful read, which the vault treats as corruption).
+class ChannelCreationSecrets final : public SessionSecretStore {
+public:
+    QMap<QString, QByteArray> values;
+    void write(const QString &key, const QByteArray &secret, Completion done) override {
+        values.insert(key, secret); QTimer::singleShot(0, this, [done] { done(Error::None); });
+    }
+    void read(const QString &key, Loaded done) override {
+        const auto value = values.value(key);
+        QTimer::singleShot(0, this, [done, value] { done(value, value.isEmpty() ? Error::NotFound : Error::None); });
+    }
+    void remove(const QString &key, Completion done) override {
+        values.remove(key); QTimer::singleShot(0, this, [done] { done(Error::None); });
+    }
+};
+
+static bool openChannelCreationVault(NativeChatKeyVault &keys)
+{
+    bool opened = false;
+    NativeChatKeyVault::Failure failure = NativeChatKeyVault::Failure::Unavailable;
+    keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+        [&](NativeChatKeyVault::Failure value) { failure = value; opened = value == NativeChatKeyVault::Failure::None; });
+    const bool settled = QTest::qWaitFor([&opened] { return opened; }, 2000);
+    if (!settled || failure != NativeChatKeyVault::Failure::None)
+        qWarning("vault open failed with code %d", int(failure));
+    return settled && failure == NativeChatKeyVault::Failure::None;
+}
+
 static QString windowDirectId(const QString &peer = channelPeer)
 {
     QStringList pair{peer.toLower(), userId.toLower()}; pair.sort();
@@ -7929,18 +7959,6 @@ mv -Tf "$root/.current-new" "$root/current"
 
     // ---- Issue #234: encrypted channel creation contract in the QML surface ----
 
-    static bool openChannelCreationVault(NativeChatKeyVault &keys)
-    {
-        bool opened = false;
-        NativeChatKeyVault::Failure failure = NativeChatKeyVault::Failure::Unavailable;
-        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
-            [&](NativeChatKeyVault::Failure value) { failure = value; opened = value == NativeChatKeyVault::Failure::None; });
-        const bool settled = QTest::qWaitFor([&opened] { return opened; }, 2000);
-        if (!settled || failure != NativeChatKeyVault::Failure::None)
-            qWarning("vault open failed with code %d", int(failure));
-        return settled && failure == NativeChatKeyVault::Failure::None;
-    }
-
     void globalChannelEncryptedSwitchClearsAndDisablesExclusiveOptions()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -8004,7 +8022,7 @@ mv -Tf "$root/.current-new" "$root/current"
         preferences.setLocale("en");
         WindowChannelFixture fixture;
         fixture.postDelay = 300;
-        WindowSecrets secrets;
+        ChannelCreationSecrets secrets;
         QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
         NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
         ApiClient api(nullptr, true);
@@ -8049,11 +8067,13 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto stored = keys.read(keys.lease(), {id, keyUuid});
         QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
         QCOMPARE(stored.value.bytes.size(), 32);
-        // Success navigation matches the ordinary path: aggregate route plus
-        // the unchanged choose-topic prompt.
+        // Success navigation matches the ordinary aggregate route; the
+        // choose-topic prompt itself stays hidden because Main.qml hides all
+        // topic affordances for encrypted conversations (aggregate
+        // conversation without the encrypted-conversation policy changing).
         QCOMPARE(controller.selectedStream(), id);
         QVERIFY(controller.selectedTopic().isEmpty());
-        QVERIFY(visibleItem("streamTopicPrompt"));
+        QTRY_VERIFY(!visibleItem("streamTopicPrompt"));
         window->close();
     }
 
@@ -8064,7 +8084,7 @@ mv -Tf "$root/.current-new" "$root/current"
         preferences.setLocale("en");
         WindowChannelFixture fixture;
         fixture.postDelay = 450;
-        WindowSecrets secrets;
+        ChannelCreationSecrets secrets;
         QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
         NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
         ApiClient api(nullptr, true);
