@@ -138,4 +138,14 @@ provider's `Q_OS_LINUX` procfs gate is source-guarded and the procfs-positive
 asserts (fixture values and real-/proc) stay gated while the key set and the
 missing-source zero-degradation run on every platform; and `removeNativeLogHandler()`
 drains an in-flight handler call parked in another thread before returning
-(the worker parks deterministically on a full stderr pipe).
+(the worker parks deterministically on a full stderr pipe). The fix-round-2
+cases (PR #289) add: a source guard asserting every POSIX-only include and
+raw descriptor call in the test translation unit sits inside a
+`Q_OS_UNIX`/`Q_OS_LINUX` guard (with portable wrappers in
+`tests/msvc-compat.h`) so `BUILD_TESTING` compiles on Windows; the two
+descriptor-based message-handler cases (stderr-failure, drain-on-removal)
+compile under `Q_OS_UNIX`; and the drain case is pipe-capacity independent —
+its reader starts before any write can block, the filler fills the pipe with
+`O_NONBLOCK` writes probed until `EAGAIN` (no 64 KiB assumption), and on
+Linux the pipe is pinned to its 4 KiB minimum (`F_SETPIPE_SZ`) so the
+small-capacity regression path is always exercised.
