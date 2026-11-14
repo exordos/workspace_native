@@ -172,9 +172,23 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   `createStages(lease)` once per owner and vault lease, skips attempts that
   still have a live in-memory intent, and for each pending stage performs the
   canonical `GET /streams/<attempt>`: a verified encrypted echo commits the
-  key and clears the stage; a `404` (the POST never landed) clears the stage;
-  any other answer keeps the stage for the next controller init. The staged
-  key never appears in logs or QML and is cleansed after use.
+  key and clears the stage; a `404` or any other non-committal answer keeps
+  the stage (see the next bullet) for bounded in-session rescans and for the
+  next controller init. The staged key never appears in logs or QML and is
+  cleansed after use.
+- Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
+  a `404` from the recovery GET is NOT proof the original POST cannot land —
+  a delayed or in-flight creation can still commit server-side moments after
+  that GET — so the stage is retained on every non-committal answer (404,
+  transport error, non-verifying echo) and only the live POST's own definite
+  rejection (400/401/403/404) closes it as "definitively not created" (this
+  also keeps rejected attempts from accumulating against the vault's
+  create-stage budget and starving later encrypted creates). A scan pass that
+  ends with any stage unresolved (vault read failure, failed GET, 404,
+  non-verifying echo) schedules a bounded in-session rescan — at most 5
+  retries, 1 s apart, per owner+vault-lease — so a transient outage heals
+  without requiring a controller restart; a stream that never lands stops
+  polling after the cap and is re-checked by the next controller init.
 - `channelCreationForm()` additionally exposes `encrypted`, which is what the
   QML layer uses to restore one immutable encrypted intent across dialog
   close/reopen for unresolved phases (the existing unresolved-form retention
@@ -216,7 +230,14 @@ uuid; a replaced runtime (logout during the POST) publishing nothing; and the
 durable crash window: with the POST reply deferred, destroying the controller
 after dispatch and creating a fresh controller on the same vault recovers and
 commits the key (verified echo), keeps the stage uncommitted (mismatched
-echo), and re-verifies nothing once the stage was cleared by the commit.
+echo), and re-verifies nothing once the stage was cleared by the commit. The
+recovery-race findings add: a definite POST rejection clearing the durable
+stage (`encryptedChannelCreationDefiniteFailureClearsStage`); a restart whose
+recovery `404` races the still-committing POST keeping the stage and then
+committing it from a bounded in-session rescan
+(`encryptedChannelCreationRecoveryKeepsStageWhileStreamMissing`); and a
+transient recovery failure being retried within the same vault session
+(`encryptedChannelCreationRecoveryRetriesTransientFailureInSession`).
 
 `native-window-test.cpp` (group `native-native-window`) covers: the switch is
 present, enabled and interactive; turning it on clears and disables
