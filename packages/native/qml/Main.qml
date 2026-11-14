@@ -3871,7 +3871,24 @@ ApplicationWindow {
                         pendingViewport = null;
                         positioning = false;
                         tailFollow = originY + contentHeight + bottomMargin - contentY - height <= 80
-                        root.controller.noteScrollRearm(distanceFromTop, height)
+                        // Issue #279: this hand-off fired because the user's own
+                        // wheel/drag took the chain over, but that takeover
+                        // scrolled while `positioning` was still raised, so its
+                        // contentY passes were dropped by the reference gates in
+                        // onContentYChanged and no attributed pass follows (the
+                        // wheel already parked the viewport wherever it stops).
+                        // A fast climb to the loaded top therefore lost the
+                        // older-page trigger for good: the reserve was still
+                        // full, yet only a re-arm - which never requests - ran
+                        // at dTop <= reserve. The resting position here is the
+                        // user's own scroll position, so it must be evaluated
+                        // with user attribution (trigger + re-arm), mirroring
+                        // the reference handleScroll, which scores a user wheel
+                        // scroll event regardless of a pending pin pass. The
+                        // arm/coalescing/end-of-history guards inside
+                        // noteScrollReserve keep this from ever duplicating or
+                        // storming a request.
+                        root.controller.noteScrollReserve(distanceFromTop, height)
                         finishServiceHistoryReady();
                         scheduleVisibleRead();
                         return;
