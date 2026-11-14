@@ -1025,6 +1025,125 @@ static QJsonObject encryptedUiRect(QQuickItem *item, QQuickItem *relative)
     const auto point = item->mapToItem(relative, QPointF{});
     return {{"x", point.x()}, {"y", point.y()}, {"width", item->width()}, {"height", item->height()}};
 }
+// Issue #243 (docs/NATIVE_DESKTOP_E2EE_CHAT_INFO.md): the chat-info drawer content
+// is driven through the QML shell ids, the same way the window group drives it.
+static QVariant encryptedUiEvaluate(QQuickWindow *window, const QString &script)
+{
+    QQmlExpression expression(qmlContext(window), window, script);
+    auto value = expression.evaluate();
+    if (expression.hasError())
+        QTest::qFail(qPrintable("QML: " + expression.error().toString()), __FILE__, __LINE__);
+    if (value.metaType() == QMetaType::fromType<QJSValue>())
+        value = value.value<QJSValue>().toVariant();
+    return value;
+}
+// The base fixture serves minimal stream_bindings rows (no who_uuid, mode or
+// dates) and an empty directory, which the channel-info binding contract
+// rejects. The protected identity shows real member and presence counts, so the
+// drawer scenes complete both collections instead of inventing zeros.
+QJsonObject chatInfoBindingRow(const QString &uuid, const QString &user, const QString &role)
+{
+    return {{"uuid", uuid}, {"project_id", projectId}, {"stream_uuid", streamId},
+        {"user_uuid", user}, {"who_uuid", Issuer}, {"role", role},
+        {"notification_mode", "all_messages"},
+        {"created_at", "2026-01-02T10:00:00.000Z"}, {"updated_at", "2026-01-02T10:00:00.000Z"}};
+}
+QJsonObject chatInfoUserRow(const QString &uuid, const QString &name, const QString &status)
+{
+    return {{"uuid", uuid}, {"username", name}, {"first_name", name},
+        {"last_name", "Fixture"}, {"email", name.toLower() + "@example.test"},
+        {"status", status}, {"updated_at", "2026-01-02T10:00:00.000Z"}};
+}
+// One window scene per locale/mode row: an encrypted stream (or a plain one for
+// the gate case) with a real QML shell, so the drawer opens through the same
+// navigation the app uses.
+struct ProtectedChatInfoScene {
+    Fixture f;
+    NativePreferences preferences;
+    QQmlApplicationEngine engine;
+    const QString language;
+    const QString palette;
+    QQuickWindow *window = nullptr;
+    ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted)
+        : f(), preferences(f.directory.filePath(QStringLiteral("chat-info-%1-%2.ini").arg(locale, mode))),
+          language(locale), palette(mode)
+    {
+        f.stream = fullEncryptedStream();
+        f.stream["current_encryption_key_uuid"] = OtherGeneration;
+        if (!encrypted) {
+            f.stream["encryption"] = false;
+            f.stream["current_encryption_key_uuid"] = QJsonValue::Null;
+            f.cipher["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Synthetic ordinary history"}};
+        }
+        const auto previous = f.http.handler;
+        f.http.handler = [previous](const Request &request) {
+            auto response = previous(request);
+            const auto path = request.target.path();
+            if (request.method == "GET" && path == "/api/workspace/v1/messenger/stream_bindings/") {
+                response.data = QJsonArray{
+                    chatInfoBindingRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", userId, "member"),
+                    chatInfoBindingRow("eeeeeeee-eeee-4eee-8eee-000000000011", Issuer, "owner")};
+            } else if (path == "/api/workspace/v1/users/") {
+                response.data = QJsonArray{chatInfoUserRow(userId, "Active Member", "active"),
+                    chatInfoUserRow(Issuer, "Quiet Owner", "offline")};
+            }
+            return response;
+        };
+    }
+    bool open()
+    {
+        if (!f.start()) return false;
+        preferences.setOwner(f.controller.ownerKey());
+        preferences.setLocale(language);
+        preferences.setMode(palette);
+        loadNativeUi(engine, &f.controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        if (!window || !QTest::qWaitForWindowExposed(window)) return false;
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        return QTest::qWaitFor([&] { return !frame.isEmpty(); }, 2000);
+    }
+    QVariant evaluate(const QString &script) { return encryptedUiEvaluate(window, script); }
+    void openChatInfo() { evaluate("rightDrawer.openInfo()"); }
+    QQuickItem *item(const QString &name) { return encryptedUiItem(window, name); }
+    QQuickItem *require(const QString &name)
+    {
+        auto *found = item(name);
+        if (!found)
+            QTest::qFail(qPrintable("missing item " + name), __FILE__, __LINE__);
+        return found;
+    }
+    QString text(const QString &name)
+    {
+        auto *found = item(name);
+        return found ? found->property("text").toString() : QString();
+    }
+    // Accessible.name is an attached object, the same read the other visual cases use.
+    QString accessible(const QString &name)
+    {
+        auto *found = item(name);
+        if (!found) return QString();
+        for (auto *child : found->children())
+            if (!child->inherits("QQuickItem") && child->metaObject()->indexOfProperty("name") != -1)
+                return child->property("name").toString();
+        return QString();
+    }
+    QColor color(const QString &name, const QString &property = "color")
+    {
+        auto *found = item(name);
+        return found ? QQmlProperty(found, property).read().value<QColor>() : QColor();
+    }
+    int fontPixelSize(const QString &name)
+    {
+        auto *found = item(name);
+        return found ? QQmlProperty(found, "font.pixelSize").read().toInt() : 0;
+    }
+    QJsonObject rect(const QString &name, QQuickItem *relative)
+    {
+        auto *found = item(name);
+        return found ? encryptedUiRect(found, relative) : QJsonObject{};
+    }
+};
 // Test-only lifecycle candidate. sync() is not a Wayland roundtrip guarantee.
 // Observe focus loss while the hidden native window still belongs to this row.
 static bool closeEncryptedVisualWindow(QQuickWindow *window)
@@ -9840,6 +9959,199 @@ private slots:
         }
         inputStage="final-gates";
         QVERIFY(!f.controller.canSend());QVERIFY(!f.controller.canAttach());window->close();inputCompleted=true;
+    }
+
+    // ---- Issue #243: encrypted chat info drawer (docs/NATIVE_DESKTOP_E2EE_CHAT_INFO.md) ----
+    // Reference oracle: features/encrypted-chat-info/encrypted-chat-info.ui.tsx
+    // info screen :562-627, settings screen :379-415, gating
+    // widgets/right-panel/right-panel-workspace-info.ui.tsx:828-845.
+    void uiEncryptedChatInfoDrawerShowsProtectedIdentity_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
+    void uiEncryptedChatInfoDrawerShowsProtectedIdentity() {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ProtectedChatInfoScene scene(locale, mode, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat info window did not close", __FILE__, __LINE__);
+        });
+        // Closed drawer: no chat-info content is mounted, encrypted or not.
+        QVERIFY(!scene.item("channelInfoLayer"));
+        QVERIFY(!scene.item("encryptedChatInfoLayer"));
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("encryptedChatInfoLayer"));
+        // The protected presentation replaces the ordinary channel info header.
+        QVERIFY(!scene.item("channelInfoLayer"));
+        QVERIFY(!scene.item("channelInfoTitle"));
+        QVERIFY(!scene.item("channelInfoSubline"));
+        // Real member and presence counts, never invented zeros.
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
+        QTRY_COMPARE(scene.f.controller.channelInfoOnlineCount(), 1);
+        auto *drawer = scene.require("nativeRightDrawer"); QVERIFY(drawer);
+        // xl avatar: 64 px circle, radius 32, resolveAvatarBackgroundColor
+        // fallback (no stream color) is the bg token with a border-subtle ring.
+        auto *avatar = scene.require("protectedChatAvatar"); QVERIFY(avatar);
+        QCOMPARE(avatar->size(), QSizeF(64, 64));
+        QCOMPARE(avatar->property("radius").toReal(), qreal(32));
+        QCOMPARE(scene.color("protectedChatAvatar"), QColor(mode == "dark" ? "#141517" : "#e4ecf3"));
+        QCOMPARE(scene.color("protectedChatAvatar", "border.color"),
+            QColor(mode == "dark" ? "#33384d" : "#d8e4ef"));
+        const auto avatarRect = scene.rect("protectedChatAvatar", drawer);
+        QCOMPARE(avatarRect.value("x").toDouble(), qreal(24)); // shell px-2 + content px-4
+        // The chatLock glyph is 40 px inside the 64 px circle (Icon size={40}).
+        QQuickItem *lock = nullptr;
+        for (auto *child : avatar->childItems())
+            if (child->isVisible() && child->property("asset").toString() == "chat_lock.svg") { lock = child; break; }
+        QVERIFY2(lock, "The protected avatar must render the chat_lock glyph");
+        QCOMPARE(lock->property("glyphSize").toInt(), 40);
+        QCOMPARE(QQmlProperty(lock, "icon.width").read().toInt(), 40);
+        QCOMPARE(QQmlProperty(lock, "icon.height").read().toInt(), 40);
+        QCOMPARE(QColor(QQmlProperty(lock, "icon.color").read().value<QColor>()),
+            QColor(mode == "dark" ? "#ffffff" : "#1b1b1d"));
+        // Identity column: name 20 px, accent caption 16 px, muted counts 14 px.
+        QCOMPARE(scene.text("protectedChatTitle"), QString("Encrypted fixture"));
+        QCOMPARE(scene.fontPixelSize("protectedChatTitle"), 20);
+        QCOMPARE(scene.color("protectedChatTitle"), QColor(mode == "dark" ? "#ffffff" : "#1b1b1d"));
+        QCOMPARE(scene.text("protectedChatCaption"),
+            locale == "ru" ? QString("Защищённый чат") : QString("Protected chat"));
+        QCOMPARE(scene.fontPixelSize("protectedChatCaption"), 16);
+        QCOMPARE(scene.color("protectedChatCaption"), QColor("#7087ff"));
+        const auto counts = scene.text("protectedChatCounts");
+        QCOMPARE(counts, locale == "ru" ? QString("2 участника, 1 в сети")
+                                        : QString("2 participants, 1 online"));
+        QCOMPARE(scene.fontPixelSize("protectedChatCounts"), 14);
+        QCOMPARE(scene.color("protectedChatCounts"), QColor(mode == "dark" ? "#707070" : "#989898"));
+        // The three lines are 8 px apart and vertically centred on the avatar.
+        const auto captionRect = scene.rect("protectedChatCaption", drawer);
+        const auto countsRect = scene.rect("protectedChatCounts", drawer);
+        QVERIFY(qAbs(captionRect.value("y").toDouble()
+            - (scene.rect("protectedChatTitle", drawer).value("y").toDouble() + 20)) <= 1);
+        QVERIFY(qAbs(countsRect.value("y").toDouble() - (captionRect.value("y").toDouble() + 16)) <= 1);
+        QVERIFY(qAbs(countsRect.value("x").toDouble() - captionRect.value("x").toDouble()) <= 1);
+        QVERIFY(qAbs(captionRect.value("x").toDouble() - (avatarRect.value("x").toDouble() + 64 + 16)) <= 1);
+        // Action row: two equal 48 px tiles, 8 px apart, 20 px below the identity block.
+        const auto callRect = scene.rect("protectedChatCallButton", drawer);
+        const auto settingsRect = scene.rect("protectedChatSettingsButton", drawer);
+        QCOMPARE(callRect.value("height").toDouble(), qreal(48));
+        QCOMPARE(settingsRect.value("height").toDouble(), qreal(48));
+        QCOMPARE(callRect.value("width").toDouble(), settingsRect.value("width").toDouble());
+        QVERIFY(callRect.value("width").toDouble() > 100);
+        QVERIFY(qAbs(settingsRect.value("x").toDouble() - (callRect.value("x").toDouble() + callRect.value("width").toDouble() + 8)) <= 1);
+        QVERIFY(qAbs(callRect.value("y").toDouble()
+            - (scene.rect("protectedChatIdentity", drawer).value("y").toDouble()
+                + scene.rect("protectedChatIdentity", drawer).value("height").toDouble() + 20)) <= 1);
+        QCOMPARE(scene.color("protectedChatCallButton", "background.color"),
+            QColor(mode == "dark" ? "#2c3747" : "#cde6ff"));
+        QCOMPARE(scene.color("protectedChatSettingsButton", "background.color"),
+            QColor(mode == "dark" ? "#2b2d9a" : "#cde6ff"));
+        QCOMPARE(scene.accessible("protectedChatCallButton"),
+            locale == "ru" ? QString("Позвонить") : QString("Call"));
+        QCOMPARE(scene.accessible("protectedChatSettingsButton"),
+            locale == "ru" ? QString("Настройки") : QString("Settings"));
+        qInfo().noquote() << "PROTECTED_CHAT_INFO" << QJsonDocument(QJsonObject{
+            {"locale", locale}, {"mode", mode}, {"avatar", avatarRect}, {"title",
+                scene.rect("protectedChatTitle", drawer)}, {"caption", captionRect},
+            {"counts", countsRect}, {"call", callRect}, {"settings", settingsRect}}).toJson(QJsonDocument::Compact);
+    }
+
+    void uiEncryptedChatInfoSettingsScreenNavigation_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
+    void uiEncryptedChatInfoSettingsScreenNavigation() {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ProtectedChatInfoScene scene(locale, mode, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat settings window did not close", __FILE__, __LINE__);
+        });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 1);
+        // Activating Settings pushes the settings screen onto the chat-info layer.
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        QVERIFY(!scene.item("protectedChatIdentity"));
+        QCOMPARE(scene.evaluate("rightDrawer.currentChatScreen").toString(), QString("settings"));
+        QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 2);
+        // Re-activating Settings dedupes instead of growing the Back loop.
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QCOMPARE(scene.evaluate("rightDrawer.topScreenCount").toInt(), 2);
+        // Read-only dl: channel name and description (reference ChannelSettings).
+        QCOMPARE(scene.text("protectedChatNameLabel"),
+            locale == "ru" ? QString("Название канала") : QString("Channel name"));
+        QCOMPARE(scene.text("protectedChatNameValue"), QString("Encrypted fixture"));
+        QCOMPARE(scene.text("protectedChatDescriptionLabel"),
+            locale == "ru" ? QString("Описание") : QString("Description (optional)"));
+        QCOMPARE(scene.text("protectedChatDescriptionValue"),
+            QString("Synthetic encrypted Archive fixture"));
+        QCOMPARE(scene.fontPixelSize("protectedChatNameLabel"), 14);
+        QCOMPARE(scene.color("protectedChatNameLabel"), QColor(mode == "dark" ? "#707070" : "#989898"));
+        QCOMPARE(scene.color("protectedChatNameValue"), QColor(mode == "dark" ? "#ffffff" : "#1b1b1d"));
+        QCOMPARE(scene.text("protectedChatReadOnlyHint"), locale == "ru"
+            ? QString("Параметры канала пока доступны только для просмотра.")
+            : QString("Channel details are currently read-only."));
+        QCOMPARE(scene.fontPixelSize("protectedChatReadOnlyHint"), 12);
+        // The "Encryption keys" row navigates to the key screen (#244 owns content).
+        QCOMPARE(scene.text("protectedChatKeysRowLabel"),
+            locale == "ru" ? QString("Ключи шифрования") : QString("Encryption keys"));
+        auto *keysRow = scene.require("protectedChatKeysRow"); QVERIFY(keysRow);
+        QCOMPARE(keysRow->height(), qreal(44)); // PanelMenuRow py-1.5 around a min-h-8 row
+        QQuickItem *keyIcon = nullptr;
+        for (auto *candidate : keysRow->findChildren<QQuickItem *>())
+            if (candidate->isVisible() && candidate->property("asset").toString() == "chat_lock.svg") { keyIcon = candidate; break; }
+        QVERIFY2(keyIcon, "The Encryption keys row carries the chatLock icon");
+        QCOMPARE(keyIcon->property("glyphSize").toInt(), 24);
+        // type and members rows
+        QCOMPARE(scene.text("protectedChatTypeLabel"),
+            locale == "ru" ? QString("Тип канала") : QString("Channel type"));
+        QCOMPARE(scene.text("protectedChatTypeValue"),
+            locale == "ru" ? QString("Открытый") : QString("Open"));
+        QCOMPARE(scene.text("protectedChatMembersLabel"),
+            locale == "ru" ? QString("Участники") : QString("Members"));
+        QTRY_COMPARE(scene.text("protectedChatMembersValue"), QString("2"));
+        QCOMPARE(scene.color("protectedChatTypeValue"), QColor(mode == "dark" ? "#707070" : "#989898"));
+        // An empty description falls back to channel.noDescription.
+        scene.f.stream["description"] = QString();
+        auto changed = cryptoEvent(scene.f.stream);
+        auto payload = changed.value("payload").toObject();
+        payload["kind"] = "stream.updated";
+        changed["payload"] = payload;
+        QVERIFY(scene.f.controller.applyRealtimeEvent(changed));
+        QTRY_COMPARE(scene.text("protectedChatDescriptionValue"),
+            locale == "ru" ? QString("Без описания") : QString("No description"));
+        // Back from settings returns to the info screen.
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        QVERIFY(!scene.item("protectedChatSettingsScreen"));
+        QCOMPARE(scene.evaluate("rightDrawer.currentChatScreen").toString(), QString(""));
+        // And the keys row lands on the scaffolded key screen, which Back unwinds.
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(keysRow = scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        QVERIFY(!scene.item("protectedChatSettingsScreen"));
+        QCOMPARE(scene.evaluate("rightDrawer.currentChatScreen").toString(), QString("key"));
+        QVERIFY(scene.evaluate("rightDrawer.canGoBack").toBool());
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+    }
+
+    void uiEncryptedChatInfoGateKeepsOrdinaryInfo() {
+        ProtectedChatInfoScene scene("en", "dark", false);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Ordinary chat info window did not close", __FILE__, __LINE__);
+        });
+        QVERIFY(!scene.item("channelInfoLayer"));
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("channelInfoLayer"));
+        // encryption=false keeps the ordinary presentation untouched.
+        QVERIFY(!scene.item("encryptedChatInfoLayer"));
+        QVERIFY(!scene.item("protectedChatAvatar"));
+        QVERIFY(scene.item("channelInfoAvatar"));
+        QVERIFY(scene.item("channelInfoTitle"));
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
     }
 #endif
 
