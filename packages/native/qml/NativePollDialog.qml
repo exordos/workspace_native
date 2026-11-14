@@ -158,7 +158,7 @@ Popup {
     }
     Connections {
         target: dialog.controller
-        function onPollActionFailed(messageUuid, action, detail) {
+        function onPollActionFailed(messageUuid, action, detail, questionUuid) {
             if (!dialog.visible || action !== "create") return
             dialog.pending = false
             if (detail === "http-409")

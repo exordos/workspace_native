@@ -138,8 +138,9 @@ existing `ApiClient`:
 Action responses are parsed as message DTOs, verified to be the same poll
 message, merged through the revision guard, projected to the cache and published
 through the existing `messagesChanged` signal. Failures never mutate the model;
-`pollActionFailed(messageUuid, action, detail)` carries a technical detail code
-(`http-4xx`, `invalid-response`, `stale-response`) so the UI tickets own all
+`pollActionFailed(messageUuid, action, detail, questionUuid)` carries a technical detail code
+(`http-4xx`, `invalid-response`, `stale-response`) plus the failed request's question uuid
+(for `vote` / `add_poll_option`, empty otherwise) so the UI tickets own all
 user-visible strings. No new `tr()` strings ship in this ticket.
 
 ## Test surface

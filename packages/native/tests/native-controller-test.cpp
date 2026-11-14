@@ -17337,6 +17337,10 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 2000);
         QCOMPARE(failed.at(0).at(1).toString(), QStringLiteral("create"));
         QCOMPARE(failed.at(0).at(2).toString(), QStringLiteral("http-503"));
+        // Create failures carry no question: the vote/add completion identity
+        // (round 3 review) is empty for actions whose body has no question_uuid.
+        QCOMPARE(failed.at(0).size(), 4);
+        QCOMPARE(failed.at(0).at(3).toString(), QString());
         const auto messageUuid = bodies.first().value(QStringLiteral("uuid")).toString();
         QVERIFY(isUuid(messageUuid));
         const auto firstQuestionUuid = questionUuidOf(bodies.first());

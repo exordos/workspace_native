@@ -12620,7 +12620,8 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
             || parsed->stream != stream || parsed->topic != topic) {
             emit pollActionFailed(QString(), QStringLiteral("create"),
                 result.ok() ? QStringLiteral("invalid-response")
-                            : QStringLiteral("http-%1").arg(result.status));
+                            : QStringLiteral("http-%1").arg(result.status),
+                QString());
             return;
         }
         // A confirmed create retires the attempt (reference pollAttemptRef = null).
@@ -12664,8 +12665,15 @@ void NativeController::invokePollAction(const QString &messageUuid, const QStrin
 bool NativeController::applyPollMutation(const QString &messageUuid, const QString &action,
     const QJsonObject &body, const ApiResult &result, const ProjectionContext &context)
 {
-    const auto fail = [this, &messageUuid, &action](const QString &detail) {
-        emit pollActionFailed(messageUuid, action, detail);
+    const auto fail = [this, &messageUuid, &action, &body](const QString &detail) {
+        // Failure completion carries the failed request's question (the vote
+        // and add bodies identify it, same extraction as the success path),
+        // so the card releases exactly that request's lock and no other
+        // (exo-review 4571961640).
+        const QString questionUuid = action == QLatin1String("vote")
+            || action == QLatin1String("add_poll_option")
+            ? body.value(QLatin1String("question_uuid")).toString() : QString();
+        emit pollActionFailed(messageUuid, action, detail, questionUuid);
         return false;
     };
     if (!result.ok()) return fail(QStringLiteral("http-%1").arg(result.status));

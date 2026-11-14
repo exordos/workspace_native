@@ -169,8 +169,10 @@ Could not add the option. Try again., Could not load the poll.
 - In-flight and error state live in the card: the card keys pending votes by
   question and releases a lock when its own request completes -
   `controller.pollActionSucceeded(messageUuid, "vote"|"add_poll_option",
-  questionUuid)` on success (round 3), `controller.pollActionFailed` on
-  failure. A poll `state.revision` change from an unrelated update retires
+  questionUuid)` on success (round 3), `controller.pollActionFailed(messageUuid,
+  action, detail, questionUuid)` on failure - both completions name the failed or
+  applied request's own question and action, so exactly that request's lock
+  retires and a retained add attempt can never release another request's lock. A poll `state.revision` change from an unrelated update retires
   only stale error text, never an in-flight lock. This mirrors the reference
   per-question pending set without adding state to the controller. The
   add-option draft and its client option uuid live on the card keyed by
