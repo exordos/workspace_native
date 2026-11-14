@@ -295,6 +295,8 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
             const QPointer<NativeController> lookupGuard(this);
             checkChatLifetime();
             if (!lookupGuard) return;
+            maybeResolveChannelCreateStages();
+            if (!lookupGuard) return;
             scheduleChatPreparation();
             if (!lookupGuard) return;
             const QPointer<NativeController> guard(this); emit stateChanged();
@@ -310,6 +312,10 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
         });
     }
     checkChatLifetime();
+    if (!lookupGuard) return;
+    // Issue #234 review fix r3: a vault attached to a fresh (restarted)
+    // controller adopts durable encrypted-create stages immediately.
+    maybeResolveChannelCreateStages();
     if (!lookupGuard) return;
     // Issue #222 review fix r2: quote records fetched before the vault existed
     // (or across a vault swap) decrypt against the newly bound key material.
@@ -4191,6 +4197,22 @@ void NativeController::createChannel(const QString &name, const QString &descrip
         {"encryption", accepted.encrypted},
         {"current_encryption_key_uuid", accepted.encrypted ? QJsonValue(accepted.encryptionKey) : QJsonValue::Null}};
     if (!channelPhase(owner, id, ticket, QStringLiteral("creating"))) return;
+    // Review findings 4574928575/4574928581: durably stage the key and the
+    // recovery identities BEFORE the stream POST is dispatched. A process
+    // loss after the server accepted the channel must not lose the only copy
+    // of the group key; a later controller restart resolves the stage.
+    if (accepted.encrypted) {
+        NativeChatKeyVault::CreateStage stage{id, accepted.encryptionKey, accepted.groupKey,
+            QDateTime::currentMSecsSinceEpoch()};
+        const bool staged = m_chatKeys && m_chatKeys->available()
+            && m_chatKeys->putCreateStage(m_chatKeys->lease(), stage) == NativeChatKeyVault::Failure::None;
+        stage.clearSecrets();
+        if (!staged) {
+            finishChannelCreation(owner, id, ticket,
+                tr("Encrypted channel creation is not available yet."), QStringLiteral("failed"));
+            return;
+        }
+    }
     m_channelCreations[owner].dispatched = true;
     request("POST", messenger + "/streams/", body, {}, [this, owner, id, ticket](const ApiResult &result) {
         if (!channelCreationContext(owner, id, ticket)) return;
@@ -4289,7 +4311,70 @@ bool NativeController::commitChannelKey(const QString &owner, const QString &id,
     }
     intent.keyStored = true;
     intent.groupKey.fill('\0'); intent.groupKey.clear();
+    // The commit closes the durable stage: from here the vault alone holds
+    // the key. A failed clear only means a later scan re-verifies and no-ops.
+    m_chatKeys->clearCreateStage(m_chatKeys->lease(), id);
     return true;
+}
+
+void NativeController::maybeResolveChannelCreateStages()
+{
+    // A restart resolves durable stages once per (owner, vault lease) pair:
+    // the vault open completes asynchronously after the session is ready, so
+    // this is invoked from vault attach, vault state changes and login.
+    // creationOwnerKey (not the https-only ownerKey) is the loopback-safe
+    // create-path identity already frozen into every channel creation intent.
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available() || creationOwnerKey().isEmpty()) return;
+    const auto lease = m_chatKeys->lease();
+    const auto token = creationOwnerKey() + QLatin1Char('/') + QString::number(lease.issuer)
+        + QLatin1Char('/') + QString::number(lease.generation);
+    if (m_channelStageToken == token) return;
+    m_channelStageToken = token;
+    QTimer::singleShot(0, this, [this, token] { resolveChannelCreateStages(token); });
+}
+
+void NativeController::resolveChannelCreateStages(const QString &token)
+{
+    if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+    auto stages = m_chatKeys->createStages(m_chatKeys->lease());
+    if (stages.failure != NativeChatKeyVault::Failure::None) return; // retried on the next init
+    QVector<PendingCreateStage> pending;
+    for (auto &stage : stages.values) {
+        bool live = false;
+        for (auto it = m_channelCreations.begin(); it != m_channelCreations.end(); ++it)
+            if (it->encrypted && it->uuid == stage.attempt) live = true;
+        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey});
+        stage.clearSecrets();
+    }
+    resolveNextChannelCreateStage(std::move(pending), token);
+}
+
+void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token)
+{
+    if (stages.isEmpty()) return;
+    if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+    auto stage = stages.takeFirst();
+    const auto lease = m_chatKeys->lease();
+    // The staged attempt uuid is the idempotent stream uuid the POST carried
+    // (and the id the echo must match), so the canonical GET under that uuid
+    // is the same verification the live path performs.
+    request("GET", messenger + "/streams/" + stage.attempt, {}, {},
+        [this, token, lease, stage, stages](const ApiResult &result) mutable {
+        auto wipe = qScopeGuard([&] { stage.groupKey.fill('\0'); });
+        if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
+        const auto raw = result.data.toObject();
+        const auto parsed = encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), stage.key);
+        if (result.status == 404) {
+            // The POST never landed server-side: nothing left to recover.
+            m_chatKeys->clearCreateStage(lease, stage.attempt);
+        } else if (result.ok() && parsed && parsed->uuid == stage.attempt) {
+            const auto committed = m_chatKeys->put(lease,
+                NativeChatKeyVault::Address{stage.attempt, stage.key}, stage.groupKey, 0);
+            if (committed == NativeChatKeyVault::Failure::None) m_chatKeys->clearCreateStage(lease, stage.attempt);
+        }
+        // Any other answer keeps the stage intact for the next controller init.
+        resolveNextChannelCreateStage(stages, token);
+    });
 }
 
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,
@@ -6347,6 +6432,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::signedOut, this, &NativeController::sessionSwitcherChanged);
     connect(m_session, &Session::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
+    // Issue #234 review fix r3: a login that happens with an already-open
+    // vault re-checks durable encrypted-create stages (login-only restarts).
+    connect(m_session, &Session::authenticated, this, [this] { maybeResolveChannelCreateStages(); });
     // Issue #161: the Workspace meet host lives only as long as the session
     // does (reference per-owner store, cleared on logout).
     connect(m_session, &Session::authenticated, this, [this] { fetchCallMeetHost(); });

@@ -852,6 +852,16 @@ private:
     void updateChannelDirectory(const QJsonArray &rows, bool authoritative);
     void confirmChannelCreation(const QString &owner, const QString &id, quint64 ticket);
     bool commitChannelKey(const QString &owner, const QString &id, quint64 ticket);
+    // Review findings 4574928575/4574928581: after a restart the durable
+    // pre-dispatch stage is the only copy of a new encrypted channel's key.
+    // The first authenticated use of a vault scans the stages and resolves
+    // each pending attempt by fetching the stream under its staged identity,
+    // verifying the encrypted echo, committing the key, then clearing.
+    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; };
+    void maybeResolveChannelCreateStages();
+    void resolveChannelCreateStages(const QString &token);
+    void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token);
+    QString m_channelStageToken;
     void loadChannelDefault(const QString &owner, const QString &id, quint64 ticket);
     void checkChannelMembers(const QString &owner, const QString &id, quint64 ticket);
     void addChannelMembers(const QString &owner, const QString &id, quint64 ticket);
