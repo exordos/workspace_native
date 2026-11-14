@@ -1043,8 +1043,9 @@ public:
     QJsonArray myVotes;
     // Question counts (3 voters): optionOne=1 optionTwo=2; question 2 mirrors.
     qint64 countOne = 1, countTwo = 2, countThree = 3, countFour = 0;
-    int votePosts = 0, addOptionPosts = 0;
+    int votePosts = 0, addOptionPosts = 0, settingsPosts = 0;
     QJsonObject lastVoteBody, lastAddOptionBody;
+    QStringList addOptionUuids;
     int voteStatus = 200, addOptionStatus = 200;
     bool holdVote = false, holdAddOption = false;
     std::function<void()> releaseVote, releaseAddOption;
@@ -1175,6 +1176,8 @@ public:
             if (path == actions + "add_poll_option/invoke") {
                 ++addOptionPosts;
                 lastAddOptionBody = request.body;
+                addOptionUuids.append(request.body.value("option").toObject()
+                    .value("uuid").toString());
                 if (addOptionStatus == 200) applyAddOption(request.body);
                 Response response{row(), addOptionStatus};
                 if (holdAddOption) {
@@ -1184,6 +1187,13 @@ public:
                     };
                 }
                 return response;
+            }
+            if (path == actions + "update_settings/invoke") {
+                // Another actor changes the poll: a revision bump with no
+                // vote or option effects (issue #216 round-3 lock case).
+                ++settingsPosts;
+                ++revision;
+                return {row(), 200};
             }
             if (path.endsWith("/streams/") && request.method == "GET") {
                 auto stream = windowChannel(streamId, QStringLiteral("Product team"));
@@ -20075,6 +20085,213 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-question-status-0", scene.fixture.messageUuid)),
             QStringLiteral("Participants: 3"));
+    }
+
+    // exo-review finding 4571525921 (round 3): the summary and status rows
+    // must flow after the questions and count into the card height instead
+    // of rendering over the top of the poll.
+    void pollBubbleSummaryAndStatusFollowQuestions()
+    {
+        PollBubbleScene scene;
+        scene.start();
+        auto *card = pollVisibleItem(scene.content(),
+            pollBubbleName("poll-card", scene.fixture.messageUuid));
+        auto *title = pollVisibleItem(scene.content(),
+            "poll-question-title-0-" + scene.fixture.messageUuid);
+        auto *summaryRow = pollVisibleItem(scene.content(),
+            pollBubbleName("poll-summary-row", scene.fixture.messageUuid));
+        auto *statusRow = pollVisibleItem(scene.content(),
+            pollBubbleName("poll-status-row", scene.fixture.messageUuid));
+        QVERIFY(card && title && summaryRow && statusRow);
+        const qreal questionBottom = title->mapToItem(card, QPointF(0, title->height())).y();
+        const qreal summaryTop = summaryRow->mapToItem(card, QPointF(0, 0)).y();
+        QVERIFY2(summaryTop >= questionBottom,
+            qPrintable(QStringLiteral("summary row overlaps questions: top %1 < question bottom %2")
+                .arg(summaryTop).arg(questionBottom)));
+        const qreal statusBottom = statusRow->mapToItem(card, QPointF(0, statusRow->height())).y();
+        QVERIFY2(statusBottom <= card->height() + 1,
+            qPrintable(QStringLiteral("card height %1 excludes the status row ending at %2")
+                .arg(card->height()).arg(statusBottom)));
+    }
+
+    // exo-review finding 4571525925 (round 3): an unrelated poll revision
+    // must not release an in-flight question lock; each lock belongs to its
+    // own request and releases only when that own request completes.
+    void pollBubbleUnrelatedRevisionKeepsInFlightVoteLock()
+    {
+        PollBubbleScene scene;
+        scene.start();
+        scene.fixture.holdVote = true;
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-0-0-" + scene.fixture.messageUuid));
+        QTRY_COMPARE(scene.fixture.votePosts, 1);
+        QTRY_VERIFY(pollItemDisabled(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
+        // Another actor changes the poll settings: the poll revision bumps
+        // while our vote request is still waiting for its own response.
+        scene.controller.updatePollSettings(scene.fixture.messageUuid, QString(), true);
+        QTRY_COMPARE(scene.fixture.settingsPosts, 1);
+        QTest::qWait(150);
+        QVERIFY2(pollItemDisabled(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid),
+            "an unrelated revision released the in-flight vote lock");
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
+        QCOMPARE(scene.fixture.votePosts, 1);
+        // The vote's own response lands: its question unlocks.
+        QVERIFY(scene.fixture.releaseVote);
+        scene.fixture.releaseVote();
+        QTRY_VERIFY(pollItemEnabled(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid));
+    }
+
+    // exo-review finding 4571525928 (round 3): an unsubmitted add-option
+    // draft must survive poll revisions that are not the draft's own add.
+    void pollBubbleUnrelatedRevisionKeepsAddOptionDraft()
+    {
+        PollBubbleScene scene;
+        scene.fixture.secondQuestion = true;
+        scene.start();
+        const auto addInput = [&] {
+            return pollVisibleItem(scene.content(),
+                "poll-add-option-0-" + scene.fixture.messageUuid);
+        };
+        auto *input = addInput();
+        QVERIFY(input);
+        QMetaObject::invokeMethod(input, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == input);
+        scene.typeText(QStringLiteral("Draft idea"));
+        // A vote on the other question lands: revision bump, not our add.
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-1-0-" + scene.fixture.messageUuid));
+        QTRY_COMPARE(scene.fixture.votePosts, 1);
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-aggregate-1-0-" + scene.fixture.messageUuid));
+        auto *kept = addInput();
+        QVERIFY(kept);
+        QCOMPARE(kept->property("text").toString(), QStringLiteral("Draft idea"));
+        // The draft's own accepted add clears the field (connected ui:143-150).
+        QMetaObject::invokeMethod(kept, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == kept);
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 1);
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-option-text-0-2-" + scene.fixture.messageUuid));
+        QTRY_VERIFY(addInput() && addInput()->property("text").toString().isEmpty());
+    }
+
+    // exo-review finding 4571525932 (round 3): retrying the same add-option
+    // text must replay one client uuid (the idempotent uuid+text contract),
+    // never generate a fresh option on every attempt.
+    void pollBubbleAddOptionRetryReusesClientUuid()
+    {
+        PollBubbleScene scene;
+        scene.start();
+        const auto addInput = [&] {
+            return pollVisibleItem(scene.content(),
+                "poll-add-option-0-" + scene.fixture.messageUuid);
+        };
+        auto *input = addInput();
+        QVERIFY(input);
+        QMetaObject::invokeMethod(input, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == input);
+        scene.fixture.addOptionStatus = 500;
+        scene.typeText(QStringLiteral("Extra"));
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 1);
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-add-error-0-" + scene.fixture.messageUuid));
+        QCOMPARE(scene.fixture.addOptionUuids.size(), 1);
+        QVERIFY(!scene.fixture.addOptionUuids.at(0).isEmpty());
+        // Retry the same text after the failure: same attempt, same uuid.
+        QMetaObject::invokeMethod(addInput(), "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == addInput());
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 2);
+        QCOMPARE(scene.fixture.addOptionUuids.at(1), scene.fixture.addOptionUuids.at(0));
+        // The retry lands; the option appears once and the field clears.
+        scene.fixture.addOptionStatus = 200;
+        QMetaObject::invokeMethod(addInput(), "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == addInput());
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 3);
+        QCOMPARE(scene.fixture.addOptionUuids.at(2), scene.fixture.addOptionUuids.at(0));
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-option-text-0-2-" + scene.fixture.messageUuid));
+        QTRY_VERIFY(addInput() && addInput()->property("text").toString().isEmpty());
+    }
+
+    // exo-review finding 4571525935 (round 3): poll options expose the
+    // button role, so they must be reachable and activatable by keyboard.
+    void pollBubbleOptionKeyboardActivation()
+    {
+        PollBubbleScene scene;
+        scene.start();
+        auto *first = pollVisibleItem(scene.content(),
+            "poll-option-0-0-" + scene.fixture.messageUuid);
+        QVERIFY(first);
+        QVERIFY2(first->property("activeFocusOnTab").toBool(),
+            "option rows must join the tab focus chain");
+        QMetaObject::invokeMethod(first, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == first);
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.votePosts, 1);
+        QCOMPARE(scene.fixture.lastVoteBody.value("option_uuid").toString(),
+            pollBubbleOptionOne);
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-aggregate-0-0-" + scene.fixture.messageUuid));
+        // The vote response re-incubates the rows; focus the fresh row and
+        // activate the second option with Space.
+        auto *second = pollVisibleItem(scene.content(),
+            "poll-option-0-1-" + scene.fixture.messageUuid);
+        QVERIFY(second);
+        QMetaObject::invokeMethod(second, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == second);
+        QKeyEvent spacePress(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+        QKeyEvent spaceRelease(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+        QCoreApplication::sendEvent(second, &spacePress);
+        QCoreApplication::sendEvent(second, &spaceRelease);
+        QTRY_COMPARE(scene.fixture.votePosts, 2);
+        QCOMPARE(scene.fixture.lastVoteBody.value("option_uuid").toString(),
+            pollBubbleOptionTwo);
+    }
+
+    // exo-review finding 4571525936 (round 3): Main.qml caps poll bubbles
+    // at 88 % of the available message width, so the card column must size
+    // to the card, not to a fixed 336 px.
+    void pollBubbleNarrowCardKeepsContentInside()
+    {
+        PollBubbleScene scene;
+        scene.fixture.resultsVisibility = QStringLiteral("always");
+        scene.start();
+        auto *card = pollVisibleItem(scene.content(),
+            pollBubbleName("poll-card", scene.fixture.messageUuid));
+        QVERIFY(card);
+        card->setWidth(280);
+        auto *row = pollVisibleItem(scene.content(),
+            "poll-option-0-0-" + scene.fixture.messageUuid);
+        QVERIFY(row);
+        QVERIFY2(row->width() <= card->width() + 1,
+            qPrintable(QStringLiteral("option row %1 px overflows the %2 px card")
+                .arg(row->width()).arg(card->width())));
+        auto *text = pollVisibleItem(scene.content(),
+            "poll-option-text-0-0-" + scene.fixture.messageUuid);
+        auto *aggregate = pollVisibleItem(scene.content(),
+            "poll-aggregate-0-0-" + scene.fixture.messageUuid);
+        QVERIFY(text && aggregate);
+        const qreal aggregateRight = aggregate->mapToItem(row, QPointF(aggregate->width(), 0)).x();
+        QVERIFY2(aggregateRight <= row->width() + 1,
+            qPrintable(QStringLiteral("result aggregate ends at %1 px, row is %2 px")
+                .arg(aggregateRight).arg(row->width())));
+        QVERIFY(text->width() >= 24);
+        // Pathological narrow: the text keeps a positive floor instead of
+        // collapsing to a negative width.
+        card->setWidth(96);
+        auto *narrowText = pollVisibleItem(scene.content(),
+            "poll-option-text-0-0-" + scene.fixture.messageUuid);
+        QVERIFY(narrowText);
+        QVERIFY2(narrowText->width() >= 24,
+            qPrintable(QStringLiteral("option text collapsed to %1 px").arg(narrowText->width())));
     }
 
 
