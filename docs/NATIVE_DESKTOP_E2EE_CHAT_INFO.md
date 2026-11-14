@@ -62,7 +62,7 @@ Settings screen (`ChannelSettings`, `encrypted-chat-info.ui.tsx:379-415`):
   and `onClick: onScreenChange("key")`. `PanelMenuRow`
   (`shared/ui/panel-menu-row/panel-menu-row.ui.tsx`) is `py-1.5 px-4` around a
   `min-h-8 gap-2` row whose icon sits in a `h-8 w-8 text-text-secondary` box and
-  whose label is `text-sm font-medium leading-5` -> 48 px row total.
+  whose label is `text-sm font-medium leading-5` -> 44 px row total (6+32+6).
 - two `flex items-center justify-between gap-2 px-4 text-sm` rows:
   `channel.type` -> `channelTypeLabel` and `channel.members` ->
   `participantsCount`, value in `text-text-muted`.
@@ -168,6 +168,11 @@ chrome (title, back, close), exactly as the reference shell does, so
 - Call action: the reference passes the chat call bridge as `onCall`; the native
   counterpart is the existing `controller.canStartCall` /
   `controller.startCall()` pair already used by the conversation header.
+- Settings glyph: the reference `./assets/instant-mix.svg` is vendored at the
+  same reference path (`packages/web/src/features/encrypted-chat-info/assets/instant-mix.svg`,
+  taken verbatim from the pinned sha) and registered in the `native_icons`
+  resource the same way the `encrypted-chat-message` service glyphs already are,
+  so the upstream asset and its provenance stay intact.
 - Back: the shell already shows Back whenever the top layer has a deeper screen,
   so Settings -> info needs no new affordance.
 
@@ -198,26 +203,33 @@ chrome (title, back, close), exactly as the reference shell does, so
 
 Window group `native-native-e2ee-ui` (`native-e2ee-ui-test` binary,
 `tests/native-e2ee-read-test.cpp`, `WORKSPACE_NATIVE_E2EE_UI`), data-driven over
-`en`/`ru` x `dark`/`light` like the existing encrypted visual cases:
+`en`/`ru` x `dark`/`light` like the existing encrypted visual cases. The shared
+`ProtectedChatInfoScene` completes the two collections the base e2ee fixture
+does not serve in channel-info shape - `stream_bindings` rows without
+`who_uuid`/`notification_mode`/dates and an empty directory - so the identity
+line shows 2 participants with 1 online instead of invented zeros, and drives
+the drawer through `rightDrawer.openInfo()` exactly like the window group does.
 
 1. `uiEncryptedChatInfoDrawerShowsProtectedIdentity`: opening the chat-info
    layer on an `encryption=true` stream keeps `channelInfoLayer` hidden and
-   shows the protected layer - 64x64 radius-32 avatar holding the 40 px
-   `chat_lock.svg` glyph, the stream title, the accent "Protected chat" caption
-   (en + ru catalog texts) and the participants/online line for the fixture's
-   two bindings - and the ordinary header texts (`channelInfoTitle`,
-   `channelInfoSubline`) are not rendered anywhere in the drawer.
-2. `uiEncryptedChatInfoSettingsScreenNavigation`: the 48 px action row has two
-   equal-width Call/Settings tiles; activating Settings switches to the settings
-   screen with the read-only name/description list (description value, and
-   "No description" fallback for a stream without one), the read-only hint, the
-   "Encryption keys" row and the type + members rows; activating that row lands
-   on the scaffolded key screen; the shell Back returns to the info screen.
-   Geometry assertions cover the 16 px side inset, 8 px gaps, the 64/40 avatar
-   inset and the 48 px action row.
-3. `uiEncryptedChatInfoGateKeepsOrdinaryInfoForPlainStreams`: the same fixture
-   with `encryption=false` keeps the ordinary `channelInfoLayer` visible and the
-   protected layer absent, proving the ordinary drawer is untouched.
+   shows the protected layer - a 64 px radius-32 avatar holding the 40 px
+   `chat_lock.svg` glyph, the stream title at 20 px, the accent "Protected chat"
+   caption at 16 px (en + ru texts) and the muted participants/online line at
+   14 px with both plural forms - and the ordinary header items
+   (`channelInfoTitle`, `channelInfoSubline`) are not rendered anywhere in the
+   drawer. Geometry pins the 24 px inset, the 8 px line gaps, the avatar-to-text
+   gap and the two equal 48 px action tiles with the neutral/`accent-soft` fills.
+2. `uiEncryptedChatInfoSettingsScreenNavigation`: activating Settings pushes the
+   settings screen (`currentChatScreen == "settings"`, deduped on re-activation),
+   which shows the read-only name/description list (including the "No
+   description" fallback after a `stream.updated` event clears it), the read-only
+   hint, the 44 px "Encryption keys" row with its 24 px lock icon and chevron,
+   and the type + members rows; activating that row lands on the scaffolded key
+   screen and the shell Back unwinds key -> settings -> info.
+3. `uiEncryptedChatInfoGateKeepsOrdinaryInfo`: the same scene with
+   `encryption=false` keeps the ordinary `channelInfoLayer` visible with its own
+   avatar/title and no `protectedChat*` item, proving the ordinary drawer is
+   untouched.
 4. `native-native-locale`: every new `qsTr` string in the
    `NativeEncryptedChatInfo` context is reviewed in
    `packages/native/translations/workspace_ru.ts` (ru texts asserted in 1-2,
