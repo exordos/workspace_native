@@ -282,6 +282,7 @@ Item {
             }
             Column {
                 id: membersFlow
+                objectName: "protectedChatMembersFlow"
                 y: 21 // border-t (1 px) + pt-5 (20 px)
                 width: parent.width
                 spacing: 12 // h3 mb-3
