@@ -3,6 +3,7 @@
 #include "native-updater.h"
 #include "native-controller.h"
 #include "native-chat-crypto.h"
+#include "native-chat-key-vault.h"
 #include "native-markdown.h"
 #include "native-cache-service.h"
 #include "native-preferences.h"
@@ -371,6 +372,10 @@ public:
                 streamBody = request.body;
                 created = windowChannel(request.body.value("uuid").toString(), request.body.value("name").toString());
                 for (const auto *field : {"description", "invite_only", "announce"}) created[field] = request.body.value(field);
+                if (request.body.value("encryption").toBool()) {
+                    created["encryption"] = true;
+                    created["current_encryption_key_uuid"] = request.body.value("current_encryption_key_uuid");
+                }
                 defaultTopic = windowChannelTopic(channelDefault, created.value("uuid").toString(), "General Topic");
                 return {created, postStatus, postDelay};
             }
@@ -7280,7 +7285,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(search->mapToScene(QPointF{}), scenario == "narrow" ? QPointF(17, 151) : QPointF(289, 301));
         QVERIFY(!visibleItem("direct-user-" + userId));
         QVERIFY(!visibleItem("channelCreateButton"));
-        QVERIFY(!visibleItem("channelEncryption"));
+        QVERIFY(!visibleItem("channelEncryptionSwitch"));
         auto *tab = visibleItem("createChatTab-0"); tab->forceActiveFocus(Qt::TabFocusReason);
         QTest::keyClick(window, Qt::Key_End);
         QTRY_COMPARE(visibleItem("createChatTabs")->property("currentIndex").toInt(), 3);
@@ -7709,7 +7714,10 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, announce);
         QVERIFY(announce->property("checked").toBool());
         QVERIFY(!visibleItem("channelAnnouncementOnly")->isEnabled());
-        QVERIFY(!visibleItem("channelEncryption")->isEnabled());
+        // Issue #234: the Protected channel switch is interactive; only a
+        // creation in flight disables it (create-chat-dialog.ui.tsx in
+        // workspace_ui 230e02b8 uses disabled={vm.creating}).
+        QVERIFY(visibleItem("channelEncryptionSwitch")->isEnabled());
         if (!qEnvironmentVariableIsEmpty("CASSI_NATIVE_CHANNEL_SHELL_SCREENSHOT")) {
             QTest::mouseMove(window, QPoint(50, 50));
             QVERIFY(window->grabWindow().save(qEnvironmentVariable("CASSI_NATIVE_CHANNEL_SHELL_SCREENSHOT")));
@@ -7917,6 +7925,201 @@ mv -Tf "$root/.current-new" "$root/current"
         for (const auto *scenario : {"cancel-pending", "uncertain-stream", "early404", "members-failed",
                                     "members-ambiguous-applied", "members-ambiguous-missing", "route", "benign-updates"})
             QTest::newRow(scenario) << QString(scenario);
+    }
+
+    // ---- Issue #234: encrypted channel creation contract in the QML surface ----
+
+    static bool openChannelCreationVault(NativeChatKeyVault &keys)
+    {
+        bool opened = false;
+        NativeChatKeyVault::Failure failure = NativeChatKeyVault::Failure::Unavailable;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { failure = value; opened = value == NativeChatKeyVault::Failure::None; });
+        const bool settled = QTest::qWaitFor([&opened] { return opened; }, 2000);
+        if (!settled || failure != NativeChatKeyVault::Failure::None)
+            qWarning("vault open failed with code %d", int(failure));
+        return settled && failure == NativeChatKeyVault::Failure::None;
+    }
+
+    void globalChannelEncryptedSwitchClearsAndDisablesExclusiveOptions()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowChannelFixture fixture;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.canCreateChannel());
+        openChannelNewChat(window);
+        auto *encryption = visibleItem("channelEncryptionSwitch");
+        QVERIFY(encryption);
+        // The issue #234 contract: the switch is interactive (the old
+        // placeholder was a disabled Text with a stub track).
+        QVERIFY(encryption->isEnabled());
+        QVERIFY(!encryption->property("checked").toBool());
+        auto *track = visibleItem("channelEncryptionTrack");
+        QVERIFY(track);
+        // Reference switch geometry: 30x18 track, 14px knob (Figma
+        // Protected-channel row in workspace_ui create-chat-dialog.ui.tsx).
+        QCOMPARE(track->property("width").toReal(), 30.0);
+        QCOMPARE(track->property("height").toReal(), 18.0);
+        auto knob = track->childItems().value(0);
+        QVERIFY(knob);
+        QCOMPARE(knob->property("width").toReal(), 14.0);
+        QCOMPARE(knob->property("height").toReal(), 14.0);
+        const auto offColor = track->property("color").value<QColor>();
+        click(window, encryption);
+        QTRY_VERIFY(encryption->property("checked").toBool());
+        QVERIFY(track->property("color").value<QColor>() != offColor);
+        // Turning the switch on clears and disables the exclusive options.
+        click(window, visibleItem("channelInviteOnly"));
+        click(window, visibleItem("channelAnnounce"));
+        QVERIFY(!visibleItem("channelInviteOnly")->property("checked").toBool());
+        QVERIFY(!visibleItem("channelAnnounce")->property("checked").toBool());
+        QVERIFY(!visibleItem("channelInviteOnly")->isEnabled());
+        QVERIFY(!visibleItem("channelAnnounce")->isEnabled());
+        // Turning the switch off restores both options.
+        click(window, encryption);
+        QTRY_VERIFY(!encryption->property("checked").toBool());
+        QVERIFY(visibleItem("channelInviteOnly")->isEnabled());
+        QVERIFY(visibleItem("channelAnnounce")->isEnabled());
+        click(window, visibleItem("channelInviteOnly"));
+        QVERIFY(visibleItem("channelInviteOnly")->property("checked").toBool());
+        window->close();
+    }
+
+    void globalChannelEncryptedCreationNavigatesLikeTheOrdinaryPath()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowChannelFixture fixture;
+        fixture.postDelay = 300;
+        WindowSecrets secrets;
+        QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QVERIFY(openChannelCreationVault(keys));
+        controller.useChatKeys(&keys);
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.canCreateChannel());
+        openChannelNewChat(window);
+        visibleItem("channelNameInput")->setProperty("text", "Protected planning");
+        click(window, visibleItem("channelEncryptionSwitch"));
+        QTRY_VERIFY(visibleItem("channelEncryptionSwitch")->property("checked").toBool());
+        click(window, visibleItem("channelCreateButton"));
+        QTRY_COMPARE(fixture.posts, 1);
+        // While creation is in flight the switch is disabled like the rest of
+        // the form (create-chat-dialog.ui.tsx uses disabled={vm.creating}).
+        QVERIFY(controller.channelCreationBusy());
+        QVERIFY(!visibleItem("channelEncryptionSwitch")->isEnabled());
+        QTest::keyClick(window, Qt::Key_Return);
+        QCOMPARE(fixture.posts, 1);
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QVERIFY2(controller.channelCreationPhase() == "ready",
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QTRY_COMPARE(complete.size(), 1);
+        QTRY_VERIFY(!visibleItem("channelNameInput"));
+        const auto id = fixture.created.value("uuid").toString();
+        const auto keyUuid = fixture.created.value("current_encryption_key_uuid").toString();
+        QVERIFY(!keyUuid.isEmpty());
+        QCOMPARE(fixture.streamBody, QJsonObject({{"uuid", id}, {"name", "Protected planning"},
+            {"description", ""}, {"source_name", "native"}, {"invite_only", false}, {"announce", false},
+            {"encryption", true}, {"current_encryption_key_uuid", keyUuid}}));
+        // The generated key is committed to the vault for the created stream.
+        const auto stored = keys.read(keys.lease(), {id, keyUuid});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(stored.value.bytes.size(), 32);
+        // Success navigation matches the ordinary path: aggregate route plus
+        // the unchanged choose-topic prompt.
+        QCOMPARE(controller.selectedStream(), id);
+        QVERIFY(controller.selectedTopic().isEmpty());
+        QVERIFY(visibleItem("streamTopicPrompt"));
+        window->close();
+    }
+
+    void globalChannelEncryptedIntentSurvivesCloseReopenAndFailureKeepsDialogOpen()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowChannelFixture fixture;
+        fixture.postDelay = 450;
+        WindowSecrets secrets;
+        QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QVERIFY(openChannelCreationVault(keys));
+        controller.useChatKeys(&keys);
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.canCreateChannel());
+        // A failed creation (503, rejected by the check flow as ambiguous)
+        // keeps the dialog open with the encrypted intent frozen; closing and
+        // reopening restores the same immutable attempt, and the recovery
+        // check never re-posts a second creation request.
+        fixture.postStatus = 503;
+        openChannelNewChat(window);
+        visibleItem("channelNameInput")->setProperty("text", "Protected planning");
+        click(window, visibleItem("channelEncryptionSwitch"));
+        QTRY_VERIFY(visibleItem("channelEncryptionSwitch")->property("checked").toBool());
+        click(window, visibleItem("channelCreateButton"));
+        QTRY_COMPARE(fixture.posts, 1);
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QCOMPARE(controller.channelCreationPhase(), QString("uncertain"));
+        QVERIFY(visibleItem("channelNameInput"));
+        QVERIFY(!visibleItem("channelEncryptionSwitch")->isEnabled());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelNameInput"));
+        openChannelNewChat(window);
+        QTRY_VERIFY(visibleItem("channelNameInput"));
+        QCOMPARE(visibleItem("channelNameInput")->property("text").toString(), QString("Protected planning"));
+        QVERIFY(visibleItem("channelEncryptionSwitch")->property("checked").toBool());
+        QVERIFY(visibleItem("channelCheckButton"));
+        fixture.postStatus = 201;
+        click(window, visibleItem("channelCheckButton"));
+        QTRY_VERIFY(!controller.channelCreationBusy());
+        QVERIFY2(controller.channelCreationPhase() == "ready",
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QTRY_COMPARE(complete.size(), 1);
+        QCOMPARE(fixture.posts, 1);
+        QTRY_VERIFY(!visibleItem("channelNameInput"));
+        const auto id = fixture.created.value("uuid").toString();
+        const auto keyUuid = fixture.created.value("current_encryption_key_uuid").toString();
+        QCOMPARE(controller.selectedStream(), id);
+        QVERIFY(controller.selectedTopic().isEmpty());
+        const auto stored = keys.read(keys.lease(), {id, keyUuid});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(stored.value.bytes.size(), 32);
+        window->close();
     }
 
     void globalChannelCreationRecoversTheSameIntent()
