@@ -30,6 +30,7 @@ add_library(workspace-native-core STATIC
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
+    src/native-logging.cpp src/native-logging.h
     src/native-updater.cpp src/native-updater.h
     src/native-cache.cpp src/native-cache.h
     src/native-cache-service.cpp src/native-cache-service.h
