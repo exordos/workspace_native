@@ -20292,8 +20292,74 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *narrowText = pollVisibleItem(scene.content(),
             "poll-option-text-0-0-" + scene.fixture.messageUuid);
         QVERIFY(narrowText);
-        QVERIFY2(narrowText->width() >= 24,
-            qPrintable(QStringLiteral("option text collapsed to %1 px").arg(narrowText->width())));
+        QVERIFY2(narrowText->width() >= 24, qPrintable(QStringLiteral("option text collapsed to %1 px").arg(narrowText->width())));
+    }
+
+    // exo-review finding 4571961640 (round 3): a retained add attempt on one
+    // question must never let a different question's add failure release an
+    // in-flight vote lock. Failure completion identifies the failed request's
+    // own question and action, so exactly that lock retires and no other.
+    void pollBubbleOtherQuestionsAddFailureKeepsInFlightVoteLock()
+    {
+        PollBubbleScene scene;
+        scene.fixture.secondQuestion = true;
+        scene.start();
+        const auto addInput = [&](int index) {
+            return pollVisibleItem(scene.content(),
+                QStringLiteral("poll-add-option-%1-%2").arg(index)
+                    .arg(scene.fixture.messageUuid));
+        };
+        // Question 2 (index 1) keeps a failed add attempt: the client retains
+        // the attempt for the idempotent uuid+text retry, so a stale entry
+        // now lives on the question that will carry the in-flight vote below.
+        scene.fixture.addOptionStatus = 500;
+        auto *secondAdd = addInput(1);
+        QVERIFY(secondAdd);
+        QMetaObject::invokeMethod(secondAdd, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == secondAdd);
+        scene.typeText(QStringLiteral("Late night"));
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 1);
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-add-error-1-" + scene.fixture.messageUuid));
+        // A vote on question 2 is in flight; the mock holds its response.
+        scene.fixture.holdVote = true;
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-1-0-" + scene.fixture.messageUuid));
+        QTRY_COMPARE(scene.fixture.votePosts, 1);
+        QTRY_VERIFY(pollItemDisabled(scene.content(),
+            "poll-option-1-1-" + scene.fixture.messageUuid));
+        // Question 1's add fails while the question 2 vote still waits for
+        // its own response: the stale question-2 attempt must not fold this
+        // unrelated failure into the vote's lock.
+        scene.fixture.holdAddOption = true;
+        auto *firstAdd = addInput(0);
+        QVERIFY(firstAdd);
+        QMetaObject::invokeMethod(firstAdd, "forceActiveFocus");
+        QTRY_VERIFY(scene.window->activeFocusItem() == firstAdd);
+        scene.typeText(QStringLiteral("Friday"));
+        scene.pressReturn();
+        QTRY_COMPARE(scene.fixture.addOptionPosts, 2);
+        QVERIFY(scene.fixture.releaseAddOption);
+        scene.fixture.releaseAddOption();
+        // The failed add's own question reports the error ...
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-add-error-0-" + scene.fixture.messageUuid));
+        // ... and the question 2 vote keeps its lock: its response never
+        // arrived, so a second click must not reach the controller.
+        QVERIFY2(pollItemDisabled(scene.content(),
+            "poll-option-1-1-" + scene.fixture.messageUuid),
+            "a different question's add failure released an in-flight vote lock");
+        scene.click(pollVisibleItem(scene.content(),
+            "poll-option-1-1-" + scene.fixture.messageUuid));
+        QCOMPARE(scene.fixture.votePosts, 1);
+        // The vote's own response lands: only then does the question unlock.
+        QVERIFY(scene.fixture.releaseVote);
+        scene.fixture.releaseVote();
+        QTRY_VERIFY(pollItemEnabled(scene.content(),
+            "poll-option-1-1-" + scene.fixture.messageUuid));
+        QTRY_VERIFY(pollVisibleItem(scene.content(),
+            "poll-aggregate-1-0-" + scene.fixture.messageUuid));
     }
 
 
