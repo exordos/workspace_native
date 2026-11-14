@@ -298,10 +298,13 @@ if(BUILD_TESTING)
             # Include the direct-chat keyboard, recovery and rendering cases.
             # Whole-group runtime measures 365.8s solo on the GPU-less host
             # (373 cases, 0 failed, issue #197 gate), already above the old
-            # 360s ceiling that made the group a deterministic timeout. 480s =
+            # 360s ceiling that made the group a deterministic timeout. The
+            # poll-bubble (#216) and reply-selection (#218) cases took the solo
+            # runtime to 487.3s at tip against the old 480s ceiling (issue
+            # #283); this host measured 463/463 passed in 503.4s solo. 600s =
             # worst measured runtime plus suite-load headroom (#16/#103: never
             # tune a ceiling to single-digit margins of one host's runtime).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 480)
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 600)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
