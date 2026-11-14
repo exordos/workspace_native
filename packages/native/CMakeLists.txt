@@ -366,6 +366,8 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
+        uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
+        uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
         uiEncryptedOsRetryDoesNotSendAKeyRequest
         uiEncryptedCheckIsGetOnlyAndRetryKeepsTheSameIntent
         uiEncryptedSourceHeaderGeometry
