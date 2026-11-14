@@ -221,6 +221,18 @@ public:
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyStore();
+    // Issue #244 (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md): key screens of
+    // the protected drawer. Saved-keys inventory over the durable vault with
+    // the reference labels, reissue (announce a fresh generation) and delete
+    // local key; the request-current-key recovery reuses requestChatKey().
+    Q_PROPERTY(QVariantMap chatKeyInventory READ chatKeyInventory NOTIFY stateChanged)
+    QVariantMap chatKeyInventory() const;
+    Q_INVOKABLE void refreshChatLocalKeys();
+    Q_INVOKABLE void reissueChatKey();
+    Q_INVOKABLE void deleteChatLocalKey(const QString &keyUuid);
+    // Joined-style date label shared by the key screens (profileDetails'
+    // joined rule: "MMM d, yyyy" en / "d MMM yyyy г." ru == formatDateJoined).
+    static QString formatChatKeyDate(const QString &isoDate, const QString &localeName);
     // Issue #221: per-message decrypt Retry on the encrypted message error row.
     Q_INVOKABLE void retryMessageDecrypt(const QString &messageUuid);
     QStringList decryptRetryPendingUuids() const;
@@ -761,6 +773,10 @@ private:
     NativeCache::Lease m_chatCacheLease;
     QString m_chatOwner, m_chatStream, m_chatTopic, m_chatSecurity, m_chatPhase, m_chatError, m_chatRequestKey;
     QString m_chatLocalRequest, m_chatRevocationOwner;
+    // Issue #244: cached local-key inventory projection + action pending/error.
+    QVariantMap m_chatLocalKeysInventory{{{"state", QStringLiteral("loading")}}};
+    bool m_chatReissueBusy = false;
+    QString m_chatKeyActionError;
     quint64 m_chatEpoch = 0, m_chatApiGeneration = 0, m_chatCatalog = 0;
     quint64 m_chatOperation = 0, m_chatAccessRevision = 0;
     QSet<QString> m_chatReadableStreams;
