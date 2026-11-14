@@ -106,7 +106,9 @@ ApplicationWindow {
             objectName: "encryptedChatInfoLayer"
             colors: root.colors
             controller: root.controller
+            localeName: root.preferences.locale
             chatScreen: rightDrawer.currentChatScreen === "" ? "info" : rightDrawer.currentChatScreen
+            keyUuid: rightDrawer.currentChatKeyUuid
             visible: rightDrawer.topLayerKind === "chat-info"
                 && rightDrawer.currentMode === "info"
                 && rightDrawer.currentProfileOverride === ""
@@ -116,6 +118,14 @@ ApplicationWindow {
                 rightDrawer.openChatScreen({ownerKey: scope.ownerKey,
                     runtimeGeneration: scope.runtimeGeneration,
                     streamUuid: scope.streamUuid, screen: screen})
+            }
+            // Saved-key details push the local-key screen onto the chat stack
+            // (right-drawer.model.ts openChatScreen contract, #244).
+            onLocalKeyOpen: function (keyUuid) {
+                const scope = root.rightDrawerChatScope
+                rightDrawer.openChatScreen({ownerKey: scope.ownerKey,
+                    runtimeGeneration: scope.runtimeGeneration,
+                    streamUuid: scope.streamUuid, screen: "local-key", keyUuid: keyUuid})
             }
             // Member management stays available in the protected drawer: the
             // add affordance opens the one shared add-members dialog (the

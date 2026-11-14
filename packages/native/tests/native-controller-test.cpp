@@ -45,6 +45,10 @@
 #include <QUrlQuery>
 #include <QWebSocket>
 #include <QWebSocketServer>
+#include <QSslSocket>
+#include <QSslKey>
+#include <QSslConfiguration>
+#include <QProcess>
 #include <algorithm>
 #include <chrono>
 #include <limits>
@@ -418,6 +422,45 @@ static QJsonObject organizationSettingsDto(const QString &realmName = QStringLit
             {QStringLiteral("realm_name"), realmName}, {QStringLiteral("realm_icon"), icon},
             {QStringLiteral("registration_url"), QStringLiteral("https://reg.example/signup")}};
 }
+
+// Loopback TLS grant for the durable key vault (same synthetic CA pattern as
+// native-e2ee-read-test.cpp): the vault account identity requires an https
+// origin (SessionVault::accountId), so the key-management fixture proxies its
+// plain-HTTP mock through a local TLS gateway.
+static QString KeyCaCertificatePath, KeyCaPrivateKeyPath;
+
+class LoopbackKeyTls final : public QTcpServer {
+public:
+    QSslCertificate certificate;
+    QSslKey key;
+    quint16 upstream;
+    explicit LoopbackKeyTls(quint16 port) : upstream(port) {
+        QFile cert(KeyCaCertificatePath);
+        QFile secret(KeyCaPrivateKeyPath);
+        if (cert.open(QIODevice::ReadOnly)) certificate = QSslCertificate(cert.readAll());
+        if (secret.open(QIODevice::ReadOnly)) key = QSslKey(secret.readAll(), QSsl::Rsa);
+        listen(QHostAddress::LocalHost);
+    }
+    QUrl origin() const { return QUrl(QString("https://127.0.0.1:%1").arg(serverPort())); }
+protected:
+    void incomingConnection(qintptr descriptor) override {
+        auto *client = new QSslSocket(this);
+        if (!client->setSocketDescriptor(descriptor)) { delete client; return; }
+        client->setLocalCertificate(certificate); client->setPrivateKey(key);
+        connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
+        connect(client, &QSslSocket::encrypted, this, [this, client] {
+            auto *server = new QTcpSocket(client);
+            connect(server, &QTcpSocket::connected, client, [server, client] { server->write(client->readAll()); });
+            connect(client, &QTcpSocket::readyRead, server, [server, client] {
+                if (server->state() == QAbstractSocket::ConnectedState) server->write(client->readAll());
+            });
+            connect(server, &QTcpSocket::readyRead, client, [server, client] { client->write(server->readAll()); });
+            connect(server, &QTcpSocket::disconnected, client, &QTcpSocket::disconnectFromHost);
+            server->connectToHost(QHostAddress::LocalHost, upstream);
+        });
+        client->startServerEncryption();
+    }
+};
 
 class Fixture {
 public:
@@ -1332,7 +1375,8 @@ struct KeyManagementFixture {
     static inline const QString KeyOrphan = "33333333-3333-4333-9333-333333333333";
     static inline const QString SecondMember = "99999999-9999-4999-8999-999999999999";
     MockServer server;
-    ApiClient api;
+    LoopbackKeyTls tls{server.serverPort()};
+    ApiClient api{nullptr, true};
     Session session{&api};
     NativeController controller{&api, &session};
     QTemporaryDir directory;
@@ -1412,7 +1456,7 @@ struct KeyManagementFixture {
     }
     bool start(bool attachVault = true)
     {
-        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        controller.login(tls.origin().toString(), "synthetic-user", "synthetic-password", "");
         if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return false;
         controller.openProject(projectId);
         if (!QTest::qWaitFor([this] { return controller.streams().size() == 1; }, 2000)) return false;
@@ -1426,10 +1470,12 @@ struct KeyManagementFixture {
     }
     void attachVaultToController()
     {
-        bool opened = false;
-        vault.open(server.origin(), projectId, userId, "Synthetic key device",
-            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
-        QTest::qWaitFor([&opened] { return opened; }, 2000);
+        NativeChatKeyVault::Failure openFailure = NativeChatKeyVault::Failure::Unavailable;
+        vault.open(tls.origin(), projectId, userId, "Synthetic key device",
+            [&openFailure](NativeChatKeyVault::Failure failure) { openFailure = failure; });
+        QTest::qWaitFor([&openFailure] { return openFailure != NativeChatKeyVault::Failure::Unavailable; }, 2000);
+        QVERIFY2(openFailure == NativeChatKeyVault::Failure::None,
+            QByteArray("vault open failed: ") + QByteArray::number(static_cast<int>(openFailure)));
         controller.useChatKeys(&vault);
     }
     void seedKey(const QString &key)
@@ -1448,7 +1494,31 @@ struct KeyManagementFixture {
 
 class NativeControllerTest final : public QObject {
     Q_OBJECT
+public:
+    QTemporaryDir certificateDirectory;
+    QSslConfiguration previousSsl{QSslConfiguration::defaultConfiguration()};
 private slots:
+    void initTestCase()
+    {
+        QVERIFY(certificateDirectory.isValid());
+        KeyCaCertificatePath = certificateDirectory.filePath("key-ca.pem");
+        KeyCaPrivateKeyPath = certificateDirectory.filePath("key-ca-key.pem");
+        QProcess generate;
+        generate.start(QStringLiteral(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE), {"req", "-x509", "-newkey", "rsa:2048",
+            "-nodes", "-days", "2", "-subj", "/CN=cassi-native-key-loopback",
+            "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost",
+            "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", KeyCaPrivateKeyPath, "-out", KeyCaCertificatePath});
+        QVERIFY(generate.waitForFinished(15000));
+        QCOMPARE(generate.exitCode(), 0);
+        QVERIFY(QFile::setPermissions(KeyCaPrivateKeyPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        QFile certificate(KeyCaCertificatePath); QVERIFY(certificate.open(QIODevice::ReadOnly));
+        auto trusted = previousSsl;
+        auto authorities = trusted.caCertificates();
+        authorities.append(QSslCertificate(certificate.readAll()));
+        trusted.setCaCertificates(authorities);
+        QSslConfiguration::setDefaultConfiguration(trusted);
+    }
+    void cleanupTestCase() { QSslConfiguration::setDefaultConfiguration(previousSsl); }
     void lastConversationStartupUsesCanonicalOwnedRoute_data()
     {
         QTest::addColumn<QString>("mode");
@@ -21169,11 +21239,12 @@ private slots:
         QVERIFY(!historical.value("isCurrent").toBool());
         QVERIFY(historical.value("announcedAt").toString().startsWith(QStringLiteral("2025-12-01T00:00:00")));
         // A vault row without any announcement in loaded history keeps "" and
-        // the QML falls back to "Not found in loaded history".
+        // the QML falls back to "Not found in loaded history". Seeded last, it
+        // is the newest receivedAt row and sits right behind the current key.
         f.seedKey(KeyManagementFixture::KeyOrphan);
         f.controller.refreshChatLocalKeys();
         QCOMPARE(f.inventoryRows().size(), 3);
-        const auto orphan = f.inventoryRows().at(2).toMap();
+        const auto orphan = f.inventoryRows().at(1).toMap();
         QCOMPARE(orphan.value("keyUuid").toString(), KeyManagementFixture::KeyOrphan);
         QVERIFY(orphan.value("announcedAt").toString().isEmpty());
         // Joined-date labels match formatDateJoined in both locales, and the
@@ -21190,7 +21261,8 @@ private slots:
         // Deleting the current key stays allowed: recovery uses the request path.
         f.controller.deleteChatLocalKey(KeyManagementFixture::KeyCurrent);
         QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
-        QCOMPARE(f.inventoryUuids(), QStringList{KeyManagementFixture::KeyOld, KeyManagementFixture::KeyOrphan});
+        const QStringList remainingUuids{KeyManagementFixture::KeyOrphan, KeyManagementFixture::KeyOld};
+        QCOMPARE(f.inventoryUuids(), remainingUuids);
     }
 
     void chatLocalKeyInventoryErrorsUntilTheStoreIsReady()
@@ -21239,6 +21311,7 @@ private slots:
         QCOMPARE(f.announcementPosts, 1);
         f.releaseAnnouncement();
         f.releaseAnnouncement = nullptr;
+        f.deferAnnouncements = false;
         QTRY_VERIFY(!f.controller.encryption().value("reissueBusy").toBool());
         // The new generation is stored durably and shows up as a historical row
         // until the stream update moves currentEncryptionKey.
