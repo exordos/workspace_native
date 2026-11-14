@@ -8,8 +8,9 @@ import QtQuick
 // result bars), workspace-message-poll.ui.tsx (subtitle/summary/status rules)
 // and workspace-message-poll-question.ui.tsx (percent formula, selectability,
 // correct marks, inline add option). Voting intents are forwarded to the
-// controller; a fresh poll_state (revision change) replaces the card's
-// transient in-flight/error state.
+// controller; in-flight locks release on their own request completion
+// (pollActionSucceeded / pollActionFailed), and a poll_state revision change
+// only retires stale error text.
 Item {
     id: card
     objectName: "poll-card-" + messageUuid
@@ -31,13 +32,16 @@ Item {
     // before the request leaves, question.ui:190-195).
     onVoteRequested: questionUuid => card.markPending(questionUuid)
 
-    // Transient local state, keyed by question uuid. A poll_state revision
-    // change (the reference applies the response through the revision guard)
-    // clears the pending/error maps.
+    // Transient local state, keyed by question uuid. In-flight locks release
+    // on their own request completion (pollActionSucceeded / pollActionFailed
+    // below); a poll_state revision change only retires stale error text.
+    // Drafts and add attempts live on the card, keyed by question, so an
+    // unrelated revision or a delegate re-incubation never loses them.
     property var pendingQuestions: ({})
     property var questionErrors: ({})
     property var addErrors: ({})
     property var addAttempts: ({})
+    property var addDrafts: ({})
     property int seenRevision: 0
     property bool deadlinePassed: false
 
@@ -130,11 +134,21 @@ Item {
         delete errors[questionUuid]
         card.questionErrors = errors
     }
-    function clearTransientState() {
-        card.pendingQuestions = ({})
-        card.questionErrors = ({})
-        card.addErrors = ({})
-        card.addAttempts = ({})
+    // Qt.createUuid is not available in shipped QML scopes (the same reason
+    // the controller generates ids), so build a v4-shaped uuid here and keep
+    // it with the attempt: retrying the same draft text replays the
+    // documented idempotent uuid+text add instead of creating a duplicate
+    // option (exo-review 4571525932).
+    function newClientUuid() {
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, marker => {
+            const r = Math.floor(Math.random() * 16)
+            return (marker === "x" ? r : ((r & 0x3) | 0x8)).toString(16)
+        })
+    }
+    function setAddDraft(questionUuid, text) {
+        if (String(card.addDrafts[questionUuid] || "") === String(text))
+            return
+        card.addDrafts = Object.assign({}, card.addDrafts, {[questionUuid]: String(text)})
     }
 
     // Success is observed through the poll_state revision change (the response
@@ -167,13 +181,43 @@ Item {
                 })
             }
         }
+        // Own-request completion (exo-review 4571525925): this request's own
+        // response was merged into the poll_state, so exactly its lock - and
+        // for adds, its attempt and draft - retires. An unrelated revision
+        // can never permit a duplicate concurrent vote.
+        function onPollActionSucceeded(messageUuid, action, questionUuid) {
+            if (messageUuid !== card.messageUuid || !questionUuid.length)
+                return
+            if (action !== "vote" && action !== "add_poll_option")
+                return
+            const pending = Object.assign({}, card.pendingQuestions)
+            delete pending[questionUuid]
+            card.pendingQuestions = pending
+            if (action === "add_poll_option") {
+                const attempts = Object.assign({}, card.addAttempts)
+                delete attempts[questionUuid]
+                card.addAttempts = attempts
+                const errors = Object.assign({}, card.addErrors)
+                delete errors[questionUuid]
+                card.addErrors = errors
+                // The reference clears the input only after its own add was
+                // accepted (connected ui:143-150, question.ui:77-80).
+                card.setAddDraft(questionUuid, "")
+            }
+        }
     }
 
     onPollChanged: {
         const revision = Number(poll && poll.state ? poll.state.revision : 0)
         if (revision !== card.seenRevision) {
             card.seenRevision = revision
-            card.clearTransientState()
+            // Only stale error text retires on a revision: in-flight locks
+            // belong to their own request and release via the completion
+            // signals above, so an unrelated poll revision (another
+            // participant's vote, another question's response) can never
+            // permit a duplicate concurrent vote (exo-review 4571525925).
+            card.questionErrors = ({})
+            card.addErrors = ({})
         }
         card.armDeadline()
     }
@@ -196,7 +240,12 @@ Item {
 
     Column {
         id: cardColumn
-        width: 336
+        // Reference parity is 336 px inside the 360 px bubble, but Main.qml
+        // caps the bubble at 88 % of the available message width, so narrow
+        // windows hand the card less than 336 px: the column follows the
+        // available card width instead of overflowing the bubble
+        // (exo-review 4571525936).
+        width: card.width > 0 ? Math.min(336, card.width) : 336
         spacing: 6
 
         Repeater {
@@ -288,6 +337,22 @@ Item {
                             Accessible.name: String(option.text)
                             Accessible.checkable: true
                             Accessible.checked: selected
+                            // Keyboard parity with the reference button element
+                            // (exo-review 4571525935): reachable via Tab,
+                            // activated by Return/Space just like a click.
+                            focusPolicy: Qt.TabFocus | Qt.ClickFocus
+                            activeFocusOnTab: true
+                            function activate() {
+                                card.voteRequested(questionBlock.question.uuid,
+                                    optionRow.option.uuid, !optionRow.selected)
+                            }
+                            Keys.onPressed: event => {
+                                if (event.key === Qt.Key_Space || event.key === Qt.Key_Return
+                                    || event.key === Qt.Key_Enter) {
+                                    event.accepted = true
+                                    optionRow.activate()
+                                }
+                            }
 
                             Item {
                                 id: optionRowInner
@@ -323,8 +388,8 @@ Item {
                                     Text {
                                         id: optionText
                                         objectName: "poll-option-text-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                        width: parent.width - optionMarker.width - 8
-                                            - (optionAggregate.visible ? optionAggregate.implicitWidth + 8 : 0)
+                                        width: Math.max(24, parent.width - optionMarker.width - 8
+                                            - (optionAggregate.visible ? optionAggregate.implicitWidth + 8 : 0))
                                         text: String(option.text)
                                         textFormat: Text.PlainText
                                         wrapMode: Text.Wrap
@@ -348,8 +413,7 @@ Item {
                                 }
                                 MouseArea {
                                     anchors.fill: parent
-                                    onClicked: card.voteRequested(
-                                        questionBlock.question.uuid, optionRow.option.uuid, !optionRow.selected)
+                                    onClicked: optionRow.activate()
                                 }
                             }
                             objectName: "poll-option-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
@@ -365,7 +429,7 @@ Item {
                                     objectName: "poll-bar-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
                                     property int percent: optionRow.percent
                                     y: 6
-                                    width: questionBlock.results
+                                    width: questionBlock && questionBlock.results
                                         ? parent.width * Math.min(100, Math.max(0, optionRow.percent)) / 100 : 0
                                     height: 2
                                     radius: 1
@@ -421,20 +485,19 @@ Item {
 
                 Column {
                     id: addColumn
-                    property string addText: ""
                     visible: card.allowAddingOptions && card.canAct()
                         && (question.options || []).length < 20
                     width: parent.width
                     spacing: 4
+                    // Draft and attempt live on the card keyed by question
+                    // (exo-review 4571525928): an unrelated poll revision or
+                    // a delegate re-incubation keeps the unsubmitted text;
+                    // only this draft's own accepted add clears it (see
+                    // onPollActionSucceeded).
+                    readonly property string addText: String(card.addDrafts[question.uuid] || "")
                     property var attempt: card.addAttempts[question.uuid] || null
                     property bool addPending: Boolean(card.pendingQuestions[question.uuid])
                     property string addError: String(card.addErrors[question.uuid] || "")
-                    readonly property int seenRevision: card.seenRevision
-
-                    // A poll_state revision change means the add (or a vote)
-                    // was accepted; the reference clears the input on success
-                    // (connected ui:143-150, question.ui:77-80).
-                    onSeenRevisionChanged: addColumn.addText = ""
 
                     Row {
                         spacing: 8
@@ -466,7 +529,13 @@ Item {
                                 width: cardColumn.width - 16 - 8
                                 height: 20
                                 text: addColumn.addText
-                                onTextChanged: { addColumn.addText = text; textEdited = text.length > 0 }
+                                onTextChanged: {
+                                    // A dying re-incubated delegate must not
+                                    // touch the card's draft map.
+                                    if (question)
+                                        card.setAddDraft(question.uuid, text)
+                                    textEdited = text.length > 0
+                                }
                                 maximumLength: 200
                                 enabled: !addColumn.addPending
                                 clip: true
@@ -482,16 +551,23 @@ Item {
                                     const text = addColumn.addText.trim()
                                     if (!text || addColumn.addPending)
                                         return
-                                    const attempt = { text: text }
-                                    card.addAttempts = Object.assign({}, card.addAttempts,
-                                        {[question.uuid]: attempt})
+                                    // One generated uuid per attempt text (exo-review
+                                    // 4571525932): a retry of the same text replays
+                                    // the documented idempotent uuid+text add.
+                                    let attempt = addColumn.attempt
+                                    if (!attempt || attempt.text !== text
+                                        || !attempt.uuid || attempt.uuid.length === 0) {
+                                        attempt = { uuid: card.newClientUuid(), text: text }
+                                        card.addAttempts = Object.assign({}, card.addAttempts,
+                                            {[question.uuid]: attempt})
+                                    }
                                     const pending = Object.assign({}, card.pendingQuestions)
                                     pending[question.uuid] = true
                                     card.pendingQuestions = pending
                                     const errors = Object.assign({}, card.addErrors)
                                     delete errors[question.uuid]
                                     card.addErrors = errors
-                                    card.addOptionRequested(question.uuid, "", attempt.text)
+                                    card.addOptionRequested(question.uuid, attempt.uuid, attempt.text)
                                 }
                                 Keys.onReturnPressed: event => submit(event)
                                 Keys.onEnterPressed: event => submit(event)
@@ -512,55 +588,58 @@ Item {
             }
         }
 
-    }
-
-    Item {
-        id: summaryRow
-        objectName: "poll-summary-row-" + card.messageUuid
-        width: cardColumn.width - ((card.statusDateText.length > 0 || card.readOnly) ? 0 : card.timeInset)
-        height: Math.max(15, summaryTextItem.height)
-        Accessible.role: Accessible.Grouping
-        Accessible.name: qsTr("Vote counts")
-        Text {
-            id: summaryTextItem
-            objectName: "poll-summary-" + card.messageUuid
-            width: parent.width
-            text: card.summaryText
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: 12
-            lineHeightMode: Text.FixedHeight
-            lineHeight: 15
-            color: card.colors["text-secondary"]
-        }
-    }
-
-    Item {
-        id: statusRow
-        objectName: "poll-status-row-" + card.messageUuid
-        visible: card.statusDateText.length > 0 || card.readOnly
-        width: cardColumn.width - card.timeInset
-        height: Math.max(16, statusDateText.height)
-        Accessible.role: Accessible.Grouping
-        Accessible.name: qsTr("Poll status")
-        Row {
-            spacing: 8
+        // The summary and status rows follow the questions in the column
+        // flow: they occupy their own lines and count into the card height
+        // instead of rendering at the card origin over the poll top
+        // (exo-review 4571525921).
+        Item {
+            id: summaryRow
+            objectName: "poll-summary-row-" + card.messageUuid
+            width: cardColumn.width - ((card.statusDateText.length > 0 || card.readOnly) ? 0 : card.timeInset)
+            height: Math.max(15, summaryTextItem.height)
+            Accessible.role: Accessible.Grouping
+            Accessible.name: qsTr("Vote counts")
             Text {
-                id: statusDateText
-                objectName: "poll-status-date-" + card.messageUuid
-                visible: card.statusDateText.length > 0
-                text: card.statusDateText
+                id: summaryTextItem
+                objectName: "poll-summary-" + card.messageUuid
+                width: parent.width
+                text: card.summaryText
                 textFormat: Text.PlainText
+                wrapMode: Text.Wrap
                 font.pixelSize: 12
+                lineHeightMode: Text.FixedHeight
+                lineHeight: 15
                 color: card.colors["text-secondary"]
             }
-            Text {
-                objectName: "poll-status-readonly-" + card.messageUuid
-                visible: card.readOnly
-                text: qsTr("Read only")
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                color: card.colors["text-secondary"]
+        }
+
+        Item {
+            id: statusRow
+            objectName: "poll-status-row-" + card.messageUuid
+            visible: card.statusDateText.length > 0 || card.readOnly
+            width: cardColumn.width - card.timeInset
+            height: Math.max(16, statusDateText.height)
+            Accessible.role: Accessible.Grouping
+            Accessible.name: qsTr("Poll status")
+            Row {
+                spacing: 8
+                Text {
+                    id: statusDateText
+                    objectName: "poll-status-date-" + card.messageUuid
+                    visible: card.statusDateText.length > 0
+                    text: card.statusDateText
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    color: card.colors["text-secondary"]
+                }
+                Text {
+                    objectName: "poll-status-readonly-" + card.messageUuid
+                    visible: card.readOnly
+                    text: qsTr("Read only")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    color: card.colors["text-secondary"]
+                }
             }
         }
     }

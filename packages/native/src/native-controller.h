@@ -586,6 +586,11 @@ signals:
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
     // ---- Issue #214 polls foundation signals ----
     void pollActionFailed(QString messageUuid, QString action, QString detail);
+    // #216 round 3: the response of one action request was applied
+    // (poll_state merged). Vote/add carry the affected question uuid so the
+    // bubble releases only the lock its own request set - an unrelated poll
+    // revision must not release in-flight question locks.
+    void pollActionSucceeded(QString messageUuid, QString action, QString questionUuid);
     // A confirmed poll create (#215 dialog): carries the created poll message
     // so the dialog can correlate completion with its own submitted attempt
     // instead of reacting to any messageSent (e.g. a late text send).
@@ -964,7 +969,7 @@ private:
     };
     void invokePollAction(const QString &messageUuid, const QString &action, const QJsonObject &body);
     bool applyPollMutation(const QString &messageUuid, const QString &action,
-        const ApiResult &result, const ProjectionContext &context);
+        const QJsonObject &body, const ApiResult &result, const ProjectionContext &context);
     static QVariantMap pollRowSnapshot(const Message &message);
     void staleReadConversation(const QString &stream, const QString &topic);
     void cachedCollection(const NativeCache::Key &key, const QString &path, const QUrlQuery &query,

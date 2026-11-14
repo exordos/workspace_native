@@ -20268,6 +20268,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             pollBubbleName("poll-card", scene.fixture.messageUuid));
         QVERIFY(card);
         card->setWidth(280);
+        QTest::qWait(120); // positioners re-polish on the next frame
         auto *row = pollVisibleItem(scene.content(),
             "poll-option-0-0-" + scene.fixture.messageUuid);
         QVERIFY(row);
@@ -20287,6 +20288,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // Pathological narrow: the text keeps a positive floor instead of
         // collapsing to a negative width.
         card->setWidth(96);
+        QTest::qWait(120);
         auto *narrowText = pollVisibleItem(scene.content(),
             "poll-option-text-0-0-" + scene.fixture.messageUuid);
         QVERIFY(narrowText);
