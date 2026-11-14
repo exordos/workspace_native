@@ -50,6 +50,13 @@ Item {
         }
     }
     property bool addDialogOpen: addMembersDialog.visible
+    // The protected chat info drawer (issue #243) routes its member add through
+    // Main.qml to this one shared dialog: the reference wires the same
+    // channel.addMembers surface into both info presentations.
+    function openAddMembers() {
+        controller.resetChannelInfoAddState();
+        addMembersDialog.open();
+    }
     function roleLabel(role) {
         if (role === "owner") return qsTr("Owner");
         if (role === "administrator") return qsTr("Administrator");

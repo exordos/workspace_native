@@ -113,7 +113,10 @@ below is complete for the nodes cited and the React source remains the oracle).
   - `11024:26424` action row 283x48 @ (10128, 17717), inner `button group` gap 8
     with two `137.5x48` tiles, `cornerRadius: 8`, icons 32x32
     (`11024:26427` call, `11024:26429` settings).
-  - `11024:26432` member section (title 32 px row + 56 px rows) - deferred scope.
+  - `11024:26432` member section (title 32 px row + 56 px rows). Re-reading the
+    subtree was requested after reviewer finding 4574939217 put member management
+    back in scope, but the Figma token was rejected (`Token expired`), so the
+    geometry stays pinned by the React reference instead (see Deviations 1).
 - Settings rows: `11026:27394` `right menu (у администратора)` 299x984
   @ (12713, 17573): label/value rows 267x32 with gap 12 - `11026:27422`
   "Ключ шифрования" row (32x32 icon box at x+8, 16 px label at x+52,
@@ -178,11 +181,20 @@ chrome (title, back, close), exactly as the reference shell does, so
 
 ## Deviations from the reference (measured, deliberate)
 
-1. The info screen renders the identity block and the Call/Settings row only.
-   `KeySummary`, the key-request sections and `MemberList` stay out of scope
-   (key management and requests are separate issues, member management already
-   lives in `NativeChannelInfo`), and the `showKeyManagement` branch is not
-   ported yet.
+1. `KeySummary` and the key-request sections stay out of scope (key management
+   is a separate issue) and the `showKeyManagement` branch is not ported yet.
+   `MemberList` is ported (reviewer finding 4574939217): the reference mounts it
+   inside the protected info screen (`encrypted-chat-info.ui.tsx` at
+   `230e02b8` renders `<MemberList>` under the identity/action blocks), so the
+   protected drawer carries the same section - heading row (36 px "Members"
+   label at 14 px with the 32 px add affordance at the right edge) followed by
+   48 px cards (`rounded-lg` 8 px radius, `bg-card-bg`, px-3 py-2, 32 px avatar
+   with the 8 px presence dot, name 14, role 10, secondary 11, 24 px remove
+   button that fades in on row hover), reusing the exact card contract
+   `NativeChannelInfo.channelInfoMemberCard` measures. One deliberate merge:
+   the reference card reserves the role slot inline; here the role text is
+   measured by a hidden probe so the name elides around a present role without
+   the empty-slot jitter the web flex layout shows while roles are unset.
 2. No `loading` / `unavailableReason` status line: the native projection is
    synchronous over already-fetched stream and binding rows, there is no
    `aria-busy` contract in the QML layer, and the counts render as soon as the
@@ -198,6 +210,14 @@ chrome (title, back, close), exactly as the reference shell does, so
 5. Avatar background falls back to `colors["bg"]` when the stream carries no
    color (reference `Avatar` base `bg-bg`), matching
    `NativeChannelInfo.channelInfoAvatar`.
+6. Screen switching: the reference remounts a different component per screen
+   inside `overflow-y-auto`, so a scroll offset from the taller settings screen
+   cannot survive navigation. The native drawer keeps one `Flickable` with both
+   screens stacked, so two contracts are enforced explicitly (reviewer finding
+   4574939220): `contentY` is reset to 0 whenever `chatScreen` changes, and
+   `contentHeight` is bound to the ACTIVE screen only, never summing the hidden
+   settings flow (a returned-to info screen must be short enough that no
+   off-view scroll can exist).
 
 ## Tests (issue acceptance)
 
@@ -217,15 +237,28 @@ the drawer through `rightDrawer.openInfo()` exactly like the window group does.
    caption at 16 px (en + ru texts) and the muted participants/online line at
    14 px with both plural forms - and the ordinary header items
    (`channelInfoTitle`, `channelInfoSubline`) are not rendered anywhere in the
-   drawer. Geometry pins the 24 px inset, the 8 px line gaps, the avatar-to-text
-   gap and the two equal 48 px action tiles with the neutral/`accent-soft` fills.
+   drawer. Geometry pins the 24 px inset, the 8 px line gaps (the identity
+   column's Column spacing, reviewer finding 4574939226), the avatar-to-text
+   gap and the two equal 48 px action tiles with the neutral/`accent-soft`
+   fills. The member block is pinned too: heading, the add affordance at the
+   heading's right edge, one 48 px card per binding row (avatar/presence dot/
+   name/role/secondary positions, the owner-vs-member role labels and the
+   `Remove from channel: <name>` accessible names), the count line dropping
+   after a real DELETE settles through the member-row removal path, and the
+   live-update path keeping the drawer open (a `stream.updated` event must not
+   reset the chat screens; the drawer runtime generation only moves on login
+   transitions).
 2. `uiEncryptedChatInfoSettingsScreenNavigation`: activating Settings pushes the
    settings screen (`currentChatScreen == "settings"`, deduped on re-activation),
    which shows the read-only name/description list (including the "No
    description" fallback after a `stream.updated` event clears it), the read-only
    hint, the 44 px "Encryption keys" row with its 24 px lock icon and chevron,
    and the type + members rows; activating that row lands on the scaffolded key
-   screen and the shell Back unwinds key -> settings -> info.
+   screen and the shell Back unwinds key -> settings -> info. The case ends on
+   the scroll contract (4574939220): a long description makes the settings
+   screen scrollable, scrolling it and returning to the info screen must land
+   at `contentY == 0`, and `contentHeight` must never exceed the viewport while
+   the short info screen is active.
 3. `uiEncryptedChatInfoGateKeepsOrdinaryInfo`: the same scene with
    `encryption=false` keeps the ordinary `channelInfoLayer` visible with its own
    avatar/title and no `protectedChat*` item, proving the ordinary drawer is
