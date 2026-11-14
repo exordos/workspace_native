@@ -663,6 +663,17 @@ ApplicationWindow {
     property bool channelSubmitted: false
     property string channelRequestedAction: "create"
     property var channelSelectedMembers: []
+    property bool channelEncryptionChecked: false
+    // The reference switch clears the exclusive channel options when it is
+    // turned on; while it is on those options stay disabled (create-chat-
+    // dialog.ui.tsx + create-chat-dialog.hook.ts in workspace_ui 230e02b8).
+    function setChannelEncryption(checked) {
+        channelEncryptionChecked = checked;
+        if (checked) {
+            channelInviteOnly.checked = false;
+            channelAnnounce.checked = false;
+        }
+    }
     readonly property string channelPhase: root.controller.channelCreationPhase
     readonly property bool channelPartialMembers: channelPhase === "members-required" || channelPhase === "members-failed"
     readonly property bool channelFormFrozen: root.chatMutationBusy || channelPhase !== "idle" && channelPhase !== "failed" && channelPhase !== "ready"
@@ -685,6 +696,7 @@ ApplicationWindow {
         setChatQuery("");
         channelInviteOnly.checked = false;
         channelAnnounce.checked = false;
+        channelEncryptionChecked = false;
     }
     function revealChannelControl(control) {
         if (!createChatDialog.visible || !control)
@@ -726,6 +738,7 @@ ApplicationWindow {
             channelDescriptionInput.text = form.description;
             channelInviteOnly.checked = Boolean(form.inviteOnly);
             channelAnnounce.checked = Boolean(form.announce);
+            channelEncryptionChecked = Boolean(form.encrypted);
             channelSelectedMembers = Array.from(form.memberUuids || []);
             channelSubmitted = true;
         }
@@ -767,7 +780,7 @@ ApplicationWindow {
             root.controller.retryChannelMembers();
         else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && channelNameInput.text.trim().length) {
             channelViewAttempt = "";
-            root.controller.createChannel(channelNameInput.text, channelDescriptionInput.text, channelInviteOnly.checked, channelAnnounce.checked, channelSelectedMembers);
+            root.controller.createChannel(channelNameInput.text, channelDescriptionInput.text, channelInviteOnly.checked, channelAnnounce.checked, channelSelectedMembers, root.channelEncryptionChecked);
         }
     }
     readonly property bool streamMenuAvailable: {
@@ -7318,6 +7331,52 @@ ApplicationWindow {
         }
     }
 
+    // Issue #234: the Protected channel (E2EE) switch. Geometry mirrors the
+    // reference role=switch control in create-chat-dialog.ui.tsx (workspace_ui
+    // 230e02b8): 30x18 rounded-full track (bg-border-subtle off, bg-accent on)
+    // with a 14px white knob at x = 2 off / x = 14 on, label to the right,
+    // 60% opacity while disabled.
+    component ChannelSwitch: CheckBox {
+        id: control
+        height: 20
+        padding: 0
+        leftPadding: 42
+        spacing: 12
+        hoverEnabled: true
+        opacity: enabled ? 1 : 0.6
+        onActiveFocusChanged: if (activeFocus) root.revealChannelControl(control)
+        indicator: Rectangle {
+            objectName: "channelEncryptionTrack"
+            x: 0
+            y: (control.height - height) / 2
+            width: 30
+            height: 18
+            radius: 9
+            color: control.checked ? root.colors["accent"] : root.colors["border-subtle"]
+            border.width: control.visualFocus ? 2 : 0
+            border.color: root.colors["accent"]
+            Rectangle {
+                x: control.checked ? 14 : 2
+                y: 2
+                width: 14
+                height: 14
+                radius: 7
+                color: "white"
+            }
+        }
+        contentItem: Text {
+            objectName: "channelEncryption"
+            text: control.text
+            textFormat: Text.PlainText
+            color: root.colors["text-primary"]
+            font.pixelSize: 14
+            lineHeightMode: Text.FixedHeight
+            lineHeight: 20
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+    }
+
     Popup {
         id: createChatDialog
         objectName: "createChatDialog"
@@ -7662,12 +7721,14 @@ ApplicationWindow {
                                 objectName: "channelInviteOnly"
                                 width: parent.width
                                 text: qsTr("Invite only")
+                                enabled: !root.channelFormFrozen && !root.channelEncryptionChecked
                             }
                             ChannelOption {
                                 id: channelAnnounce
                                 objectName: "channelAnnounce"
                                 width: parent.width
                                 text: qsTr("Announce channel creation")
+                                enabled: !root.channelFormFrozen && !root.channelEncryptionChecked
                             }
                             ChannelOption {
                                 objectName: "channelAnnouncementOnly"
@@ -7688,39 +7749,15 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Item {
+                    ChannelSwitch {
+                        id: channelEncryptionSwitch
+                        objectName: "channelEncryptionSwitch"
                         width: parent.width
-                        height: 20
-                        Rectangle {
-                            x: 0
-                            y: 1
-                            width: 30
-                            height: 18
-                            radius: 9
-                            color: root.colors["border-subtle"]
-                            Rectangle { x: 2; y: 2; width: 14; height: 14; radius: 7; color: "white" }
-                        }
-                        Text {
-                            objectName: "channelEncryption"
-                            x: 42
-                            width: parent.width - 42
-                            height: 20
-                            text: qsTr("Protected channel (E2EE)")
-                            textFormat: Text.PlainText
-                            color: root.colors["text-primary"]
-                            font.pixelSize: 14
-                            verticalAlignment: Text.AlignVCenter
-                            Accessible.role: Accessible.CheckBox
-                            Accessible.name: text
-                            Accessible.description: qsTr("Encrypted channel creation is not implemented yet")
-                            Accessible.checkable: true
-                            Accessible.checked: false
-                            Accessible.ignored: false
-                            enabled: false
-                        }
-                        HoverHandler { id: encryptionHover }
-                        ToolTip.visible: encryptionHover.hovered
-                        ToolTip.text: qsTr("Encrypted channel creation is not implemented yet")
+                        text: qsTr("Protected channel (E2EE)")
+                        Accessible.name: qsTr("Create encrypted chat")
+                        checked: root.channelEncryptionChecked
+                        enabled: !root.channelFormFrozen
+                        onClicked: root.setChannelEncryption(!root.channelEncryptionChecked)
                     }
                     Column {
                         width: parent.width

@@ -622,8 +622,8 @@
             <translation>Защищенный канал (E2EE)</translation>
         </message>
         <message>
-            <source>Encrypted channel creation is not implemented yet</source>
-            <translation>Создание зашифрованных каналов пока не реализовано</translation>
+            <source>Create encrypted chat</source>
+            <translation>Создать зашифрованный чат</translation>
         </message>
         <message>
             <source>Add members</source>
@@ -1543,6 +1543,18 @@
         <message>
             <source>Wait for the member directory to update before creating this channel.</source>
             <translation>Дождитесь обновления списка пользователей перед созданием этого канала.</translation>
+        </message>
+        <message>
+            <source>Encrypted channel creation is not available yet.</source>
+            <translation>Создание зашифрованных каналов пока недоступно.</translation>
+        </message>
+        <message>
+            <source>The server did not confirm encrypted channel creation. Check status before trying again.</source>
+            <translation>Сервер не подтвердил создание зашифрованного канала. Перед повторной попыткой проверьте состояние.</translation>
+        </message>
+        <message>
+            <source>Could not store the encrypted channel key. Check status before trying again.</source>
+            <translation>Не удалось сохранить ключ зашифрованного канала. Перед повторной попыткой проверьте состояние.</translation>
         </message>
         <message>
             <source>Resolve the earlier channel creation attempts before creating another channel.</source>
