@@ -875,8 +875,13 @@ private:
     struct PendingCreateStage { QString attempt, key; QByteArray groupKey; };
     void maybeResolveChannelCreateStages();
     void resolveChannelCreateStages(const QString &token);
-    void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token);
+    void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token,
+                                       bool unresolved = false);
+    void scheduleChannelStageRecoveryRetry(const QString &token);
     QString m_channelStageToken;
+    int m_channelStageRecoveryRetries = 0;
+    static constexpr int maximumChannelStageRecoveryRetries = 5;
+    static constexpr int channelStageRecoveryRetryIntervalMs = 1000;
     void loadChannelDefault(const QString &owner, const QString &id, quint64 ticket);
     void checkChannelMembers(const QString &owner, const QString &id, quint64 ticket);
     void addChannelMembers(const QString &owner, const QString &id, quint64 ticket);

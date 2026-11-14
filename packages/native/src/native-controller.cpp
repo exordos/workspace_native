@@ -4323,6 +4323,14 @@ void NativeController::createChannel(const QString &name, const QString &descrip
             || parsed->description != intent.description || raw.value("invite_only").toBool() != intent.inviteOnly
             || raw.value("announce").toBool() != intent.announce) {
             const bool failed = result.status == 400 || result.status == 401 || result.status == 403 || result.status == 404;
+            // Review finding 4575117265: a conclusive rejection proves the
+            // stream was not created, so the durable pre-dispatch stage is
+            // stale. Close it here so rejected attempts cannot accumulate
+            // against the vault's create-stage budget and starve later
+            // encrypted creates. Only a definite outcome clears; anything
+            // uncertain keeps the stage for recovery.
+            if (failed && intent.encrypted && m_chatKeys && m_chatKeys->available())
+                m_chatKeys->clearCreateStage(m_chatKeys->lease(), id);
             const auto message = failed ? tr("Could not create the channel. %1").arg(result.error)
                 : intent.encrypted && result.ok()
                     ? tr("The server did not confirm encrypted channel creation. Check status before trying again.")
@@ -4428,6 +4436,7 @@ void NativeController::maybeResolveChannelCreateStages()
         + QLatin1Char('/') + QString::number(lease.generation);
     if (m_channelStageToken == token) return;
     m_channelStageToken = token;
+    m_channelStageRecoveryRetries = 0;
     QTimer::singleShot(0, this, [this, token] { resolveChannelCreateStages(token); });
 }
 
@@ -4435,7 +4444,9 @@ void NativeController::resolveChannelCreateStages(const QString &token)
 {
     if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
     auto stages = m_chatKeys->createStages(m_chatKeys->lease());
-    if (stages.failure != NativeChatKeyVault::Failure::None) return; // retried on the next init
+    // Review finding 4575117269: a vault read failure must not burn this
+    // lease's recovery for the session; the bounded retry re-scans shortly.
+    if (stages.failure != NativeChatKeyVault::Failure::None) { scheduleChannelStageRecoveryRetry(token); return; }
     QVector<PendingCreateStage> pending;
     for (auto &stage : stages.values) {
         bool live = false;
@@ -4447,9 +4458,13 @@ void NativeController::resolveChannelCreateStages(const QString &token)
     resolveNextChannelCreateStage(std::move(pending), token);
 }
 
-void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token)
+void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token,
+    bool unresolved)
 {
-    if (stages.isEmpty()) return;
+    if (stages.isEmpty()) {
+        if (unresolved) scheduleChannelStageRecoveryRetry(token);
+        return;
+    }
     if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
     auto stage = stages.takeFirst();
     const auto lease = m_chatKeys->lease();
@@ -4457,22 +4472,44 @@ void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage>
     // (and the id the echo must match), so the canonical GET under that uuid
     // is the same verification the live path performs.
     request("GET", messenger + "/streams/" + stage.attempt, {}, {},
-        [this, token, lease, stage, stages](const ApiResult &result) mutable {
+        [this, token, lease, stage, stages, unresolved](const ApiResult &result) mutable {
         auto wipe = qScopeGuard([&] { stage.groupKey.fill('\0'); });
         if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
         const auto raw = result.data.toObject();
         const auto parsed = encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), stage.key);
-        if (result.status == 404) {
-            // The POST never landed server-side: nothing left to recover.
-            m_chatKeys->clearCreateStage(lease, stage.attempt);
-        } else if (result.ok() && parsed && parsed->uuid == stage.attempt) {
+        bool resolved = false;
+        // Review finding 4575117257: a 404 from the recovery GET is not
+        // proof that the original POST cannot land — a delayed or in-flight
+        // creation can still commit server-side moments after this GET. The
+        // stage is therefore retained on every non-committal answer (404,
+        // transport error, non-verifying echo) and re-checked by the bounded
+        // in-session rescan; only the live POST's own definite rejection
+        // (400/401/403/404 response) closes it, and only a verified echo
+        // commits it here.
+        if (result.ok() && parsed && parsed->uuid == stage.attempt) {
             const auto committed = m_chatKeys->put(lease,
                 NativeChatKeyVault::Address{stage.attempt, stage.key}, stage.groupKey, 0);
-            if (committed == NativeChatKeyVault::Failure::None) m_chatKeys->clearCreateStage(lease, stage.attempt);
+            if (committed == NativeChatKeyVault::Failure::None) {
+                m_chatKeys->clearCreateStage(lease, stage.attempt);
+                resolved = true;
+            }
         }
-        // Any other answer keeps the stage intact for the next controller init.
-        resolveNextChannelCreateStage(stages, token);
+        resolveNextChannelCreateStage(stages, token, unresolved || !resolved);
     });
+}
+
+void NativeController::scheduleChannelStageRecoveryRetry(const QString &token)
+{
+    // Review finding 4575117269: a scan pass that ended with stages still
+    // unresolved (transient vault error, failed or non-committal stream GET)
+    // is retried a bounded number of times inside the current vault session
+    // instead of waiting for a controller restart. The cap keeps a stream
+    // that genuinely never lands from polling forever.
+    if (m_channelStageToken != token) return;
+    if (m_channelStageRecoveryRetries >= maximumChannelStageRecoveryRetries) return;
+    ++m_channelStageRecoveryRetries;
+    QTimer::singleShot(channelStageRecoveryRetryIntervalMs, this,
+        [this, token] { resolveChannelCreateStages(token); });
 }
 
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,
