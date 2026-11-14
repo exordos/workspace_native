@@ -272,6 +272,11 @@ Item {
             x: 0
             y: infoFlow.y + infoFlow.height + 20
             width: pageScroll.width
+            // The section must carry its member flow in the scroll height: the
+            // contentHeight binding sizes from this item (reviewer finding
+            // 4575277281 - without a height the member rows below the viewport
+            // were unreachable). border-t + pt-5 sit above the self-sized flow.
+            height: membersFlow.y + membersFlow.height
             visible: page.infoScreen
 
             Rectangle {
