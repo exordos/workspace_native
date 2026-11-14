@@ -176,6 +176,28 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   the stage (see the next bullet) for bounded in-session rescans and for the
   next controller init. The staged key never appears in logs or QML and is
   cleansed after use.
+- Two-phase dispatch contract (review findings 4575672241/4575672242): the
+  durable stage carries a phase. `putCreateStage` writes it as `prepared`.
+  The controller durably marks the stage `dispatch-attempted`
+  (`markCreateStageDispatchAttempted`) immediately BEFORE the stream POST is
+  handed to the network stack, so the phase distinguishes a stage whose POST
+  provably never left the process from one whose POST may still land
+  server-side. Recovery retires a `prepared` stage directly — no GET, no
+  retention — reclaiming its slot in the vault's 32-stage create budget;
+  without this, a run of process losses inside the stage-to-dispatch window
+  would permanently exhaust the budget and starve every later encrypted
+  create, restarts included. If the dispatch marker itself cannot be written,
+  creation is rejected locally and the stage cleared on the spot: at that
+  point the POST has provably not been dispatched and never will be, so the
+  reclaim is safe. Residual risk, accepted deliberately: a crash between the
+  durable marker and the actual socket write leaves a `dispatch-attempted`
+  stage whose POST also never left; recovery retains it (bounded rescans)
+  instead of risking the lossy direction. Retaining a stage that never lands
+  costs at most budget slots and repeated harmless GETs; retiring a stage
+  whose POST can still land would strand a created channel whose only key
+  copy is in the vault — so the tradeoff always resolves toward retention.
+  Stage records written before this contract existed carry no phase and
+  decode as `dispatch-attempted` (the same never-lossy default).
 - Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
   a `404` from the recovery GET is NOT proof the original POST cannot land —
   a delayed or in-flight creation can still commit server-side moments after
@@ -188,7 +210,9 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   non-verifying echo) schedules a bounded in-session rescan — at most 5
   retries, 1 s apart, per owner+vault-lease — so a transient outage heals
   without requiring a controller restart; a stream that never lands stops
-  polling after the cap and is re-checked by the next controller init.
+  polling after the cap and is re-checked by the next controller init. A
+  `prepared` (never-dispatched) stage never reaches this retention rule: it
+  is retired by the two-phase dispatch contract above before any request.
 - `channelCreationForm()` additionally exposes `encrypted`, which is what the
   QML layer uses to restore one immutable encrypted intent across dialog
   close/reopen for unresolved phases (the existing unresolved-form retention
@@ -237,7 +261,13 @@ recovery `404` races the still-committing POST keeping the stage and then
 committing it from a bounded in-session rescan
 (`encryptedChannelCreationRecoveryKeepsStageWhileStreamMissing`); and a
 transient recovery failure being retried within the same vault session
-(`encryptedChannelCreationRecoveryRetriesTransientFailureInSession`).
+(`encryptedChannelCreationRecoveryRetriesTransientFailureInSession`). The
+two-phase dispatch findings add: 32 crash-before-dispatch stages being
+reclaimed by recovery so a later encrypted create can stage again, without
+any recovery GET for the never-dispatched attempts
+(`encryptedChannelCreationCrashBeforeDispatchStagesCannotStarveLaterCreates`);
+and the guard that a dispatched stage whose recovery sees `404` is retained,
+never retired (`encryptedChannelCreationDispatchAttemptedStageSurvivesRecoveryScan`).
 
 `native-window-test.cpp` (group `native-native-window`) covers: the switch is
 present, enabled and interactive; turning it on clears and disables

@@ -4310,6 +4310,24 @@ void NativeController::createChannel(const QString &name, const QString &descrip
                 tr("Encrypted channel creation is not available yet."), QStringLiteral("failed"));
             return;
         }
+        // Review findings 4575672241/4575672242 (two-phase dispatch): the
+        // stage starts in phase 'prepared'. Durably mark it 'dispatch-
+        // attempted' BEFORE the POST is handed to the network stack, so a
+        // stage still 'prepared' after a restart provably never had its POST
+        // leave this process and recovery may reclaim it. A crash between
+        // this marker and the socket write is benign: the stage is then
+        // treated as possibly-dispatched and retained (the safe side). If the
+        // marker itself fails we have not dispatched and will not dispatch,
+        // so the stage is provably never-dispatched right here and is cleared
+        // with the local rejection.
+        const bool marked = m_chatKeys->markCreateStageDispatchAttempted(m_chatKeys->lease(), id)
+            == NativeChatKeyVault::Failure::None;
+        if (!marked) {
+            m_chatKeys->clearCreateStage(m_chatKeys->lease(), id);
+            finishChannelCreation(owner, id, ticket,
+                tr("Encrypted channel creation is not available yet."), QStringLiteral("failed"));
+            return;
+        }
     }
     m_channelCreations[owner].dispatched = true;
     request("POST", messenger + "/streams/", body, {}, [this, owner, id, ticket](const ApiResult &result) {
@@ -4452,7 +4470,7 @@ void NativeController::resolveChannelCreateStages(const QString &token)
         bool live = false;
         for (auto it = m_channelCreations.begin(); it != m_channelCreations.end(); ++it)
             if (it->encrypted && it->uuid == stage.attempt) live = true;
-        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey});
+        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey, stage.dispatchAttempted});
         stage.clearSecrets();
     }
     resolveNextChannelCreateStage(std::move(pending), token);
@@ -4468,6 +4486,21 @@ void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage>
     if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
     auto stage = stages.takeFirst();
     const auto lease = m_chatKeys->lease();
+    // Review finding 4575672241 (high): a stage still in phase 'prepared'
+    // was durably written but never marked dispatch-attempted, so its stream
+    // POST provably never left a process — no request can still land for it.
+    // Retire the stage immediately (reclaiming its vault create-stage budget
+    // slot) without any network round trip; the uncommitted group key belongs
+    // to a creation that never happened. This path can only ever drop a
+    // provably-never-dispatched stage: a stage marked 'dispatch-attempted'
+    // may still land server-side and falls through to the GET below, where
+    // the R2 retention contract applies unchanged. If the clear itself fails
+    // the pass counts as unresolved and the bounded rescan retries it.
+    if (!stage.dispatchAttempted) {
+        const auto retired = m_chatKeys->clearCreateStage(lease, stage.attempt);
+        resolveNextChannelCreateStage(stages, token, unresolved || retired != NativeChatKeyVault::Failure::None);
+        return;
+    }
     // The staged attempt uuid is the idempotent stream uuid the POST carried
     // (and the id the echo must match), so the canonical GET under that uuid
     // is the same verification the live path performs.

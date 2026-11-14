@@ -55,11 +55,22 @@ public:
     // (the idempotent stream-creation uuid and the generation uuid the server
     // echoes). Written before the stream POST and cleared only after the
     // canonical echo verified and the key committed.
+    //
+    // Two-phase dispatch contract (review findings 4575672241/4575672242):
+    // a stage starts in phase 'prepared' (dispatchAttempted == false). The
+    // controller durably marks it 'dispatch-attempted' (markCreateStage-
+    // DispatchAttempted) immediately before the stream POST leaves the
+    // process. Recovery may only retire a 'prepared' stage whose POST can
+    // therefore provably never have been dispatched; a dispatch-attempted
+    // stage may still land server-side and is retained on inconclusive
+    // answers. Records written before this contract existed (no field) decode
+    // as dispatch-attempted: the safe, never-lossy default.
     struct CreateStage {
         QString attempt;
         QString key;
         QByteArray groupKey;
         qint64 createdAt = 0;
+        bool dispatchAttempted = false;
         void clearSecrets();
     };
     struct CreateStageResult { Failure failure = Failure::Unavailable; std::optional<CreateStage> value; };
@@ -91,6 +102,13 @@ public:
     Failure completeRequest(const Lease &lease, const Address &address, const Completion &completion,
                             const QByteArray &groupKey = {}, bool replaceExisting = false);
     Failure putCreateStage(const Lease &lease, const CreateStage &stage);
+    // Durably transition a stored stage from phase 'prepared' to phase
+    // 'dispatch-attempted'. Must be called by the creator BEFORE the stream
+    // POST is handed to the network stack; idempotent. A stage that stays
+    // 'prepared' across a restart proves its POST never left the process, so
+    // recovery may retire it without risking a channel whose key is only in
+    // the vault. Missing stage: MissingKey; lease mismatch: Superseded.
+    Failure markCreateStageDispatchAttempted(const Lease &lease, const QString &attempt);
     CreateStageResult readCreateStage(const Lease &lease, const QString &attempt);
     CreateStageListResult createStages(const Lease &lease);
     Failure clearCreateStage(const Lease &lease, const QString &attempt);

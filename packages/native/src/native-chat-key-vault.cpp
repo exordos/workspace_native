@@ -771,7 +771,8 @@ namespace {
 QByteArray encodeCreateStage(const NativeChatKeyVault::CreateStage &value)
 {
     return encode({{"attempt", value.attempt}, {"key", value.key},
-        {"groupKey", QString::fromLatin1(value.groupKey.toBase64())}, {"createdAt", value.createdAt}});
+        {"groupKey", QString::fromLatin1(value.groupKey.toBase64())}, {"createdAt", value.createdAt},
+        {"dispatchAttempted", value.dispatchAttempted}});
 }
 
 std::optional<NativeChatKeyVault::CreateStage> decodeCreateStage(const QByteArray &bytes)
@@ -781,6 +782,11 @@ std::optional<NativeChatKeyVault::CreateStage> decodeCreateStage(const QByteArra
     if (!validInteger(created)) return {};
     NativeChatKeyVault::CreateStage stage{object.value("attempt").toString(), object.value("key").toString(),
         decodedBytes(object.value("groupKey")), qint64(created)};
+    // A record from before the two-phase contract carries no phase: it was
+    // written directly before the dispatch window opened, so the POST may
+    // have gone out. Default to dispatch-attempted — the safe, never-lossy
+    // side — so recovery can only ever retain such a stage, never retire it.
+    stage.dispatchAttempted = object.value("dispatchAttempted").toBool(true);
     if (!isUuid(stage.attempt) || !isUuid(stage.key) || stage.groupKey.size() != 32) return {};
     return std::move(stage);
 }
@@ -821,6 +827,27 @@ Failure NativeChatKeyVault::putCreateStage(const Lease &value, const CreateStage
     if (result == Failure::None) result = writeRecord(record, encoded);
     cleanse(encoded);
     if (old) cleanse(old->groupKey);
+    return finishTransaction(result);
+}
+
+Failure NativeChatKeyVault::markCreateStageDispatchAttempted(const Lease &value, const QString &attempt)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = createStageAddress(attempt);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    Failure result = Failure::None;
+    auto old = readCreateStageRecord(attempt.toLower(), result);
+    if (result != Failure::None) return finishTransaction(result); // MissingKey / Corrupt
+    if (old->dispatchAttempted) { // idempotent: the phase may never move backwards
+        cleanse(old->groupKey);
+        return finishTransaction(Failure::None);
+    }
+    old->dispatchAttempted = true;
+    auto encoded = encodeCreateStage(*old);
+    cleanse(old->groupKey);
+    result = writeRecord(record, encoded);
+    cleanse(encoded);
     return finishTransaction(result);
 }
 
