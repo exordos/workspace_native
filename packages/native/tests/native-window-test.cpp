@@ -12840,9 +12840,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(bubbleThumb->property("radius").toReal(), 6.0);
         QCOMPARE(bubbleThumb->property("color").toString(), QString("#ffffff"));
         QTRY_COMPARE(bubbleThumb->property("status").toString(), QString("ready"));
-        auto *thumbImage = item(content, "quoteMediaImage-" + quotingId); QVERIFY(thumbImage);
+        auto *thumbImage = item(content, "quoteMediaThumbnail-" + quotingId + "-image"); QVERIFY(thumbImage);
         QVERIFY(!thumbImage->property("source").toString().isEmpty());
-        QVERIFY(thumbImage->property("clip").toBool());
+        QVERIFY(bubbleThumb->property("clip").toBool());
         // The media markdown text is gone from the quote body once it is ready.
         auto *quoteBody = item(content, "quoteBodyHtml-" + quotingId); QVERIFY(quoteBody);
         QVERIFY2(!quoteBody->property("text").toString().contains("shot.png"),
