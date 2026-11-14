@@ -1,6 +1,8 @@
 #include "native-controller.h"
 #include "native-auth-guard.h"
 #include "native-logging.h"
+#include "native-chat-crypto.h"
+#include "native-chat-key-vault.h"
 #include "native-preferences.h"
 #include <QDir>
 #include <QFileInfo>
@@ -1318,6 +1320,129 @@ struct FolderRailFixture
         controller.openProject(projectId);
         if (!QTest::qWaitFor([this] { return controller.streams().size() == 2; }, 2000)) return false;
         return true;
+    }
+};
+
+// Issue #244 (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md): catalog-backed
+// encrypted stream + durable key vault, serving the key-screen contract:
+// local-key inventory, reissue and delete-local-key controller actions.
+struct KeyManagementFixture {
+    static inline const QString KeyCurrent = "11111111-1111-4111-9111-111111111111";
+    static inline const QString KeyOld = "22222222-2222-4222-9222-222222222222";
+    static inline const QString KeyOrphan = "33333333-3333-4333-9333-333333333333";
+    static inline const QString SecondMember = "99999999-9999-4999-8999-999999999999";
+    MockServer server;
+    ApiClient api;
+    Session session{&api};
+    NativeController controller{&api, &session};
+    QTemporaryDir directory;
+    ControllerMemorySecrets secrets;
+    NativeChatKeyVault vault;
+    QString viewerRole = "owner";
+    int messagePostStatus = 201;
+    bool deferAnnouncements = false;
+    int announcementPosts = 0;
+    QJsonArray announcementBodies;
+    std::function<void()> releaseAnnouncement;
+    explicit KeyManagementFixture() : vault(directory.path(), &secrets)
+    {
+        server.handler = [this](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/")
+                return {QJsonArray{streamRow()}, 200};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return {streamRow(), 200};
+            if (path == "/api/workspace/v1/messenger/stream_topics/")
+                return {QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                             {"stream_uuid", streamId}, {"name", "History"}, {"is_default", false}},
+                    QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+                        {"stream_uuid", streamId}, {"name", "Default"}, {"is_default", true}}}, 200};
+            if (path == "/api/workspace/v1/messenger/stream_bindings/")
+                return {QJsonArray{QJsonObject{{"uuid", "40000000-0000-4000-8000-000000000001"},
+                             {"project_id", projectId}, {"stream_uuid", streamId},
+                             {"user_uuid", userId}, {"role", viewerRole}},
+                    QJsonObject{{"uuid", "40000000-0000-4000-8000-000000000002"},
+                        {"project_id", projectId}, {"stream_uuid", streamId},
+                        {"user_uuid", SecondMember}, {"role", "member"}}}, 200};
+            if (path == "/api/workspace/v1/users/")
+                return {QJsonArray{}};
+            if (path == "/api/workspace/v1/messenger/messages/" && request.method == "GET")
+                return {QJsonArray{announcement("50000000-0000-4000-8000-000000000001", KeyCurrent,
+                             "2026-01-02T10:00:00.000Z"),
+                    announcement("50000000-0000-4000-8000-000000000002", KeyCurrent,
+                        "2026-01-01T08:00:00.000Z"),
+                    announcement("50000000-0000-4000-8000-000000000003", KeyOld,
+                        "2025-12-01T00:00:00.000Z")}, 200};
+            if (path == "/api/workspace/v1/messenger/messages/" && request.method == "POST") {
+                const auto payload = request.body.value("payload").toObject();
+                if (payload.value("kind").toString() == "key_announced") {
+                    ++announcementPosts;
+                    announcementBodies.append(request.body);
+                    auto saved = message({}, "60000000-0000-4000-8000-000000000001", secondTopicId);
+                    saved["payload"] = payload;
+                    Response response{saved, messagePostStatus};
+                    if (deferAnnouncements)
+                        response.defer = [this](std::function<void()> send) { releaseAnnouncement = send; };
+                    return response;
+                }
+                return {message({}, "60000000-0000-4000-8000-000000000009", topicId), 201};
+            }
+            return sessionResponse(request);
+        };
+    }
+    QJsonObject streamRow() const
+    {
+        return {{"uuid", streamId}, {"project_id", projectId}, {"name", "Key management fixture"},
+            {"description", "Synthetic key management stream"}, {"user_uuid", userId}, {"owner", userId},
+            {"role", viewerRole}, {"source_name", "native"}, {"provider_uuid", QJsonValue::Null},
+            {"provider_identity", QJsonValue::Null}, {"encryption", true},
+            {"current_encryption_key_uuid", KeyCurrent}, {"default_topic_uuid", secondTopicId},
+            {"private", false}, {"direct_user_uuid", QJsonValue::Null}, {"invite_only", false},
+            {"announce", false}, {"is_archived", false}, {"unread_count", 0},
+            {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", QJsonValue::Null}, {"notification_mode", "all_messages"},
+            {"created_at", "2026-01-01T00:00:00.000Z"}, {"updated_at", "2026-01-02T12:00:00.000Z"}};
+    }
+    static QJsonObject announcement(const QString &uuid, const QString &key, const QString &createdAt)
+    {
+        auto row = message({}, uuid, topicId);
+        row["created_at"] = createdAt;
+        row["payload"] = QJsonObject{{"kind", "key_announced"}, {"key_uuid", key}};
+        return row;
+    }
+    bool start(bool attachVault = true)
+    {
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([this] { return controller.streams().size() == 1; }, 2000)) return false;
+        controller.selectStream(streamId);
+        if (!QTest::qWaitFor([this] { return !controller.topics().isEmpty(); }, 2000)) return false;
+        controller.selectTopic(topicId);
+        if (!QTest::qWaitFor([this] { return !controller.busy() && controller.messages().size() == 3; }, 2000)) return false;
+        if (!attachVault) return true;
+        attachVaultToController();
+        return true;
+    }
+    void attachVaultToController()
+    {
+        bool opened = false;
+        vault.open(server.origin(), projectId, userId, "Synthetic key device",
+            [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QTest::qWaitFor([&opened] { return opened; }, 2000);
+        controller.useChatKeys(&vault);
+    }
+    void seedKey(const QString &key)
+    {
+        QCOMPARE(vault.put(vault.lease(), {streamId, key}, QByteArray(32, char(7)), 0),
+            NativeChatKeyVault::Failure::None);
+    }
+    QVariantList inventoryRows() const { return controller.chatKeyInventory().value("keys").toList(); }
+    QStringList inventoryUuids() const
+    {
+        QStringList result;
+        for (const auto &row : inventoryRows()) result.append(row.toMap().value("keyUuid").toString());
+        return result;
     }
 };
 
@@ -21015,6 +21140,154 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(legacy.controller.folders().size(), 3, 4000);
         QCOMPARE(folderKeys(legacy.controller.folders()).first(), QStringLiteral("all"));
         QCOMPARE(legacy.controller.folders().first().toMap().value("id").toString(), legacy.customUuid);
+    }
+
+    // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
+
+    void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        // The vault returns receivedAt newest-first, so KeyOld (seeded last)
+        // leads; the projection must move the current key to the top.
+        f.controller.refreshChatLocalKeys();
+        const auto inventory = f.controller.chatKeyInventory();
+        QCOMPARE(inventory.value("state").toString(), QStringLiteral("ready"));
+        QVERIFY(inventory.value("error").toString().isEmpty());
+        const QStringList expectedUuids{KeyManagementFixture::KeyCurrent, KeyManagementFixture::KeyOld};
+        QCOMPARE(f.inventoryUuids(), expectedUuids);
+        const auto current = f.inventoryRows().at(0).toMap();
+        QCOMPARE(current.value("keyUuid").toString(), KeyManagementFixture::KeyCurrent);
+        QVERIFY(current.value("isCurrent").toBool());
+        // Earliest key_announced date for the generation, not the newest one.
+        QVERIFY(current.value("announcedAt").toString().startsWith(QStringLiteral("2026-01-01T08:00:00")));
+        QVERIFY(QDateTime::fromString(current.value("addedAt").toString(), Qt::ISODateWithMs).isValid());
+        const auto historical = f.inventoryRows().at(1).toMap();
+        QCOMPARE(historical.value("keyUuid").toString(), KeyManagementFixture::KeyOld);
+        QVERIFY(!historical.value("isCurrent").toBool());
+        QVERIFY(historical.value("announcedAt").toString().startsWith(QStringLiteral("2025-12-01T00:00:00")));
+        // A vault row without any announcement in loaded history keeps "" and
+        // the QML falls back to "Not found in loaded history".
+        f.seedKey(KeyManagementFixture::KeyOrphan);
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.inventoryRows().size(), 3);
+        const auto orphan = f.inventoryRows().at(2).toMap();
+        QCOMPARE(orphan.value("keyUuid").toString(), KeyManagementFixture::KeyOrphan);
+        QVERIFY(orphan.value("announcedAt").toString().isEmpty());
+        // Joined-date labels match formatDateJoined in both locales, and the
+        // key screen's createdLabel source is the current key's announcement.
+        QCOMPARE(NativeController::formatChatKeyDate(QStringLiteral("2026-01-01T08:00:00.000"), "en"),
+            QStringLiteral("Jan 1, 2026"));
+        QCOMPARE(NativeController::formatChatKeyDate(QStringLiteral("2026-01-01T08:00:00.000"), "ru"),
+            QStringLiteral("1 янв. 2026 г."));
+        QCOMPARE(NativeController::formatChatKeyDate(QString(), "en"), QString());
+        const auto encryption = f.controller.encryption();
+        QCOMPARE(encryption.value("currentKeyUuid").toString(), KeyManagementFixture::KeyCurrent);
+        QVERIFY(encryption.value("keyAnnouncedAt").toString().startsWith(QStringLiteral("2026-01-01T08:00:00")));
+        QVERIFY(encryption.value("canRotate").toBool());
+        // Deleting the current key stays allowed: recovery uses the request path.
+        f.controller.deleteChatLocalKey(KeyManagementFixture::KeyCurrent);
+        QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
+        QCOMPARE(f.inventoryUuids(), QStringList{KeyManagementFixture::KeyOld, KeyManagementFixture::KeyOrphan});
+    }
+
+    void chatLocalKeyInventoryErrorsUntilTheStoreIsReady()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start(false));
+        // No durable store: the projection reports the reference error text and
+        // the Retry action is a plain refresh once the store comes back.
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.controller.chatKeyInventory().value("state").toString(), QStringLiteral("error"));
+        QCOMPARE(f.controller.chatKeyInventory().value("error").toString(),
+            QStringLiteral("Could not load keys from this device."));
+        QVERIFY(f.controller.chatKeyInventory().value("keys").toList().isEmpty());
+        // Store opening publishes the loading state instead of an error.
+        f.controller.setChatKeyStoreOpening(true);
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.controller.chatKeyInventory().value("state").toString(), QStringLiteral("loading"));
+        f.controller.setChatKeyStoreOpening(false);
+        f.attachVaultToController();
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.controller.chatKeyInventory().value("state").toString(), QStringLiteral("ready"));
+        QCOMPARE(f.inventoryUuids(), QStringList{KeyManagementFixture::KeyCurrent});
+    }
+
+    void chatLocalKeyReissueAnnouncesAndFails()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        f.controller.refreshChatLocalKeys();
+        QVERIFY(f.controller.encryption().value("canRotate").toBool());
+        f.deferAnnouncements = true;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY_WITH_TIMEOUT(f.releaseAnnouncement != nullptr, 5000);
+        // Pending covers the whole announcing window (verifying + sending).
+        QVERIFY(f.controller.encryption().value("reissueBusy").toBool());
+        const auto posted = f.announcementBodies.last().toObject();
+        const auto payload = posted.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), QStringLiteral("key_announced"));
+        const auto announcedKey = payload.value("key_uuid").toString();
+        QVERIFY(announcedKey != KeyManagementFixture::KeyCurrent);
+        QVERIFY(announcedKey != KeyManagementFixture::KeyOld);
+        QCOMPARE(posted.value("topic_uuid").toString(), secondTopicId);
+        QCOMPARE(f.announcementPosts, 1);
+        f.releaseAnnouncement();
+        f.releaseAnnouncement = nullptr;
+        QTRY_VERIFY(!f.controller.encryption().value("reissueBusy").toBool());
+        // The new generation is stored durably and shows up as a historical row
+        // until the stream update moves currentEncryptionKey.
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, announcedKey}).value.bytes.size(), 32);
+        QTRY_VERIFY(f.inventoryUuids().contains(announcedKey));
+        QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
+        // Failure text: a rejected announcement clears pending and reports the
+        // localized rotateKeyFailed text (the reference toast message).
+        f.messagePostStatus = 500;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY(f.controller.encryption().value("actionError").toString()
+            == QStringLiteral("Could not reissue the encryption key. Please try again."));
+        QVERIFY(!f.controller.encryption().value("reissueBusy").toBool());
+        // Right gate: a member has no canRotate and reissue never posts.
+        KeyManagementFixture member;
+        member.viewerRole = "member";
+        QVERIFY(member.start());
+        QVERIFY(!member.controller.encryption().value("canRotate").toBool());
+        member.controller.reissueChatKey();
+        QCOMPARE(member.announcementPosts, 0);
+        QVERIFY(!member.controller.encryption().value("reissueBusy").toBool());
+    }
+
+    void chatLocalKeyDeleteRemovesAndFails()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.inventoryUuids().size(), 2);
+        f.controller.deleteChatLocalKey(KeyManagementFixture::KeyOld);
+        QCOMPARE(f.inventoryUuids(), QStringList{KeyManagementFixture::KeyCurrent});
+        // The removal is durable: a fresh enumeration keeps it gone, and the
+        // vault no longer serves the key for decryption.
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.inventoryUuids(), QStringList{KeyManagementFixture::KeyCurrent});
+        QVERIFY(f.vault.read(f.vault.lease(), {streamId, KeyManagementFixture::KeyOld}).value.bytes.isEmpty());
+        // Failure texts: a malformed UUID and an unavailable store both land in
+        // the localized deleteLocalKeyFailed message, matching the reference.
+        f.controller.deleteChatLocalKey(QStringLiteral("not-a-uuid"));
+        QCOMPARE(f.controller.encryption().value("actionError").toString(),
+            QStringLiteral("Could not delete the key from this device. Please try again."));
+        f.vault.close();
+        f.controller.deleteChatLocalKey(KeyManagementFixture::KeyCurrent);
+        QCOMPARE(f.controller.encryption().value("actionError").toString(),
+            QStringLiteral("Could not delete the key from this device. Please try again."));
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.controller.chatKeyInventory().value("state").toString(), QStringLiteral("error"));
     }
 };
 
