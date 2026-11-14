@@ -20686,11 +20686,26 @@ QTRY_VERIFY(create->property("enabled").toBool());
             }
             QVERIFY2(seedOutput.contains(QStringLiteral("FREEZEPROBE seed")),
                 "cache seeding child failed");
+            QVERIFY2(process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0,
+                QStringLiteral("cache seeding child exited abnormally (status %1, crash %2)")
+                    .arg(process.exitCode())
+                    .arg(process.exitStatus() == QProcess::CrashExit ? 1 : 0)
+                    .toUtf8().constData());
             historyDelay = 700;
             runMeasured(scenario, 120000, &output);
         } else {
             runMeasured(scenario, 120000, &output);
         }
+        // The child prints its FREEZEPROBE line before the final verifications
+        // of its own QtTest run (cache shutdown still follows the monitor), so
+        // the report only counts once the child has exited the way a passing
+        // QtTest run exits: normally, with status zero. A failure or crash
+        // after reporting must fail this case (review follow-up on #141).
+        QVERIFY2(process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0,
+            QStringLiteral("scenario=%1 freeze probe child exited abnormally (status %2, crash %3)")
+                .arg(scenario).arg(process.exitCode())
+                .arg(process.exitStatus() == QProcess::CrashExit ? 1 : 0)
+                .toUtf8().constData());
         QString line;
         for (const auto &candidate : output.split(QLatin1Char('\n'))) {
             if (candidate.contains(QStringLiteral("FREEZEPROBE"))) {
@@ -20704,7 +20719,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
         };
         qDebug().noquote() << "freeze probe" << scenario << line;
-        QVERIFY2(field("settled") == "1", QStringLiteral("scenario=%1 layout never settled\n%2")
+        QVERIFY2(field("settled") == "1", QStringLiteral("scenario=%1 layout was not settled through the end of the monitor window\n%2")
             .arg(scenario, line).toUtf8().constData());
         QVERIFY2(field("settleMs").toInt() <= 5000, line.toUtf8().constData());
         QVERIFY2(field("maxRssKib").toLongLong() < 1500000, line.toUtf8().constData());
@@ -20769,7 +20784,13 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 15000);
         click(window, item(content, "stream-" + streamId));
         QTRY_COMPARE_WITH_TIMEOUT(controller.topics().size(), 2, 15000);
-        const auto monitor = [&] {
+        // Monitors the presented scene for windowMs. An optional scroll hook
+        // runs once early inside the window so the exercise happens inside
+        // the monitored scene (exordos review on #141: scrolling after the
+        // switch must be covered), and the record only reports settled when
+        // the layout stays settled through the END of the window.
+        const auto monitor = [&](int windowMs = 8000,
+                const std::function<void(QQuickItem *)> &scroll = nullptr) {
             auto *list = item(content, "messageList");
             QVERIFY(list);
             qint64 ticks = 0;
@@ -20790,9 +20811,15 @@ private slots:
             QElapsedTimer clock;
             clock.start();
             qint64 maxRss = 0;
-            int unstable = 0, lastMoveMs = 0, settleMs = -1;
+            int unstable = 0, lastMoveMs = 0, settleMs = -1, lateMoves = 0;
+            bool settledAtEnd = false;
             qreal previousY = -1e9, previousOrigin = -1e9, previousExtent = -1e9;
-            while (clock.elapsed() < 8000) {
+            bool scrolled = (scroll == nullptr);
+            while (clock.elapsed() < windowMs) {
+                if (!scrolled && clock.elapsed() >= 500) {
+                    scrolled = true;
+                    scroll(list);
+                }
                 QTest::qWait(50);
                 const qreal contentY = list->property("contentY").toReal();
                 const qreal originY = list->property("originY").toReal();
@@ -20803,18 +20830,46 @@ private slots:
                 if (moved) {
                     ++unstable;
                     lastMoveMs = clock.elapsed();
+                    if (settleMs >= 0)
+                        ++lateMoves;
                 }
                 previousY = contentY;
                 previousOrigin = originY;
                 previousExtent = extent;
                 maxRss = std::max(maxRss, rssKiB());
-                if (settleMs < 0 && !list->property("positioning").toBool() && !moved
-                        && clock.elapsed() - lastMoveMs >= 600)
+                // A quiet spell counts only while it holds: later movement
+                // both latches lateMoves and clears the end-of-window flag,
+                // so the record reports settled only when the layout stayed
+                // settled from the first quiet spell through the END of the
+                // monitor window (revalidation or a late image commit that
+                // restarts instability must clear it).
+                const bool quiet = !moved && !list->property("positioning").toBool()
+                    && clock.elapsed() - lastMoveMs >= 600;
+                if (settleMs < 0 && quiet)
                     settleMs = clock.elapsed();
+                settledAtEnd = settleMs >= 0 && lateMoves == 0 && quiet;
             }
             heartbeat.stop();
-            qInfo("FREEZEPROBE phase=%s settled=%d settleMs=%d unstable=%d ticks=%lld maxRssKib=%lld",
-                qPrintable(phase), settleMs >= 0 ? 1 : 0, settleMs, unstable, ticks, maxRss);
+            qInfo("FREEZEPROBE phase=%s settled=%d settleMs=%d unstable=%d lateMoves=%d ticks=%lld maxRssKib=%lld",
+                qPrintable(phase), settledAtEnd ? 1 : 0, settleMs, unstable, lateMoves, ticks, maxRss);
+        };
+        // Scrolling after opening/switching must be exercised inside the
+        // monitored scene (review follow-up on #141). The viewport must
+        // answer the position moves, and the monitor's own heartbeat and
+        // settled-at-end checks are the responsiveness proof after each
+        // scroll.
+        const auto scrollExercise = [](QQuickItem *list) {
+            QVERIFY(list);
+            QVERIFY2(list->property("contentHeight").toReal()
+                    > list->property("height").toReal() + 1.0,
+                "freeze probe list must be scrollable for the scroll exercise");
+            const qreal start = list->property("contentY").toReal();
+            list->setProperty("contentY", start - 240.0);
+            const bool scrolled = qAbs(list->property("contentY").toReal() - start) > 1.0;
+            QTest::qWait(150);
+            list->setProperty("contentY", list->property("contentY").toReal() + 240.0);
+            QTest::qWait(150);
+            QVERIFY2(scrolled, "the message list ignored the simulated scroll");
         };
         if (phase == "cache-seed") {
             // Persist one full topic page into the shared cache directory and
@@ -20846,11 +20901,13 @@ private slots:
         } else if (phase == "repeat-switch") {
             click(window, item(content, "topic-" + topicId));
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
+            monitor(2000, scrollExercise);
             click(window, item(content, "topic-" + secondTopicId));
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 20, 15000);
+            monitor(2000, scrollExercise);
             click(window, item(content, "topic-" + topicId));
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
-            monitor();
+            monitor(2000, scrollExercise);
         } else {
             QFAIL("unknown freeze probe phase");
         }
