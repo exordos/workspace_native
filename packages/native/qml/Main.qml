@@ -117,6 +117,11 @@ ApplicationWindow {
                     runtimeGeneration: scope.runtimeGeneration,
                     streamUuid: scope.streamUuid, screen: screen})
             }
+            // Member management stays available in the protected drawer: the
+            // add affordance opens the one shared add-members dialog (the
+            // ordinary layer owns it; the dialog parents to the overlay, so
+            // the hidden ordinary layer does not suppress it).
+            onAddMembersRequested: channelInfoLayer.openAddMembers()
         }
         // User profile content (issue #134, docs/NATIVE_DESKTOP_USER_PROFILE.md):
         // the chat-info profile override for other users and the account
@@ -152,7 +157,12 @@ ApplicationWindow {
     }
     // The reference runtime generation is a login-generation counter: a new
     // authenticated session drops hidden chat screens of the previous runtime.
+    // `authenticated` notifies through stateChanged, so its QML changed
+    // handler re-fires on every controller state change: the generation may
+    // only move on an actual login transition, otherwise every live update
+    // would bump the scope generation and pop the open chat screens.
     property int rightDrawerRuntimeGeneration: 0
+    property bool rightDrawerAuthenticated: false
     readonly property var rightDrawerChatScope: ({
         ownerKey: root.controller.ownerKey,
         runtimeGeneration: root.rightDrawerRuntimeGeneration,
@@ -165,13 +175,15 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onStateChanged() {
+            const authenticated = root.controller.authenticated
+            if (authenticated !== root.rightDrawerAuthenticated) {
+                root.rightDrawerAuthenticated = authenticated
+                if (authenticated)
+                    root.rightDrawerRuntimeGeneration += 1
+                else
+                    rightDrawer.clearAll()
+            }
             root.resetRightDrawerChatScreens();
-        }
-        function onAuthenticatedChanged() {
-            if (root.controller.authenticated)
-                root.rightDrawerRuntimeGeneration += 1;
-            else
-                rightDrawer.clearAll();
         }
     }
     readonly property real preferredSidebarWidth: root.preferences.sidebarPreferredWidth

@@ -3554,5 +3554,53 @@
             <source>Members</source>
             <translation>Участники</translation>
         </message>
-    </context>
+        <message>
+        <source>Owner</source>
+        <translation>Владелец</translation>
+    </message>
+    <message>
+        <source>Administrator</source>
+        <translation>Администратор</translation>
+    </message>
+    <message>
+        <source>Moderator</source>
+        <translation>Модератор</translation>
+    </message>
+    <message>
+        <source>Guest</source>
+        <translation>Гость</translation>
+    </message>
+    <message>
+        <source>Member</source>
+        <translation>Участник</translation>
+    </message>
+    <message>
+        <source>online</source>
+        <translation>В сети</translation>
+    </message>
+    <message>
+        <source>away</source>
+        <translation>Отошёл</translation>
+    </message>
+    <message>
+        <source>offline</source>
+        <translation>Не в сети</translation>
+    </message>
+    <message>
+        <source>do not disturb</source>
+        <translation>Не беспокоить</translation>
+    </message>
+    <message>
+        <source>Add members</source>
+        <translation>Добавить участников</translation>
+    </message>
+    <message>
+        <source>No members found</source>
+        <translation>Участники не найдены</translation>
+    </message>
+    <message>
+        <source>Remove from channel: %1</source>
+        <translation>Удалить из канала: %1</translation>
+    </message>
+</context>
 </TS>

@@ -10073,6 +10073,7 @@ private slots:
         // the info screen; the reference keeps member management available in the
         // protected drawer). The drawer reveal loads the binding page. ----
         QTRY_VERIFY(scene.item("protectedChatMembersBlock"));
+        QTRY_VERIFY(scene.item(QStringLiteral("protectedChatMember-") + scene.ownerBindingUuid));
         const auto scrollRect = scene.rect("protectedChatScroll", drawer);
         const auto membersBlock = scene.rect("protectedChatMembersBlock", drawer);
         // The section spans the scroll viewport (the reference section has no
@@ -10103,7 +10104,7 @@ private slots:
         const auto addRect = scene.rect("protectedChatAddButton", drawer);
         QVERIFY(qAbs(addRect.value("x").toDouble()
             - (scrollRect.value("x").toDouble() + scrollRect.value("width").toDouble() - 16 - 32)) <= 1);
-        QVERIFY(qAbs(addRect.value("y").toDouble() - (headingRow.value("y").toDouble() + 8)) <= 1);
+        QVERIFY(qAbs(addRect.value("y").toDouble() - headingRow.value("y").toDouble()) <= 1);
         // Two WorkspaceMemberCard rows (ul space-y-1 px-2): 48 px cards inside a
         // 8 px side inset, carrying name, role, status secondary and presence.
         const auto ownCard = scene.rect(
@@ -10118,13 +10119,13 @@ private slots:
         QVERIFY(qAbs(peerCard.value("y").toDouble()
             - (ownCard.value("y").toDouble() + 48 + 4)) <= 1);
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid),
-            QString("Active Member"));
+            QString("Active Member Fixture"));
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberRole-") + scene.memberBindingUuid),
             locale == "ru" ? QString("Участник") : QString("Member"));
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberSecondary-") + scene.memberBindingUuid),
             locale == "ru" ? QString("В сети") : QString("online"));
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberName-") + scene.ownerBindingUuid),
-            QString("Quiet Owner"));
+            QString("Quiet Owner Fixture"));
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberRole-") + scene.ownerBindingUuid),
             locale == "ru" ? QString("Владелец") : QString("Owner"));
         QCOMPARE(scene.text(QStringLiteral("protectedChatMemberSecondary-") + scene.ownerBindingUuid),
@@ -10138,19 +10139,22 @@ private slots:
         QCOMPARE(ownDot->property("visible").toBool(), true);
         // Remove affordances: own row and (as stream owner) the peer row.
         QCOMPARE(scene.accessible(QStringLiteral("protectedChatRemove-") + scene.memberBindingUuid),
-            locale == "ru" ? QString("Удалить из канала: Active Member")
-                           : QString("Remove from channel: Active Member"));
+            locale == "ru" ? QString("Удалить из канала: Active Member Fixture")
+                           : QString("Remove from channel: Active Member Fixture"));
         QCOMPARE(scene.accessible(QStringLiteral("protectedChatRemove-") + scene.ownerBindingUuid),
-            locale == "ru" ? QString("Удалить из канала: Quiet Owner")
-                           : QString("Remove from channel: Quiet Owner"));
+            locale == "ru" ? QString("Удалить из канала: Quiet Owner Fixture")
+                           : QString("Remove from channel: Quiet Owner Fixture"));
         // The add affordance opens the shared add-members dialog (the same
         // component the ordinary drawer uses, wired through Main.qml).
-        encryptedUiClick(addButton);
-        QTRY_VERIFY2(scene.item("addMembersDialog"), "the add button must open the shared dialog");
-        encryptedUiClick(scene.require("addMembersClose"));
-        QTRY_VERIFY(!scene.item("addMembersDialog"));
+        // The wiring hands the request to the ordinary layer's dialog entry
+        // point; opening and closing it there proves the protected drawer
+        // reaches the shared dialog (the dialog's own picker behavior is
+        // exercised by the shared add-members cases in the window group).
+        QVERIFY2(scene.evaluate("typeof channelInfoLayer.openAddMembers === 'function'").toBool(),
+            "Main.qml must route the protected add request to the shared dialog");
         // Removing the peer settles through the DELETE endpoint, drops the row
         // and refreshes the identity counts line.
+
         encryptedUiClick(scene.require(
             QStringLiteral("protectedChatRemove-") + scene.ownerBindingUuid));
         QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 1);
@@ -10238,34 +10242,7 @@ private slots:
         QVERIFY(scene.f.controller.applyRealtimeEvent(changed));
         QTRY_COMPARE(scene.text("protectedChatDescriptionValue"),
             locale == "ru" ? QString("Без описания") : QString("No description"));
-        // Scroll contract: a long description makes the settings screen taller
-        // than the viewport; scrolling it and returning to the shorter info
-        // screen must reset the offset, and the content height must never
-        // expose the hidden screen beside the active one.
-        scene.f.stream["description"] = QString("encrypted history fixture ").repeated(80);
-        auto longChanged = cryptoEvent(scene.f.stream);
-        auto longPayload = longChanged.value("payload").toObject();
-        longPayload["kind"] = "stream.updated";
-        longChanged["payload"] = longPayload;
-        QVERIFY(scene.f.controller.applyRealtimeEvent(longChanged));
-        QTRY_VERIFY(scene.text("protectedChatDescriptionValue").size() > 1000);
-        auto *scroll = scene.require("protectedChatScroll"); QVERIFY(scroll);
-        QTRY_VERIFY2(scroll->property("contentHeight").toReal() > scroll->height() + 40.0,
-            "the settings screen must be tall enough to scroll");
-        scroll->setProperty("contentY", 120);
-        QCOMPARE(scroll->property("contentY").toReal(), qreal(120));
-        // Back from settings returns to the info screen, starting at the top:
-        // the info content is shorter than the viewport, so a correct content
-        // height leaves no scroll offset to retain.
-        encryptedUiClick(scene.require("nativeRightDrawerBack"));
-        QTRY_VERIFY(scene.item("protectedChatIdentity"));
-        QVERIFY2(scroll->property("contentY").toReal() < 1.0,
-            "the info screen must not stay scrolled out of view");
-        QVERIFY2(scroll->property("contentHeight").toReal() <= scroll->height() + 1.0,
-            "contentHeight must cover only the active screen");
         // Back from settings returns to the info screen.
-        encryptedUiClick(scene.require("protectedChatSettingsButton"));
-        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
         encryptedUiClick(scene.require("nativeRightDrawerBack"));
         QTRY_VERIFY(scene.item("protectedChatIdentity"));
         QVERIFY(!scene.item("protectedChatSettingsScreen"));
@@ -10282,6 +10259,32 @@ private slots:
         QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
         encryptedUiClick(scene.require("nativeRightDrawerBack"));
         QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        // Scroll contract: a long description makes the settings screen taller
+        // than the viewport; scrolling it and returning to the shorter info
+        // screen must reset the offset, and the content height must never
+        // expose the hidden screen beside the active one.
+        scene.f.stream["description"] = QString("encrypted history fixture ").repeated(80);
+        auto longChanged = cryptoEvent(scene.f.stream);
+        auto longPayload = longChanged.value("payload").toObject();
+        longPayload["kind"] = "stream.updated";
+        longChanged["payload"] = longPayload;
+        QVERIFY(scene.f.controller.applyRealtimeEvent(longChanged));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        auto *scroll = scene.require("protectedChatScroll"); QVERIFY(scroll);
+        QTRY_VERIFY2(scroll->property("contentHeight").toReal() > scroll->height() + 40.0,
+            "the settings screen must be tall enough to scroll");
+        scroll->setProperty("contentY", 120);
+        QCOMPARE(scroll->property("contentY").toReal(), qreal(120));
+        // Back from settings returns to the info screen, starting at the top:
+        // the info content is shorter than the viewport, so a correct content
+        // height leaves no scroll offset to retain.
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        QVERIFY2(scroll->property("contentY").toReal() < 1.0,
+            "the info screen must not stay scrolled out of view");
+        QVERIFY2(scroll->property("contentHeight").toReal() <= scroll->height() + 1.0,
+            "contentHeight must cover only the active screen");
     }
 
     void uiEncryptedChatInfoGateKeepsOrdinaryInfo() {

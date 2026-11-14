@@ -20,9 +20,16 @@ Item {
     // "info" | "settings" | "key" | "local-key" (encrypted-chat-info.types.ts:3).
     property string chatScreen: "info"
     signal screenChange(string screen)
+    // The member add affordance routes to the shared add-members dialog through
+    // Main.qml (the ordinary layer owns the one dialog instance).
+    signal addMembersRequested()
     objectName: "encryptedChatInfoLayer"
     anchors.fill: parent
     clip: true
+    // Reset the scroll position whenever the active screen changes: the flows
+    // have different heights, and a retained offset can leave the shorter
+    // screen scrolled out of view (reference remounts per screen).
+    onChatScreenChanged: pageScroll.contentY = 0
 
     // The shell reveals this layer only while it is on top, so a hidden layer
     // never fetches (#197). Reveal re-reads the info projection like the
@@ -75,13 +82,46 @@ Item {
         return participantsLabel(page.participantsCount) + ", " + page.onlineLabel(page.onlineCount);
     }
 
+    // Member card helpers (mirrors the ordinary drawer's WorkspaceMemberCard
+    // projection helpers - resolveWorkspaceRoleLabel / resolveWorkspaceStatusLabel).
+    function roleLabel(role) {
+        if (role === "owner") return qsTr("Owner");
+        if (role === "administrator") return qsTr("Administrator");
+        if (role === "moderator") return qsTr("Moderator");
+        if (role === "guest") return qsTr("Guest");
+        if (role === "member") return qsTr("Member");
+        return "";
+    }
+    function presenceLabel(status) {
+        if (status === "active") return qsTr("online");
+        if (status === "idle") return qsTr("away");
+        if (status === "offline") return qsTr("offline");
+        if (status === "do_not_disturb") return qsTr("do not disturb");
+        return "";
+    }
+    function presenceColor(presence) {
+        if (presence === "active") return page.colors["indicator-green"];
+        if (presence === "idle") return page.colors["indicator-orange"];
+        return page.colors["text-muted"];
+    }
+    // resolveWorkspaceStatusLabel(status) ?? email.
+    function memberSecondary(status, email) {
+        const label = page.presenceLabel(status);
+        return label.length > 0 ? label : email;
+    }
+
     Flickable {
         id: pageScroll
         objectName: "protectedChatScroll"
         anchors.fill: parent
         clip: true
         contentWidth: width
-        contentHeight: Math.max(infoFlow.y + infoFlow.height, settingsFlow.y + settingsFlow.height) + 16
+        // Size the content to the active screen only: including the hidden
+        // screen's flow would let the shorter screen scroll past its end.
+        contentHeight: (page.infoScreen
+                ? Math.max(infoFlow.y + infoFlow.height, membersSection.y + membersSection.height)
+                : Math.max(settingsFlow.y + settingsFlow.height,
+                    page.keyScreen || page.localKeyScreen ? 16 : 0)) + 16
         boundsBehavior: Flickable.StopAtBounds
 
         // ---- Info screen (encrypted-chat-info.ui.tsx:562-627) ----
@@ -217,6 +257,224 @@ Item {
                         opacity: settingsTile.down ? 0.8 : 1
                     }
                     onClicked: page.screenChange("settings")
+                }
+            }
+        }
+
+        // ---- Member management (reference MemberList :416-480, the last child
+        // of the reference info screen). The section spans the scroll viewport
+        // (the reference section carries no own padding): border-t pt-5 (20)
+        // with a mb-3 h-8 px-4 text-base heading, a space-y-1 px-2 card list
+        // and a px-4 text-xs error line. ----
+        Item {
+            id: membersSection
+            objectName: "protectedChatMembersBlock"
+            x: 0
+            y: infoFlow.y + infoFlow.height + 20
+            width: pageScroll.width
+            visible: page.infoScreen
+
+            Rectangle {
+                objectName: "protectedChatMembersDivider"
+                width: parent.width
+                height: 1
+                color: page.colors["border-subtle"]
+            }
+            Column {
+                id: membersFlow
+                y: 21 // border-t (1 px) + pt-5 (20 px)
+                width: parent.width
+                spacing: 12 // h3 mb-3
+                Item {
+                    objectName: "protectedChatMembersHeadingRow"
+                    width: parent.width
+                    height: 32
+                    Text {
+                        objectName: "protectedChatMembersHeading"
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Members")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 16
+                        font.weight: Font.Medium
+                        color: page.colors["text-primary"]
+                        Accessible.role: Accessible.Heading
+                    }
+                    NativeIconButton {
+                        objectName: "protectedChatAddButton"
+                        anchors.right: parent.right
+                        anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: page.controller.channelInfoIsOwner
+                        colors: page.colors
+                        width: 32; height: 32
+                        glyphSize: 24
+                        asset: "person_add.svg"
+                        help: qsTr("Add members")
+                        Accessible.name: qsTr("Add members")
+                        iconColor: hovered ? page.colors["text-primary"] : page.colors["text-secondary"]
+                        background: Rectangle {
+                            radius: 6
+                            color: parent.hovered ? page.colors["card-bg-active"] : "transparent"
+                            border.width: parent.visualFocus ? 1 : 0
+                            border.color: page.colors.accent
+                        }
+                        onClicked: page.addMembersRequested()
+                    }
+                }
+                Text {
+                    objectName: "protectedChatNoMembers"
+                    visible: page.controller.channelInfoMembers.length === 0
+                    width: parent.width
+                    leftPadding: 16
+                    text: qsTr("No members found")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 14
+                    color: page.colors["text-muted"]
+                }
+                Column {
+                    id: protectedMemberRows
+                    objectName: "protectedChatMemberRows"
+                    x: 8
+                    width: parent.width - 16
+                    spacing: 4
+                    Repeater {
+                        model: page.controller.channelInfoMembers
+                        // Same WorkspaceMemberCard contract the ordinary drawer
+                        // measures: rounded-lg bg-card-bg px-3 py-2 gap-3, sm
+                        // avatar with presence dot, name 14 / role 10 /
+                        // secondary 11, remove button 24 visible on row hover.
+                        delegate: Rectangle {
+                            id: protectedMemberCard
+                            required property var modelData
+                            objectName: "protectedChatMember-" + modelData.bindingUuid
+                            width: protectedMemberRows.width
+                            height: 48
+                            radius: 8
+                            color: protectedMemberHover.containsMouse
+                                ? page.colors["card-bg-active"] : page.colors["card-bg"]
+                            property bool removing:
+                                page.controller.channelInfoRemovingMembers.indexOf(modelData.userUuid) >= 0
+                            MouseArea {
+                                id: protectedMemberHover
+                                anchors.fill: parent
+                                acceptedButtons: Qt.NoButton
+                                hoverEnabled: true
+                            }
+                            Rectangle {
+                                objectName: "protectedChatMemberAvatar-" + protectedMemberCard.modelData.bindingUuid
+                                x: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 32; height: 32
+                                radius: 16
+                                color: page.colors["bg-elevated"]
+                                border.width: 1
+                                border.color: page.colors["border-subtle"]
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: protectedMemberCard.modelData.initial
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    color: page.colors["text-primary"]
+                                }
+                                Rectangle {
+                                    objectName: "protectedChatMemberPresence-" + protectedMemberCard.modelData.bindingUuid
+                                    visible: protectedMemberCard.modelData.presence.length > 0
+                                    width: 8; height: 8
+                                    radius: 4
+                                    x: 32 - width - 1
+                                    y: 32 - height - 1
+                                    color: page.presenceColor(protectedMemberCard.modelData.presence)
+                                    border.width: 2
+                                    border.color: protectedMemberCard.color
+                                }
+                            }
+                            Text {
+                                id: protectedMemberRoleMeasure
+                                visible: false
+                                text: page.roleLabel(protectedMemberCard.modelData.role)
+                                textFormat: Text.PlainText
+                                font.pixelSize: 10
+                            }
+                            Text {
+                                id: protectedMemberName
+                                objectName: "protectedChatMemberName-" + protectedMemberCard.modelData.bindingUuid
+                                y: 9
+                                x: 56
+                                width: Math.max(0, protectedMemberCard.width - 56 - 24 - 6
+                                    - (protectedMemberRoleMeasure.text.length > 0
+                                        ? protectedMemberRoleMeasure.width + 6 : 0))
+                                text: protectedMemberCard.modelData.name
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                color: page.colors["text-primary"]
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                objectName: "protectedChatMemberRole-" + protectedMemberCard.modelData.bindingUuid
+                                visible: protectedMemberRoleMeasure.text.length > 0
+                                text: protectedMemberRoleMeasure.text
+                                x: 56 + protectedMemberName.width + 6
+                                y: 12
+                                textFormat: Text.PlainText
+                                font.pixelSize: 10
+                                color: page.colors["text-secondary"]
+                            }
+                            Text {
+                                objectName: "protectedChatMemberSecondary-" + protectedMemberCard.modelData.bindingUuid
+                                y: 26
+                                x: 56
+                                width: protectedMemberCard.width - 56 - 12
+                                text: page.memberSecondary(protectedMemberCard.modelData.status,
+                                    protectedMemberCard.modelData.email)
+                                textFormat: Text.PlainText
+                                font.pixelSize: 11
+                                color: page.colors["text-secondary"]
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                id: protectedMemberRemove
+                                objectName: "protectedChatRemove-" + protectedMemberCard.modelData.bindingUuid
+                                visible: protectedMemberCard.modelData.canRemove
+                                width: 24; height: 24
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                enabled: !protectedMemberCard.removing
+                                opacity: enabled ? (protectedMemberHover.containsMouse ? 1.0 : 0.0) : 0.4
+                                Behavior on opacity { NumberAnimation { duration: 120 } }
+                                display: AbstractButton.IconOnly
+                                padding: 0
+                                hoverEnabled: true
+                                icon.source: "qrc:/workspace/icons/close.svg"
+                                icon.width: 14
+                                icon.height: 14
+                                icon.color: protectedMemberRemove.hovered && protectedMemberRemove.enabled
+                                    ? page.colors["notice-base"] : page.colors["text-muted"]
+                                Accessible.name: qsTr("Remove from channel: %1")
+                                    .arg(protectedMemberCard.modelData.name)
+                                background: Rectangle {
+                                    radius: 4
+                                    color: protectedMemberRemove.hovered && protectedMemberRemove.enabled
+                                        ? page.colors["bg"] : "transparent"
+                                }
+                                onClicked: page.controller.removeChannelInfoMember(
+                                    protectedMemberCard.modelData.bindingUuid)
+                            }
+                        }
+                    }
+                }
+                Text {
+                    objectName: "protectedChatMemberError"
+                    visible: text.length > 0
+                    width: parent.width
+                    leftPadding: 16
+                    text: page.controller.channelInfoMemberError
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    color: page.colors["notice-base"]
                 }
             }
         }
