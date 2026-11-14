@@ -3423,6 +3423,14 @@
                 <numerusform>%n участников</numerusform>
             </translation>
         </message>
+        <message numerus="yes">
+            <source>%n participants</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
         <message>
             <source>You voted</source>
             <translation>Вы проголосовали</translation>
