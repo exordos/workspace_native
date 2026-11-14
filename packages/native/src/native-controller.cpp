@@ -277,6 +277,9 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
             m_chatPrepared.clear(); m_chatPreparedUnits = 0;
             m_chatCurrentKeyState = ChatKeyAvailability::Unknown;
             m_chatRejectedWindow.clear(); m_chatPreparingWindow.clear(); ++m_chatPreparation;
+            // Issue #222 review fix r2: fetched encrypted quote origins live
+            // outside the window, so this event is their only re-decrypt cue.
+            refreshQuoteOriginDecryptions();
             if (key == m_chatRequestKey && chatVaultMatches()) {
                 auto stored = m_chatKeys->read(m_chatKeys->lease(), {stream, key});
                 if (stored.failure != NativeChatKeyVault::Failure::None || stored.value.bytes.isEmpty()) {
@@ -308,6 +311,9 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
     }
     checkChatLifetime();
     if (!lookupGuard) return;
+    // Issue #222 review fix r2: quote records fetched before the vault existed
+    // (or across a vault swap) decrypt against the newly bound key material.
+    refreshQuoteOriginDecryptions();
     scheduleChatPreparation();
     if (!lookupGuard) return;
     const QPointer<NativeController> guard(this); emit stateChanged();
@@ -9075,11 +9081,23 @@ QVariantList NativeController::messages() const
                 if (record->missing) {
                     quoteStatus = QStringLiteral("unavailable");
                 } else if (record->decrypt) {
-                    // Issue #222 deviation D1: an encrypted origin fetched outside the
-                    // loaded windows keeps the locked presentation until the origin
-                    // itself is loaded (the loaded-window branch above then wins).
-                    quoteStatus = QStringLiteral("locked");
+                    // Issue #222 review fix r2: an encrypted origin fetched
+                    // outside the loaded windows projects the same decrypt
+                    // states as the window branch above: locked until key
+                    // material exists, then ready with the decrypted text or
+                    // error, from the payload the lookup retained.
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
+                    if (!canReadChat) {
+                        quoteStatus = QStringLiteral("locked");
+                    } else if (!record->hasPrepared) {
+                        quoteStatus = QStringLiteral("preparing");
+                    } else if (record->prepared.state == ChatKeyAvailability::Present) {
+                        quoteStatus = QStringLiteral("ready");
+                        quoteContent = record->prepared.content;
+                    } else {
+                        quoteStatus = record->prepared.state == ChatKeyAvailability::Missing
+                            ? QStringLiteral("locked") : QStringLiteral("error");
+                    }
                 } else {
                     quoteStatus = QStringLiteral("ready");
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
@@ -11753,12 +11771,21 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
                 record.authorId = parsed->author;
                 record.content = parsed->content;
-            } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee") {
-                // Issue #222: a durable encrypted origin is not an authoritative miss
-                // (the reference keeps it decrypt-aware). The row renders the locked
-                // "Key required" state until the chat-prepared pipeline covers it.
+            } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee" && parsed->crypto) {
+                // Issue #222 review fix r2: a durable encrypted origin is not an
+                // authoritative miss, and the lookup retains its decryptable
+                // payload instead of dropping it. The record runs the same
+                // chat-prepared decrypt path as window rows right away, so the
+                // quote frame reaches ready/error without waiting for the
+                // origin to load into a conversation window.
                 record.authorId = parsed->author;
                 record.decrypt = true;
+                record.origin = *parsed;
+                if (self->chatReadAllowed() && self->m_chatKeys
+                        && sameChatLease(self->m_chatKeys->lease(), self->m_chatVaultLease)) {
+                    record.prepared = self->decryptChatMessageRow(*parsed);
+                    record.hasPrepared = true;
+                }
             } else {
                 record.missing = true;
             }
@@ -11771,6 +11798,24 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
                 emit self->replySessionChanged();
         });
     }, Qt::QueuedConnection);
+}
+
+// Issue #222 review fix r2: keys that land after a fetched quote lookup must
+// move the encrypted origin's quote frame without waiting for the origin to
+// load into a conversation window. Re-runs the same chat-prepared decrypt
+// path (decryptChatMessageRow, the #221 single-row presentation helper) for
+// every decrypt-pending quote record and publishes the fresh state.
+void NativeController::refreshQuoteOriginDecryptions()
+{
+    if (m_quotes.isEmpty()) return;
+    const bool decryptable = chatReadAllowed() && m_chatKeys
+        && sameChatLease(m_chatKeys->lease(), m_chatVaultLease);
+    for (auto it = m_quotes.begin(); it != m_quotes.end(); ++it) {
+        if (!it->decrypt || !it->origin || !it->origin->crypto) continue;
+        if (!decryptable) { it->hasPrepared = false; it->prepared = {}; continue; }
+        it->prepared = decryptChatMessageRow(*it->origin);
+        it->hasPrepared = true;
+    }
 }
 
 void NativeController::resetReadState()
