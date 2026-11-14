@@ -905,30 +905,35 @@ static QByteArray freezeProbeStandalonePng()
 // #141: parent-side parser for the FREEZEPROBE report lines the probe child
 // prints (one line per monitored window: repeat-switch opens three). Returns
 // the reasons the child's output must fail the freeze probe case; empty
-// means the reports are acceptable.
+// means the reports are acceptable. EVERY report the child emitted must
+// pass: a later monitor window failing its heartbeat or settle checks must
+// fail the case, not just the first window's checks (exordos review on #141).
 static QStringList freezeProbeReportProblems(const QString &output)
 {
-    QStringList problems;
-    QString line;
-    for (const auto &candidate : output.split(QLatin1Char('\n'))) {
-        if (candidate.contains(QStringLiteral("FREEZEPROBE"))) {
-            line = candidate;
-            break;
-        }
-    }
-    if (line.isEmpty())
+    QStringList reports;
+    for (const auto &candidate : output.split(QLatin1Char('\n')))
+        if (candidate.contains(QStringLiteral("FREEZEPROBE")))
+            reports << candidate;
+    if (reports.isEmpty())
         return {QStringLiteral("child produced no FREEZEPROBE report:\n%1").arg(output)};
-    const auto field = [&line](const QString &key) {
-        return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
-    };
-    if (field(QStringLiteral("settled")) != QLatin1String("1"))
-        problems << QStringLiteral("layout was not settled through the end of the monitor window: %1").arg(line);
-    if (field(QStringLiteral("settleMs")).toInt() > 5000)
-        problems << QStringLiteral("layout settled slower than the 5s budget: %1").arg(line);
-    if (field(QStringLiteral("maxRssKib")).toLongLong() >= 1500000)
-        problems << QStringLiteral("child peaked over the 1.5 GiB memory budget: %1").arg(line);
-    if (field(QStringLiteral("ticks")).toLongLong() < 50)
-        problems << QStringLiteral("event loop heartbeat starved (fewer than 50 ticks): %1").arg(line);
+    QStringList problems;
+    for (int i = 0; i < reports.size(); ++i) {
+        const QString &line = reports.at(i);
+        const auto field = [&line](const QString &key) {
+            return QRegularExpression(QStringLiteral("%1=(-?[0-9]+)").arg(key)).match(line).captured(1);
+        };
+        const QString tag = reports.size() > 1
+            ? QStringLiteral("report %1/%2: ").arg(i + 1).arg(reports.size())
+            : QString();
+        if (field(QStringLiteral("settled")) != QLatin1String("1"))
+            problems << tag + QStringLiteral("layout was not settled through the end of the monitor window: %1").arg(line);
+        if (field(QStringLiteral("settleMs")).toInt() > 5000)
+            problems << tag + QStringLiteral("layout settled slower than the 5s budget: %1").arg(line);
+        if (field(QStringLiteral("maxRssKib")).toLongLong() >= 1500000)
+            problems << tag + QStringLiteral("child peaked over the 1.5 GiB memory budget: %1").arg(line);
+        if (field(QStringLiteral("ticks")).toLongLong() < 50)
+            problems << tag + QStringLiteral("event loop heartbeat starved (fewer than 50 ticks): %1").arg(line);
+    }
     return problems;
 }
 
