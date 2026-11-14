@@ -50,6 +50,20 @@ public:
     struct Completion { QString localId; QString requestMessage; QString responseMessage; Outcome outcome = Outcome::Rejected; };
     struct PendingResult { Failure failure = Failure::Unavailable; QVector<PendingRequest> values; };
     struct CompletionResult { Failure failure = Failure::Unavailable; std::optional<Completion> value; };
+    // Durable pre-dispatch record for an encrypted channel creation: the group
+    // key plus the identities needed to recover the attempt after a restart
+    // (the idempotent stream-creation uuid and the generation uuid the server
+    // echoes). Written before the stream POST and cleared only after the
+    // canonical echo verified and the key committed.
+    struct CreateStage {
+        QString attempt;
+        QString key;
+        QByteArray groupKey;
+        qint64 createdAt = 0;
+        void clearSecrets();
+    };
+    struct CreateStageResult { Failure failure = Failure::Unavailable; std::optional<CreateStage> value; };
+    struct CreateStageListResult { Failure failure = Failure::Unavailable; QVector<CreateStage> values; };
     using Opened = std::function<void(Failure)>;
 
     explicit NativeChatKeyVault(QString directory = {}, SessionSecretStore *backend = nullptr,
@@ -76,6 +90,10 @@ public:
     CompletionResult requestCompletionByMessage(const Lease &lease, const Address &address, const QString &messageId);
     Failure completeRequest(const Lease &lease, const Address &address, const Completion &completion,
                             const QByteArray &groupKey = {}, bool replaceExisting = false);
+    Failure putCreateStage(const Lease &lease, const CreateStage &stage);
+    CreateStageResult readCreateStage(const Lease &lease, const QString &attempt);
+    CreateStageListResult createStages(const Lease &lease);
+    Failure clearCreateStage(const Lease &lease, const QString &attempt);
 
     static constexpr qsizetype MaximumRecordBytes = 2048;
     static constexpr qint64 MaximumDatabaseBytes = 64 * 1024 * 1024;
@@ -83,6 +101,7 @@ public:
     static constexpr qsizetype MaximumRequestRecordBytes = 1024 * 1024;
     static constexpr qsizetype MaximumRecoveryEnvelopeBytes = 512 * 1024;
     static constexpr qint64 MaximumPendingBytes = 8 * 1024 * 1024;
+    static constexpr qsizetype MaximumCreateStages = 32;
 
 signals:
     // Material/deletion changes are published only after their transaction commits.
@@ -104,6 +123,9 @@ private:
     std::optional<PendingRequest> readPending(const Address &address, const QString &id, Failure &failure);
     CompletionResult readCompletion(const QString &record);
     Failure requestCapacity(const Address &address, const QString &record, qsizetype encodedBytes);
+    QString createStagePrefix() const;
+    QString createStageAddress(const QString &attempt) const;
+    std::optional<CreateStage> readCreateStageRecord(const QString &attempt, Failure &failure);
     Failure finishTransaction(Failure result);
     void resetStorage();
     void startNextOpen();

@@ -750,4 +750,127 @@ Failure NativeChatKeyVault::markForSending(const Lease &value, const Address &ad
     return finishTransaction(failure);
 }
 
+void NativeChatKeyVault::CreateStage::clearSecrets()
+{
+    cleanse(groupKey);
+}
+
+QString NativeChatKeyVault::createStagePrefix() const
+{
+    auto value = QString::fromUtf8(QJsonDocument(QJsonArray{QLatin1String("create-stage"), m_device.id})
+        .toJson(QJsonDocument::Compact));
+    value.chop(1); return value + ',';
+}
+
+QString NativeChatKeyVault::createStageAddress(const QString &attempt) const
+{
+    return isUuid(attempt) ? createStagePrefix() + '"' + attempt.toLower() + "\"]" : QString{};
+}
+
+namespace {
+QByteArray encodeCreateStage(const NativeChatKeyVault::CreateStage &value)
+{
+    return encode({{"attempt", value.attempt}, {"key", value.key},
+        {"groupKey", QString::fromLatin1(value.groupKey.toBase64())}, {"createdAt", value.createdAt}});
+}
+
+std::optional<NativeChatKeyVault::CreateStage> decodeCreateStage(const QByteArray &bytes)
+{
+    const auto object = QJsonDocument::fromJson(bytes).object();
+    const auto created = object.value("createdAt").toDouble(-1);
+    if (!validInteger(created)) return {};
+    NativeChatKeyVault::CreateStage stage{object.value("attempt").toString(), object.value("key").toString(),
+        decodedBytes(object.value("groupKey")), qint64(created)};
+    if (!isUuid(stage.attempt) || !isUuid(stage.key) || stage.groupKey.size() != 32) return {};
+    return std::move(stage);
+}
+} // namespace
+
+std::optional<NativeChatKeyVault::CreateStage> NativeChatKeyVault::readCreateStageRecord(const QString &attempt, Failure &failure)
+{
+    auto bytes = readRecord(createStageAddress(attempt), failure);
+    if (!bytes) return {};
+    auto stage = decodeCreateStage(*bytes); cleanse(*bytes);
+    if (!stage || stage->attempt != attempt.toLower()) { failure = Failure::Corrupt; return {}; }
+    return stage;
+}
+
+Failure NativeChatKeyVault::putCreateStage(const Lease &value, const CreateStage &stage)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = createStageAddress(stage.attempt);
+    if (record.isEmpty() || !isUuid(stage.key) || stage.groupKey.size() != 32) return Failure::InvalidKey;
+    if (stage.createdAt < 0 || quint64(stage.createdAt) > MaximumRevision) return Failure::InvalidKey;
+    auto captured = stage; captured.attempt = captured.attempt.toLower(); captured.key = captured.key.toLower();
+    auto encoded = encodeCreateStage(captured);
+    if (encoded.size() > MaximumRecordBytes) { cleanse(encoded); return Failure::Capacity; }
+    if (!m_database.transaction()) { cleanse(encoded); return Failure::Unavailable; }
+    Failure result = Failure::None;
+    auto old = readCreateStageRecord(captured.attempt, result);
+    // The staged attempt is immutable: a different key or identity for the
+    // same attempt is a conflict, an identical rewrite is idempotent.
+    if (result == Failure::None && old && encodeCreateStage(*old) != encoded) result = Failure::Conflict;
+    if (result == Failure::None && !old) {
+        const auto prefix = createStagePrefix();
+        QSqlQuery query(m_database);
+        query.prepare("SELECT COUNT(*) FROM secrets WHERE address>=? AND address<? AND address!=?");
+        query.addBindValue(prefix); query.addBindValue(prefix.chopped(1) + '-'); query.addBindValue(record);
+        if (!query.exec() || !query.next()) result = Failure::Unavailable;
+        else if (query.value(0).toLongLong() >= MaximumCreateStages) result = Failure::Capacity;
+    }
+    if (result == Failure::None) result = writeRecord(record, encoded);
+    cleanse(encoded);
+    if (old) cleanse(old->groupKey);
+    return finishTransaction(result);
+}
+
+NativeChatKeyVault::CreateStageResult NativeChatKeyVault::readCreateStage(const Lease &value, const QString &attempt)
+{
+    if (!accepts(value)) return {Failure::Superseded, {}};
+    if (createStageAddress(attempt).isEmpty()) return {Failure::InvalidAddress, {}};
+    Failure failure = Failure::None;
+    auto stage = readCreateStageRecord(attempt.toLower(), failure);
+    if (!stage && failure == Failure::None) failure = Failure::MissingKey;
+    return {failure, std::move(stage)};
+}
+
+NativeChatKeyVault::CreateStageListResult NativeChatKeyVault::createStages(const Lease &value)
+{
+    if (!accepts(value)) return {Failure::Superseded, {}};
+    const auto prefix = createStagePrefix();
+    QSqlQuery query(m_database);
+    query.prepare("SELECT address FROM secrets WHERE address>=? AND address<? ORDER BY address LIMIT ?");
+    query.addBindValue(prefix); query.addBindValue(prefix.chopped(1) + '-'); query.addBindValue(MaximumCreateStages + 1);
+    if (!query.exec()) return {Failure::Unavailable, {}};
+    QList<QString> records;
+    while (query.next()) {
+        records.append(query.value(0).toString());
+        if (records.size() > MaximumCreateStages) return {Failure::Capacity, {}};
+    }
+    query.finish();
+    CreateStageListResult result{Failure::None, {}};
+    for (const auto &record : records) {
+        Failure failure = Failure::None;
+        auto bytes = readRecord(record, failure);
+        if (!bytes) return {failure == Failure::None ? Failure::Corrupt : failure, {}};
+        auto stage = decodeCreateStage(*bytes); cleanse(*bytes);
+        if (!stage || createStageAddress(stage->attempt) != record) return {Failure::Corrupt, {}};
+        result.values.append(std::move(*stage));
+    }
+    return result;
+}
+
+Failure NativeChatKeyVault::clearCreateStage(const Lease &value, const QString &attempt)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = createStageAddress(attempt);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    QSqlQuery query(m_database);
+    query.prepare("DELETE FROM secrets WHERE address=?");
+    query.addBindValue(record);
+    Failure result = query.exec() ? Failure::None : Failure::Unavailable;
+    return finishTransaction(result);
+}
+
 } // namespace workspace
