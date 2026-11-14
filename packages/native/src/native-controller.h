@@ -482,8 +482,12 @@ public:
     // replace-the-active-tab semantics, addReplyTab appends a new tab. The
     // composer draft mirrors the active tab's answer while the session is open,
     // and send() composes every "urn:quote" block plus answer in tab order.
-    Q_INVOKABLE bool beginReply(const QString &id);
-    Q_INVOKABLE bool addReplyTab(const QString &id);
+    // selectedText carries the bubble-menu selection (issue #218); a selection
+    // that is whitespace-only or taken from a body containing encrypted
+    // fragments is dropped, falling back to the whole-message quote exactly
+    // like chat-page-workspace.ui.tsx:2747-2751 at workspace_ui 230e02b8.
+    Q_INVOKABLE bool beginReply(const QString &id, const QString &selectedText = {});
+    Q_INVOKABLE bool addReplyTab(const QString &id, const QString &selectedText = {});
     Q_INVOKABLE bool selectReplyTab(const QString &tabId);
     Q_INVOKABLE void removeReplyTab(const QString &tabId);
     Q_INVOKABLE bool reorderReplyTab(const QString &tabId, int destinationIndex);
@@ -1259,6 +1263,11 @@ private:
     // empty and serialize their quote line from the quoted message.
     struct ReplyTab {
         QString id, message, createdAt, answer, reference;
+        // ReplyTab.selectedText is the fragment selected inside the quoted
+        // bubble when the reply started (issue #218, workspace_ui 230e02b8
+        // workspace-reply types: tab.selectedText). It wins the excerpt and
+        // the wire quote carries it as ?text=; empty means "quote whole".
+        QString selectedText;
         // ReplyTab.fallbackAuthor is the sender label parsed from the restored quote
         // line; it carries the chip author while the quoted origin is unresolved
         // (pending lookup) or when the lookup reports the origin is unavailable.

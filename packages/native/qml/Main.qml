@@ -464,6 +464,11 @@ ApplicationWindow {
     property string sidebarQuery: ""
     property date calendarDate: new Date()
     property string menuMessageId: ""
+    // Snapshot of the body selection at the moment the bubble menu opened
+    // (workspace-message-body-interactions.hook.ts:364,383 at 230e02b8): the
+    // menu Reply quotes exactly what was selected when the menu appeared,
+    // even if the live selection is lost before the click lands.
+    property string menuSelectedText: ""
     property string menuMessageContent: ""
     property bool menuMessageOwn: false
     property Item menuMessageAnchor: null
@@ -1064,13 +1069,14 @@ ApplicationWindow {
         onTriggered: root.calendarDate = new Date()
     }
 
-    function openMessageActions(message, anchor) {
+    function openMessageActions(message, anchor, selectedText) {
         if (root.encryptionControlLabel(String(message.kind)).length)
             return;
         root.menuOwner = root.controller.ownerKey;
         root.menuStream = root.controller.selectedStream;
         root.menuTopic = root.controller.selectedTopic;
         root.menuMessageId = message.id;
+        root.menuSelectedText = String(selectedText || "");
         root.menuMessageContent = message.content;
         root.menuMessageOwn = Boolean(message.own);
         root.menuMessageAnchor = anchor || null;
@@ -4375,7 +4381,10 @@ ApplicationWindow {
                             if (quoteBody.visible) quoteBody.forceLayout();
                             messageQuoteContents.forceLayout();
                         }
-                        messageBody.forceLayout();
+                        // Issue #218: the body is a TextEdit now (no forceLayout
+                        // slot); its document lays out inside the same polish
+                        // pass that settles the content Column below.
+                        if (messageBody.forceLayout) messageBody.forceLayout();
                         mediaMessageBody.forceLayout();
                         bubbleContent.forceLayout();
                     }
@@ -5093,24 +5102,35 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            Text {
+                            TextEdit {
                                 id: messageBody
                                 visible: !messageRow.hasInlineImages && !messageRow.encryptedLocked && messageRow.incomingKeyRequest === null && !messageRow.keyResponse && messageRow.modelData.kind !== "key_announced"
                                     && !messageRow.isCallCard
                                 horizontalAlignment: messageRow.keyControl ? Text.AlignHCenter : Text.AlignLeft
                                 objectName: messageRow.hasInlineImages ? "" : "message-content-" + messageRow.modelData.id
                                 width: parent.width
-                                text: messageRow.keyControl ? messageRow.controlLabel : messageRow.displayHtml
-                                textFormat: messageRow.keyControl ? Text.PlainText : Text.RichText
+                                text: messageRow.keyControl ? messageRow.controlLabel
+                                    // The reference body keeps a fixed 20 px line box
+                                    // (Text.lineHeightMode: FixedHeight). TextEdit has no
+                                    // lineHeight property, so the box travels with the
+                                    // rich-text document as an inherited CSS line-height.
+                                    : "<div style=\"line-height:20px\">" + messageRow.displayHtml + "</div>"
+                                textFormat: messageRow.keyControl ? TextEdit.PlainText : TextEdit.RichText
+                                // Issue #218: a read-only selectable body mirrors the
+                                // reference DOM selection (workspace-message-body
+                                // -interactions.hook.ts:97-116); centered control
+                                // labels stay non-selectable.
+                                readOnly: true
+                                selectByMouse: !messageRow.keyControl
+                                cursorVisible: false
+                                persistentSelection: true
                                 bottomPadding: messageRow.inlineMeta ? 2 : 0
                                 height: contentHeight + topPadding + bottomPadding
                                 Accessible.ignored: true
-                                wrapMode: Text.Wrap
+                                wrapMode: TextEdit.Wrap
                                 font.pixelSize: 14
-                                lineHeightMode: Text.FixedHeight
-                                lineHeight: 20
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
-                                linkColor: root.colors.accent
+                                palette.link: root.colors.accent
                                 onLinkActivated: link => root.openReference(link)
                             }
                             Column {
@@ -5369,12 +5389,12 @@ ApplicationWindow {
                             anchors.fill: parent
                             acceptedButtons: Qt.RightButton
                             onClicked: mouse => {
-                                root.openMessageActions(messageRow.modelData, bubble);
+                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText);
                             }
                         }
                         Keys.onPressed: event => {
                             if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers & Qt.ShiftModifier)) {
-                                root.openMessageActions(messageRow.modelData, bubble);
+                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText);
                                 event.accepted = true;
                             }
                         }
@@ -8574,9 +8594,12 @@ ApplicationWindow {
             // An open session collects another quote tab instead of replacing the
             // active quote (reference routes the reply action to the add handler
             // whenever the session has tabs, workspace-message-list.ui.tsx:1284).
-            onTriggered: root.controller.replyMessageId.length > 0
-                ? root.controller.addReplyTab(root.menuMessageId)
-                : root.controller.beginReply(root.menuMessageId)
+            onTriggered: {
+                const selection = root.menuSelectedText;
+                root.controller.replyMessageId.length > 0
+                    ? root.controller.addReplyTab(root.menuMessageId, selection)
+                    : root.controller.beginReply(root.menuMessageId, selection);
+            }
         }
         MessageMenuSeparator {
             visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation

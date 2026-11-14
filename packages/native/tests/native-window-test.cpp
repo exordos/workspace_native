@@ -19026,6 +19026,99 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QStringLiteral("the inward notch stopped working (contentY %1 -> %2)")
                 .arg(start).arg(list->property("contentY").toReal())));
     }
+    // Reply to selected text (issue #218), measured against workspace_ui
+    // 230e02b8: the selection is snapshotted when the bubble menu opens
+    // (workspace-message-body-interactions.hook.ts:364,383) and handed to the
+    // menu Reply item (workspace-message-bubble-menu.ui.tsx:295-305). The
+    // composer quote shows exactly the fragment as plain wrapped text
+    // (workspace-message-quote.ui.tsx:145-152), the tab row label applies the
+    // 36-char collapse (workspace-reply.ui.tsx:28-37), and the wire carries
+    // urn:quote:<uuid>?text=<percent-encoded> (workspace-message-quote.lib.ts).
+    void replyMenuQuotesTheDraggedBubbleFragment()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError|Binding loop detected).*"));
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const QString bodyText = QStringLiteral("Alpha bravo charlie delta echo foxtrot");
+        auto origin = message(bodyText, messageId);
+        origin["is_own"] = false;
+        QJsonObject posted; int posts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++posts; posted = request.body;
+                return {message(posted.value("payload").toObject().value("content").toString(), returnedId), 201};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{origin}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Reply selection teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 1, 3000);
+        auto *content = window->contentItem();
+        auto *body = visibleItem(content, "message-content-" + messageId); QVERIFY(body);
+        QTRY_VERIFY(body->property("selectByMouse").toBool());
+        QVERIFY(body->property("readOnly").toBool());
+
+        // Drag from the start of "bravo" to the end of "charlie" inside the body.
+        const auto bodyValue = engine.toScriptValue(body);
+        const auto rectAt = [&bodyValue](int position) {
+            const auto rect = bodyValue.property("positionToRectangle").call({QJSValue(position)});
+            return QRectF(rect.property("x").toNumber(), rect.property("y").toNumber(),
+                rect.property("width").toNumber(), rect.property("height").toNumber());
+        };
+        const QPointF start = rectAt(bodyText.indexOf("bravo")).topLeft() + QPointF(1.0, 5.0);
+        const QPointF end = rectAt(bodyText.indexOf("charlie") + 7).topRight() + QPointF(-1.0, 5.0);
+        QTest::mousePress(window, Qt::LeftButton, {}, body->mapToScene(start).toPoint());
+        QTest::mouseMove(window, body->mapToScene(end).toPoint());
+        QTest::mouseRelease(window, Qt::LeftButton, {}, body->mapToScene(end).toPoint());
+        QTRY_COMPARE(body->property("selectedText").toString(), QString("bravo charlie"));
+
+        // Opening the bubble menu must not lose the selection (hook line 383).
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction"));
+        QVERIFY(replyAction);
+        click(window, replyAction);
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        auto *excerpt = item(content, "replyExcerptText"); QVERIFY(excerpt);
+        QCOMPARE(excerpt->property("text").toString(), QString("bravo charlie"));
+        // The tab strip row runs the 36-char collapse over the fragment.
+        const auto tabRow = controller.replyTabs().toList().first().toMap();
+        QVERIFY2(tabRow.value("label").toString().endsWith(QLatin1String(": bravo charlie")),
+            qPrintable(tabRow.value("label").toString()));
+
+        // Sending quotes the selection as ?text= on the urn (percent-encoded).
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QInputMethodEvent typed; typed.setCommitString("picked that");
+        QCoreApplication::sendEvent(composer, &typed);
+        auto *sendButton = window->findChild<QObject *>("sendButton"); QVERIFY(sendButton);
+        QTRY_VERIFY(sendButton->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(sendButton));
+        QTRY_COMPARE(posts, 1);
+        const auto wire = posted.value("payload").toObject().value("content").toString();
+        QVERIFY2(wire.contains(QStringLiteral("urn:quote:") + messageId
+            + QLatin1String("?text=bravo%20charlie")), qPrintable(wire));
+        QVERIFY2(wire.endsWith(QLatin1String("\n\npicked that")), qPrintable(wire));
+    }
 };
 
 

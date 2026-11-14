@@ -8748,7 +8748,7 @@ std::optional<ParsedLeadingQuote> leadingQuoteReference(const QString &content)
 // are only recognised at a line start preceded by a blank line; each quote's
 // answer runs to the next quote and is trimmed. Returns nothing when the first
 // line is not a quote block, so ordinary bodies keep raw editing.
-struct EditQuoteEntry { QString referenceLine, messageUuid, senderName, answer; };
+struct EditQuoteEntry { QString referenceLine, messageUuid, senderName, selectedText, answer; };
 
 QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
 {
@@ -8761,7 +8761,7 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
         QStringLiteral("^\\[((?:\\\\.|[^\\\\\\]])+)\\]\\(urn:user:(%1)\\)\\s+\\[(?:\\\\.|[^\\]])*\\]"
                       "\\(urn:message:(%1)\\):[ \\t]*$").arg(uuid.pattern()),
         QRegularExpression::CaseInsensitiveOption);
-    struct RawQuote { QString line, messageUuid, senderName; qsizetype end = 0; };
+    struct RawQuote { QString line, messageUuid, senderName, selectedText; qsizetype end = 0; };
     auto normalized = body;
     normalized.replace(QLatin1String("\r\n"), QLatin1String("\n"));
     normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
@@ -8861,7 +8861,8 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
             const auto reference = workspace::parseWorkspaceReference(match.captured(2));
             if (name.isEmpty() || !reference
                 || reference->kind != workspace::WorkspaceReferenceKind::Quote) return std::nullopt;
-            return RawQuote{line, reference->id, name, index + 1};
+            return RawQuote{line, reference->id, name,
+                reference->text ? *reference->text : QString{}, index + 1};
         }
         if (!line.startsWith(QLatin1Char('>'))) return std::nullopt;
         const auto content = line.startsWith(QLatin1String("> ")) ? line.mid(2) : line.mid(1);
@@ -8873,7 +8874,7 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
         // The legacy header round-trips to the canonical reference form, exactly
         // as the reference's tab serializer re-emits every restored tab.
         RawQuote quote{workspace::buildWorkspaceQuoteReference(name, match.captured(3).toLower()),
-                       match.captured(3).toLower(), name, index + 1};
+                       match.captured(3).toLower(), name, {}, index + 1};
         while (quote.end < lines.size() && lines.at(quote.end).startsWith(QLatin1Char('>')))
             ++quote.end;
         return quote;
@@ -8890,11 +8891,24 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
             if (next) { nextStart = index; break; }
         }
         entries.append(EditQuoteEntry{current->line, current->messageUuid, current->senderName,
+            current->selectedText,
             QStringList(lines.cbegin() + current->end, lines.cbegin() + nextStart)
                 .join(QLatin1Char('\n')).trimmed()});
         current = next;
     }
     return entries;
+}
+
+QString normalizedReplySelection(const QString &content, const QString &selectedText)
+{
+    // chat-page-workspace.ui.tsx:2747-2751 (workspace_ui 230e02b8): a
+    // whitespace-only selection or a body carrying encrypted fragments
+    // (revealed text must never leave as a quote line, bubble-presentation
+    // .ui.tsx:636-639) drops the selection; the reply then quotes the whole
+    // message instead.
+    if (selectedText.trimmed().isEmpty()) return {};
+    if (content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
+    return selectedText;
 }
 } // namespace
 
@@ -10539,7 +10553,7 @@ void NativeController::send()
         QStringList blocks;
         for (const auto &tab : std::as_const(m_replyTabs)) {
             const auto quoteLine = workspace::buildWorkspaceQuoteReference(
-                replyTabAuthor(tab), tab.message);
+                replyTabAuthor(tab), tab.message, tab.selectedText);
             if (quoteLine.isEmpty()) {
                 report(tr("This message can no longer be replied to."));
                 return;
@@ -11295,7 +11309,7 @@ void NativeController::pumpRowPreviewHydration()
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
-bool NativeController::beginReply(const QString &id)
+bool NativeController::beginReply(const QString &id, const QString &selectedText)
 {
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
@@ -11315,6 +11329,7 @@ bool NativeController::beginReply(const QString &id)
         ReplyTab tab;
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
+        tab.selectedText = normalizedReplySelection(message->content, selectedText);
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = draft();
         m_replyTabs.append(tab);
@@ -11325,8 +11340,10 @@ bool NativeController::beginReply(const QString &id)
     }
     for (auto &tab : m_replyTabs) {
         if (tab.id != m_replyActiveTab) continue;
-        if (tab.message != id) {
+        const auto selection = normalizedReplySelection(message->content, selectedText);
+        if (tab.message != id || tab.selectedText != selection) {
             tab.message = id;
+            tab.selectedText = selection;
             m_replyRoute = conversationKey();
             emit replySessionChanged();
         }
@@ -11335,7 +11352,7 @@ bool NativeController::beginReply(const QString &id)
     return true;
 }
 
-bool NativeController::addReplyTab(const QString &id)
+bool NativeController::addReplyTab(const QString &id, const QString &selectedText)
 {
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
@@ -11349,10 +11366,11 @@ bool NativeController::addReplyTab(const QString &id)
     // addWorkspaceReplyTab (workspace-reply.lib.ts:59-79) via the page wiring
     // (chat-page-workspace.ui.tsx:4166-4181): append a fresh blank-answer tab and
     // activate it; on an empty session the first tab inherits the composer text.
-    if (m_replyTabs.isEmpty()) return beginReply(id);
+    if (m_replyTabs.isEmpty()) return beginReply(id, selectedText);
     ReplyTab tab;
     tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     tab.message = id;
+    tab.selectedText = normalizedReplySelection(message->content, selectedText);
     tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
     m_replyTabs.append(tab);
     m_replyActiveTab = tab.id;
@@ -11509,6 +11527,10 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
 
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
 {
+    // The selected fragment wins over the whole quote (getTabExcerpt,
+    // workspace-reply.ui.tsx:28-32 at 230e02b8): whitespace collapsed the
+    // same replace(/\s+/g, " ").trim() way simplified() performs.
+    if (!tab.selectedText.isEmpty()) return tab.selectedText.simplified();
     // The memo covers only a missing message. A present message with an empty
     // rendered excerpt is live content and must replace (clear) the memo.
     const auto live = replyPlainFor(tab.message);
@@ -12081,6 +12103,10 @@ bool NativeController::beginEditMessage(const QString &id)
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = entry.answer;
         tab.reference = entry.referenceLine;
+        // A "?text=" selection on the restored line is the quoted fragment
+        // (issue #218): the banner shows it while the verbatim reference keeps
+        // the identity on the next save.
+        tab.selectedText = entry.selectedText;
         // The parsed label backs the chip until (or unless) the origin resolves.
         tab.fallbackAuthor = entry.senderName;
         m_replyTabs.append(tab);
@@ -12125,7 +12151,8 @@ void NativeController::submitEditMessage()
         for (const auto &tab : std::as_const(m_replyTabs)) {
             const auto quoteLine = !tab.reference.isEmpty()
                 ? tab.reference
-                : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message), tab.message);
+                : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message),
+                    tab.message, tab.selectedText);
             if (quoteLine.isEmpty()) {
                 report(tr("This message can no longer be replied to."));
                 return;

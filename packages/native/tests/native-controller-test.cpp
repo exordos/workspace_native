@@ -9050,6 +9050,101 @@ private slots:
         QCOMPARE(fixture.controller.replyMediaSummary(), fixture.controller.replyExcerpt());
     }
 
+    // Reply to selected text (issue #218), reference workspace_ui 230e02b8:
+    // the bubble menu hands getSelectedText to beginReply/addReplyTab
+    // (workspace-message-bubble-menu.ui.tsx:295-317); a whitespace-only or
+    // encrypted-fragment selection drops to the whole-message quote
+    // (chat-page-workspace.ui.tsx:2747-2751, bubble-presentation.ui.tsx:636-639);
+    // the selection wins the 36-char tab excerpt (workspace-reply.ui.tsx:28-32);
+    // the wire is urn:quote:<uuid>?text=<percent-encoded>.
+    void replySelectedTextWinsQuoteLabelAndWire()
+    {
+        Fixture fixture;
+        const QString peerId = "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a";
+        fixture.users = [&](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", peerId}, {"username", "bobby"}, {"first_name", "Bobby"}}}}; };
+        auto note = message("Peer note\nsecond line", messageId);
+        note["is_own"] = false; note["author_uuid"] = peerId;
+        const QString secretId = "7e7e7e7e-7e7e-4e7e-8e7e-7e7e7e7e7e7e";
+        const QString restoreId = "0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b";
+        auto secretNote = message(
+            QStringLiteral("Peer note [redacted](urn:secret:11111111-1111-4111-8111-111111111111)"), secretId);
+        secretNote["is_own"] = false; secretNote["author_uuid"] = peerId;
+        const auto restored = message(QStringLiteral("[Bobby](urn:quote:%1?text=second%20line)\n\nkeep answer")
+            .arg(messageId), restoreId);
+        QJsonObject posted; int posts = 0;
+        const auto savedContent = [&]{ return posted.value("payload").toObject().value("content").toString(); };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST") { ++posts; posted = request.body; return {message(savedContent(), returnedId), 201}; }
+            if (request.method == "GET" && path.endsWith("/messages/")) return {QJsonArray{note, secretNote, restored}};
+            return {message(savedContent(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.setDraft("answer");
+
+        // The selection wins the banner excerpt (whitespace collapsed) and the
+        // tab label (workspace-reply.ui.tsx:28-37).
+        QVERIFY(fixture.controller.beginReply(messageId, QStringLiteral(" second  line ")));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("second line"));
+        auto rows = fixture.controller.replyTabs().toList();
+        QCOMPARE(rows.first().toMap().value("label").toString(), QString("Bobby: second line"));
+
+        // A whitespace-only selection is dropped: whole-message quote returns
+        // and the tab keeps no selection.
+        QVERIFY(fixture.controller.beginReply(messageId, QStringLiteral("   ")));
+        QCOMPARE(fixture.controller.replyExcerpt(), QString("Peer note second line"));
+
+        // An empty selection never emits "?text=" on the wire.
+        QVERIFY(fixture.controller.beginReply(messageId, QString()));
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 1);
+        QCOMPARE(savedContent(), QString("[Bobby](urn:quote:%1)\n\nanswer").arg(messageId));
+
+        // A selection serializes percent-encoded (Cyrillic and reserved chars).
+        QVERIFY(fixture.controller.beginReply(messageId, QStringLiteral("мир & <x>")));
+        fixture.controller.setDraft("ok");
+        QTRY_VERIFY(fixture.controller.canSend());
+        fixture.controller.send();
+        QTRY_COMPARE(posts, 2);
+        QVERIFY2(savedContent().contains(QStringLiteral("urn:quote:") + messageId
+            + QStringLiteral("?text=%D0%BC%D0%B8%D1%80%20%26%20%3Cx%3E")), qPrintable(savedContent()));
+
+        // The 36-char collapse applies to the fragment: slice(0, 36) trimEnd + "…".
+        QVERIFY(fixture.controller.beginReply(messageId,
+            QStringLiteral("selection0selection1selection2selection3selection4")));
+        rows = fixture.controller.replyTabs().toList();
+        QCOMPARE(rows.first().toMap().value("excerpt").toString(),
+            QStringLiteral("selection0selection1selection2select") + QString::fromUtf8("\xE2\x80\xA6"));
+
+        // A bubble containing encrypted fragments never quotes the selection
+        // (revealed text stays out of the wire); the reply falls back to the
+        // whole message quote instead (bubble-presentation.ui.tsx:636-639).
+        QVERIFY(fixture.controller.beginReply(secretId, QStringLiteral("chosen bit")));
+        const auto secretExcerpt = fixture.controller.replyExcerpt();
+        QVERIFY2(!secretExcerpt.contains(QLatin1String("chosen")), qPrintable(secretExcerpt));
+        QVERIFY2(secretExcerpt.startsWith(QLatin1String("Peer note")), qPrintable(secretExcerpt));
+
+        // addReplyTab carries the selection onto the appended tab too (the
+        // reference passes getSelectedText to the add-reply sibling).
+        QVERIFY(fixture.controller.addReplyTab(messageId, QStringLiteral("second line")));
+        rows = fixture.controller.replyTabs().toList();
+        QCOMPARE(rows.last().toMap().value("excerpt").toString(), QString("second line"));
+        for (const auto &value : rows)
+            fixture.controller.removeReplyTab(value.toMap().value("id").toString());
+        QVERIFY(fixture.controller.replyMessageId().isEmpty());
+
+        // Edit restore reads "?text=" back: the restored tab quotes the
+        // fragment, and the verbatim reference re-serializes unchanged.
+        QVERIFY(fixture.controller.beginEditMessage(restoreId));
+        QTRY_COMPARE(fixture.controller.replyExcerpt(), QString("second line"));
+        // The verbatim tab.reference (already shipping, docs/
+        // NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md) keeps the "?text=" identity on
+        // the next save; this lane only added the visible-fragment half.
+        fixture.controller.cancelEditMessage();
+        QVERIFY(fixture.controller.editingMessageId().isEmpty());
+    }
+
     // An inline (non-leading) urn:quote anchor stays in the body text for the
     // markdown renderer, and openMessageInChat resolves the origin for the click.
     void replyAnchorInsideTheBodyStaysRenderableAndNavigable()
