@@ -29,12 +29,23 @@ Popup {
     // Validity fan-in: every mutation that can change Create's enabled state
     // bumps this counter so formValid re-evaluates deterministically.
     property int revision: 0
+    // Time freshness tick: bumped once per second while a deadline is in play,
+    // so deadline validity (and everything fanning into it) re-evaluates when
+    // a deadline crosses into the past without any further form interaction.
+    property int clockTick: 0
+    readonly property int questionLimit: 20
+    readonly property int answerLimit: 20
     readonly property bool formLocked: pending || sendFailed
-    readonly property bool deadlineFuture: {
-        revision
+    // Fresh (binding-cache independent) deadline check used at submission time.
+    function deadlineIsFuture() {
         const stamp = deadlineDate.length > 0 && deadlineTime.length > 0
             ? new Date(deadlineDate + "T" + deadlineTime) : null
         return stamp !== null && !isNaN(stamp.getTime()) && stamp.getTime() > Date.now()
+    }
+    readonly property bool deadlineFuture: {
+        revision
+        clockTick
+        return deadlineIsFuture()
     }
     readonly property string deadlineIso: deadlineEnabled && deadlineFuture
         ? new Date(deadlineDate + "T" + deadlineTime).toISOString() : ""
@@ -43,13 +54,21 @@ Popup {
             return child.objectName === "pollQuestionSection"
         })
     }
+    readonly property bool limitExceeded: {
+        revision
+        if (sectionCount > questionLimit) return true
+        for (const section of sectionsInOrder())
+            if (section.filledOptions > answerLimit) return true
+        return false
+    }
     readonly property bool formValid: {
         revision
-        if (sectionCount <= 0) return false
+        if (sectionCount <= 0 || sectionCount > questionLimit) return false
         const sections = sectionsInOrder()
         if (sections.length !== sectionCount) return false
         for (const section of sections) {
             if (!section.sectionReady) return false
+            if (section.filledOptions > answerLimit) return false
         }
         return !(deadlineEnabled && !deadlineFuture)
     }
@@ -83,6 +102,7 @@ Popup {
         revision++
     }
     function addQuestion() {
+        if (sectionCount >= questionLimit) return
         sectionCount++
         revision++
     }
@@ -111,6 +131,13 @@ Popup {
     }
     function submit() {
         if (pending || creationUnavailable || !formValid) return
+        // Revalidate the deadline at send time: one that expired while the
+        // dialog sat open must block with the inline error rather than being
+        // silently dropped from the payload (revision++ refreshes the label).
+        if (deadlineEnabled && !deadlineIsFuture()) {
+            revision++
+            return
+        }
         validationFailed = false
         sendFailed = false
         const rows = []
@@ -142,9 +169,18 @@ Popup {
                 dialog.sendFailed = true
             dialog.revision++
         }
-        function onMessageSent(id, stream, topic) {
+        function onPollCreated(id, stream, topic) {
+            // Only the dialog's own create completion closes it; an unrelated
+            // messageSent (e.g. a previously started text send finishing)
+            // must leave a pending poll alone.
             if (dialog.visible && dialog.pending) dialog.reopenAfterSend()
         }
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: dialog.visible && dialog.deadlineEnabled
+        onTriggered: dialog.clockTick++
     }
     width: Math.min(600, parent && parent.width > 0 ? parent.width - 48 : 600)
     readonly property int formBudget: parent && parent.height > 0 ? parent.height - 48 : 760
@@ -214,6 +250,16 @@ Popup {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                 }
+                Text {
+                    objectName: "pollLimitErrorLabel"
+                    visible: dialog.limitExceeded
+                    text: qsTr("Polls allow at most 20 questions and 20 answers per question. Remove some before sending.")
+                    textFormat: Text.PlainText
+                    color: dialog.colors["danger"]
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                }
                 ColumnLayout {
                     id: questionsContainer
                     objectName: "pollQuestionsContainer"
@@ -241,6 +287,7 @@ Popup {
                         objectName: "pollAddQuestionButton"
                         colors: dialog.colors
                         text: "\uFF0B " + qsTr("Add question")
+                        enabled: dialog.sectionCount < dialog.questionLimit
                         onClicked: dialog.addQuestion()
                     }
                     Item { Layout.fillWidth: true }
@@ -388,6 +435,10 @@ Popup {
                     objectName: "pollCancelButton"
                     colors: dialog.colors
                     text: qsTr("Cancel")
+                    // A pending create is an uncertain send: cancelling it
+                    // would strand the attempt (and let a late result land on
+                    // a reopened dialog), so the close gesture is locked too.
+                    enabled: !dialog.pending
                     onClicked: dialog.close()
                 }
                 NativeButton {

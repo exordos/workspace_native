@@ -3262,6 +3262,10 @@
             <translation>Стандартный лимит сервера — 20 вопросов и 20 ответов на вопрос.</translation>
         </message>
         <message>
+            <source>Polls allow at most 20 questions and 20 answers per question. Remove some before sending.</source>
+            <translation>Опрос допускает не более 20 вопросов и не более 20 ответов на вопрос. Удалите лишние перед отправкой.</translation>
+        </message>
+        <message>
             <source>Add question</source>
             <translation>Добавить вопрос</translation>
         </message>

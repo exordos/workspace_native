@@ -569,6 +569,10 @@ signals:
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
     // ---- Issue #214 polls foundation signals ----
     void pollActionFailed(QString messageUuid, QString action, QString detail);
+    // A confirmed poll create (#215 dialog): carries the created poll message
+    // so the dialog can correlate completion with its own submitted attempt
+    // instead of reacting to any messageSent (e.g. a late text send).
+    void pollCreated(QString id, QString stream, QString topic);
     void pollVotersLoaded(QString messageUuid, QString questionUuid, QString optionUuid,
         QVariantList voters, QString nextMarker, QString error);
     void snapshotReloaded();
