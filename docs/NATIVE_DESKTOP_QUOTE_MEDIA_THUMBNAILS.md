@@ -161,3 +161,19 @@ media-hidden summary dropping the `Image` label.
 `quoteMediaThumbnail-<id>` at 48 px with a painted image inside the bubble frame,
 and the composer reply preface renders `replyMediaThumbnail` whose excerpt loses
 the media label once the preview is ready.
+
+## Live measurements (stream "native qa", 2026-11-14)
+
+- Composer reply preface: thumbnail rendered at 48 px wide (x=397..444) with the
+  quoted text column shifted right; the media token is dropped from the excerpt
+  once the image is ready (no `![Image` text remains).
+- In-bubble quote frame (sent reply): thumbnail rendered at exactly 48 px wide
+  (x=998..1045) as the frame's leading element, same text dedupe behavior.
+- Recorded deviation: the reference box is `min-h-12` with `self-stretch`, so the
+  web frame never renders the thumbnail shorter than 48 px. The native thumbnail
+  self-stretches with the frame minus 6 px insets (`height: parent.height - 12`),
+  which matches the reference in the tall composer preface (measured 48x60) but
+  yields 48x36 inside a compact two-line in-bubble quote frame. The frame height
+  is driven by the excerpt text instead of a thumbnail min-height; widening the
+  frame to force the 48 px floor was rejected because it would change bubble
+  rhythm for every quote, not just media ones.
