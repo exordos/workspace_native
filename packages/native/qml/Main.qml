@@ -2555,6 +2555,123 @@ ApplicationWindow {
         }
     }
 
+    // Issue #83: one rail cell for both the pinned All slot and the scrollable
+    // group. Geometry measured from workspace_ui 61dacef7
+    // folder-rail-folder-items.ui.tsx::VerticalFolderItem: 72x56 cell, 48x64
+    // card scaled 1.1 while selected, icon 32 at top-10, label at top-42
+    // width 52 text-xs leading-4; visual rules from folder-rail-visual.lib.ts
+    // (hover surface only, selection carries on icon/label color + scale).
+    Component {
+        id: folderCellComponent
+        Item {
+            id: folderCell
+            required property int modelData
+            readonly property var folder: root.controller.folders[modelData] ?? ({})
+            readonly property string systemType: String(folder.systemType || "created")
+            readonly property bool isCustom: systemType === "created"
+            readonly property bool isSelected: String(root.controller.selectedFolder) === String(folder.id)
+            readonly property bool interactive: folderCellPointer.containsMouse || isSelected
+            readonly property color folderColor: Qt.rgba(
+                (((folder.color || 0) >> 16) & 0xff) / 255,
+                (((folder.color || 0) >> 8) & 0xff) / 255,
+                ((folder.color || 0) & 0xff) / 255, 1.0)
+            readonly property string iconAsset: systemType === "all" ? "folders.svg"
+                : systemType === "personal" ? "profile.svg"
+                : systemType === "channels" ? "channels.svg"
+                : isSelected ? "folder_open.svg" : "folder.svg"
+            width: 72
+            height: 72
+            Accessible.role: Accessible.Button
+            Accessible.name: String(folder.title || "")
+            MouseArea {
+                id: folderCellPointer
+                objectName: "folder-" + String(folderCell.folder.key)
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { root.controller.closeDrafts(); root.controller.selectFolder(String(folderCell.folder.key)) }
+            }
+            Item {
+                id: folderCard
+                objectName: "folderCard-" + String(folderCell.folder.key)
+                width: 48
+                height: 64
+                anchors.centerIn: parent
+                scale: folderCell.isSelected ? 1.1 : 1.0
+                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+                NativeIconButton {
+                    colors: root.colors
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 10
+                    width: 32
+                    height: 32
+                    cornerRadius: 8
+                    asset: folderCell.iconAsset
+                    help: String(folderCell.folder.title || "")
+                    glyphSize: 32
+                    // The reference icon button selects like the whole cell.
+                    onClicked: root.controller.selectFolder(String(folderCell.folder.key))
+                    iconColor: folderCell.isCustom ? folderCell.folderColor
+                        : folderCell.interactive ? root.colors["text-primary"] : root.colors["text-muted"]
+                    background: Rectangle {
+                        // Hover surface only; selection stays outline-free
+                        // (folder-rail-visual.lib.ts resolveSystemFolderSurfaceClassName).
+                        visible: folderCellPointer.containsMouse && !folderCell.isSelected
+                        radius: 8
+                        color: folderCell.isCustom
+                            ? Qt.rgba(folderCell.folderColor.r, folderCell.folderColor.g, folderCell.folderColor.b, 0.10)
+                            : root.colors["sidebar-item-hover"]
+                        border.width: 1
+                        border.color: folderCell.isCustom
+                            ? Qt.rgba(folderCell.folderColor.r, folderCell.folderColor.g, folderCell.folderColor.b, 0.22)
+                            : root.colors["border-subtle"]
+                    }
+                }
+                Rectangle {
+                    visible: Number(folderCell.folder.unreadCount || 0) > 0
+                    x: parent.width - width - 4
+                    y: 0
+                    z: 2
+                    width: Math.max(16, folderBadgeText.implicitWidth + 6)
+                    height: 16
+                    radius: 8
+                    color: root.colors["badge-bg"]
+                    Text {
+                        id: folderBadgeText
+                        objectName: "folderBadge-" + String(folderCell.folder.key)
+                        anchors.centerIn: parent
+                        text: root.countText(Number(folderCell.folder.unreadCount || 0))
+                        textFormat: Text.PlainText
+                        color: root.colors["badge-text"]
+                        font.pixelSize: 10
+                    }
+                }
+                Text {
+                    x: -2
+                    y: 42
+                    width: 52
+                    height: 16
+                    text: String(folderCell.folder.title || "")
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignHCenter
+                    elide: Text.ElideRight
+                    font.pixelSize: 12
+                    lineHeightMode: Text.FixedHeight
+                    lineHeight: 16
+                    color: folderCell.isCustom && folderCell.interactive ? folderCell.folderColor
+                        : folderCell.interactive ? root.colors["text-primary"] : root.colors["text-muted"]
+                }
+            }
+        }
+    }
+
+    Connections {
+        target: root.controller
+        // Reference handleSelectWorkspaceFolder: picking a different folder
+        // clears the sidebar search query (sidebar-shell.ui.tsx:242-244).
+        function onFolderSelected() { root.sidebarQuery = "" }
+    }
+
     RowLayout {
         id: workspace
         visible: root.controller.authenticated
@@ -2567,93 +2684,56 @@ ApplicationWindow {
         spacing: 4
 
         Item {
+            id: folderRail
             objectName: "folderRail"
             Layout.preferredWidth: 72
             Layout.fillHeight: true
+            // Issue #83: real folders (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md).
+            // Measured from workspace_ui 61dacef7 folder-rail-vertical-view.ui.tsx:
+            // 72px rail, py-2, gap 2px; the All slot pins above the scrollable
+            // group; the add-folder button is the last scroll item. The
+            // overflow quick-list is a documented follow-up.
+            readonly property var allFolder: root.controller.folders.length > 0
+                && String(root.controller.folders[0].key) === "all"
+                ? root.controller.folders[0] : null
             Column {
-                anchors.top: parent.top
+                anchors.fill: parent
                 anchors.topMargin: 8
-                width: parent.width
+                anchors.bottomMargin: 8
                 spacing: 2
                 Repeater {
-                    model: [
-                        {
-                            id: "all",
-                            asset: "folders.svg",
-                            name: qsTr("All chats"),
-                            available: true
-                        },
-                        {
-                            id: "personal",
-                            asset: "profile.svg",
-                            name: qsTr("Personal"),
-                            available: false
-                        },
-                        {
-                            id: "channels",
-                            asset: "channels.svg",
-                            name: qsTr("Channels"),
-                            available: false
-                        }
-                    ]
-                    delegate: Item {
-                        id: folderItem
-                        required property var modelData
-                        width: 72
-                        // Source reserves72px per item; the scrollable group
-                        // additionally starts2px below its2px flex gap.
-                        height: folderItem.modelData.available ? 74 : 72
-                        Item {
-                            x: 12
-                            y: 4
-                            width: 48
-                            height: 64
-                            scale: folderItem.modelData.available ? 1.1 : 1
-                            NativeIconButton {
-                                objectName: "folder-" + folderItem.modelData.id
-                                colors: root.colors
-                                x: 8
-                                y: 10
-                                asset: folderItem.modelData.asset
-                                help: folderItem.modelData.available ? folderItem.modelData.name : qsTr("This filter is not implemented yet")
-                                enabled: folderItem.modelData.available
-                                iconColor: folderItem.modelData.available ? root.colors["text-primary"] : root.colors["icon-base"]
-                                width: 32
-                                height: 32
-                                glyphSize: 32
-                                onClicked: { root.controller.closeDrafts(); root.sidebarQuery = ""; }
-                            }
-                            Text {
-                                x: -2
-                                y: 42
-                                width: 52
-                                height: 16
-                                text: folderItem.modelData.name
-                                textFormat: Text.PlainText
-                                horizontalAlignment: Text.AlignHCenter
-                                elide: Text.ElideRight
-                                font.pixelSize: 12
-                                lineHeightMode: Text.FixedHeight
-                                lineHeight: 16
-                                color: folderItem.modelData.available ? root.colors["text-primary"] : root.colors["text-muted"]
-                            }
-                        }
-                    }
+                    model: folderRail.allFolder ? [0] : []
+                    delegate: folderCellComponent
                 }
-                Item {
+                ListView {
+                    id: folderScroll
                     width: parent.width
-                    height: 40
-                    NativeIconButton {
-                        colors: root.colors
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 8
-                        asset: "add.svg"
-                        help: qsTr("Folder creation is not implemented yet")
-                        enabled: false
-                        width: 32
-                        height: 32
-                        glyphSize: 28
+                    height: Math.max(0, parent.height - (folderRail.allFolder ? 74 : 0))
+                    spacing: 2
+                    clip: true
+                    // Live C++ list: positional model, delegates read by index.
+                    model: Array.from({ length: Math.max(0, root.controller.folders.length - (folderRail.allFolder ? 1 : 0)) },
+                        (_, index) => (folderRail.allFolder ? 1 : 0) + index)
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    footer: Item {
+                        width: folderScroll.width
+                        height: 40
+                        NativeIconButton {
+                            objectName: "folderAddButton"
+                            colors: root.colors
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            y: 8
+                            asset: "add.svg"
+                            help: qsTr("Add folder")
+                            width: 32
+                            height: 32
+                            cornerRadius: 8
+                            glyphSize: 28
+                            // The creation flow is issue #84; the button only announces.
+                            onClicked: root.controller.requestAddFolder()
+                        }
                     }
+                    delegate: folderCellComponent
                 }
             }
         }
@@ -2802,7 +2882,7 @@ ApplicationWindow {
                 anchors.rightMargin: 8
                 spacing: 2
                 clip: true
-                model: root.controller.streams
+                model: root.controller.sidebarStreams
                 MouseArea {
                     // Issue #142: sidebar wheel scroller (expanded topic rows
                     // included - they are delegate children) using the same

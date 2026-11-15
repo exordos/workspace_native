@@ -130,6 +130,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool archiveLoading READ archiveLoading NOTIFY stateChanged)
     Q_PROPERTY(QString archiveError READ archiveError NOTIFY stateChanged)
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
+    // Issue #83: folder rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md). The rail
+    // rows, the effective folder selection and the folder-scoped sidebar
+    // projection over the stream catalog.
+    Q_PROPERTY(QVariantList folders READ folders NOTIFY foldersChanged)
+    Q_PROPERTY(QVariantList sidebarStreams READ sidebarStreams NOTIFY sidebarStreamsChanged)
+    Q_PROPERTY(QString selectedFolder READ selectedFolder NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList topics READ topics NOTIFY topicsChanged)
     Q_PROPERTY(bool topicResolving READ topicResolving NOTIFY stateChanged)
     Q_PROPERTY(bool topicsComplete READ topicsComplete NOTIFY stateChanged)
@@ -304,6 +310,9 @@ public:
     Q_INVOKABLE void openArchivedChat(const QString &id);
     Q_INVOKABLE void unarchiveChat(const QString &id);
     QVariantList streams() const;
+    QVariantList folders() const;
+    QVariantList sidebarStreams() const;
+    QString selectedFolder() const;
     QVariantList topics() const;
     bool topicResolving() const { return m_topicOpening.active; }
     bool topicsComplete() const { return m_topicsVerified; }
@@ -385,6 +394,12 @@ public:
     NativeAuthGuard *authGuard() const { return m_authGuard; }
     Q_INVOKABLE void selectStream(const QString &id);
     Q_INVOKABLE void selectTopic(const QString &id);
+    // Issue #83: resolve a rail row by its stable key or UUID. Selecting the
+    // effective folder is a no-op; a real change emits folderSelected() so the
+    // view can clear the sidebar search exactly like the reference.
+    Q_INVOKABLE void selectFolder(const QString &key);
+    // Issue #84 will wire the creation dialog; the rail button only announces.
+    Q_INVOKABLE void requestAddFolder();
     Q_INVOKABLE void openTopic(const QString &id, const QString &streamHint = {});
     // Window focus mirror for desktop notifications (Electron sends
     // window:activity from the focus/blur handlers in main.ts).
@@ -632,6 +647,10 @@ signals:
     void editSessionChanged();
     void replySessionChanged();
     void streamsChanged();
+    void foldersChanged();
+    void sidebarStreamsChanged();
+    void folderSelected();
+    void folderAddRequested();
     void callCryptoStateChanged();
     void topicsChanged();
     void messagesChanged();
@@ -1147,6 +1166,10 @@ private:
                     QJsonArray accumulated = {}, QSet<QByteArray> markers = {},
                     std::function<void()> failed = {});
     void loadTopics();
+    // Issue #83: bootstrap GET /folders/ with the same catalog guard as the
+    // other snapshot collections; failures keep (or install) the synthesized
+    // system trio so the rail never renders empty.
+    void loadFolders();
     // Notification metadata backfill: topics of background streams are not in
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);
@@ -1250,6 +1273,21 @@ private:
     bool m_sawSleepNotification = false;
     bool m_onBattery = false;
     QVector<Stream> m_streams;
+    // Issue #83: rail rows derived from GET /folders/ plus synthesized system
+    // slots (reference fixed UUIDs 0..000/0..001/0..002).
+    struct FolderRow
+    {
+        QString uuid;
+        QString key;
+        QString title;
+        QString systemType; // all | personal | channels | created
+        quint32 color = 0;  // 0xRRGGBB
+        int unread = 0;
+        QStringList streamIds;
+        bool synthesized = false;
+    };
+    QVector<FolderRow> m_folders;
+    QString m_selectedFolder;
     // Issue #132 channel info drawer state for the selected stream. The
     // binding rows belong to m_channelInfoStreamId; a projection read with a
     // different selection stays empty, so stale pages can never leak across
