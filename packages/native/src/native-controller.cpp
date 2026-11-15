@@ -14,6 +14,8 @@
 #include "file-client.h"
 
 #include <QClipboard>
+#include <QImage>
+#include <QTemporaryDir>
 #include <QFile>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -11359,15 +11361,69 @@ void NativeController::copyMessageLink(const QString &id)
     if (!link.isEmpty()) QGuiApplication::clipboard()->setText(link);
 }
 
-// RED stub (issue #79): filled in by the green implementation commit.
-bool NativeController::clipboardImageBytes(const QByteArray &)
+// Issue #79: mirror of the Electron clipboard:writeImage handler measured at
+// workspace_ui 61dacef7 (main.ts:1054-1067), in the same order of checks:
+// the 64 MiB cap (main.ts:50) rejects before any decoding, an undecodable
+// buffer behaves like nativeImage.isEmpty(), and success writes the image
+// onto the clipboard selection (Electron's explicit "clipboard" target).
+// Every failure is silent - the reference surfaces no toast for any outcome.
+bool NativeController::clipboardImageBytes(const QByteArray &bytes)
 {
-    return false;
+    if (bytes.size() > ClipboardImageBytesLimit)
+        return false;
+    const QImage image = QImage::fromData(bytes);
+    if (image.isNull())
+        return false;
+    QGuiApplication::clipboard()->setImage(image);
+    return true;
 }
 
-bool NativeController::copyMessageImage(const QString &)
+// Context-menu Copy for image messages (workspace-message-bubble-menu.ui.tsx:335-349):
+// resolve the message's image file, fetch the bytes through the authenticated
+// file pipeline like onLoadWorkspaceFilePreview does, then hand them to the
+// write path. The reference fires and forgets (`void writeImage(...)` then
+// closeMenu()), so the completion result never travels back to the caller.
+bool NativeController::copyMessageImage(const QString &id)
 {
-    return false;
+    const auto *message = findMessage(id);
+    if (!message || !m_files)
+        return false;
+    // The reference entry only exists for an image context file; the body walk
+    // matches mediaPreviewReference's document order, image kind only.
+    QString uuid;
+    if (message->kind == QLatin1String("markdown")) {
+        static NativeMarkdown picker;
+        for (const auto &entry : picker.mediaReferences(message->content)) {
+            const auto reference = entry.toMap();
+            if (reference.value(QLatin1String("kind")) == QLatin1String("image")) {
+                uuid = reference.value(QLatin1String("id")).toString();
+                break;
+            }
+        }
+    }
+    if (uuid.isEmpty())
+        return false;
+    // Staged to disk (not downloadBytes) so payloads between the 25 MiB memory
+    // cap and the 64 MiB clipboard cap reach the size check like the reference
+    // blob does; the staging directory lives until the completion runs.
+    auto staging = std::make_shared<QTemporaryDir>();
+    if (!staging->isValid())
+        return false;
+    const QPointer<NativeController> self(this);
+    const auto destination = staging->filePath(QStringLiteral("clipboard-image"));
+    m_files->download(uuid, destination, [self, staging](const FileResult &result) {
+        if (!self)
+            return;
+        QByteArray bytes;
+        if (result.ok()) {
+            QFile file(result.path);
+            if (file.open(QIODevice::ReadOnly))
+                bytes = file.readAll();
+        }
+        // Silent by contract: a failed fetch or decode leaves the clipboard as it is.
+        self->clipboardImageBytes(bytes);
+    });
+    return true;
 }
 
 void NativeController::openMessageLink(const QString &url)

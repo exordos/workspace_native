@@ -5,6 +5,7 @@
 #include "native-markdown.h"
 
 #include <QFileInfo>
+#include <QFile>
 #include <QPair>
 #include <QSet>
 #include <QTemporaryDir>
@@ -153,10 +154,26 @@ void MediaViewerModel::close()
     closeSession();
 }
 
-// RED stub (issue #79): filled in by the green implementation commit.
 bool MediaViewerModel::copyCurrentImage()
 {
-    return false;
+    // Toolbar copy in the reference renders only for image items
+    // (media-viewer-overlay.ui.tsx:118) and hands the displayed bytes to
+    // writeImage (media-viewer-actions.lib.ts:144-151). Here the slot's staged
+    // session bytes are that payload (see the deviations section of
+    // docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md); a missing or failed slot is the
+    // counterpart of the swallowed null-blob rejection: silent false.
+    if (!m_open || m_index < 0 || m_index >= m_slots.size())
+        return false;
+    const auto &slot = m_slots.at(m_index);
+    if (slot.kind != QLatin1String("image") || slot.state != QLatin1String("ready"))
+        return false;
+    const QUrl url(slot.url);
+    if (!url.isLocalFile())
+        return false;
+    QFile file(url.toLocalFile());
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    return NativeController::clipboardImageBytes(file.readAll());
 }
 
 void MediaViewerModel::markSlotDisplayError(int index)
