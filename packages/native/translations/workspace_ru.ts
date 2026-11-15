@@ -2144,6 +2144,18 @@
             <source>Image is too large (max %1 MB)</source>
             <translation>Изображение слишком большое (макс. %1 МБ)</translation>
         </message>
+        <message>
+            <source>Could not delete the key from this device. Please try again.</source>
+            <translation>Не удалось удалить ключ с этого устройства. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Could not load keys from this device.</source>
+            <translation>Не удалось загрузить ключи с этого устройства.</translation>
+        </message>
+        <message>
+            <source>Could not reissue the encryption key. Please try again.</source>
+            <translation>Не удалось сменить ключ шифрования. Попробуйте ещё раз.</translation>
+        </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
@@ -3718,5 +3730,105 @@
         <source>Remove from channel: %1</source>
         <translation>Удалить из канала: %1</translation>
     </message>
+        <message>
+            <source>Added to this device</source>
+            <translation>Добавлен на это устройство</translation>
+        </message>
+        <message>
+            <source>Added: %1</source>
+            <translation>Добавлен: %1</translation>
+        </message>
+        <message>
+            <source>Announced in chat</source>
+            <translation>Объявлен в чате</translation>
+        </message>
+        <message>
+            <source>Copy key ID</source>
+            <translation>Копировать ID ключа</translation>
+        </message>
+        <message>
+            <source>Created: %1</source>
+            <translation>Создан: %1</translation>
+        </message>
+        <message>
+            <source>Current</source>
+            <translation>Актуальный</translation>
+        </message>
+        <message>
+            <source>Current key ID</source>
+            <translation>ID текущего ключа</translation>
+        </message>
+        <message>
+            <source>Delete from this device</source>
+            <translation>Удалить с этого устройства</translation>
+        </message>
+        <message>
+            <source>Historical</source>
+            <translation>Исторический</translation>
+        </message>
+        <message>
+            <source>Key ID</source>
+            <translation>ID ключа</translation>
+        </message>
+        <message>
+            <source>Key unavailable</source>
+            <translation>Ключ недоступен</translation>
+        </message>
+        <message>
+            <source>Keys on this device (%1)</source>
+            <translation>Ключи на этом устройстве (%1)</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>No saved keys for this chat on this device.</source>
+            <translation>На этом устройстве нет сохранённых ключей этого чата.</translation>
+        </message>
+        <message>
+            <source>Not found in loaded history</source>
+            <translation>Нет в загруженной истории</translation>
+        </message>
+        <message>
+            <source>Reissue key</source>
+            <translation>Перевыпустить ключ</translation>
+        </message>
+        <message>
+            <source>Request current key</source>
+            <translation>Запросить актуальный ключ</translation>
+        </message>
+        <message>
+            <source>Request sent. The saved key remains available.</source>
+            <translation>Запрос отправлен. Сохранённый ключ остаётся доступным.</translation>
+        </message>
+        <message>
+            <source>Request sent. Waiting for the key.</source>
+            <translation>Запрос отправлен. Ожидаем ключ.</translation>
+        </message>
+        <message>
+            <source>Request this key again</source>
+            <translation>Запросить этот ключ повторно</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>Saved key</source>
+            <translation>Сохранённый ключ</translation>
+        </message>
+        <message>
+            <source>The current key is missing from this device.</source>
+            <translation>Актуального ключа нет на этом устройстве.</translation>
+        </message>
+        <message>
+            <source>This key is no longer saved on this device.</source>
+            <translation>Этот ключ больше не сохранён на устройстве.</translation>
+        </message>
+        <message>
+            <source>Unknown</source>
+            <translation>Неизвестно</translation>
+        </message>
 </context>
 </TS>

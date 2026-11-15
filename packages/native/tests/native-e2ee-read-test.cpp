@@ -10384,6 +10384,149 @@ private slots:
         QVERIFY(scene.item("channelInfoTitle"));
         QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
     }
+
+    // Issue #244 (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md): the key screen
+    // summary, the saved-keys inventory and the saved-key details screen, driven
+    // through the same drawer stack as the #243 info screens.
+    void uiEncryptedChatKeyScreenInventoryAndDetails() {
+        ProtectedChatInfoScene scene("en", "dark", true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat key screen window did not close", __FILE__, __LINE__);
+        });
+        // Two local generations before the reveal: the stream's current key and
+        // one past generation. The drawer enumerates them on screen entry.
+        const QString historicalKey = QStringLiteral("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d");
+        for (const auto &key : {OtherGeneration, historicalKey})
+            QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, key}, QByteArray(32, 'k'), 0),
+                NativeChatKeyVault::Failure::None);
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyUuid"));
+        // KeySummary: the chip mirrors the stream's current generation and the
+        // owner (the scene's role) sees the rotate affordance. No key_announced
+        // message exists in the fixture history, so the created label hides.
+        QCOMPARE(scene.text("encryptedChatKeyUuid"), OtherGeneration);
+        QCOMPARE(scene.text("encryptedChatKeyUuidLabel"), QString("Current key ID"));
+        QVERIFY(scene.require("encryptedChatReissueButton")->isVisible());
+        QVERIFY(!scene.item("encryptedChatKeyUnavailable"));
+        QVERIFY(!scene.item("encryptedChatKeyCreated"));
+        encryptedUiClick(scene.require("encryptedChatKeyCopyButton"));
+        QTRY_COMPARE(QGuiApplication::clipboard()->text(), OtherGeneration);
+        // The saved-keys section starts collapsed and enumerates the vault on reveal.
+        QVERIFY(!scene.item("encryptedChatLocalKeysList"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeysToggle"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeysList"));
+        QCOMPARE(scene.text("encryptedChatLocalKeysToggleLabel"), QString("Keys on this device (2)"));
+        QVERIFY(scene.require("encryptedChatLocalKeyRow-" + OtherGeneration)->isVisible());
+        QCOMPARE(scene.text("encryptedChatLocalKeyRowBadge-" + OtherGeneration), QString("Current"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyRowBadge-" + historicalKey), QString("Historical"));
+        QVERIFY(scene.text("encryptedChatLocalKeyRowUuid-" + historicalKey).startsWith(historicalKey.left(8)));
+        QVERIFY(!scene.text("encryptedChatLocalKeyRowAdded-" + historicalKey).isEmpty());
+        // Saved-key details for the historical generation: full uuid, the
+        // announcement fallback label and a working request-this-key path.
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + historicalKey));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyUuid"), historicalKey);
+        QCOMPARE(scene.text("encryptedChatLocalKeyState"), QString("Historical"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyAnnouncedValue"), QString("Not found in loaded history"));
+        QVERIFY(!scene.text("encryptedChatLocalKeyAddedValue").isEmpty());
+        encryptedUiClick(scene.require("encryptedChatRequestLocalKeyButton"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyRequested"));
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        // The current generation's details allow self-deletion; deleting it
+        // surfaces the reference missing-key recovery block on the key screen.
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + OtherGeneration));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyState"), QString("Current"));
+        encryptedUiClick(scene.require("encryptedChatDeleteLocalKeyButton"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyUnavailable"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyUnavailable"),
+            QString("This key is no longer saved on this device."));
+        encryptedUiClick(scene.require("nativeRightDrawerBack"));
+        QTRY_COMPARE(scene.text("encryptedChatCurrentKeyMissingHint"),
+            QString("The current key is missing from this device."));
+        QVERIFY(scene.require("encryptedChatRequestCurrentKeyButton")->isVisible());
+        encryptedUiClick(scene.require("encryptedChatRequestCurrentKeyButton"));
+        QTRY_VERIFY(scene.item("encryptedChatCurrentKeyRequested"));
+    }
+
+    void uiEncryptedChatKeyScreenSourceGeometry_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
+    void uiEncryptedChatKeyScreenSourceGeometry() {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ProtectedChatInfoScene scene(locale, mode, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat key geometry window did not close", __FILE__, __LINE__);
+        });
+        const auto muted = QColor(mode == "dark" ? "#707070" : "#989898");
+        const auto cardBg = QColor(mode == "dark" ? "#373737" : "#f5f5f5");
+        const auto primary = QColor(mode == "dark" ? "#ffffff" : "#1b1b1d");
+        const auto accent = QColor("#ff8438");
+        const QString historicalKey = QStringLiteral("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d");
+        for (const auto &key : {OtherGeneration, historicalKey})
+            QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, key}, QByteArray(32, 'k'), 0),
+                NativeChatKeyVault::Failure::None);
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        // encrypted-chat-info.ui.tsx: label row text-sm text-text-muted with the
+        // 24 px ghost copy button; the chip is rounded-lg bg-card-bg px-2 py-1.5
+        // around a 20 px leading line: height 16 + 12 py + 4 = 32.
+        QCOMPARE(scene.fontPixelSize("encryptedChatKeyUuidLabel"), 14);
+        QCOMPARE(scene.color("encryptedChatKeyUuidLabel"), muted);
+        QCOMPARE(scene.require("encryptedChatKeyCopyButton")->height(), qreal(24));
+        QCOMPARE(scene.require("encryptedChatKeyCopyButton")->width(), qreal(24));
+        QCOMPARE(scene.require("encryptedChatKeyChip")->height(), qreal(32));
+        QCOMPARE(scene.color("encryptedChatKeyChip"), cardBg);
+        QCOMPARE(scene.fontPixelSize("encryptedChatKeyUuid"), 14);
+        QCOMPARE(scene.color("encryptedChatKeyUuid"), primary);
+        // Button md full width: h-9, radius 8 (rounded-lg).
+        QCOMPARE(scene.require("encryptedChatReissueButton")->height(), qreal(36));
+        // PanelMenuRow 44 px, chevron rotates with the expanded state.
+        QCOMPARE(scene.require("encryptedChatLocalKeysToggle")->height(), qreal(44));
+        QCOMPARE(scene.fontPixelSize("encryptedChatLocalKeysToggleLabel"), 14);
+        QCOMPARE(scene.color("encryptedChatLocalKeysToggleLabel"), primary);
+        encryptedUiClick(scene.require("encryptedChatLocalKeysToggle"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeysList"));
+        // Rows: py-2 over two text-xs lines with the trailing 16 px chevron.
+        const auto *currentRow = scene.require("encryptedChatLocalKeyRow-" + OtherGeneration);
+        QCOMPARE(currentRow->height(), qreal(50));
+        QCOMPARE(scene.fontPixelSize("encryptedChatLocalKeyRowUuid-" + OtherGeneration), 12);
+        QCOMPARE(scene.color("encryptedChatLocalKeyRowUuid-" + OtherGeneration), primary);
+        QCOMPARE(scene.color("encryptedChatLocalKeyRowBadge-" + OtherGeneration), accent);
+        QCOMPARE(scene.color("encryptedChatLocalKeyRowBadge-" + historicalKey), muted);
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + historicalKey));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        // Details: the uuid chip is break-all mono over px-2 py-2; dt text-sm
+        // muted / dd text-sm primary.
+        QCOMPARE(scene.fontPixelSize("encryptedChatLocalKeyUuid"), 14);
+        QCOMPARE(scene.color("encryptedChatLocalKeyUuid"), primary);
+        QCOMPARE(scene.fontPixelSize("encryptedChatLocalKeyUuidLabel"), 14);
+        QCOMPARE(scene.color("encryptedChatLocalKeyUuidLabel"), muted);
+        QCOMPARE(scene.fontPixelSize("encryptedChatLocalKeyAnnouncedLabel"), 14);
+        QCOMPARE(scene.color("encryptedChatLocalKeyAnnouncedValue"), primary);
+        QCOMPARE(scene.require("encryptedChatRequestLocalKeyButton")->height(), qreal(36));
+        QCOMPARE(scene.require("encryptedChatDeleteLocalKeyButton")->height(), qreal(36));
+        auto *drawer = scene.require("nativeRightDrawer"); QVERIFY(drawer);
+        qInfo().noquote() << "KEY_SCREEN_GEOMETRY" << QJsonDocument(QJsonObject{
+            {"locale", locale}, {"mode", mode},
+            {"chip", scene.rect("encryptedChatKeyChip", drawer)},
+            {"copy", scene.rect("encryptedChatKeyCopyButton", drawer)},
+            {"reissue", scene.rect("encryptedChatReissueButton", drawer)},
+            {"toggle", scene.rect("encryptedChatLocalKeysToggle", drawer)},
+            {"currentRow", scene.rect("encryptedChatLocalKeyRow-" + OtherGeneration, drawer)}})
+            .toJson(QJsonDocument::Compact);
+    }
 #endif
 
     void publicPreparationStateDoesNotOfferAKeyRequestForKnownMalformedCiphertext_data() {

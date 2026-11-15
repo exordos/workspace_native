@@ -232,7 +232,7 @@ public:
     Q_INVOKABLE void deleteChatLocalKey(const QString &keyUuid);
     // Joined-style date label shared by the key screens (profileDetails'
     // joined rule: "MMM d, yyyy" en / "d MMM yyyy г." ru == formatDateJoined).
-    static QString formatChatKeyDate(const QString &isoDate, const QString &localeName);
+    Q_INVOKABLE static QString formatChatKeyDate(const QString &isoDate, const QString &localeName);
     // Issue #221: per-message decrypt Retry on the encrypted message error row.
     Q_INVOKABLE void retryMessageDecrypt(const QString &messageUuid);
     QStringList decryptRetryPendingUuids() const;
