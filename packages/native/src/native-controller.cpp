@@ -4309,9 +4309,10 @@ void NativeController::createChannel(const QString &name, const QString &descrip
             // Review finding 4576823403 (medium): a FULL create budget is its
             // own case — all durable stage slots are held by unresolved
             // attempts (usually dormant quarantines), and the safe way out is
-            // the user-invokable resolve (unresolvedChannelCreateStages /
-            // resolveChannelCreateStage). Point the user there; nothing held
-            // is touched automatically.
+            // the user-facing flow: open the unresolved-creations inventory
+            // from the create dialog, check an attempt (commit its key if the
+            // channel landed) or explicitly discard one after the key-loss
+            // warning. Nothing held is touched automatically.
             finishChannelCreation(owner, id, ticket,
                 staged == NativeChatKeyVault::Failure::Capacity
                     ? tr("All encrypted channel creation slots are held by unresolved attempts. Resolve one of them and try again.")
@@ -4632,22 +4633,21 @@ QJsonArray NativeController::unresolvedChannelCreateStages() const
 
 void NativeController::resolveChannelCreateStage(const QString &attempt)
 {
-    // Review finding 4576823403 (medium, R7): the SAFE terminal-resolution
-    // mechanism for permanently-unresolved create attempts. Automatic
-    // recovery may never destroy a dispatch-attempted stage on absence
-    // evidence (R6), so the bounded create budget could otherwise stay
-    // starved across restarts with no path out. The missing terminal
-    // authority is the human, and resolve only ever acts on the human's
-    // explicit request plus a DEFINITIVE live answer:
-    //  - definitive 404 now: the user decides the creation is not worth
-    //    waiting for any longer; the stage record is released (an explicit
-    //    human-ordered discard, never inferred from absence) and its budget
-    //    slot is free again;
-    //  - stream served and the encrypted echo verifies: the staged key is
-    //    COMMITTED (re-adopted) — resolving an attempt can never discard a
-    //    key whose channel turned out to exist;
-    //  - anything inconclusive (transport error, 5xx, non-verifying echo)
-    //    or a failed vault write: stage and key stay byte-for-byte intact.
+    // Review findings 4576823403 (medium, R7) + 4576938727 (critical, R8):
+    // the user-invokable CHECK of a permanently-unresolved create attempt.
+    // Automatic recovery may never destroy a dispatch-attempted stage on
+    // absence evidence (R6), so the bounded create budget could otherwise
+    // stay starved across restarts with no path out. The check gives the
+    // human the two answers recovery can prove:
+    //  - the stream is served and its encrypted echo verifies: the staged
+    //    key is COMMITTED (re-adopted) and the budget slot freed — terminal
+    //    via positive proof; resolving can never discard a key whose channel
+    //    turned out to exist;
+    //  - a 404 (or any inconclusive answer, or a failed vault write): NOT
+    //    terminal — a delayed POST can still land and the stage may hold the
+    //    only copy of the group key — so the stage and key stay byte-for-byte
+    //    intact and the answer is "not found yet". Stopping to await such an
+    //    attempt is the separate informed discardChannelCreateStage decision.
     // Only a provably-never-dispatched 'prepared' stage may be released
     // without a GET (the two-phase dispatch contract: its POST never left
     // any process).
@@ -4715,14 +4715,18 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
             return;
         }
         if (result.status == 404) {
-            // The definitive answer the human asked for: the stream does
-            // not exist, and the human — not an absence heuristic — now
-            // closes the attempt. The key is discarded only as the explicit
-            // consequence of that human decision, freeing the budget slot.
-            const bool released = m_chatKeys->clearCreateStage(lease, lower) == NativeChatKeyVault::Failure::None;
-            settle(released ? QStringLiteral("released") : QStringLiteral("unresolved"), released
-                ? tr("The channel was definitively not created; its creation slot was released.")
-                : tr("The creation attempt could not be resolved right now."));
+            // Review finding 4576938727 (critical, R8): a 404 at resolve time
+            // is NOT a terminal outcome. The client observes no server-side
+            // deadline or cancellation for the attempt, so a delayed or
+            // in-flight POST can still commit the channel arbitrarily late,
+            // and this stage may hold the only copy of its group key. Absence
+            // therefore proves nothing conclusive here — the same rule R6 set
+            // for automatic recovery applies to the user check: report "not
+            // found yet" and retain stage and key byte-for-byte. The only
+            // path that may destroy a staged key is the informed explicit
+            // discardChannelCreateStage decision below.
+            settle(QStringLiteral("unresolved"),
+                tr("The channel was not found yet. The attempt and its encryption key were kept."));
             return;
         }
         if (result.ok()) {
@@ -4742,7 +4746,50 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
 
 void NativeController::discardChannelCreateStage(const QString &attempt, bool confirmed)
 {
-    Q_UNUSED(attempt); Q_UNUSED(confirmed); // RED repro stub: the fix commit implements the informed discard.
+    // Review finding 4576938727 (critical, R8): because a check can never
+    // prove a terminal negative — absence of the stream is never proof that
+    // the create POST cannot still land — the only key-safe way for the user
+    // to stop awaiting an unresolved attempt and free its create-budget slot
+    // is an INFORMED EXPLICIT KEY-DISCARD: the caller (a UI confirmation
+    // that names the risk) carries `confirmed == true`, meaning the user was
+    // told that the channel may still appear later and would then be
+    // permanently unreadable. An unconfirmed call is refused and changes
+    // nothing. A discard is a decision, not a proof attempt: no GET is
+    // issued; the stage record and its staged key are removed and the budget
+    // slot is freed, exactly as the warned user asked.
+    const auto lower = attempt.toLower();
+    const auto settle = [this, lower](const QString &outcome, const QString &message) {
+        emit channelCreateStageResolved(lower, outcome, message);
+        emit stateChanged();
+    };
+    const auto kept = QStringLiteral("unresolved");
+    if (!isUuid(lower)) { settle(kept, tr("The channel creation attempt identity is invalid.")); return; }
+    if (!confirmed) {
+        settle(kept, tr("The attempt was kept: discarding requires an explicit confirmation, because a channel that appears later could never be read."));
+        return;
+    }
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available()) {
+        settle(kept, tr("Encrypted channel creation is not available yet.")); return;
+    }
+    if (m_channelStageResolving.contains(lower)) {
+        // A check is in flight for this attempt; let it settle first so a
+        // verify-commit can never race a user discard into a lost key.
+        settle(kept, tr("A check for this attempt is already running. Try again when it finishes.")); return;
+    }
+    for (auto it = m_channelCreations.begin(); it != m_channelCreations.end(); ++it)
+        if (it->encrypted && it->uuid == lower) {
+            settle(kept, tr("This creation attempt is still in progress. Check its status later.")); return;
+        }
+    const auto lease = m_chatKeys->lease();
+    const auto stored = m_chatKeys->readCreateStage(lease, lower);
+    if (stored.failure != NativeChatKeyVault::Failure::None || !stored.value) {
+        settle(kept, tr("This creation attempt is no longer unresolved.")); return;
+    }
+    const auto cleared = m_chatKeys->clearCreateStage(lease, lower);
+    settle(cleared == NativeChatKeyVault::Failure::None ? QStringLiteral("discarded") : kept,
+        cleared == NativeChatKeyVault::Failure::None
+            ? tr("The creation attempt was discarded. If its channel appears later, it can never be read.")
+            : tr("The creation attempt could not be resolved right now."));
 }
 
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,

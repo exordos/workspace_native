@@ -448,11 +448,11 @@ public:
     // unresolved durable attempt (attempt uuid, staged key uuid, created
     // timestamp, dispatch phase, absence evidence, dormant flag — never key
     // material) so a UI can present them; resolveChannelCreateStage(attempt)
-    // is the explicit user-invokable terminal decision: a definitive 404 at
-    // resolve time releases the stage record (an explicit human discard,
-    // never inferred) and frees the budget slot; a stream that now exists
-    // with a verifying encrypted echo commits (re-adopts) the key instead of
-    // discarding it; any inconclusive answer keeps everything untouched.
+    // is the explicit user-invokable CHECK: a stream that now exists with a
+    // verifying encrypted echo commits (re-adopts) the key and frees the
+    // budget slot (terminal via positive proof), while a 404 is NOT terminal
+    // (a delayed POST can still land) — the stage and its key are kept and
+    // the answer is "not found yet".
     // Outcomes arrive via channelCreateStageResolved. Surfaced on the
     // controller so any UI can drive it; a full settings page is out of
     // scope for this slice.
@@ -625,12 +625,15 @@ signals:
     void messagesChanged();
     void topicCreated(QString stream, QString topic);
     void channelCreated(QString stream, QString defaultTopic);
-    // R7 (review finding 4576823403): terminal result of one explicit
-    // resolveChannelCreateStage call: "committed" (the stream exists and the
-    // encrypted echo verified — the staged key was adopted and the stage
-    // closed), "released" (a definitive 404 — the user explicitly closed the
-    // attempt and freed its budget slot), "unresolved" (nothing conclusive —
-    // the stage and its key were kept unchanged).
+    // R7 (finding 4576823403) / R8 (finding 4576938727): terminal result of
+    // one explicit resolveChannelCreateStage or discardChannelCreateStage
+    // call: "committed" (the stream exists and the encrypted echo verified —
+    // the staged key was adopted and the stage closed), "discarded" (an
+    // informed explicit discard: the staged key record was removed by the
+    // warned user's decision and its budget slot freed), "released" (a
+    // provably never-dispatched stage retired without a network round trip),
+    // "unresolved" (nothing conclusive — the stage and its key were kept
+    // unchanged; a 404 is never terminal for a check).
     void channelCreateStageResolved(QString attempt, QString outcome, QString message);
     void directChatOpened(QString stream, QString peer, QString defaultTopic);
     void messageSent(QString id, QString stream, QString topic);
