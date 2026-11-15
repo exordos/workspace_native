@@ -176,6 +176,15 @@ FocusScope {
         openScreen(requested);
     }
     function resetChatScreens(scope) {
+        // An unknown scope is not a scope change. While no owner is active the
+        // projection has nothing to compare against, so it can never prove the
+        // open chat screens stale; the login transition already drops them via
+        // clearAll. Treating "unknown" as "stale" let any controller signal
+        // (e.g. the reveal-driven key refresh emitting stateChanged inside the
+        // topScreen change cascade) wipe the stack mid-cascade and trip Qt's
+        // binding-loop detection on topScreen (Bug #300).
+        if (scope == null || scope.ownerKey == null || String(scope.ownerKey) === "")
+            return;
         let changed = false;
         const layers = drawer.layers.map(function (layer) {
             const screens = layer.screens.filter(function (screen) {
