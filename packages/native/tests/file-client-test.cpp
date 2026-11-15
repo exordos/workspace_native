@@ -1,5 +1,6 @@
 #include "api-client.h"
 #include "file-client.h"
+#include "file-download-staging.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -9,6 +10,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -88,6 +91,13 @@ class FileClientTest : public QObject {
 private slots:
     void multipartUpload();
     void downloadAclAndAtomicCommit();
+#ifdef Q_OS_UNIX
+    void privateStagingPublicationRetainsDirectoryIdentity();
+#endif
+#ifdef Q_OS_LINUX
+    void stagedPublicationKeepsVerifiedIdentity_data();
+    void stagedPublicationKeepsVerifiedIdentity();
+#endif
     void rejectedDownloads_data();
     void rejectedDownloads();
     void generationCancelsPartialDownload();
@@ -159,6 +169,84 @@ void FileClientTest::downloadAclAndAtomicCommit()
     QVERIFY(server.requests[1].startsWith("GET /api/workspace/v1/messenger/files/" + FileUuid.toUtf8() + "/actions/download HTTP/1.1"));
     for (const auto &request : server.requests) QCOMPARE(header(request, "Authorization"), "Bearer file-test-token");
 }
+
+#ifdef Q_OS_UNIX
+void FileClientTest::privateStagingPublicationRetainsDirectoryIdentity()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto destination = directory.filePath("saved.bin");
+    FileDownloadStaging staging(destination);
+    QVERIFY(staging.isValid());
+    QSaveFile output(staging.fileName());
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    QCOMPARE(output.write(Bytes), Bytes.size());
+    QVERIFY(output.commit());
+    const auto original = QFileInfo(staging.fileName()).absolutePath();
+    const auto renamed = original + ".retained";
+    QVERIFY(QDir().rename(original, renamed));
+    QVERIFY(QDir().mkdir(original));
+    write(QDir(original).filePath("payload"), "unverified replacement");
+    // Execute the non-Linux POSIX backend on Linux too. A pathname-based link
+    // would select the replacement directory; the retained dirfd must not.
+    QVERIFY(staging.publishFromPrivateDirectory(destination));
+    QCOMPARE(read(destination), Bytes);
+    QVERIFY(!staging.publishFromPrivateDirectory(destination));
+    QCOMPARE(read(destination), Bytes);
+    QCOMPARE(read(QDir(original).filePath("payload")), QByteArray("unverified replacement"));
+}
+#endif
+
+#ifdef Q_OS_LINUX
+void FileClientTest::stagedPublicationKeepsVerifiedIdentity_data()
+{
+    QTest::addColumn<QString>("substitution");
+    QTest::newRow("file") << QStringLiteral("file");
+    QTest::newRow("symlink") << QStringLiteral("symlink");
+}
+
+void FileClientTest::stagedPublicationKeepsVerifiedIdentity()
+{
+    QFETCH(QString, substitution);
+    if (!qEnvironmentVariableIsSet("WORKSPACE_TEST_PUBLICATION_CHILD")) {
+        // Interpose only the final publishing syscall in a child process. The
+        // replacement is a real directory operation, not a FileClient hook.
+        QProcess child;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("WORKSPACE_TEST_PUBLICATION_CHILD", "1");
+        environment.insert("LD_PRELOAD", QStringLiteral(WORKSPACE_PUBLICATION_RACE_LIBRARY));
+        child.setProcessEnvironment(environment);
+        child.start(QCoreApplication::applicationFilePath(),
+                    {QStringLiteral("stagedPublicationKeepsVerifiedIdentity:") + substitution});
+        QVERIFY(child.waitForFinished(10000));
+        const auto output = child.readAllStandardOutput() + child.readAllStandardError();
+        QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+        return;
+    }
+    Server server;
+    server.handler = [](QTcpSocket *socket, const QByteArray &request) {
+        Server::reply(socket, request.contains("/actions/download ") ? Bytes : metadata());
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto destination = directory.filePath("saved.bin");
+    const auto marker = directory.filePath("race-ran");
+    qputenv("WORKSPACE_TEST_PUBLICATION_DESTINATION", QFile::encodeName(destination));
+    qputenv("WORKSPACE_TEST_PUBLICATION_MARKER", QFile::encodeName(marker));
+    qputenv("WORKSPACE_TEST_PUBLICATION_SUBSTITUTION", substitution.toLatin1());
+    FileResult result; bool done = false;
+    client.download(FileUuid, destination, [&](const FileResult &value) { result = value; done = true; },
+                    {}, FileClient::DestinationMode::KeepExisting);
+    QTRY_VERIFY(done);
+    QVERIFY2(QFile::exists(marker), "The real staging substitution must execute before publication.");
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QVERIFY(!QFileInfo(destination).isSymLink());
+    QCOMPARE(read(destination), Bytes);
+    QVERIFY(result.checksumVerified);
+}
+#endif
 
 void FileClientTest::rejectedDownloads_data()
 {

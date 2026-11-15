@@ -22,7 +22,7 @@ add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
     src/workspace-reference.cpp src/workspace-reference.h
-    src/file-client.cpp src/file-client.h
+    src/file-client.cpp src/file-client.h src/file-download-staging.h
     src/native-markdown.cpp src/native-markdown.h
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
@@ -259,11 +259,20 @@ if(BUILD_TESTING)
     add_test(NAME native-about-policy COMMAND native-about-policy-test)
     set_tests_properties(native-about-policy PROPERTIES TIMEOUT 30)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(file-publication-race SHARED tests/file-publication-race.cpp)
+        target_link_libraries(file-publication-race PRIVATE ${CMAKE_DL_LIBS})
+    endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
     foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
+        if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_dependencies(file-client-test file-publication-race)
+            target_compile_definitions(file-client-test PRIVATE
+                WORKSPACE_PUBLICATION_RACE_LIBRARY="$<TARGET_FILE:file-publication-race>")
+        endif()
         if(test STREQUAL "native-desktop")
             target_link_libraries(${test}-test PRIVATE workspace-native-desktop)
         endif()

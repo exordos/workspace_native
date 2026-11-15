@@ -18,10 +18,18 @@ and destinations reserved by active downloads require a unique numeric suffix.
 
 Destination selection is advisory: another process can create that name during
 the transfer. Download-center saves therefore use FileClient's explicit
-KeepExisting mode: verify and commit into an owned temporary file in the target
-directory, then publish without replacing the destination (hard-link creation
-on Unix, MoveFile on Windows). Unsupported filesystems report an error rather
-than falling back to replacement. Existing FileClient callers keep their
+KeepExisting mode: verify and commit into a private staging directory on the
+target filesystem, then publish without replacing the destination. Linux retains
+the verified file descriptor across commit and creates a hard link through
+`/proc/self/fd`; it never reopens the staged filename. Other POSIX platforms pin
+the private 0700 directory with a verified owner and directory descriptor, then
+publish its fixed child with `linkat`. A writer of the parent may rename that
+directory, but another UID cannot replace its contents or redirect the held
+descriptor. The same UID already controls the user's files and is not an isolation
+boundary. Windows retains a duplicate of QSaveFile's exclusive, DELETE-capable
+handle and publishes through `SetFileInformationByHandle(FileRenameInfo)` with
+replacement disabled. Unsupported filesystems or unavailable safe operations
+report an error rather than falling back to pathname replacement. Existing FileClient callers keep their
 replacement behavior. Retry retains the original requested path separately from
 the allocated attempt path, including when allocation failed before transfer.
 
@@ -54,6 +62,20 @@ refresh, refresh/restart errors, removal during refresh, service replacement and
 logout. Refresh failure retains the original failed row. The local dismiss is
 not an IPC call and has no artificial rejection seam: an absent or no-longer-owned
 row cannot be restarted.
+
+A Linux syscall-boundary regression first reproduced an unverified file and a
+symbolic link being substituted after commit but before publication. The test
+interposes only that syscall in an isolated child and performs real filesystem
+renames; there are no production test hooks. Both substitutions now publish the
+verified bytes. A separate check executes the POSIX directory-descriptor backend
+on Linux after renaming the entire staging directory and replacing its old path,
+and confirms that a competing destination is preserved.
+
+The Windows implementation follows the Qt 6.10.2 QSaveFile/QTemporaryFile handle
+contract and the documented [DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)
+and [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)
+semantics. Windows runtime and native macOS acceptance remain **NOT RUN**; the
+POSIX backend's Linux check is not a macOS acceptance claim.
 
 The complete FileClient suite also checks progress on a real streamed body and
 cancellation/destruction inside initial and partial progress callbacks. Existing
