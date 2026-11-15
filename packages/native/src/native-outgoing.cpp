@@ -30,9 +30,14 @@ bool NativeController::outgoingReady() const
 bool NativeController::outgoingOwned(const SendIntent &intent, bool writing) const
 {
     if (intent.encrypted) return encryptedSendOwned(intent, writing);
+    // A markdown send admitted by canSend() must be able to finish while a
+    // snapshot reload is still open (issue #342): the reload barrier is
+    // transient and its history leg may itself be the delayed page the send
+    // races, so freshness flags must not silently strand the accepted intent.
+    // Ownership, account identity and the stream still being present are the
+    // durable fences here; responses are additionally verified field by field.
     if (!authenticated() || intent.owner != creationOwnerKey() || intent.project != m_session->project()
-        || intent.user != m_session->user() || !m_catalogVerified || m_snapshotActive || m_syncBlocked
-        || m_cacheForgettingAccount) return false;
+        || intent.user != m_session->user() || m_cacheForgettingAccount) return false;
     const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &s) { return s.uuid == intent.stream; });
     if (row == m_streams.cend() || row->encrypted) return false;
     if (!writing) return true;
