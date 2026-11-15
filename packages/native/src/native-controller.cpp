@@ -4529,22 +4529,26 @@ void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage>
                 resolved = true;
             }
         } else if (result.status == 404) {
-            // Review findings 4575672241/4575672242 residual hole: a stage
-            // whose POST vanished between the durable dispatch marker and
-            // the socket write answers 404 forever and could never be
-            // removed by retention alone. Record the definitive absence on
-            // the stage durably; retire only once K consecutive definitive
-            // 404s observed across SEPARATE scan cycles are on record AND
-            // the stage aged past minimumChannelStageReclaimAgeMs. The age
-            // and cross-cycle requirements are what keep the R2 race closed:
-            // a stream whose creation is still committing lands long before
-            // the age floor, and its first 2xx both re-verifies the echo
-            // and resets the evidence. A failed retire counts unresolved.
-            const auto evidence = stage.missingEvidence + 1;
-            const auto age = QDateTime::currentMSecsSinceEpoch() - stage.createdAt;
-            if (evidence >= minimumChannelStageMissingObservations && age >= minimumChannelStageReclaimAgeMs)
-                resolved = m_chatKeys->clearCreateStage(lease, stage.attempt) == NativeChatKeyVault::Failure::None;
-            else
+            // Review finding 4576535469 (critical): a definitive 404 proves
+            // the stream is absent NOW, never that a dispatched POST can no
+            // longer land — this client observes no server-side deadline or
+            // cancellation for the attempt, and an ambiguous creation may
+            // commit arbitrarily late. Absence is therefore NOT a definitive
+            // terminal outcome, and this stage can hold the only copy of the
+            // group key, so it is NEVER retired here (the R4 5x404+age
+            // reclaim is removed: it destroyed keys of still-landing
+            // channels). The durable counter saturates at
+            // minimumChannelStageMissingObservations: a stage at saturation
+            // is DORMANT — the key stays quarantined inside the vault's
+            // bounded create-stage budget (never destroyed), the scan keeps
+            // re-arming at the bounded backoff below (unresolved), and when
+            // a later cycle's GET finally serves the stream the verified
+            // echo above commits the key and frees the slot (re-adoption).
+            // The residual bound this accepts: dormant stages keep their
+            // budget slot, so a full budget of dormant attempts rejects new
+            // encrypted creates locally until one of them lands.
+            const auto evidence = qMin(stage.missingEvidence + 1, minimumChannelStageMissingObservations);
+            if (evidence != stage.missingEvidence)
                 m_chatKeys->setCreateStageMissingEvidence(lease, stage.attempt, evidence);
         } else if (result.ok() && stage.missingEvidence > 0) {
             // The stream answered under the attempt uuid (2xx): absence

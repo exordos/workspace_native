@@ -888,16 +888,25 @@ private:
     // re-arms with exponential backoff capped at this interval, so a failure
     // that outlives the window heals without a restart and without a tight loop.
     static constexpr qint64 channelStageRecoveryBackoffCapMs = 30000;
-    // Review findings 4575672241/4575672242: a dispatch-attempted stage is
-    // retired only after this many DEFINITIVE 404 recovery answers observed
-    // across SEPARATE scan cycles are durably recorded on the stage AND the
-    // stage is older than the reclaim age below. Together they establish the
-    // creation is impossible: a POST still in flight or still committing is
-    // protected by the cross-cycle requirement (each cycle is a fresh check
-    // separated by at least the retry interval) and by the age requirement
-    // (no real server commits a stream POST this late).
+    // Review findings 4575672241/4575672242 as re-scoped by 4576535469
+    // (critical): a definitive 404 proves absence NOW, never that a
+    // dispatched POST can no longer land — the client observes no
+    // server-side deadline or cancellation for the attempt — so absence
+    // evidence alone is NOT a definitive terminal outcome and may NEVER
+    // retire a dispatch-attempted stage: it can hold the only copy of a
+    // group key of a creation whose POST is still able to commit. The
+    // durable cross-cycle 404 counter instead SATURATES at this value: a
+    // stage at saturation is DORMANT — its key stays quarantined inside
+    // the vault's bounded MaximumCreateStages budget (never destroyed), the
+    // scan keeps re-arming at the bounded backoff above, and if a later
+    // scan sees the stream land the verified echo commits the key and
+    // frees the slot (re-adoption). Only definitive terminal outcomes
+    // retire material: the verified encrypted echo (commit), the live
+    // POST's own definite rejection, or the provably-never-dispatched
+    // 'prepared' phase reclaim (which never carried a live POST). The
+    // counter saturating here also bounds the dormant bookkeeping itself:
+    // dormant records never grow and never leave the 32-record budget.
     static constexpr int minimumChannelStageMissingObservations = 5;
-    static constexpr qint64 minimumChannelStageReclaimAgeMs = 10 * 60 * 1000;
     void loadChannelDefault(const QString &owner, const QString &id, quint64 ticket);
     void checkChannelMembers(const QString &owner, const QString &id, quint64 ticket);
     void addChannelMembers(const QString &owner, const QString &id, quint64 ticket);
