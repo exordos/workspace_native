@@ -1561,6 +1561,46 @@
             <translation>Сначала уточните результат предыдущих попыток создания канала.</translation>
         </message>
         <message>
+            <source>All encrypted channel creation slots are held by unresolved attempts. Resolve one of them and try again.</source>
+            <translation>Все слоты создания зашифрованных каналов заняты не уточнёнными попытками. Уточните одну из них и повторите попытку.</translation>
+        </message>
+        <message>
+            <source>The channel creation attempt identity is invalid.</source>
+            <translation>Идентификатор попытки создания канала некорректен.</translation>
+        </message>
+        <message>
+            <source>This creation attempt is no longer unresolved.</source>
+            <translation>Эта попытка создания канала больше не требует уточнения.</translation>
+        </message>
+        <message>
+            <source>This creation attempt is still in progress. Check its status later.</source>
+            <translation>Эта попытка создания канала ещё выполняется. Проверьте её состояние позже.</translation>
+        </message>
+        <message>
+            <source>The creation attempt could not be resolved right now.</source>
+            <translation>Не удалось уточнить результат попытки создания канала.</translation>
+        </message>
+        <message>
+            <source>The creation attempt never reached the server and was retired.</source>
+            <translation>Попытка создания канала не была отправлена на сервер и удалена.</translation>
+        </message>
+        <message>
+            <source>The unresolved channel was found and its encryption key was saved.</source>
+            <translation>Не уточнённый канал был найден, и его ключ шифрования сохранён.</translation>
+        </message>
+        <message>
+            <source>The channel was definitively not created; its creation slot was released.</source>
+            <translation>Канал точно не был создан; слот его создания освобождён.</translation>
+        </message>
+        <message>
+            <source>The channel exists but did not confirm this key. The attempt was kept.</source>
+            <translation>Канал существует, но не подтвердил этот ключ. Попытка сохранена.</translation>
+        </message>
+        <message>
+            <source>The server did not answer conclusively. The attempt was kept.</source>
+            <translation>Сервер не дал определённого ответа. Попытка сохранена.</translation>
+        </message>
+        <message>
             <source>Could not create the channel. %1</source>
             <translation>Не удалось создать канал. %1</translation>
         </message>
