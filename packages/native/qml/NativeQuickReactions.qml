@@ -107,6 +107,20 @@ Item {
                 }
             }
         }
+        MouseArea {
+            anchors.fill: parent
+            z: 1
+            acceptedButtons: Qt.NoButton
+            onWheel: wheel => {
+                // The entire capsule owns wheel/gesture input, including its
+                // border and the ends of a short or overflowing reaction list.
+                // Pixel deltas retain their precision instead of becoming notches.
+                buttons.cancelFlick();
+                const delta = wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y : wheel.angleDelta.y / 120 * 36;
+                buttons.contentY = Math.max(0, Math.min(buttons.contentHeight - buttons.height, buttons.contentY - delta));
+                wheel.accepted = true;
+            }
+        }
         Flickable {
             id: buttons
             objectName: "quick-reactions-" + capsule.messageId

@@ -637,6 +637,21 @@ six base choices plus up to five popular identities from seven UTC days; only a
 verified new local addition records quick usage. Suggestions record picker clicks.
 Both histories use the existing opaque-owner preference scope.
 
+The visible quick capsule raises its owning list delegate above adjacent bubbles.
+Its full frame owns wheel input: each angle notch moves one 36px reaction row,
+while pixel deltas and fractional angle steps retain their precision. Both ends,
+the frame border and lists that already fit consume the event. The conversation's
+wheel observer sits below message delegates in the scrolling content item, so
+ordinary conversation scrolling keeps its existing notch mapping.
+`quickReactionsPaintAndReceiveClicksAboveAdjacentMessages` checks actual rendered
+overlap and the target of a real click for own/peer messages, including scrolling,
+variable row heights and delayed image dimensions.
+`quickReactionWheelStaysInsideCapsule` delivers real wheel events and checks both
+scroll offsets, precise gesture phases, edges, and normal scrolling outside.
+Existing capsule keyboard and conversation-wheel scenarios remain required.
+These synthetic visible-window checks do not replace live-server or other-platform
+acceptance.
+
 Unknown provider names stay plain text; removal uses the exact confirmed own
 reaction identity. Pending mutations disable repeated toggles, and an uncertain
 result offers a confirmation-only status check. Picker acceptance is bound to its
