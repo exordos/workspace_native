@@ -6842,6 +6842,23 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::signedOut, this, [this] {
         m_authGuard->setSessionActive(false);
     });
+    // Fix round R2 (cid=4577609973, cid=4577609975): the session-generation
+    // bump seam for the async clipboard-copy fence (m_sessionGeneration).
+    // Sign-out retires the identity outright; a project switch re-authenticates
+    // - away and back restores the same owner key, so comparing against the
+    // last authenticated owner is what turns every switch into a generation
+    // bump. A same-owner token refresh re-authenticates without changing the
+    // owner key and therefore does not retire in-flight work.
+    connect(m_session, &Session::signedOut, this, [this] {
+        ++m_sessionGeneration;
+        m_sessionGenerationOwner.clear();
+    });
+    connect(m_session, &Session::authenticated, this, [this] {
+        const auto owner = creationOwnerKey();
+        if (owner != m_sessionGenerationOwner)
+            ++m_sessionGeneration;
+        m_sessionGenerationOwner = owner;
+    });
     connect(m_authGuard, &NativeAuthGuard::activeChanged,
             this, &NativeController::authGuardActiveChanged);
     // Issue #144: the top bar switcher re-reads its rows whenever the live
@@ -11426,11 +11443,18 @@ bool NativeController::copyMessageImage(const QString &id)
     // lands after sign-out or an account switch belongs to a retired
     // identity and is discarded before it can touch the clipboard.
     const auto sessionOwner = creationOwnerKey();
+    // Fix round R2 (cid=4577609973, cid=4577609975): the owner key survives a
+    // project switch away and back, so the owner fence alone lets a retired
+    // operation through after the round trip. Capture the session generation
+    // too - it advances at every retirement boundary - and discard a completion
+    // whose generation differs even when the owner key matches again.
+    const auto sessionGeneration = m_sessionGeneration;
     const auto destination = staging->filePath(QStringLiteral("clipboard-image"));
-    m_files->download(uuid, destination, [self, staging, sessionOwner](const FileResult &result) {
+    m_files->download(uuid, destination, [self, staging, sessionOwner, sessionGeneration](const FileResult &result) {
         if (!self)
             return;
-        if (!self->authenticated() || self->creationOwnerKey() != sessionOwner)
+        if (!self->authenticated() || self->creationOwnerKey() != sessionOwner
+            || self->m_sessionGeneration != sessionGeneration)
             return;
         QByteArray bytes;
         if (result.ok()) {

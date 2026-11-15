@@ -16820,6 +16820,125 @@ private slots:
         QVERIFY(clipboardSentinelIntact());
     }
 
+    // Fix round R2 (cid=4577609973, cid=4577609975): the owner key alone is not
+    // a completion fence. A project switch away and back re-creates the very
+    // same creationOwnerKey, so a download dispatched before the detour would
+    // pass the R1 fence after its session already retired and write its image
+    // into the current clipboard. The controller now also fences on a session
+    // generation that advances on every retirement boundary, and this test
+    // stages the in-flight download with the mock's defer gate (no sleeps):
+    // the response is delivered only after the session has returned to the
+    // first project, and the reply's finish proves the delivery landed - so a
+    // still-intact sentinel means the completion was discarded, not lost.
+    void copyMessageImageCompletionAfterProjectRoundTripIsDiscarded()
+    {
+        const QString otherProject = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        bool secondProject = false;
+        std::function<void()> releaseDownload;
+        Fixture fixture;
+        fixture.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (request.target.path() == "/api/core/v1/iam/projects/")
+                response.data = QJsonArray{QJsonObject{{"uuid", projectId}, {"name", "First project"}, {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", otherProject}, {"name", "Second project"}, {"status", "ACTIVE"}}};
+            if (secondProject && request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject();
+                raw["project_id"] = otherProject;
+                response.data = raw;
+            }
+            return response;
+        };
+        fixture.streams = [&](const Request &) {
+            if (secondProject) return Response{QJsonArray{}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}}};
+        };
+        fixture.topics = [&](const Request &) {
+            if (secondProject) return Response{QJsonArray{}};
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray png = clipboardCopyFixturePng();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        int downloadRequests = 0;
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                ++downloadRequests;
+                Response result;
+                result.rawBody = png;
+                result.rawContentType = "image/png";
+                // Hold only the in-flight copy dispatched below; the post-return
+                // proof copy answers immediately.
+                if (downloadRequests == 1)
+                    result.defer = [&releaseDownload](std::function<void()> send) { releaseDownload = std::move(send); };
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId},
+                {"name", "m1.png"}, {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        const auto body = QStringLiteral("Head\n\n![m1.png](urn:image:%1?name=m1.png&content_type=image%2Fpng&size=%2)\n\nTail")
+            .arg(mvFileA).arg(png.size());
+        const auto note = message(body, messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        // Never leave the mock socket with an undelivered deferred gate if an
+        // assertion below aborts the test.
+        auto releaseOnExit = qScopeGuard([&] { if (releaseDownload) releaseDownload(); });
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.projects().size(), 2, 2000);
+        fixture.controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.streams().size() == 1, 2000);
+        fixture.controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.topics().isEmpty(), 2000);
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.busy(), 2000);
+        setClipboardImageSentinel();
+        QVERIFY(fixture.controller.copyMessageImage(messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(downloadRequests >= 1, 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseDownload), 2000);
+        // Track the in-flight download reply so the deferred delivery can be
+        // proven (not assumed) once released.
+        QPointer<QNetworkReply> inFlight;
+        for (auto *reply : fixture.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path().endsWith("/actions/download")) inFlight = reply;
+        QVERIFY(inFlight);
+        QVERIFY(!inFlight->isFinished());
+        // Detour to the second project and back: the owner key the completion
+        // sees at the end is identical to the one captured at dispatch.
+        secondProject = true;
+        fixture.session.selectProject(otherProject);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.busy(), 2000);
+        secondProject = false;
+        fixture.session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.streams().size() == 1, 2000);
+        // Deliver the retired operation's response now.
+        releaseDownload();
+        releaseDownload = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(inFlight.isNull() || inFlight->isFinished(), 4000);
+        // The response landed but the completion belongs to a retired session
+        // generation: the clipboard keeps the sentinel even though the owner
+        // key matches again.
+        QVERIFY(clipboardSentinelIntact());
+        // Non-vacuity: a fresh copy under the current generation still writes
+        // the image through the very same pipeline. First let the returned
+        // session re-open the conversation the message lives in.
+        fixture.controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.topics().isEmpty(), 2000);
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.messages().isEmpty(), 4000);
+        QGuiApplication::clipboard()->clear();
+        QVERIFY(fixture.controller.copyMessageImage(messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(!QGuiApplication::clipboard()->image().isNull(), 4000);
+        QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
+    }
+
     // The controller-side half of docs/NATIVE_DESKTOP_AUTO_PAGING.md: a fetched
     // page whose every row is an account-irrelevant service entry must still
     // commit and move the older marker. The view-side zero-visible auto-advance
