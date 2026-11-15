@@ -250,7 +250,12 @@ static void awaitTopicMenuLayout(QQuickWindow *window,QQuickItem *action,const Q
         if(window->property("streamMenuTarget").toString()!=expected || !menu->property("visible").toBool() || !menu->property("opened").toBool()
             || !action->isVisible() || !action->isEnabled() || action->window()!=window || action->height()!=action->implicitHeight()) return false;
         const auto content=list->property("contentHeight").toReal();
-        if(content!=action->height() || menu->property("height").toReal()!=content+menu->property("topPadding").toReal()+menu->property("bottomPadding").toReal()) return false;
+        qreal expectedHeight = 0;
+        for (const auto *name : {"streamMarkReadAction", "streamRenameAction", "streamNewTopicAction", "streamArchiveAction"}) {
+            const auto *entry = window->findChild<QQuickItem *>(name);
+            if (entry && entry->isVisible()) expectedHeight += entry->implicitHeight();
+        }
+        if(content!=expectedHeight || menu->property("height").toReal()!=content+menu->property("topPadding").toReal()+menu->property("bottomPadding").toReal()) return false;
         auto *popup=list->parentItem();
         return popup && popup->window()==window && QRectF(popup->mapToScene(QPointF{}),popup->size()).contains(QRectF(action->mapToScene(QPointF{}),action->size()));
     };
@@ -6496,6 +6501,150 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(fixture.posts, 0); window->close();
     }
 
+    void streamContextMenuOffersCoreChatActions()
+    {
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/streams/") && request.method == "GET") {
+                auto stream = windowChannel(streamId, "Product team");
+                stream["unread_count"] = 2; stream["active_unread_count"] = 2;
+                return {QJsonArray{stream}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Sidebar chat action teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!frame.isEmpty());
+        auto *row = item(window->contentItem(), "stream-" + streamId); QVERIFY(row);
+        QTest::mouseClick(window, Qt::RightButton, {}, row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        QTRY_VERIFY(menu->property("opened").toBool());
+        QVERIFY(visibleItem(window->contentItem(), "streamMarkReadAction"));
+        QVERIFY(visibleItem(window->contentItem(), "streamRenameAction"));
+        QVERIFY(visibleItem(window->contentItem(), "streamArchiveAction"));
+        QVERIFY(visibleItem(window->contentItem(), "streamNewTopicAction"));
+    }
+
+    void sidebarChatActionsCompleteFromMenu_data()
+    {
+        QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("scenario");
+        for (const auto &theme : {"en-light", "ru-dark", "en-dark", "ru-light"})
+            for (const auto &scenario : {"rename", "read", "archive", "direct", "failure", "read-failure", "external-archive"})
+                QTest::newRow(qPrintable(QString(theme)+"-"+scenario)) << QString(theme) << QString(scenario);
+    }
+    void sidebarChatActionsCompleteFromMenu()
+    {
+        QFETCH(QString, theme); QFETCH(QString, scenario);
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(theme.startsWith("ru") ? "ru" : "en"); preferences.setMode(theme.endsWith("dark") ? "dark" : "light");
+        WindowChannelFixture fixture; auto stream = windowChannel(streamId, "Product team");
+        stream["unread_count"] = 2; stream["active_unread_count"] = 2;
+        if (scenario == "direct") { stream["private"] = true; stream["direct_user_uuid"] = channelPeer; }
+        int mutations = 0; bool reject = scenario == "failure" || scenario == "read-failure";
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/") && request.method == "GET") return {QJsonArray{stream}};
+            if (path.endsWith("/streams/"+streamId) && request.method == "GET") return {stream};
+            if ((path.endsWith("/streams/"+streamId) && request.method == "PUT") || path.contains("/streams/"+streamId+"/actions/")) {
+                ++mutations;
+                if (reject) return {QJsonObject{}, 403, 200, {}};
+                stream["updated_at"] = "2026-01-02T10:01:00Z";
+                if (request.method == "PUT") stream["name"] = request.body.value("name");
+                else if (path.endsWith("/actions/read/invoke")) { stream["unread_count"] = 0; stream["active_unread_count"] = 0; }
+                else stream["is_archived"] = path.endsWith("/actions/archive/invoke");
+                return {stream, 200, 200, {}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Chat actions window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId); QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(item(window->contentItem(), "stream-"+streamId));
+        auto *row = item(window->contentItem(), "stream-"+streamId); row->forceActiveFocus(Qt::TabFocusReason);
+        if (theme.endsWith("dark")) QTest::keyClick(window, Qt::Key_F10, Qt::ShiftModifier);
+        else QTest::keyClick(window, Qt::Key_Menu);
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu); QTRY_VERIFY(menu->property("opened").toBool());
+        const auto actionName = scenario == "rename" ? "streamRenameAction" : scenario.startsWith("read") ? "streamMarkReadAction" : "streamArchiveAction";
+        auto *action = window->findChild<QQuickItem *>(actionName); QVERIFY(action);
+        awaitTopicMenuLayout(window, action, streamId);
+        if (theme.startsWith("ru") && QString(actionName) == "streamArchiveAction")
+            QCOMPARE(action->property("text").toString(), QString("Архивировать"));
+        if (scenario == "direct") {
+            QVERIFY(!visibleItem("streamRenameAction"));
+            QVERIFY(!window->findChild<QQuickItem *>("streamRenameAction")->isEnabled());
+        }
+        captureArchiveWindow(window, theme+"-"+scenario, "menu");
+        click(window, action);
+        auto *dialog = window->findChild<QObject *>("chatActionDialog"); QVERIFY(dialog);
+        if (scenario == "read") {
+            QTRY_COMPARE(controller.streams().first().toMap().value("unread").toInt(), 0);
+            QCOMPARE(mutations, 1); QVERIFY(!dialog->property("visible").toBool()); return;
+        }
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        if (scenario == "read-failure") {
+            QTRY_VERIFY(visibleItem("chatActionError"));
+            captureArchiveWindow(window, theme+"-"+scenario, "error");
+            click(window, visibleItem("chatActionCancel"));
+            QTRY_VERIFY(!dialog->property("visible").toBool());
+            auto event = stream; event["kind"] = "stream.updated";
+            QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"uuid",returnedId},{"project_id",projectId},{"user_uuid",userId},{"payload",event}}));
+            QVERIFY(!dialog->property("visible").toBool()); QCOMPARE(mutations, 1); return;
+        }
+        captureArchiveWindow(window, theme+"-"+scenario, "confirmation");
+        if (scenario == "external-archive") {
+            auto event = stream; event["is_archived"] = true; event["kind"] = "stream.updated";
+            QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"uuid",returnedId},{"project_id",projectId},{"user_uuid",userId},{"payload",event}}));
+            QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(mutations, 0); return;
+        }
+        auto *confirm = visibleItem("chatActionConfirm"); QVERIFY(confirm);
+        if (scenario == "rename") {
+            auto *input = visibleItem("chatRenameInput"); QVERIFY(input); QCOMPARE(input->property("text").toString(), QString("Product team"));
+            QVERIFY(!confirm->isEnabled()); input->setProperty("text", "  "); QVERIFY(!confirm->isEnabled());
+            input->setProperty("text", QString(256, QLatin1Char('x')));
+            input->forceActiveFocus(Qt::TabFocusReason); QTest::keyClick(window, Qt::Key_Return);
+            QCOMPARE(mutations, 0);
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("chatActionError"), 1000);
+            QVERIFY(dialog->property("visible").toBool());
+            QVERIFY(visibleItem("chatActionError")->property("text").toString().contains("255"));
+            input->setProperty("text", "Renamed team"); input->forceActiveFocus(Qt::TabFocusReason); QTest::keyClick(window, Qt::Key_Return);
+            QTRY_COMPARE(mutations, 1); QVERIFY(!confirm->isEnabled());
+            QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(controller.streams().first().toMap().value("name").toString(), QString("Renamed team")); return;
+        }
+        QVERIFY(visibleItem("chatArchiveHistoryHint")); QVERIFY(visibleItem("chatArchiveDescription"));
+        const auto description = visibleItem("chatArchiveDescription")->property("text").toString();
+        if (!theme.startsWith("ru")) QCOMPARE(description.contains("both of you"), scenario == "direct");
+        click(window, confirm); QTRY_COMPARE(mutations, 1); QVERIFY(!confirm->isEnabled());
+        if (reject) {
+            QTRY_VERIFY(visibleItem("chatActionError")); QVERIFY(dialog->property("visible").toBool());
+            captureArchiveWindow(window, theme+"-"+scenario, "error");
+            reject = false; click(window, confirm); QTRY_COMPARE(mutations, 2);
+        }
+        QTRY_VERIFY(!dialog->property("visible").toBool()); QTRY_VERIFY(controller.streams().isEmpty());
+        QCOMPARE(controller.archivedChats().size(), 1);
+        openArchive(window); QTRY_VERIFY(visibleItem("archive-restore-"+streamId));
+        click(window, visibleItem("archive-restore-"+streamId));
+        QTRY_VERIFY(controller.archivedChats().isEmpty()); QTRY_COMPARE(controller.streams().size(), 1);
+        QCOMPARE(mutations, reject ? 2 : scenario == "failure" ? 3 : 2);
+    }
+
     void realMenuInputWaitsForSourceLayout()
     {
         QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
@@ -6534,7 +6683,7 @@ mv -Tf "$root/.current-new" "$root/current"
         qInfo()<<"Controlled menu height at real press"<<heightAtPress<<clickPoint;
         QTest::mouseClick(window,Qt::LeftButton,{},clickPoint.toPoint());
         QTRY_VERIFY(visibleItem("topicNameInput"));
-        QCOMPARE(heightAtPress,qreal(46));
+        QCOMPARE(heightAtPress,qreal(118));
         QCOMPARE(mutations,0);window->close();
     }
 
@@ -9084,7 +9233,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Menu);
         QTRY_VERIFY(visibleItem("streamNewTopicAction"));
         QCOMPARE(controller.selectedStream(), QString());
+        // The hidden read action must be skipped: Rename then New topic.
         QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(window->findChild<QObject *>("streamContextMenu")->property("currentIndex").toInt(), 2);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(visibleItem("topicFormClose"));
         QVERIFY(visibleItem("topicFormClose")->hasActiveFocus());
@@ -11074,7 +11226,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::addColumn<QString>("scenario");
         QTest::addColumn<QString>("locale");
         QTest::addColumn<QString>("mode");
-        for (const auto *scenario : {"unread", "all-read", "divider", "divider-group", "divider-stable", "divider-passed", "tail-button", "outside-window", "return-position", "bulk-read", "bulk-stream", "outside-tail", "return-outside", "return-tail"})
+        for (const auto *scenario : {"unread", "all-read", "divider", "divider-group", "divider-stable", "divider-passed", "tail-button", "outside-window", "return-position", "bulk-read", "bulk-stream", "bulk-sidebar", "bulk-inflight", "bulk-inflight-stream", "bulk-inflight-topic", "bulk-inflight-unread", "outside-tail", "return-outside", "return-tail"})
             for (const auto *locale : {"en", "ru"})
                 for (const auto *mode : {"light", "dark"})
                     QTest::newRow(qPrintable(QString("%1-%2-%3").arg(scenario, locale, mode)))
@@ -11088,14 +11240,15 @@ mv -Tf "$root/.current-new" "$root/current"
         NativePreferences preferences(directory.filePath("unread.ini"));
         preferences.setLocale(locale); preferences.setMode(mode);
         MockServer server;
-        const bool paged = scenario.startsWith("outside-") || scenario == "return-outside";
+        const bool paged = scenario.startsWith("outside-") || scenario == "return-outside" || scenario.startsWith("bulk-inflight");
         const int total = paged ? 120 : 50;
         const auto uuid = [](int i) { return QString("85000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')); };
         QJsonArray history;
         for (int i = 0; i < total; ++i) {
             auto row = message(QString("Unread navigation message %1 with a stable visible body").arg(i), uuid(i));
             row["is_own"] = false; row["author_uuid"] = channelPeer;
-            row["read"] = scenario == "all-read" || scenario.startsWith("return-") || scenario.startsWith("bulk-") || i < 20;
+            row["read"] = (scenario == "bulk-sidebar" || scenario == "bulk-inflight" || scenario == "bulk-inflight-unread") ? i < total - 1
+                : scenario == "all-read" || scenario.startsWith("return-") || scenario.startsWith("bulk-") || i < 20;
             row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
                 .addSecs(i).toString(Qt::ISODateWithMs);
             // The first unread row starts an author group. A separate same-group
@@ -11107,9 +11260,15 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto unread = [&] {
             int count = 0; for (const auto &row : history) count += !row.toObject().value("read").toBool(); return count;
         };
-        const auto stream = [&] { return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Unread navigation"},
-            {"encryption", false}, {"unread_count", unread()}, {"active_unread_count", unread()},
-            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
+        const auto stream = [&] {
+            auto row = windowChannel(streamId, "Unread navigation");
+            row["unread_count"] = unread(); row["active_unread_count"] = unread();
+            row["last_message_uuid"] = history.last().toObject().value("uuid");
+            return row;
+        };
+        int bulkReadPosts = 0;
+        bool holdSavedLookup = false;
+        std::function<void()> releaseSavedLookup, releaseBulkRead;
         const auto topic = [&] { return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
             {"name", "First unread"}, {"unread_count", unread()}, {"active_unread_count", unread()},
             {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
@@ -11128,7 +11287,11 @@ mv -Tf "$root/.current-new" "$root/current"
                     return {QJsonArray{}};
                 }
                 const auto marker = query.queryItemValue("page_marker");
-                if (query.hasQueryItem("uuid")) return {QJsonArray{history[query.queryItemValue("uuid").right(12).toInt()]}};
+                if (query.hasQueryItem("uuid")) {
+                    Response response{QJsonArray{history[query.queryItemValue("uuid").right(12).toInt()]}};
+                    if (holdSavedLookup) response.defer = [&](std::function<void()> send) { releaseSavedLookup = std::move(send); };
+                    return response;
+                }
                 const int anchor = marker.isEmpty() ? total : marker.right(12).toInt();
                 const bool newer = query.queryItemValue("sort_dir") == "asc";
                 QJsonArray page;
@@ -11138,6 +11301,14 @@ mv -Tf "$root/.current-new" "$root/current"
                 Response response{page};
                 if (newer ? end < total : begin > 0)
                     response.headers["X-Pagination-Marker"] = uuid(newer ? end - 1 : begin).toUtf8();
+                return response;
+            }
+            if (path.endsWith("/streams/" + streamId + "/actions/read/invoke")) {
+                ++bulkReadPosts;
+                for (int i = 0; i < history.size(); ++i) { auto row = history[i].toObject(); row["read"] = true; history[i] = row; }
+                Response response{stream()};
+                if (scenario == "bulk-inflight-unread")
+                    response.defer = [&](std::function<void()> send) { releaseBulkRead = std::move(send); };
                 return response;
             }
             if (path.endsWith("/actions/read_up_to/invoke")) {
@@ -11197,7 +11368,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 QVERIFY(window->grabWindow().save(QDir(captures).filePath("unread-" + locale + '-' + mode + ".png")));
             }
         } else if (scenario.startsWith("return-") || scenario.startsWith("bulk-")) {
-            if (scenario == "return-outside") {
+            if (scenario == "return-outside" || scenario.startsWith("bulk-inflight")) {
                 controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 100);
                 QTRY_VERIFY(!controller.busy());
                 controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 120);
@@ -11208,15 +11379,76 @@ mv -Tf "$root/.current-new" "$root/current"
                 QTRY_VERIFY(messageCenter(0) >= 0 && messageCenter(0) <= list->height());
             }
             const qreal offset = messageCenter(0);
+            if (scenario.startsWith("bulk-inflight")) {
+                controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+                QTRY_VERIFY(!controller.busy());
+                holdSavedLookup = true;
+                controller.selectTopic(topicId);
+                QTRY_VERIFY(bool(releaseSavedLookup));
+                QVERIFY(controller.conversationOpening().value("pending").toBool());
+                QVERIFY(!list->property("openingApplied").toBool());
+            }
             if (scenario.startsWith("bulk-")) {
-                auto payload = scenario == "bulk-stream" ? stream() : topic();
-                payload["kind"] = scenario == "bulk-stream" ? "stream.read" : "topic.read";
-                QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
-                    {"uuid", returnedId}, {"payload", payload}}));
+                if (scenario == "bulk-sidebar" || scenario == "bulk-inflight" || scenario == "bulk-inflight-unread") {
+                    auto *sidebar = item(window->contentItem(), "stream-" + streamId); QVERIFY(sidebar);
+                    QTest::mouseClick(window, Qt::RightButton, {}, sidebar->mapToScene(QPointF(20, sidebar->height() / 2)).toPoint());
+                    auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+                    QTRY_VERIFY(menu->property("opened").toBool());
+                    auto *action = window->findChild<QQuickItem *>("streamMarkReadAction"); QVERIFY(action);
+                    awaitTopicMenuLayout(window, action, streamId);
+                    click(window, action);
+                    QTRY_COMPARE(bulkReadPosts, 1);
+                    if (scenario == "bulk-inflight-unread") {
+                        QTRY_VERIFY(bool(releaseBulkRead));
+                        auto next = history.last().toObject(); next["uuid"] = uuid(total); next["read"] = false;
+                        next["created_at"] = "2026-01-02T10:02:00.000Z";
+                        history.append(next);
+                        next["kind"] = "message.created";
+                        QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                            {"uuid", returnedId}, {"payload", next}}));
+                        auto updated = stream(); updated["kind"] = "stream.updated"; updated["updated_at"] = "2026-01-02T11:00:00.000Z";
+                        QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                            {"uuid", returnedId}, {"payload", updated}}));
+                        releaseBulkRead(); releaseBulkRead = {};
+                    }
+                    QTRY_VERIFY(!controller.chatActionState(streamId).value("pending").toBool());
+                    QVERIFY(controller.chatActionState(streamId).value("error").toString().isEmpty());
+                    QCOMPARE(controller.streams().first().toMap().value("unread").toInt(), scenario == "bulk-inflight-unread" ? 1 : 0);
+                } else {
+                    const bool streamRead = scenario == "bulk-stream" || scenario == "bulk-inflight-stream";
+                    auto payload = streamRead ? stream() : topic();
+                    payload["kind"] = streamRead ? "stream.read" : "topic.read";
+                    QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                        {"uuid", returnedId}, {"payload", payload}}));
+                }
                 QTRY_VERIFY(!list->property("positioning").toBool());
                 QSignalSpy frame(window, &QQuickWindow::frameSwapped);
                 window->update();
                 QTRY_VERIFY(!frame.isEmpty() && engine.incubationController()->incubatingObjectCount() == 0);
+                if (scenario.startsWith("bulk-inflight")) {
+                    QNetworkReply *savedReply = nullptr;
+                    for (auto *reply : api.findChildren<QNetworkReply *>())
+                        if (!reply->isFinished() && QUrlQuery(reply->url()).queryItemValue("uuid") == uuid(0)) savedReply = reply;
+                    QVERIFY(savedReply);
+                    // ApiClient connected its production callback before this
+                    // witness. Do not accept the new viewport until the old
+                    // response has actually completed and attempted its callback.
+                    QSignalSpy lookupFinished(savedReply, &QNetworkReply::finished);
+                    holdSavedLookup = false;
+                    releaseSavedLookup(); releaseSavedLookup = {};
+                    QTRY_COMPARE(lookupFinished.size(), 1);
+                    QTRY_VERIFY(list->property("openingApplied").toBool());
+                    QTRY_VERIFY(!list->property("positioning").toBool());
+                    const int target = scenario == "bulk-inflight-unread" ? total : total - 1;
+                    QTRY_VERIFY_WITH_TIMEOUT(messageCenter(target) >= 0 && messageCenter(target) <= list->height(), 2000);
+                    QVERIFY(!controller.canLoadNewer());
+                    if (scenario == "bulk-inflight-unread") {
+                        QCOMPARE(controller.conversationOpening().value("messageId").toString(), uuid(total));
+                        QVERIFY(!controller.messages().last().toMap().value("read").toBool());
+                    }
+                    other.close();
+                    return;
+                }
                 QVERIFY(qAbs(messageCenter(0) - offset) < 2);
             }
             controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);

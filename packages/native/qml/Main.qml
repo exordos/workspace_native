@@ -870,6 +870,57 @@ ApplicationWindow {
         streamMenuAnchor = anchor;
         streamMenu.popup(point);
     }
+    property string chatActionTarget: ""
+    property string chatActionOwner: ""
+    property string chatActionContext: ""
+    property string chatActionLifetime: ""
+    property string chatActionMode: ""
+    property bool chatActionSubmitted: false
+    readonly property var chatActionState: {
+        const rows = root.controller.streams;
+        return root.controller.chatActionState(chatActionTarget);
+    }
+    readonly property var streamMenuState: {
+        const rows = root.controller.streams;
+        return root.controller.chatActionState(streamMenuTarget);
+    }
+    function openChatAction(mode) {
+        const stream = currentStream(streamMenuTarget);
+        if (!stream || !streamMenuState.available) return;
+        chatActionTarget = stream.id;
+        chatActionOwner = root.controller.ownerKey;
+        chatActionContext = String(stream.contextKey || "");
+        chatActionLifetime = root.controller.topicCreationContextKey;
+        chatActionMode = mode;
+        chatActionSubmitted = false;
+        chatRenameInput.text = stream.name;
+        streamMenu.close();
+        if (mode === "read") submitChatAction();
+        else chatActionDialog.open();
+    }
+    function submitChatAction() {
+        if (!chatActionTarget.length || chatActionState.pending || !chatActionState.available) return;
+        const stream = currentStream(chatActionTarget);
+        if (!stream) return;
+        if (chatActionMode === "rename" && (!chatRenameInput.text.trim().length || chatRenameInput.text.trim() === stream.name)) return;
+        chatActionSubmitted = true;
+        if (chatActionMode === "archive") root.controller.archiveChat(chatActionTarget);
+        else if (chatActionMode === "rename") root.controller.renameChat(chatActionTarget, chatRenameInput.text);
+        else root.controller.markChatRead(chatActionTarget);
+    }
+    function validateChatAction() {
+        const stream = currentStream(chatActionTarget);
+        if (!root.controller.authenticated || chatActionOwner !== root.controller.ownerKey
+            || chatActionLifetime !== root.controller.topicCreationContextKey || !stream
+            || String(stream.contextKey || "") !== chatActionContext) {
+            chatActionDialog.close(); chatActionTarget = ""; return;
+        }
+        const state = root.controller.chatActionState(chatActionTarget);
+        if (chatActionSubmitted && !state.pending) {
+            if (!state.error.length) { chatActionDialog.close(); chatActionTarget = ""; }
+            else if (chatActionMode === "read") chatActionDialog.open();
+        }
+    }
     function clearTopicForm() {
         createTopicDialog.close();
         topicFormTarget = "";
@@ -881,6 +932,7 @@ ApplicationWindow {
         topicNameInput.text = "";
     }
     function validateStreamUi() {
+        validateChatAction();
         const menuTarget = currentStream(streamMenuTarget);
         if (!root.controller.authenticated || streamMenuOwner !== root.controller.ownerKey || streamMenuRoute !== currentRoute() || !menuTarget || String(menuTarget.contextKey || "") !== streamMenuContext) {
             streamMenu.close();
@@ -3962,7 +4014,7 @@ ApplicationWindow {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -4004,6 +4056,9 @@ ApplicationWindow {
                         // again. Fresh user movement re-arms position recording.
                         positionSaveAllowed = false;
                         openingPosition = null;
+                        // Wait for the accepted read projection to finish before
+                        // restarting a retired saved-position opening.
+                        Qt.callLater(continueOpening);
                     }
                 }
                 function continueOpening() {
@@ -7716,7 +7771,7 @@ ApplicationWindow {
     Menu {
         id: streamMenu
         objectName: "streamContextMenu"
-        width: 180
+        width: 280
         focus: true
         topPadding: 5
         bottomPadding: 5
@@ -7730,15 +7785,140 @@ ApplicationWindow {
             border.color: root.colors["border-subtle"]
         }
         MessageMenuAction {
+            objectName: "streamMarkReadAction"
+            implicitWidth: 278
+            visible: { const stream = root.currentStream(root.streamMenuTarget); return stream && stream.unread > 0; }
+            height: visible ? implicitHeight : 0
+            text: qsTr("Mark all as read")
+            asset: "check.svg"
+            enabled: visible && root.streamMenuState.available
+            onTriggered: root.openChatAction("read")
+        }
+        MessageMenuAction {
+            objectName: "streamRenameAction"
+            implicitWidth: 278
+            visible: { const stream = root.currentStream(root.streamMenuTarget); return stream && !stream.isDirect; }
+            height: visible ? implicitHeight : 0
+            text: qsTr("Rename")
+            asset: "border_color.svg"
+            enabled: visible && root.streamMenuState.available
+            onTriggered: root.openChatAction("rename")
+        }
+        MessageMenuAction {
             id: streamNewTopicAction
             objectName: "streamNewTopicAction"
-            implicitWidth: 178
+            implicitWidth: 278
             leftPadding: 8
             rightPadding: 8
             asset: "plus.svg"
             text: qsTr("New topic")
             enabled: root.streamMenuAvailable
             onTriggered: root.openTopicForm(streamNewTopicAction.visualFocus)
+        }
+        MessageMenuAction {
+            objectName: "streamArchiveAction"
+            implicitWidth: 278
+            text: qsTranslate("SidebarChatActions", "Archive")
+            asset: "folder.svg"
+            enabled: root.streamMenuState.canArchive
+            onTriggered: root.openChatAction("archive")
+        }
+    }
+
+    Popup {
+        id: chatActionDialog
+        objectName: "chatActionDialog"
+        parent: Overlay.overlay
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        width: Math.min(root.width - 48, 448)
+        padding: 24
+        modal: true; dim: true; focus: true
+        closePolicy: root.chatActionState.pending ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#80000000" }
+        background: Rectangle { radius: 10; color: root.colors["bg-elevated"]; border.color: root.colors["border-subtle"] }
+        onOpened: {
+            if (root.chatActionMode === "rename") { chatRenameInput.forceActiveFocus(Qt.TabFocusReason); chatRenameInput.selectAll(); }
+            else chatActionCancel.forceActiveFocus(Qt.TabFocusReason);
+        }
+        onClosed: {
+            root.chatActionTarget = ""; root.chatActionSubmitted = false;
+            if (root.streamMenuAnchor) root.streamMenuAnchor.forceActiveFocus(Qt.TabFocusReason);
+            messageList.scheduleVisibleRead();
+        }
+        contentItem: Column {
+            spacing: 16
+            Text {
+                objectName: "chatActionTitle"
+                width: parent.width
+                text: root.chatActionMode === "archive" ? qsTr("Archive chat?") : root.chatActionMode === "rename" ? qsTr("Rename") : qsTr("Mark all as read")
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 18; font.weight: Font.DemiBold
+                color: root.colors["text-primary"]
+            }
+            Text {
+                objectName: "chatArchiveDescription"
+                width: parent.width
+                visible: root.chatActionMode === "archive"
+                text: { const stream = root.currentStream(root.chatActionTarget); return stream && stream.isDirect
+                    ? qsTr("Archive your conversation with “%1”? The chat will be archived for both of you.").arg(stream.displayName || stream.name)
+                    : qsTr("Archive “%1” for all participants?").arg(stream ? stream.name : ""); }
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 14; color: root.colors["text-primary"]
+            }
+            Text {
+                objectName: "chatArchiveHistoryHint"
+                width: parent.width
+                visible: root.chatActionMode === "archive"
+                text: qsTr("The history will remain available in New chat → Archive. You can restore the chat there.")
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 14; color: root.colors["text-secondary"]
+            }
+            Column {
+                width: parent.width; spacing: 6
+                visible: root.chatActionMode === "rename"
+                Text { text: qsTr("Channel name"); font.pixelSize: 14; color: root.colors["text-muted"] }
+                ChannelField {
+                    id: chatRenameInput
+                    objectName: "chatRenameInput"
+                    width: parent.width
+                    enabled: !root.chatActionState.pending
+                    Accessible.name: qsTr("Channel name")
+                    onAccepted: root.submitChatAction()
+                    KeyNavigation.tab: chatActionCancel
+                }
+            }
+            Text {
+                objectName: "chatActionError"
+                width: parent.width
+                visible: root.chatActionSubmitted && root.chatActionState.error.length > 0
+                text: visible ? root.chatActionState.error : ""
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 14; color: root.colors.danger
+                Accessible.role: Accessible.AlertMessage
+            }
+            Row {
+                anchors.right: parent.right; spacing: 8
+                NativeButton {
+                    id: chatActionCancel
+                    objectName: "chatActionCancel"
+                    colors: root.colors
+                    text: qsTr("Cancel")
+                    enabled: !root.chatActionState.pending
+                    onClicked: { root.chatActionTarget = ""; chatActionDialog.close(); }
+                    KeyNavigation.tab: chatActionConfirm
+                }
+                NativeButton {
+                    id: chatActionConfirm
+                    objectName: "chatActionConfirm"
+                    colors: root.colors; primary: true
+                    text: root.chatActionState.pending ? qsTr("Please wait…") : root.chatActionMode === "archive" ? qsTranslate("SidebarChatActions", "Archive") : root.chatActionMode === "rename" ? qsTr("Save") : qsTr("Try again")
+                    enabled: root.chatActionState.available && (root.chatActionMode !== "rename"
+                        || chatRenameInput.text.trim().length > 0 && chatRenameInput.text.trim() !== String((root.currentStream(root.chatActionTarget) || {}).name || ""))
+                    onClicked: root.submitChatAction()
+                    KeyNavigation.tab: root.chatActionMode === "rename" ? chatRenameInput : chatActionCancel
+                }
+            }
         }
     }
 

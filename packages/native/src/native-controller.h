@@ -342,6 +342,10 @@ public:
     Q_INVOKABLE bool canUnarchiveChat(const QString &id) const;
     Q_INVOKABLE void openArchivedChat(const QString &id);
     Q_INVOKABLE void unarchiveChat(const QString &id);
+    Q_INVOKABLE void archiveChat(const QString &id);
+    Q_INVOKABLE void renameChat(const QString &id, const QString &name);
+    Q_INVOKABLE void markChatRead(const QString &id);
+    Q_INVOKABLE QVariantMap chatActionState(const QString &id) const;
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
@@ -1126,7 +1130,13 @@ private:
         QPointer<NativeCacheService> cache;
         NativeCache::Lease lease;
         bool pending = false, uncertain = false, dispatched = false, invalidated = false;
+        bool archived = false;
     };
+    bool streamOperationContext(const QString &id, const ArchiveOperation &op) const;
+    bool canSetChatArchived(const QString &id, bool archived) const;
+    void setChatArchived(const QString &id, bool archived);
+    void mutateChat(const QString &id, const QString &name, bool read);
+    QHash<QString, ArchiveOperation> m_chatActions;
     bool archiveContext(const QString &id, quint64 ticket) const;
     bool archiveAvailable() const;
     void postUnarchive(const QString &id, quint64 ticket);
