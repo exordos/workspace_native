@@ -26,4 +26,6 @@ snapshot remains visible if revalidation fails; a later explicit interaction
 can retry it. A deferred cache result does not release a still-running request.
 
 Synthetic Linux window checks exercise expansion, restart, reveal levels and
-focus. Live service and other-platform acceptance are separate.
+focus. The restored-history window fixture also returns the canonical read
+receipt expected from the server and checks that the client accepts it without
+an error. Live service and other-platform acceptance are separate.

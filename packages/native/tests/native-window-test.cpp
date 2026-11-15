@@ -24503,6 +24503,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTemporaryDir cacheDir;
         QVERIFY(cacheDir.isValid());
         int historyDelay = 0;
+        int restoreReadPosts = 0;
         const QByteArray standalonePng = freezeProbeStandalonePng();
         QVERIFY(standalonePng.size() > 1000);
         const QImage standaloneDecoded = QImage::fromData(standalonePng, "PNG");
@@ -24676,7 +24677,17 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 binary.rawContentType = "image/png";
                 return binary;
             }
-            if (path.endsWith("/actions/read_up_to/invoke")) return Response{QJsonObject{}};
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                if (historyDelay > 0) ++restoreReadPosts;
+                for (const auto &value : primary) {
+                    auto row = value.toObject();
+                    if (path.contains("/messages/" + row.value("uuid").toString() + "/")) {
+                        row["read"] = true;
+                        return Response{row};
+                    }
+                }
+                return Response{QJsonObject{}, 404};
+            }
             if (request.method == "GET") {
                 for (const auto &value : primary)
                     if (path.endsWith("/messages/" + value.toObject().value("uuid").toString()))
@@ -24749,6 +24760,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
                     .toUtf8().constData());
             historyDelay = 700;
             runMeasured(scenario, 120000, &output);
+            QVERIFY2(restoreReadPosts > 0, "The restored conversation must send its visible read marker");
         } else {
             runMeasured(scenario, 120000, &output);
         }
@@ -24758,9 +24770,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // QtTest run exits: normally, with status zero. A failure or crash
         // after reporting must fail this case (review follow-up on #141).
         QVERIFY2(process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0,
-            QStringLiteral("scenario=%1 freeze probe child exited abnormally (status %2, crash %3)")
+            QStringLiteral("scenario=%1 freeze probe child exited abnormally (status %2, crash %3)\n%4")
                 .arg(scenario).arg(process.exitCode())
                 .arg(process.exitStatus() == QProcess::CrashExit ? 1 : 0)
+                .arg(output)
                 .toUtf8().constData());
         for (const auto &candidate : output.split(QLatin1Char('\n')))
             if (candidate.contains(QStringLiteral("FREEZEPROBE")))
@@ -26104,6 +26117,7 @@ private slots:
             clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             monitor();
+            QVERIFY2(controller.error().isEmpty(), qPrintable(controller.error()));
             cache->shutdown();
             QTRY_VERIFY_WITH_TIMEOUT(cache->stopped(), 20000);
         } else if (phase.startsWith(QLatin1String("topic-open"))) {
