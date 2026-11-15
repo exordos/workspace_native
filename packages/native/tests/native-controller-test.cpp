@@ -9,8 +9,10 @@
 #include <QDateTime>
 #include <QNetworkRequest>
 #include "file-client.h"
+#include "image-decode-fixtures.h"
 #include "media-viewer.h"
 #include <QUrl>
+#include <QImage>
 #include "native-markdown.h"
 #include "realtime-client.h"
 #include "power-watcher.h"
@@ -16431,6 +16433,199 @@ private slots:
         viewer->close();
         viewer->markSlotDisplayError(0);
         QCOMPARE(viewer->count(), 0);
+    }
+
+    // --- Issue #79: copy image to clipboard (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md) ---
+    // Mirrors the Electron clipboard:writeImage handler measured at workspace_ui
+    // 61dacef7 (main.ts:1054-1067, cap main.ts:50): over-cap payloads are
+    // rejected before decoding, undecodable buffers never touch the clipboard,
+    // and every failure is silent - no toast, clipboard left unchanged.
+
+    static void setClipboardImageSentinel()
+    {
+        QImage sentinel(2, 2, QImage::Format_RGB32);
+        sentinel.fill(0xffff0000u);
+        QGuiApplication::clipboard()->setImage(sentinel);
+    }
+
+    static bool clipboardSentinelIntact()
+    {
+        const QImage image = QGuiApplication::clipboard()->image();
+        return image.size() == QSize(2, 2) && image.pixelColor(0, 0) == QColor(0xff, 0, 0);
+    }
+
+    static QByteArray clipboardCopyFixturePng()
+    {
+        for (const auto &fixture : NativeDecodeFixtures)
+            if (QString::fromLatin1(fixture.format) == QLatin1String("png"))
+                return QByteArray::fromBase64(QByteArray(fixture.base64));
+        return {};
+    }
+
+    void copyMessageImageWritesImageBytesToClipboard()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray png = clipboardCopyFixturePng();
+        QVERIFY(!png.isEmpty());
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = png;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        const auto body = QStringLiteral("Head\n\n![m1.png](urn:image:%1?name=m1.png&content_type=image%2Fpng&size=%2)\n\nTail")
+            .arg(mvFileA).arg(png.size());
+        const auto note = message(body, messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        QVERIFY(fixture.start());
+        QGuiApplication::clipboard()->clear();
+        QVERIFY(fixture.controller.copyMessageImage(messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(!QGuiApplication::clipboard()->image().isNull(), 4000);
+        // The locally generated fixture decodes to a solid 8x4 image.
+        QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
+    }
+
+    void copyMessageImageUndecodableBytesLeaveClipboardUnchanged()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray junk("definitely not an image");
+        int downloadHits = 0;
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(junk, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                ++downloadHits;
+                Response result;
+                result.rawBody = junk;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", junk.size()}, {"hash", sha}}};
+        };
+        const auto body = QStringLiteral("Head\n\n![m1.png](urn:image:%1?name=m1.png&content_type=image%2Fpng&size=%2)\n\nTail")
+            .arg(mvFileA).arg(junk.size());
+        const auto note = message(body, messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        QVERIFY(fixture.start());
+        setClipboardImageSentinel();
+        QVERIFY(fixture.controller.copyMessageImage(messageId));
+        // The corrupt write must fail quietly: clipboard sentinel intact, no
+        // error notice raised anywhere (reference shows no toast).
+        QTRY_VERIFY_WITH_TIMEOUT(downloadHits >= 1, 4000);
+        QTest::qWait(750);
+        QVERIFY(clipboardSentinelIntact());
+        QVERIFY(fixture.controller.error().isEmpty());
+    }
+
+    void copyMessageImageWithoutImageReferenceIsSilentNoop()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        fixture.files = [&](const Request &) { return Response{QJsonObject{}, 500}; };
+        const auto note = message("plain text only, no media", messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        QVERIFY(fixture.start());
+        QGuiApplication::clipboard()->setText("sentinel text");
+        QVERIFY(!fixture.controller.copyMessageImage(messageId));
+        QVERIFY(!fixture.controller.copyMessageImage(QStringLiteral("00000000-0000-4000-8000-0000000000ff")));
+        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("sentinel text"));
+        // No media reference means no download attempt on the reference path.
+        for (const auto &request : fixture.server.requests)
+            QVERIFY(!request.target.path().contains("/files/"));
+    }
+
+    void clipboardImageBytesRejectsOversizedAndEmptyPayloads()
+    {
+        setClipboardImageSentinel();
+        // A decodable png plus one byte over the 64 MiB cap: rejected before
+        // any decode happens (main.ts:1084 order of checks).
+        const QByteArray overCap = clipboardCopyFixturePng()
+            + QByteArray(NativeController::ClipboardImageBytesLimit, '\0');
+        QVERIFY(overCap.size() > NativeController::ClipboardImageBytesLimit);
+        QVERIFY(!NativeController::clipboardImageBytes(overCap));
+        QVERIFY(clipboardSentinelIntact());
+        // Exactly at the cap passes the size gate but still fails to decode.
+        QVERIFY(!NativeController::clipboardImageBytes(QByteArray(NativeController::ClipboardImageBytesLimit, 'x')));
+        QVERIFY(clipboardSentinelIntact());
+        // Empty payload behaves like nativeImage.isEmpty().
+        QVERIFY(!NativeController::clipboardImageBytes(QByteArray()));
+        QVERIFY(clipboardSentinelIntact());
+        // The valid fixture passes and replaces the clipboard content.
+        QVERIFY(NativeController::clipboardImageBytes(clipboardCopyFixturePng()));
+        QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
+    }
+
+    void mediaViewerCopyWritesStagedImageBytes()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray png = clipboardCopyFixturePng();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = png;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        QVERIFY(viewer->copyCurrentImage());
+        QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
+    }
+
+    void mediaViewerCopyRejectsFailedAndVideoSlots()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        fixture.files = [&](const Request &) { return Response{QJsonObject{}, 500}; };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        setClipboardImageSentinel();
+        // Closed viewer: nothing to copy.
+        QVERIFY(!viewer->copyCurrentImage());
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("load-error"), 4000);
+        QVERIFY(!viewer->copyCurrentImage());
+        QVERIFY(clipboardSentinelIntact());
+        viewer->close();
+        // Video slots never offer the copy action (showCopy is image-only).
+        QVariantList videoRows;
+        videoRows << mediaViewerVideoRow("m2", mvFileB);
+        QVERIFY(viewer->openFromMessages(videoRows, mvFileB));
+        QVERIFY(!viewer->copyCurrentImage());
+        QVERIFY(clipboardSentinelIntact());
+        viewer->close();
     }
 
     // The controller-side half of docs/NATIVE_DESKTOP_AUTO_PAGING.md: a fetched
