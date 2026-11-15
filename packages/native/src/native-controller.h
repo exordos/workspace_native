@@ -138,6 +138,7 @@ class NativeController final : public QObject {
     // projection over the stream catalog.
     Q_PROPERTY(QVariantList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList sidebarStreams READ sidebarStreams NOTIFY sidebarStreamsChanged)
+    Q_PROPERTY(QStringList expandedSidebarStreams READ expandedSidebarStreams NOTIFY sidebarExpansionChanged)
     Q_PROPERTY(QString selectedFolder READ selectedFolder NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList topics READ topics NOTIFY topicsChanged)
     Q_PROPERTY(bool topicResolving READ topicResolving NOTIFY stateChanged)
@@ -354,6 +355,11 @@ public:
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
+    QStringList expandedSidebarStreams() const { return m_expandedSidebarStreams; }
+    Q_INVOKABLE QVariantMap sidebarTopicState(const QString &stream, bool includeRows) const;
+    Q_INVOKABLE void requestSidebarTopics(const QString &stream);
+    Q_INVOKABLE void toggleSidebarStream(const QString &stream);
+
     Q_INVOKABLE void setSidebarSearchQuery(const QString &query);
     QString selectedFolder() const;
     QVariantList topics() const;
@@ -730,6 +736,9 @@ public:
 
 signals:
     void otpCodeRejected();
+    void sidebarExpansionChanged();
+    // Empty stream means a placement change may have affected several streams.
+    void sidebarTopicsChanged(const QString &stream);
     void downloadsChanged();
     void downloadDuplicateRequested();
     void chatKeyStoreOpenRequested();
@@ -1801,11 +1810,23 @@ private:
     // topic snapshots so the reference topic rows exist for streams whose
     // topic lists the sidebar has not hydrated (design doc hydration note).
     QString m_sidebarSearchQuery;
+    QString m_sidebarExpansionOwner;
+    QStringList m_expandedSidebarStreams;
+    QStringList m_sidebarTopicPending;
+    QSet<QString> m_sidebarTopicHydrating;
+    bool m_restoringSidebarRoute = false;
+    void prepareSidebarExpansion();
+    void collapseSidebarExcept(const QString &stream);
+    void hydrateExpandedSidebarStreams();
+    void pumpSidebarTopicHydration();
+
     void hydrateSidebarSearchTopics();
     QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream) const;
     bool m_inboxVisible = false;
     QString m_section = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
+    // Foreground authoritative catalogs fence older background completions.
+    QHash<QString, quint64> m_inboxSelectedRevisions;
     QHash<QString, quint64> m_inboxHydrating; // stream -> hydration token (#64)
     quint64 m_inboxHydrationToken = 0;
     void hydrateInboxTopics();

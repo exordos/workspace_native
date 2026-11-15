@@ -17806,6 +17806,333 @@ private slots:
         return {};
     }
 
+    void sidebarHydrationOnlyNotifiesInboxWhenVisible_data()
+    {
+        QTest::addColumn<bool>("inboxVisible");
+        QTest::newRow("closed") << false;
+        QTest::newRow("open") << true;
+    }
+
+    void sidebarHydrationOnlyNotifiesInboxWhenVisible()
+    {
+        QFETCH(bool, inboxVisible);
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Engineering", 1, 1, 0)}}; };
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.topics = [held](const Request &) {
+            Response response{QJsonArray{inboxTopic(topicId, streamId, "Planning", 1, 1, 0)}};
+            response.defer = [held](auto send) { *held = std::move(send); };
+            return response;
+        };
+        loginInbox(fixture, 1);
+        fixture.controller.requestSidebarTopics(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(*held), 3000);
+        if (inboxVisible) fixture.controller.showInbox();
+        QSignalSpy state(&fixture.controller, &NativeController::stateChanged);
+        QSignalSpy topics(&fixture.controller, &NativeController::sidebarTopicsChanged);
+        (*held)(); *held = {};
+        QTRY_VERIFY_WITH_TIMEOUT(!topics.isEmpty(), 3000);
+        QCOMPARE(state.size(), inboxVisible ? 1 : 0);
+        QCOMPARE(fixture.controller.sidebarTopicState(streamId, true).value("rows").toList().size(), 1);
+        if (inboxVisible)
+            QVERIFY(!inboxRow(fixture.controller.inboxPage(), "channels", streamId, topicId).isEmpty());
+    }
+
+    void sidebarExpansionLargeCatalogDiagnostic()
+    {
+        Fixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-large.ini"));
+        QStringList streamIds;
+        QJsonArray catalog;
+        for (int i = 0; i < 120; ++i) {
+            const auto id = QString("93000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            streamIds.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        preferences.recordExpandedStreams(conversationPreferenceOwner(fixture.server.origin()), streamIds);
+        fixture.controller.usePreferences(&preferences);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto gets = std::make_shared<QHash<QString, int>>();
+        fixture.topics = [gates, gets](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            ++(*gets)[stream];
+            Response response{QJsonArray{inboxTopic(topicId, stream, "Planning", 0, 0, 0)}};
+            response.defer = [gates](auto send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QElapsedTimer timer; timer.start();
+        loginInbox(fixture, 120);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 3000);
+        for (const auto &id : streamIds) fixture.controller.requestSidebarTopics(id);
+        int pendingReplies = 0;
+        for (auto *reply : fixture.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path().endsWith("/stream_topics/")) ++pendingReplies;
+        QElapsedTimer projection; projection.start();
+        for (int i = 0; i < 20; ++i) QCOMPARE(fixture.controller.sidebarStreams().size(), 120);
+        const auto projectionMs = projection.elapsed();
+        QVERIFY2(pendingReplies <= 2, "Expansion must reserve transport capacity for the current chat and search");
+        bool ticked = false; QTimer::singleShot(0, [&] { ticked = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(ticked, 1000);
+        qInfo() << "EXPANSION_LOAD" << "streams" << streamIds.size() << "pending-replies" << pendingReplies
+                << "server-requests" << gets->size() << "elapsed-ms" << timer.elapsed()
+                << "projection-20-ms" << projectionMs;
+        for (auto it = gets->cbegin(); it != gets->cend(); ++it) QCOMPARE(it.value(), 1);
+        fixture.controller.logout();
+        QTRY_VERIFY(!fixture.controller.authenticated());
+        const auto pending = std::move(*gates); gates->clear();
+        for (const auto &release : pending) release();
+        QTest::qWait(100);
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+    }
+
+    void sidebarExpansionQueueProgressAndForeground_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"failure", "conversation", "search"})
+            QTest::newRow(scenario) << QString(scenario);
+    }
+
+    void sidebarExpansionQueueProgressAndForeground()
+    {
+        QFETCH(QString, scenario);
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-queue.ini"));
+        QStringList ids; QJsonArray catalog;
+        for (int i = 0; i < 5; ++i) {
+            const auto id = QString("94000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        preferences.recordExpandedStreams(conversationPreferenceOwner(fixture.server.origin()), ids);
+        fixture.controller.usePreferences(&preferences);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        auto gates = std::make_shared<QHash<QString, std::function<void()>>>();
+        auto gets = std::make_shared<QHash<QString, int>>();
+        fixture.topics = [&, gates, gets](const Request &request) {
+            const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            const int number = ++(*gets)[id];
+            Response response{QJsonArray{inboxTopic(topicId, id, "Needle", 0, 0, 0)},
+                scenario == "failure" && id == ids[0] && number == 1 ? 503 : 200};
+            if (scenario == "conversation" && fixture.controller.selectedStream() == id) return response;
+            if (scenario == "search" && id != ids[0] && id != ids[1]) return response;
+            response.defer = [gates, id](auto send) { gates->insert(id, std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 5);
+        QTRY_VERIFY_WITH_TIMEOUT(gates->contains(ids[0]) && gates->contains(ids[1]), 3000);
+        QCOMPARE(gets->size(), 2);
+        if (scenario == "failure") {
+            fixture.controller.toggleSidebarStream(ids[4]); // Cancel the last queued expansion.
+            auto first = gates->take(ids[0]); first();
+            QTRY_VERIFY_WITH_TIMEOUT(gates->contains(ids[2]), 3000);
+            fixture.controller.requestSidebarTopics(ids[0]); // Explicit retry follows the queued work.
+            auto second = gates->take(ids[1]); second();
+            QTRY_VERIFY_WITH_TIMEOUT(gates->contains(ids[3]), 3000);
+            auto third = gates->take(ids[2]); third();
+            QTRY_VERIFY_WITH_TIMEOUT(gates->contains(ids[0]) && gets->value(ids[0]) == 2, 3000);
+            auto fourth = gates->take(ids[3]); fourth();
+            auto retry = gates->take(ids[0]); retry();
+            QTRY_VERIFY_WITH_TIMEOUT(fixture.api.findChildren<QNetworkReply *>().isEmpty(), 3000);
+            QCOMPARE(gets->value(ids[4]), 0);
+        } else if (scenario == "conversation") {
+            fixture.controller.selectStream(ids[4]);
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.selectedStream(), ids[4], 3000);
+            QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.topicsComplete(), 3000);
+            QCOMPARE(gets->value(ids[4]), 1); // Foreground bypasses the two held background requests.
+        } else {
+            fixture.controller.setSidebarSearchQuery("needle");
+            QTRY_VERIFY_WITH_TIMEOUT(gets->value(ids[2]) == 1, 3000); // Search bypasses the background queue.
+        }
+        fixture.controller.logout();
+        QTRY_VERIFY(!fixture.controller.authenticated());
+        const auto held = std::move(*gates); gates->clear();
+        for (auto it = held.cbegin(); it != held.cend(); ++it) it.value()();
+    }
+
+    void sidebarExpansionDoesNotCarryStateOrLateRepliesAcrossOwners()
+    {
+        Fixture fixture; MockServer otherServer; QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-owner.ini"));
+        preferences.recordExpandedStreams(conversationPreferenceOwner(fixture.server.origin()), {streamId});
+        fixture.controller.usePreferences(&preferences);
+        fixture.streams = [](const Request &) { return Response{QJsonArray{inboxStream(streamId, "Engineering", 0, 0, 0)}}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        fixture.topics = [gates](const Request &) {
+            Response response{QJsonArray{inboxTopic(topicId, streamId, "Old owner", 0, 0, 0)}};
+            response.defer = [gates](auto send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        otherServer.handler = fixture.server.handler;
+        loginInbox(fixture, 1); QTRY_COMPARE_WITH_TIMEOUT(gates->size(), size_t(1), 3000);
+        QVERIFY(fixture.controller.expandedSidebarStreams().contains(streamId));
+        fixture.controller.logout(); QTRY_VERIFY(!fixture.controller.authenticated());
+        fixture.controller.login(otherServer.origin().toString(), "other-owner", "synthetic-password", "");
+        QTRY_COMPARE(fixture.controller.projects().size(), 1); fixture.controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated() && fixture.controller.streams().size() == 1, 3000);
+        QVERIFY(!fixture.controller.expandedSidebarStreams().contains(streamId));
+        (*gates)[0](); gates->clear(); QTest::qWait(200);
+        QVERIFY(!fixture.controller.expandedSidebarStreams().contains(streamId));
+        QVERIFY(fixture.controller.sidebarTopicState(streamId, true).value("rows").toList().isEmpty());
+    }
+
+    void sidebarExpansionUsesLatestSelectedCatalog_data()
+    {
+        QTest::addColumn<bool>("holdBackground");
+        QTest::newRow("completed-background") << false;
+        QTest::newRow("late-background") << true;
+    }
+
+    void sidebarExpansionUsesLatestSelectedCatalog()
+    {
+        QFETCH(bool, holdBackground);
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-refresh.ini"));
+        fixture.controller.usePreferences(&preferences);
+        const QString other = "95000000-0000-4000-8000-000000000001";
+        fixture.streams = [other](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Engineering", 0, 0, 0), inboxStream(other, "Support", 0, 0, 0)}}; };
+        auto revision = std::make_shared<int>(1);
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.topics = [revision, other, held, holdBackground](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == other) return Response{QJsonArray{inboxTopic("95000000-0000-4000-8000-000000000002", other, "Support", 0, 0, 0)}};
+            QJsonArray rows{inboxTopic(topicId, streamId, "Planning", 0, 0, 0)};
+            if (*revision >= 2) rows.append(inboxTopic(secondTopicId, streamId, "Later topic", 0, 0, 0));
+            Response result{rows};
+            if (holdBackground && *revision == 1)
+                result.defer = [held](auto send) { *held = std::move(send); };
+            return result;
+        };
+        loginInbox(fixture, 2);
+        const auto streamRow = [&] { return fixture.controller.sidebarTopicState(streamId, true); };
+        fixture.controller.requestSidebarTopics(streamId);
+        if (holdBackground) QTRY_VERIFY_WITH_TIMEOUT(bool(*held), 3000);
+        else QTRY_COMPARE_WITH_TIMEOUT(streamRow().value("rows").toList().size(), 1, 3000);
+        *revision = 2;
+        fixture.controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.topicsComplete() && fixture.controller.topics().size() == 2, 3000);
+        fixture.controller.selectStream(other);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.topicsComplete(), 3000);
+        if (holdBackground) { (*held)(); *held = {}; QTest::qWait(250); }
+        fixture.controller.requestSidebarTopics(streamId);
+        QTRY_COMPARE_WITH_TIMEOUT(streamRow().value("rows").toList().size(), 2, 3000);
+    }
+
+    void sidebarExpansionStaleCacheKeepsNetworkBounded()
+    {
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        QStringList ids; QJsonArray catalog;
+        for (int i = 0; i < 8; ++i) {
+            const auto id = QString("96000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        {
+            NativeCache initial(directory.filePath("cache"), NativeCache::Policy{}, true);
+            QVERIFY(initial.open(fixture.server.origin(), projectId, userId));
+            for (const auto &id : ids) {
+                const NativeCache::Key key{NativeCache::Kind::Topics, id, {}, {}};
+                QVERIFY(initial.put(initial.lease(), key, {inboxTopic(topicId, id, "Cached", 0, 0, 0)}));
+                QVERIFY(initial.markStale(initial.lease(), NativeCache::Kind::Topics, id));
+            }
+            initial.close();
+        }
+        NativePreferences preferences(directory.filePath("expansion-cache.ini"));
+        preferences.recordExpandedStreams(conversationPreferenceOwner(fixture.server.origin()), ids);
+        NativeCacheService cache(directory.filePath("cache"), NativeCache::Policy{}, true);
+        fixture.controller.usePreferences(&preferences); fixture.controller.useCache(&cache);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        fixture.topics = [gates](const Request &) {
+            Response response{QJsonArray{}};
+            response.defer = [gates](auto send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 8); QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 3000);
+        QTest::qWait(700); // Let all eligible stale-cache callbacks run while network is held.
+        int pending = 0;
+        for (auto *reply : fixture.api.findChildren<QNetworkReply *>())
+            if (!reply->isFinished() && reply->url().path().endsWith("/stream_topics/")) ++pending;
+        qInfo() << "STALE_EXPANSION_LOAD" << "held" << gates->size() << "pending" << pending;
+        QVERIFY2(pending <= 2, "Stale cache delivery must not release the network request slot");
+        fixture.controller.logout(); QTRY_VERIFY(!fixture.controller.authenticated());
+        const auto held = std::move(*gates); gates->clear(); for (const auto &release : held) release();
+    }
+
+    void sidebarExpansionLargePopulatedCatalogDiagnostic()
+    {
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-populated.ini"));
+        QStringList ids; QJsonArray catalog;
+        for (int i = 0; i < 120; ++i) {
+            const auto id = QString("98000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        preferences.recordExpandedStreams(conversationPreferenceOwner(fixture.server.origin()), ids);
+        fixture.controller.usePreferences(&preferences);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        auto gets = std::make_shared<int>(0);
+        fixture.topics = [gets, ids](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            const auto number = ids.indexOf(stream); QJsonArray rows; ++*gets;
+            for (int j = 0; j < 20; ++j) {
+                const auto id = QString("99000000-0000-4000-8000-%1").arg(number * 100 + j + 1, 12, 10, QLatin1Char('0'));
+                rows.append(inboxTopic(id, stream, QString("Topic %1").arg(j), 0, 0, 0));
+            }
+            return Response{rows};
+        };
+        qint64 maxProjectionMs = 0; int publications = 0;
+        connect(&fixture.controller, &NativeController::sidebarStreamsChanged, this, [&] {
+            QElapsedTimer measurement; measurement.start();
+            fixture.controller.sidebarStreams();
+            maxProjectionMs = qMax(maxProjectionMs, measurement.elapsed()); ++publications;
+        });
+        QElapsedTimer total; total.start(); loginInbox(fixture, 120);
+        QTRY_COMPARE_WITH_TIMEOUT(*gets, 120, 30000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.api.findChildren<QNetworkReply *>().isEmpty(), 30000);
+        const auto rows = fixture.controller.sidebarStreams(); QCOMPARE(rows.size(), 120);
+        for (const auto &row : rows)
+            QCOMPARE(fixture.controller.sidebarTopicState(row.toMap().value("id").toString(), true).value("rows").toList().size(), 20);
+        QElapsedTimer projection; projection.start();
+        for (int i = 0; i < 20; ++i) fixture.controller.sidebarStreams();
+        bool ticked = false; QTimer::singleShot(0, [&] { ticked = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(ticked, 1000);
+        qInfo() << "POPULATED_EXPANSION_LOAD" << "streams" << ids.size() << "topics-per-stream" << 20
+                << "publications" << publications << "max-projection-ms" << maxProjectionMs
+                << "projection-20-ms" << projection.elapsed() << "total-ms" << total.elapsed();
+    }
+
+    void sidebarExpansionPublishesTopicMovesAndDeletes()
+    {
+        const auto alpha = QStringLiteral("a4000000-0000-4000-8000-000000000001");
+        const auto beta = QStringLiteral("a4000000-0000-4000-8000-000000000002");
+        const auto moved = QStringLiteral("a4000000-0000-4000-8000-000000000003");
+        Fixture fixture;
+        fixture.streams = [=](const Request &) { return Response{QJsonArray{
+            inboxStream(alpha, "Alpha", 0, 0, 0), inboxStream(beta, "Beta", 0, 0, 0)}}; };
+        fixture.topics = [=](const Request &request) {
+            const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            return Response{id == alpha ? QJsonArray{inboxTopic(moved, alpha, "Original", 0, 0, 0)} : QJsonArray{}};
+        };
+        loginInbox(fixture, 2);
+        fixture.controller.requestSidebarTopics(alpha); fixture.controller.requestSidebarTopics(beta);
+        QTRY_VERIFY(fixture.controller.sidebarTopicState(alpha, false).value("known").toBool());
+        QTRY_VERIFY(fixture.controller.sidebarTopicState(beta, false).value("known").toBool());
+        QSignalSpy publications(&fixture.controller, &NativeController::sidebarTopicsChanged);
+        auto changed = inboxTopic(moved, beta, "Moved", 0, 0, 0, "2026-06-22T11:30:00Z");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated", changed, 40)));
+        QVERIFY(!publications.isEmpty());
+        QVERIFY(fixture.controller.sidebarTopicState(alpha, true).value("rows").toList().isEmpty());
+        const auto movedRows = fixture.controller.sidebarTopicState(beta, true).value("rows").toList();
+        QCOMPARE(movedRows.size(), 1); QCOMPARE(movedRows[0].toMap().value("name").toString(), QString("Moved"));
+        publications.clear();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.deleted",
+            QJsonObject{{"uuid", moved}, {"stream_uuid", beta}}, 41)));
+        QVERIFY(!publications.isEmpty());
+        QVERIFY(fixture.controller.sidebarTopicState(beta, true).value("rows").toList().isEmpty());
+    }
+
     void sidebarSearchKeepsHydrationOwnedAndDeduplicated_data()
     {
         QTest::addColumn<bool>("logoutWhileHeld");
