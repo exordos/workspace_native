@@ -5000,9 +5000,11 @@ void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage>
     // The staged attempt uuid is the idempotent stream uuid the POST carried
     // (and the id the echo must match), so the canonical GET under that uuid
     // is the same verification the live path performs.
+    m_channelStageRecoveryPassInFlight = true;
     request("GET", messenger + "/streams/" + stage.attempt, {}, {},
         [this, token, lease, stage, stages, unresolved](const ApiResult &result) mutable {
         auto wipe = qScopeGuard([&] { stage.groupKey.fill('\0'); });
+        m_channelStageRecoveryPassInFlight = false;
         if (m_channelStageToken != token || !authenticated() || !m_chatKeys || !m_chatKeys->available()) return;
         const auto raw = result.data.toObject();
         const auto parsed = encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), stage.key);
@@ -5082,6 +5084,39 @@ void NativeController::scheduleChannelStageRecoveryRetry(const QString &token)
     const auto backoff = qMin<qint64>(channelStageRecoveryBackoffCapMs,
         qint64(channelStageRecoveryRetryIntervalMs) << step);
     QTimer::singleShot(int(backoff), this, [this, token] { resolveChannelCreateStages(token); });
+}
+
+void NativeController::interruptChannelStageOperations()
+{
+    // Issue #293: replacing the access token (a normal same-owner renewal),
+    // clearing the session or moving the transport to another server bumps the
+    // API generation and aborts every outstanding request; the shared request
+    // wrapper then drops the retired callbacks, so nothing else would ever
+    // settle the transient in-flight markers. Generation-scoped cleanup clears
+    // ONLY the retired operations' markers and reports each interrupted user
+    // check as unresolved — the durable stages and their keys are untouched,
+    // because cancellation proves nothing about the attempt. Tickets were
+    // cleared with the retired operations, so a stale completion can no longer
+    // settle away a newer check that reuses the same attempt.
+    const auto retired = m_channelStageTickets.keys();
+    m_channelStageTickets.clear();
+    m_channelStageResolving.clear();
+    for (const auto &attempt : retired) {
+        emit channelCreateStageResolved(attempt, QStringLiteral("unresolved"),
+            tr("The channel creation status check was interrupted by a session change. "
+               "The attempt was kept; check status again."));
+    }
+    if (!retired.isEmpty()) emit stateChanged();
+    // The automatic pass was abandoned mid-GET: release its once-per-owner/vault
+    // arming latch — which by design excludes the API generation — so it
+    // re-arms as soon as the same owner is ready. maybeResolveChannelCreateStages
+    // is a no-op while the session or vault is not usable; login and vault
+    // state changes invoke it again, so the rescan happens without a restart.
+    if (m_channelStageRecoveryPassInFlight) {
+        m_channelStageRecoveryPassInFlight = false;
+        m_channelStageToken.clear();
+        maybeResolveChannelCreateStages();
+    }
 }
 
 QJsonArray NativeController::unresolvedChannelCreateStages() const
@@ -5171,16 +5206,30 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
             : tr("The creation attempt could not be resolved right now."));
         return;
     }
+    // Issue #293: the check's identity is this operation's ticket. An
+    // interruption (API generation bump) retires the ticket; a completion that
+    // arrives for a retired ticket must never settle or clear a newer check
+    // that has since taken the same attempt.
+    const auto ticket = ++m_channelStageTicketCounter;
     m_channelStageResolving.insert(lower);
+    m_channelStageTickets.insert(lower, ticket);
+    const auto settleCheck = [this, lower, ticket](const QString &outcome, const QString &message) {
+        const auto current = m_channelStageTickets.constFind(lower);
+        if (current == m_channelStageTickets.constEnd() || current.value() != ticket) return;
+        m_channelStageTickets.erase(m_channelStageTickets.find(lower));
+        m_channelStageResolving.remove(lower);
+        emit channelCreateStageResolved(lower, outcome, message);
+        emit stateChanged();
+    };
     request("GET", messenger + "/streams/" + lower, {}, {},
-        [this, lower, lease, key, groupKey, settle](const ApiResult &result) mutable {
+        [this, lower, lease, key, groupKey, settleCheck](const ApiResult &result) mutable {
         auto wipe = qScopeGuard([&] { groupKey.fill('\0'); });
         const auto current = m_chatKeys && m_chatKeys->available() ? m_chatKeys->lease() : NativeChatKeyVault::Lease{};
         if (!authenticated() || current.owner != lease.owner || current.issuer != lease.issuer
             || current.generation != lease.generation) {
             // The session or vault changed while checking: prove nothing,
             // release nothing — the stage and its key stay as they were.
-            settle(QStringLiteral("unresolved"), tr("Encrypted channel creation is not available yet.")); return;
+            settleCheck(QStringLiteral("unresolved"), tr("Encrypted channel creation is not available yet.")); return;
         }
         const auto raw = result.data.toObject();
         const auto parsed = encryptedCreationStreamDto(raw, m_session->project(), m_session->user(), key);
@@ -5191,10 +5240,10 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
             const auto committed = m_chatKeys->put(lease, NativeChatKeyVault::Address{lower, key}, groupKey, 0);
             if (committed == NativeChatKeyVault::Failure::None) {
                 m_chatKeys->clearCreateStage(lease, lower); // idempotent even if recovery already closed it
-                settle(QStringLiteral("committed"),
+                settleCheck(QStringLiteral("committed"),
                     tr("The unresolved channel was found and its encryption key was saved."));
             } else {
-                settle(QStringLiteral("unresolved"),
+                settleCheck(QStringLiteral("unresolved"),
                     tr("Could not store the encrypted channel key. Check status before trying again."));
             }
             return;
@@ -5210,7 +5259,7 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
             // found yet" and retain stage and key byte-for-byte. The only
             // path that may destroy a staged key is the informed explicit
             // discardChannelCreateStage decision below.
-            settle(QStringLiteral("unresolved"),
+            settleCheck(QStringLiteral("unresolved"),
                 tr("The channel was not found yet. The attempt and its encryption key were kept."));
             return;
         }
@@ -5220,12 +5269,12 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
             // record stay intact. The live answer does void the stored
             // absence evidence, exactly as in the recovery scan.
             m_chatKeys->setCreateStageMissingEvidence(lease, lower, 0);
-            settle(QStringLiteral("unresolved"),
+            settleCheck(QStringLiteral("unresolved"),
                 tr("The channel exists but did not confirm this key. The attempt was kept."));
             return;
         }
         // Transport error, 5xx, ...: no definitive answer — nothing changes.
-        settle(QStringLiteral("unresolved"), tr("The server did not answer conclusively. The attempt was kept."));
+        settleCheck(QStringLiteral("unresolved"), tr("The server did not answer conclusively. The attempt was kept."));
     });
 }
 
@@ -7522,6 +7571,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         interruptTopicCreations();
         interruptChannelCreations();
         interruptDirectChats();
+        // Issue #293: a generation bump also retires the channel-stage check and
+        // recovery GETs; settle their transient state so they can retry/re-arm.
+        interruptChannelStageOperations();
         m_messageFields.clear();
         // Same-token renewals retain their transfers. A changed generation fences
         // both active operations and queued paths before resetting their UI state.
@@ -7542,6 +7594,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (!guard) return;
         interruptChannelCreations();
         interruptDirectChats();
+        // Issue #293: an automatic stage-recovery pass abandoned across the
+        // sign-out (its GET was retired with the previous generation) re-arms
+        // here, once the same owner is ready again.
+        maybeResolveChannelCreateStages();
         openCache();
         if (!guard) return;
         m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
@@ -8513,6 +8569,12 @@ void NativeController::reset()
     m_channelChoices.clear();
     m_channelDirectoryOwner.clear();
     m_channelDirectoryValid = false;
+    // Issue #293: no stage check may survive the owner it was running for.
+    // (sessionChanged already settled the user-visible reports; this is the
+    // defensive owner-change clear that reset performs for every per-owner state.)
+    m_channelStageTickets.clear();
+    m_channelStageResolving.clear();
+    m_channelStageRecoveryPassInFlight = false;
     interruptTopicCreations();
     interruptChannelCreations();
     interruptDirectChats();
