@@ -14956,6 +14956,29 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(harness.readString("currentProfileOverride"), QString(""));
     }
 
+    void rightDrawerResetIgnoresScopeWithoutOwner()
+    {
+        RightDrawerHarness harness;
+        // An ownerless scope (the unauthenticated live projection) is not a
+        // scope change: resetChatScreens cannot prove open chat screens stale,
+        // and an unknown scope must never project mid-cascade. Answering an
+        // unknown scope by dropping screens wiped the chat stack from inside
+        // the topScreen change cascade (Bug #300 binding-loop repro) and froze
+        // the projections, so back() popped nothing.
+        harness.evaluate("rightDrawer.toggleChatInfo()");
+        const auto scope = [&](const QString &screen) { return drawerChatScope("o1", 1, "s1", screen); };
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("settings") + ")");
+        harness.evaluate("rightDrawer.openChatScreen(" + scope("key") + ")");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        harness.evaluate("rightDrawer.resetChatScreens({ownerKey:'',runtimeGeneration:0,streamUuid:''})");
+        QCOMPARE(harness.readInt("topScreenCount"), 3);
+        QCOMPARE(harness.readString("currentChatScreen"), QString("key"));
+        // A real generation change still drops chat screens back to the root.
+        harness.evaluate("rightDrawer.resetChatScreens({ownerKey:'o1',runtimeGeneration:2,streamUuid:'s1'})");
+        QCOMPARE(harness.readString("currentChatScreen"), QString(""));
+        QCOMPARE(harness.readInt("topScreenCount"), 1);
+    }
+
     void rightDrawerCollapsesWithoutDeletingHistory()
     {
         RightDrawerHarness harness;
