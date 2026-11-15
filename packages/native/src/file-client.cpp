@@ -2,6 +2,7 @@
 #include "file-download-staging.h"
 #include "api-client.h"
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -44,6 +45,19 @@ QString safeName(QString name)
     name.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f\\x7f]")), QStringLiteral("_"));
     name.replace(QRegularExpression(QStringLiteral("\\.{2,}")), QStringLiteral("."));
     return name.trimmed();
+}
+
+bool imageSignatureMatches(const QString &mime, const QByteArray &header)
+{
+    if (mime == QLatin1String("image/png"))
+        return header.startsWith(QByteArray::fromHex("89504e470d0a1a0a"));
+    if (mime == QLatin1String("image/jpeg"))
+        return header.startsWith(QByteArray::fromHex("ffd8ff"));
+    if (mime == QLatin1String("image/gif"))
+        return header.startsWith("GIF87a") || header.startsWith("GIF89a");
+    if (mime == QLatin1String("image/webp"))
+        return header.size() >= 12 && header.startsWith("RIFF") && header.mid(8, 4) == "WEBP";
+    return true;
 }
 
 bool parseMetadata(const QByteArray &bytes, FileMetadata &metadata)
@@ -233,20 +247,43 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     auto body = std::make_unique<QHttpMultiPart>(QHttpMultiPart::FormDataType);
     auto *file = new UploadFile(path, info.size(), body.get());
     if (!file->open(QIODevice::ReadOnly)) { fail(id, FileClient::tr("Cannot read the selected file.")); return id; }
+    const QMimeDatabase mimeDatabase;
+    const auto declaredType = mimeDatabase.mimeTypeForFile(path, QMimeDatabase::MatchExtension).name();
+    const auto uploadedType = mimeDatabase.mimeTypeForFile(uploadName, QMimeDatabase::MatchExtension).name();
+    // Validation and multipart transmission must observe the same bytes even if
+    // the selected file changes. Retain at most the existing 25 MiB upload limit.
+    QBuffer *snapshot = nullptr;
+    if (declaredType.startsWith("image/") || uploadedType.startsWith("image/")) {
+        snapshot = new QBuffer(body.get());
+        snapshot->buffer().reserve(info.size());
+    }
     QCryptographicHash hash(QCryptographicHash::Sha256);
     qint64 hashed = 0;
     while (hashed < info.size()) {
         const auto bytes = file->read(std::min(ChunkSize, info.size() - hashed));
         if (bytes.isEmpty()) { fail(id, FileClient::tr("Cannot read the complete selected file.")); return id; }
         hash.addData(bytes);
+        if (snapshot) snapshot->buffer().append(bytes);
         hashed += bytes.size();
     }
-    if (!file->seek(0)) { fail(id, FileClient::tr("Cannot rewind the selected file.")); return id; }
+    QIODevice *uploadDevice = file;
+    if (snapshot) {
+        const auto header = snapshot->data().left(12);
+        if (!imageSignatureMatches(declaredType, header) || !imageSignatureMatches(uploadedType, header)) {
+            fail(id, FileClient::tr("The image file type does not match its contents.")); return id;
+        }
+        file->close();
+        snapshot->open(QIODevice::ReadOnly);
+        uploadDevice = snapshot;
+    } else if (!file->seek(0)) {
+        fail(id, FileClient::tr("Cannot rewind the selected file.")); return id;
+    }
     const auto operation = m_operations.value(id);
     operation->upload = true;
     operation->metadata.streamUuid = streamUuid.toLower();
     operation->metadata.name = uploadName;
-    operation->metadata.contentType = QMimeDatabase().mimeTypeForFile(path, QMimeDatabase::MatchContent).name();
+    operation->metadata.contentType = snapshot ? mimeDatabase.mimeTypeForData(snapshot->data()).name()
+        : mimeDatabase.mimeTypeForFile(path, QMimeDatabase::MatchContent).name();
     operation->metadata.sizeBytes = info.size();
     operation->metadata.sha256 = hash.result().toHex();
     auto headerName = uploadName.toLatin1();
@@ -255,7 +292,7 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     QHttpPart binary;
     binary.setHeader(QNetworkRequest::ContentDispositionHeader, "form-data; name=\"file\"; filename=\"" + headerName + '"');
     binary.setHeader(QNetworkRequest::ContentTypeHeader, operation->metadata.contentType);
-    binary.setBodyDevice(file);
+    binary.setBodyDevice(uploadDevice);
     body->append(binary);
     const auto appendText = [&body](const QByteArray &key, const QByteArray &value) {
         QHttpPart part;
