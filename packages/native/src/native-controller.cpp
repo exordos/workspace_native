@@ -9310,6 +9310,13 @@ void NativeController::setWindowVisible(bool visible)
     m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
 }
 
+void NativeController::setWindowMinimized(bool minimized)
+{
+    if (m_windowMinimized == minimized) return;
+    m_windowMinimized = minimized;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+}
+
 void NativeController::maybeOfferCallInvite(const Message &message)
 {
     if (!authenticated())

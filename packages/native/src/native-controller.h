@@ -389,8 +389,11 @@ public:
     // window:activity from the focus/blur handlers in main.ts).
     Q_INVOKABLE void setWindowFocused(bool focused);
     // Window visibility mirror (issue #78): hidden windows take the hidden
-    // presence tier.
+    // presence tier. The minimized seam exists because Qt keeps isVisible()
+    // true for a minimized window while the reference ladder treats
+    // minimized as hidden (fix-round-2, cid 4576526934).
     Q_INVOKABLE void setWindowVisible(bool visible);
+    Q_INVOKABLE void setWindowMinimized(bool minimized);
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
     // Reference bootstrap error banner Retry (bootstrapRetryNonce analogue):
@@ -1176,6 +1179,7 @@ private:
     NotificationService m_notifications;
     bool m_windowFocused = true;
     bool m_windowVisible = true;
+    bool m_windowMinimized = false;
     QVector<Message> m_messages;
     struct UserPresentation {
         QString name, avatar, presence, statusLabel;

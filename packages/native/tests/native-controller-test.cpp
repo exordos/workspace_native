@@ -14242,6 +14242,36 @@ private slots:
         QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
     }
 
+    void minimizedWindowUsesReferenceHiddenPresenceCadence()
+    {
+        // Fix-round-2 finding (cid 4576526934): Qt keeps isVisible() true
+        // for a minimized window, so the R1 bool mirror left minimized
+        // windows on the unfocused tier. The reference ladder keys on
+        // document.hidden, and in the reference (Chromium-backed) shell a
+        // minimized window is hidden: WORKSPACE_PRESENCE_HIDDEN_INTERVAL_MS
+        // = 300 000 (user-workspace-presence-reporter.lib.ts:24 at
+        // 61dacef7), WORKSPACE_PRESENCE_BATTERY_MULTIPLIER = 2 (line 25),
+        // and the hidden branch returns max(base, 300 000) * batteryFactor
+        // (line 39). Minimized must land on 300000 mains / 600000 battery.
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        // A minimized window: Qt reports it visible-but-unfocused, exactly
+        // what main.cpp's visibilityChanged wiring forwards.
+        fixture.controller.setWindowFocused(false);
+        fixture.controller.setWindowMinimized(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 300000);
+        fixture.controller.setOnBattery(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 600000);
+        // Restoring the window returns to the unfocused ladder...
+        fixture.controller.setWindowMinimized(false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 160000);
+        // ...and a hidden window still selects the hidden tier by itself.
+        fixture.controller.setWindowFocused(true);
+        fixture.controller.setWindowVisible(false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 600000);
+    }
+
     void spoofedResumeBurstCannotSpamRealtimeReconnects()
     {
         // Fix-round-1 finding 4 (cid 4576526936): on an injected bus any peer
@@ -14280,6 +14310,64 @@ private slots:
         }
         QTest::qWait(500);
         QCOMPARE(gateway.sockets.size(), 2);
+        QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+    }
+
+    void genuineSleepCycleResumeBypassesReconnectFloor()
+    {
+        // Fix-round-2 finding (cid 4576829140): monotonic elapsed() excludes
+        // suspended time, so a genuine sleep->wake->sleep->wake can leave the
+        // second resume inside the five second floor and wrongly suppress it.
+        // A resume that was PRECEDED by a PrepareForSleep(true) sleep
+        // notification is a real sleep cycle and always reconnects; only bare
+        // resumes without a preceding sleep notification stay floored (the
+        // spoof/burst pattern from fix-round-1 finding 4).
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10},
+                    {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+        QCOMPARE(gateway.sockets.size(), 1);
+        PowerBusFixture bus("sleep-cycle");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        QVERIFY(bus.claimService("org.freedesktop.login1"));
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // Bare storm first: the first resume reconnects, the rest are floored,
+        // so the baseline stays at the two legitimate sockets.
+        bus.emitPrepareForSleep(false);
+        QTRY_COMPARE_WITH_TIMEOUT(gateway.sockets.size(), 2, 3000);
+        for (int i = 0; i < 3; ++i) {
+            bus.emitPrepareForSleep(false);
+            QTest::qWait(150);
+        }
+        QTest::qWait(300);
+        QCOMPARE(gateway.sockets.size(), 2);
+        // Genuine sleep cycles inside the same floor window: every resume
+        // follows a PrepareForSleep(true), so every one reconnects every time.
+        for (int i = 0; i < 3; ++i) {
+            bus.emitPrepareForSleep(true);
+            QTest::qWait(100);
+            bus.emitPrepareForSleep(false);
+            QTRY_COMPARE_WITH_TIMEOUT(gateway.sockets.size(), 3 + i, 3000);
+        }
+        // The sleep mark is consumed per cycle: a bare burst afterwards is
+        // floored again and adds no sockets.
+        for (int i = 0; i < 2; ++i) {
+            bus.emitPrepareForSleep(false);
+            QTest::qWait(150);
+        }
+        QTest::qWait(300);
+        QCOMPARE(gateway.sockets.size(), 5);
         QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
     }
 
