@@ -1194,6 +1194,17 @@ private:
     QMap<QString, QVariantMap> m_sessionProjections;
     QPointer<NativeChatKeyVault> m_chatKeys;
     Session *m_session;
+    // Fix round R2 (PR #292 review, cid=4577609973 / cid=4577609975): the
+    // creationOwnerKey alone cannot fence async completions - switching
+    // projects away and back re-creates the identical owner key, so a retired
+    // operation would pass an owner-only fence after the round trip. This
+    // generation advances at every session retirement boundary: sign-out
+    // clears it, and any re-authentication under a changed owner (a project
+    // switch, including back to the original project) bumps it. Async copy
+    // paths capture it at dispatch and discard completions from a retired
+    // generation even when the owner key matches again.
+    quint64 m_sessionGeneration = 0;
+    QString m_sessionGenerationOwner;
     QPointer<NativeCacheService> m_cache;
     QMetaObject::Connection m_cacheDestroyed;
     QMetaObject::Connection m_cacheStatusChanged;
