@@ -87,7 +87,7 @@ verified download without reopening or recursively cleaning staging paths.
 The Windows implementation follows the documented
 [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
 and [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)
-semantics. Windows runtime and native macOS acceptance remain **NOT RUN**; the
+semantics. Full Windows application and native macOS acceptance remain **NOT RUN**; the
 POSIX backend's Linux check is not a macOS acceptance claim.
 
 The complete FileClient suite also checks progress on a real streamed body and
@@ -109,7 +109,8 @@ native picker, packaged installation, Windows/macOS and a full matched-pixel
 reference comparison were not run. The reference contracts are the pinned
 workspace_ui `workspace-file-download.lib.ts`, `workspace-downloads.ts`,
 `top-bar-download-center.ui.tsx` and `top-bar-download-row.ui.tsx`.
-# Windows staging permission regression
+
+## Windows staging permission regression
 
 The standalone Qt Core/Test project in
 `packages/native/tests/windows-file-staging` exercises the production staging
@@ -122,3 +123,13 @@ download remains readable by its owner while the substituted parent cannot
 grant another principal access. Existing-destination preservation is checked
 separately. The dedicated Windows workflow has read-only repository permissions
 and a bounded runtime; it does not package or release the application.
+
+The baseline failed on Windows Server 2022 with Qt 6.10.2: the public control
+and ordinary/no-replace saves passed, but the restricted reader obtained the
+published attachment. File creation must therefore supply a protected DACL
+granting access only to the current process user, instead of inheriting the
+parent's ACL. The same exclusive handle still owns all writes and publication;
+the junction can redirect creation but cannot grant access to the held file.
+Security-descriptor construction failures must stop staging before any bytes
+are written. This follows the documented Windows
+[file-security inheritance rules](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights).

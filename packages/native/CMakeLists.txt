@@ -61,6 +61,9 @@ target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
 target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+if(WIN32)
+    target_link_libraries(workspace-native-core PRIVATE advapi32)
+endif()
 # The notification attention adapter asks the window manager for attention
 # over raw xcb on Linux; without the headers it degrades to a silent no-op.
 include(CheckIncludeFileCXX)

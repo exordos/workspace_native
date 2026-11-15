@@ -48,9 +48,32 @@ public:
         created = true;
         if (!file.open(output, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) ::close(output);
 #elif defined(Q_OS_WIN)
+        // The private directory's pathname can be replaced before this call.
+        // Give the file an owner-only, protected DACL at creation so a junction
+        // target cannot contribute inherited permissions to the published file.
+        HANDLE token = nullptr;
+        if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return;
+        DWORD userSize = 0;
+        ::GetTokenInformation(token, TokenUser, nullptr, 0, &userSize);
+        std::vector<unsigned char> user(userSize);
+        const bool userKnown = ::GetTokenInformation(token, TokenUser, user.data(), userSize, &userSize);
+        ::CloseHandle(token);
+        if (!userKnown) return;
+        const auto sid = reinterpret_cast<const TOKEN_USER *>(user.data())->User.Sid;
+        std::vector<unsigned char> acl(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE)
+                                       - sizeof(DWORD) + ::GetLengthSid(sid));
+        auto *dacl = reinterpret_cast<ACL *>(acl.data());
+        SECURITY_DESCRIPTOR security {};
+        if (!::InitializeAcl(dacl, static_cast<DWORD>(acl.size()), ACL_REVISION)
+            || !::AddAccessAllowedAce(dacl, ACL_REVISION, FILE_ALL_ACCESS, sid)
+            || !::InitializeSecurityDescriptor(&security, SECURITY_DESCRIPTOR_REVISION)
+            || !::SetSecurityDescriptorOwner(&security, sid, FALSE)
+            || !::SetSecurityDescriptorDacl(&security, TRUE, dacl, FALSE)
+            || !::SetSecurityDescriptorControl(&security, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) return;
+        SECURITY_ATTRIBUTES attributes {sizeof(SECURITY_ATTRIBUTES), &security, FALSE};
         const auto path = QDir::toNativeSeparators(fileName());
         const auto output = ::CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()),
-            GENERIC_READ | GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            GENERIC_READ | GENERIC_WRITE | DELETE, 0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (output == INVALID_HANDLE_VALUE) return;
         const int nativeDescriptor = ::_open_osfhandle(reinterpret_cast<intptr_t>(output), _O_BINARY | _O_RDWR);
         if (nativeDescriptor < 0 || !file.open(nativeDescriptor, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) {
