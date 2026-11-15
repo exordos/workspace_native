@@ -41,6 +41,7 @@ class NativeController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
     Q_PROPERTY(QString loginStep READ loginStep NOTIFY stateChanged)
     Q_PROPERTY(QString organizationRealm READ organizationRealm NOTIFY stateChanged)
@@ -636,6 +637,13 @@ public:
     Q_INVOKABLE QString formatPollDate(const QString &isoDateTime) const;
     Q_INVOKABLE void attachFiles(const QVariantList &localUrls);
     Q_INVOKABLE void downloadFile(const QString &id, const QUrl &destination);
+    QVariantList downloadEntries() const;
+    Q_INVOKABLE void cancelDownload(const QString &id);
+    Q_INVOKABLE void dismissDownload(const QString &id);
+    Q_INVOKABLE void clearDownloads();
+    Q_INVOKABLE void retryDownload(const QString &id);
+    Q_INVOKABLE void openDownload(const QString &id);
+    Q_INVOKABLE void revealDownload(const QString &id);
 
     // ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
     // Conversation context for mention ranking (MentionRankingContext in the
@@ -661,6 +669,8 @@ public:
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);
 
 signals:
+    void downloadsChanged();
+    void downloadDuplicateRequested();
     void chatKeyStoreOpenRequested();
     // Issue #244 review 4577108887: settles a user-invoked rotation-stage
     // check/discard with the outcome ("resolved", "released", "discarded"
@@ -1194,6 +1204,17 @@ private:
         quint64 operation = 0;
         quint64 editSession = 0;
     };
+    struct DownloadEntry {
+        QString id, owner, fileUuid, fileName, path, status, error;
+        qint64 received = 0, total = -1;
+        quint64 intent = 0, retryService = 0;
+        bool retrying = false;
+        bool active() const { return status == "starting" || status == "downloading"; }
+    };
+    void startDownload(DownloadEntry entry);
+    void finishDownloadRetries(bool success);
+    QString uniqueDownloadPath(const QString &path) const;
+    QString completedDownloadPath(const QString &id);
     void cancelFileTransfers(const QString &reason = {});
     void cancelEditUploads();
     void drainUploads();
@@ -1329,6 +1350,7 @@ private:
     QMetaObject::Connection m_filesDestroyed;
     QQueue<UploadTask> m_uploadQueue;
     QHash<quint64, FileOperation> m_fileOperations;
+    QVector<DownloadEntry> m_downloadEntries;
     quint64 m_nextFileOperation = 0;
     quint64 m_fileEpoch = 0;
     quint64 m_fileServiceSerial = 0;

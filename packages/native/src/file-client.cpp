@@ -88,6 +88,7 @@ private:
 
 struct FileClient::Operation {
     Completion completion;
+    Progress progress;
     quint64 generation = 0;
     QPointer<QNetworkReply> reply;
     QPointer<QTimer> timer;
@@ -269,11 +270,13 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     return id;
 }
 
-quint64 FileClient::download(const QString &uuid, const QString &destination, Completion completion)
+quint64 FileClient::download(const QString &uuid, const QString &destination, Completion completion,
+                             Progress progress)
 {
     const auto id = begin(std::move(completion));
     if (!validUuid(uuid) || destination.isEmpty()) { fail(id, FileClient::tr("Invalid file identifier or destination.")); return id; }
     const auto operation = m_operations.value(id);
+    operation->progress = std::move(progress);
     operation->uuid = uuid.toLower();
     operation->destination = destination;
     operation->reply = m_api ? m_api->startFileMetadata(operation->uuid) : nullptr;
@@ -369,6 +372,7 @@ void FileClient::startDownload(quint64 id)
     operation->reply->setReadBufferSize(ChunkSize);
     connect(operation->reply, &QNetworkReply::readyRead, this, [this, id] { readDownload(id); });
     connect(operation->reply, &QNetworkReply::finished, this, [this, id] { finishDownload(id); });
+    if (operation->progress) operation->progress(0, operation->metadata.sizeBytes);
 }
 
 void FileClient::readDownload(quint64 id)
@@ -395,6 +399,8 @@ void FileClient::readDownload(quint64 id)
         operation->hash.addData(bytes);
         operation->received += bytes.size();
     }
+    // Last action: observers may cancel the operation or destroy this service.
+    if (operation->progress) operation->progress(operation->received, operation->metadata.sizeBytes);
 }
 
 void FileClient::finishDownload(quint64 id)

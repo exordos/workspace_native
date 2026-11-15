@@ -98,6 +98,8 @@ private slots:
     void absentChecksumAndEmptyDownload();
     void typedUrns();
     void streamingAcrossMultipleChunks();
+    void progressObserversMayCancelOrDestroyTheTransfer_data();
+    void progressObserversMayCancelOrDestroyTheTransfer();
     void apiDestructionCancelsTransfers();
     void realWriteFailurePreservesDestination();
     void memoryDownloadReturnsBytes_data();
@@ -411,9 +413,58 @@ void FileClientTest::streamingAcrossMultipleChunks()
     QVERIFY(server.requests.first().contains(bytes));
     const auto destination = directory.filePath("saved.bin");
     done = false;
-    client.download(FileUuid, destination, [&](const FileResult &r) { result = r; done = true; });
+    QList<qint64> progress;
+    client.download(FileUuid, destination, [&](const FileResult &r) { result = r; done = true; },
+        [&](qint64 received, qint64 total) {
+            QCOMPARE(total, bytes.size());
+            QVERIFY(!done);
+            QVERIFY(progress.isEmpty() || received >= progress.last());
+            progress.append(received);
+        });
     QTRY_VERIFY(done); QVERIFY2(result.ok(), qPrintable(result.error));
     QCOMPARE(read(destination), bytes); QVERIFY(result.checksumVerified);
+    QVERIFY(progress.size() > 2);
+    QCOMPARE(progress.first(), 0); QCOMPARE(progress.last(), bytes.size());
+    QVERIFY(std::any_of(progress.cbegin(), progress.cend(), [&](auto received) { return received > 0 && received < bytes.size(); }));
+}
+
+void FileClientTest::progressObserversMayCancelOrDestroyTheTransfer_data()
+{
+    QTest::addColumn<bool>("destroy"); QTest::addColumn<bool>("partial");
+    QTest::newRow("initial-cancel") << false << false;
+    QTest::newRow("initial-destroy") << true << false;
+    QTest::newRow("partial-cancel") << false << true;
+    QTest::newRow("partial-destroy") << true << true;
+}
+
+void FileClientTest::progressObserversMayCancelOrDestroyTheTransfer()
+{
+    QFETCH(bool, destroy); QFETCH(bool, partial);
+    Server server;
+    const QByteArray bytes(128 * 1024, 'x');
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) { Server::reply(socket, metadata(bytes)); return; }
+        socket->write("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: " + QByteArray::number(bytes.size()) + "\r\n\r\n" + bytes.left(8192));
+        QTimer::singleShot(100, socket, [socket, bytes] { socket->write(bytes.mid(8192)); socket->disconnectFromHost(); });
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    auto client = std::make_unique<FileClient>(&api);
+    QTemporaryDir directory;
+    const auto destination = directory.filePath("original.txt"); write(destination, "keep me");
+    quint64 operation = 0;
+    int completions = 0, progress = 0; bool acted = false;
+    operation = client->download(FileUuid, destination, [&](const FileResult &result) { QVERIFY(!result.ok()); ++completions; },
+        [&](qint64 received, qint64) {
+            QVERIFY(!acted); ++progress;
+            if (partial && received == 0) return;
+            acted = true;
+            if (destroy) client.reset(); else client->cancel(operation);
+        });
+    QTRY_VERIFY(acted);
+    const auto count = progress;
+    QTest::qWait(150);
+    QCOMPARE(progress, count); QCOMPARE(completions, destroy ? 0 : 1);
+    QCOMPARE(read(destination), QByteArray("keep me"));
 }
 
 void FileClientTest::apiDestructionCancelsTransfers()
