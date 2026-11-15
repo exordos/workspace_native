@@ -20462,6 +20462,36 @@ private slots:
         QCOMPARE(completed.count(), 0);
     }
 
+    void sendPollRetryIdentityDoesNotSurviveSignOut()
+    {
+        Fixture fixture;
+        QVector<QJsonObject> bodies;
+        QVector<std::function<void()>> releases;
+        fixture.messages = [&](const Request &request) {
+            if (request.method != "POST") return Response{QJsonArray{}};
+            bodies.append(request.body);
+            Response response{pollMessageDto(request.body.value("uuid").toString(), 1, false)};
+            response.defer = [&](std::function<void()> send) { releases.append(std::move(send)); };
+            return response;
+        };
+        const QVariantList questions{
+            QVariantMap{{QString("text"), QStringLiteral("Which day?")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        QVERIFY(fixture.start());
+        fixture.controller.sendPoll(questions, false, false, false, "always", false, {});
+        QTRY_COMPARE(bodies.size(), 1);
+        fixture.controller.logout();
+        QVERIFY(fixture.start());
+        fixture.controller.sendPoll(questions, false, false, false, "always", false, {});
+        QTRY_COMPARE(bodies.size(), 2);
+        QVERIFY(bodies[1].value("uuid") != bodies[0].value("uuid"));
+        const auto first = bodies[0].value("payload").toObject().value("questions");
+        const auto second = bodies[1].value("payload").toObject().value("questions");
+        QVERIFY(second != first);
+        for (auto &release : releases) release();
+    }
+
     void sendPollIdenticalRetryReusesCanonicalUuidsUntilConfirmed()
     {
         Fixture fixture;

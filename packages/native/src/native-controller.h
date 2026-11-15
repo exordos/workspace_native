@@ -616,9 +616,11 @@ public:
     // Issue #215: reactive QML gate for the composer poll trigger; same rule as
     // the invokable, exposed so bindings re-evaluate with the selection.
     Q_PROPERTY(bool pollCreationAllowed READ canCreatePoll NOTIFY stateChanged)
+    Q_PROPERTY(QString pollCreationOwnerKey READ creationOwnerKey NOTIFY stateChanged)
+    // A UI caller supplies a token unique to this controller for each submission.
     Q_INVOKABLE void sendPoll(const QVariantList &questions, bool multipleAnswers, bool isAnonymous,
         bool allowRevote, const QString &resultsVisibility, bool allowAddingOptions,
-        const QString &closesAt = QString());
+        const QString &closesAt = QString(), const QString &operation = QString());
     Q_INVOKABLE void votePollOption(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, bool selected);
     Q_INVOKABLE void closePoll(const QString &messageUuid);
@@ -713,10 +715,12 @@ signals:
     // bubble releases only the lock its own request set - an unrelated poll
     // revision must not release in-flight question locks.
     void pollActionSucceeded(QString messageUuid, QString action, QString questionUuid);
-    // A confirmed poll create (#215 dialog): carries the created poll message
-    // so the dialog can correlate completion with its own submitted attempt
-    // instead of reacting to any messageSent (e.g. a late text send).
+    // Confirmed create notification for observers. The dialog uses the separate
+    // operation completion below to distinguish different form lifetimes.
     void pollCreated(QString id, QString stream, QString topic);
+    // One dialog submission, distinct from the canonical UUID reused on retry.
+    // Empty detail confirms success; interrupted is an uncertain send.
+    void pollCreationFinished(QString operation, QString detail);
     void pollVotersLoaded(QString messageUuid, QString questionUuid, QString optionUuid,
         QVariantList voters, QString nextMarker, QString error);
     void snapshotReloaded();
@@ -1156,7 +1160,7 @@ private:
     void pruneMessageFields();
     void finishMessageIntent(const QString &id);
     // ---- Issue #214 polls foundation internals ----
-    // Issue #215: one in-flight poll creation attempt per conversation. The
+    // Issue #215: one canonical poll creation attempt per owner/conversation. The
     // reference keeps the submitted attempt (chat-page-workspace pollAttemptRef):
     // retrying an unchanged draft must replay the identical canonical client
     // UUIDs, while any content change rotates the attempt.
@@ -1166,6 +1170,7 @@ private:
         QStringList questionUuids;
         QList<QStringList> optionUuids;
     };
+    void finishPollCreation(const QString &operation, const QString &detail);
     void invokePollAction(const QString &messageUuid, const QString &action, const QJsonObject &body);
     bool applyPollMutation(const QString &messageUuid, const QString &action,
         const QJsonObject &body, const ApiResult &result, const ProjectionContext &context);
@@ -1643,7 +1648,8 @@ private:
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
-    QHash<QString, PollSendAttempt> m_pollSendAttempts; // Issue #215 idempotent poll creates
+    QHash<QString, PollSendAttempt> m_pollSendAttempts; // Owner + conversation retry identity
+    QSet<QString> m_pendingPollCreations; // Dialog submission tokens, never canonical UUIDs
     QHash<QString, int> m_pendingUploads;
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;

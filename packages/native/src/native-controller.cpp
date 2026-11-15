@@ -7559,6 +7559,14 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(session, &Session::projectsAvailable, this, &NativeController::stateChanged);
     connect(api, &ApiClient::sessionChanged, this, [this] {
         const QPointer<NativeController> lookupGuard(this);
+        // Retired transport callbacks are deliberately dropped. Settle their
+        // UI operations here while retaining same-owner retry UUIDs.
+        const auto pollOperations = m_pendingPollCreations;
+        m_pendingPollCreations.clear();
+        for (const auto &operation : pollOperations) {
+            emit pollCreationFinished(operation, QStringLiteral("interrupted"));
+            if (!lookupGuard) return;
+        }
         interruptOwnStatusUpdate();
         if (!lookupGuard) return;
         m_statusPreferenceOwner.clear(); m_statusManualAway = false;
@@ -8559,6 +8567,7 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    m_pollSendAttempts.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
@@ -14185,7 +14194,7 @@ bool NativeController::canCreatePoll() const
 
 void NativeController::sendPoll(const QVariantList &questions, bool multipleAnswers,
     bool isAnonymous, bool allowRevote, const QString &resultsVisibility,
-    bool allowAddingOptions, const QString &closesAt)
+    bool allowAddingOptions, const QString &closesAt, const QString &operation)
 {
     if (!canCreatePoll() || m_stream.isEmpty() || m_topic.isEmpty()) return;
     if (resultsVisibility != QLatin1String("always")
@@ -14225,7 +14234,7 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
             closesAt.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(closesAt)}};
     const auto signature = QString::fromUtf8(
         QJsonDocument(signatureDraft).toJson(QJsonDocument::Compact));
-    const auto conversation = conversationKey();
+    const auto conversation = creationOwnerKey() + QLatin1Char('/') + conversationKey();
     auto attempt = m_pollSendAttempts.value(conversation);
     if (attempt.signature != signature) {
         attempt = PollSendAttempt{};
@@ -14283,21 +14292,22 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
     const QPointer<NativeController> guard(this);
     // The create body carries the canonical client message uuid exactly like
     // the markdown send intent, so an uncertain create can be replayed safely.
+    if (!operation.isEmpty()) m_pendingPollCreations.insert(operation);
     request("POST", messenger + "/messages/",
         QJsonObject{{QStringLiteral("uuid"), attempt.messageUuid},
             {QStringLiteral("stream_uuid"), stream}, {QStringLiteral("topic_uuid"), topic},
             {QStringLiteral("payload"), payload}},
         {}, [this, guard, stream, topic, conversation, attempt, generation,
-            context](const ApiResult &result) {
+            context, operation](const ApiResult &result) {
         if (!guard || generation != m_api->generation()) return;
         const auto parsed = result.ok()
             ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
         if (!parsed || parsed->kind != QLatin1String("poll") || !parsed->pollState
             || parsed->stream != stream || parsed->topic != topic) {
-            emit pollActionFailed(QString(), QStringLiteral("create"),
-                result.ok() ? QStringLiteral("invalid-response")
-                            : QStringLiteral("http-%1").arg(result.status),
-                QString());
+            const auto detail = result.ok() ? QStringLiteral("invalid-response")
+                : QStringLiteral("http-%1").arg(result.status);
+            emit pollActionFailed(QString(), QStringLiteral("create"), detail, QString());
+            if (guard) finishPollCreation(operation, detail);
             return;
         }
         // A confirmed create retires the attempt (reference pollAttemptRef = null).
@@ -14319,9 +14329,16 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
         if (!guard) return;
         emit stateChanged();
         emit messageSent(parsed->uuid, stream, topic);
-        // The poll-specific completion the create dialog correlates with.
+        // Preserve the canonical create notification for non-form observers.
         emit pollCreated(parsed->uuid, stream, topic);
+        if (guard) finishPollCreation(operation, QString());
     });
+}
+
+void NativeController::finishPollCreation(const QString &operation, const QString &detail)
+{
+    if (!operation.isEmpty() && m_pendingPollCreations.remove(operation))
+        emit pollCreationFinished(operation, detail);
 }
 
 void NativeController::invokePollAction(const QString &messageUuid, const QString &action,
