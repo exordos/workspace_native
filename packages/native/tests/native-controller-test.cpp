@@ -23,6 +23,7 @@
 #include <QElapsedTimer>
 #include <QDeadlineTimer>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QGuiApplication>
 #include <QSignalSpy>
 #include <QDBusConnection>
@@ -461,6 +462,17 @@ protected:
         });
         client->startServerEncryption();
     }
+};
+
+class DownloadDesktopProbe final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.FileManager1")
+public:
+    QList<QUrl> opened;
+    QStringList revealed;
+public slots:
+    void open(const QUrl &url) { opened.append(url); }
+    void ShowItems(const QStringList &uris, const QString &) { revealed = uris; }
 };
 
 class Fixture {
@@ -13288,6 +13300,338 @@ private slots:
         QTest::qWait(400);
         QVERIFY(fixture.controller.draft().isEmpty());
         QVERIFY(!fixture.controller.canAttach());
+    }
+
+    void failedAttachmentRetainsAnActionableDownloadRow()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        fixture.files = [](const Request &) { return Response{QJsonObject{}, 503}; };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QVERIFY(fixture.controller.error().contains("could not be saved"));
+        const auto rows = fixture.controller.property("downloadEntries").toList();
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows.first().toMap().value("fileUuid").toString(), returnedId);
+        QCOMPARE(rows.first().toMap().value("fileName").toString(), QString("report.txt"));
+        QCOMPARE(rows.first().toMap().value("status").toString(), QString("error"));
+    }
+
+    void downloadRowsTrackProgressCancelDuplicatesAndUniqueDestinations_data()
+    {
+        QTest::addColumn<bool>("cancelSecond"); QTest::addColumn<bool>("symbolic");
+        QTest::newRow("cancel") << true << false;
+        QTest::newRow("complete-both") << false << false;
+#ifdef Q_OS_UNIX
+        QTest::newRow("dangling-symbolic-link") << false << true;
+#endif
+    }
+
+    void downloadRowsTrackProgressCancelDuplicatesAndUniqueDestinations()
+    {
+        QFETCH(bool, cancelSecond); QFETCH(bool, symbolic);
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("saved.txt");
+        QFile original(destination);
+        if (symbolic) {
+#ifdef Q_OS_UNIX
+            QCOMPARE(::symlink(QFile::encodeName(directory.filePath("missing-target.txt")).constData(), QFile::encodeName(destination).constData()), 0);
+#endif
+        } else { QVERIFY(original.open(QIODevice::WriteOnly)); original.write("keep me"); original.close(); }
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonObject{{"uuid", request.target.path().section('/', -1)}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        const auto rows = [&] { return fixture.controller.downloadEntries(); };
+        QSignalSpy duplicate(&fixture.controller, &NativeController::downloadDuplicateRequested);
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QCOMPARE(rows().size(), 1);
+        QCOMPARE(rows().first().toMap().value("status").toString(), QString("starting"));
+        const auto first = rows().first().toMap().value("id").toString();
+        fixture.controller.downloadFile(returnedId.toUpper(), QUrl::fromLocalFile(destination));
+        QCOMPARE(duplicate.size(), 1); QCOMPARE(rows().size(), 1);
+        fixture.controller.retryDownload(first); // Active entries are not retryable.
+        fixture.controller.dismissDownload(first); fixture.controller.clearDownloads();
+        QCOMPARE(rows().size(), 1);
+        QTRY_COMPARE(release.size(), 1);
+        QCOMPARE(rows().first().toMap().value("status").toString(), QString("downloading"));
+        QCOMPARE(rows().first().toMap().value("receivedBytes").toLongLong(), 0);
+        QCOMPARE(rows().first().toMap().value("totalBytes").toLongLong(), 2);
+        fixture.controller.downloadFile(messageId, QUrl::fromLocalFile(destination));
+        QTRY_COMPARE(release.size(), 2);
+        QCOMPARE(rows().size(), 2);
+        const auto second = rows().first().toMap().value("id").toString();
+        if (cancelSecond) fixture.controller.cancelDownload(second);
+        QCOMPARE(rows().size(), cancelSecond ? 1 : 2);
+        QVERIFY(fixture.controller.fileBusy());
+        release[1](); release[1] = {}; release[0](); release[0] = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(rows().first().toMap().value("status").toString(), QString("downloaded"));
+        QCOMPARE(rows().first().toMap().value("receivedBytes").toLongLong(), 2);
+        QFile saved(directory.filePath("saved (1).txt")); QVERIFY(saved.open(QIODevice::ReadOnly)); QCOMPARE(saved.readAll(), QByteArray("{}"));
+        QCOMPARE(QFileInfo::exists(directory.filePath("saved (2).txt")), !cancelSecond);
+        if (symbolic) {
+            QVERIFY(QFileInfo(destination).isSymLink());
+            QVERIFY(!QFileInfo::exists(directory.filePath("missing-target.txt")));
+        } else { QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(), QByteArray("keep me")); }
+        fixture.controller.retryDownload(first); QCOMPARE(rows().size(), cancelSecond ? 1 : 2);
+        fixture.controller.clearDownloads(); QVERIFY(rows().isEmpty());
+        QVERIFY(QFileInfo::exists(directory.filePath("saved (1).txt")));
+        QVERIFY(QFileInfo::exists(destination) || QFileInfo(destination).isSymLink());
+    }
+
+    void downloadCommitPreservesAFileCreatedDuringTransfer_data()
+    {
+        QTest::addColumn<bool>("symbolic");
+        QTest::newRow("regular-file") << false;
+#ifdef Q_OS_UNIX
+        QTest::newRow("symbolic-link") << true;
+#endif
+    }
+
+    void downloadCommitPreservesAFileCreatedDuringTransfer()
+    {
+        QFETCH(bool, symbolic);
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report.txt");
+        std::function<void()> release;
+        auto cleanup = qScopeGuard([&] { if (release) release(); });
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release = std::move(send); };
+                return response;
+            }
+            return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(bool(release));
+        if (symbolic) {
+#ifdef Q_OS_UNIX
+            QCOMPARE(::symlink(QFile::encodeName(directory.filePath("missing.txt")).constData(),
+                QFile::encodeName(destination).constData()), 0);
+#endif
+        } else {
+            QFile other(destination); QVERIFY(other.open(QIODevice::WriteOnly));
+            QCOMPARE(other.write("other application"), 17); other.close();
+        }
+        release(); release = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        if (symbolic) {
+            QVERIFY(QFileInfo(destination).isSymLink());
+            QVERIFY(!QFileInfo::exists(directory.filePath("missing.txt")));
+        } else {
+            QFile other(destination); QVERIFY(other.open(QIODevice::ReadOnly));
+            QCOMPARE(other.readAll(), QByteArray("other application"));
+        }
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("error"));
+        QCOMPARE(QDir(directory.path()).entryList(QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot).size(), 1);
+    }
+
+    void downloadRetryRecoversAfterDestinationAllocationFailure()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report.txt");
+        QVERIFY(QDir().mkdir(destination));
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) return Response{QJsonObject{}};
+            return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QCOMPARE(fixture.controller.downloadEntries().size(), 1);
+        const auto row = fixture.controller.downloadEntries().first().toMap();
+        QCOMPARE(row.value("status").toString(), QString("error"));
+        QVERIFY(QDir().rmdir(destination));
+        fixture.controller.retryDownload(row.value("id").toString());
+        QTRY_VERIFY(fixture.controller.downloadEntries().first().toMap().value("id") != row.value("id"));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("downloaded"));
+        QFile saved(destination); QVERIFY(saved.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), QByteArray("{}"));
+    }
+
+    void downloadRetryWaitsForFreshSessionAndRetainsFailures_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"changed-token", "same-token", "refresh-fails", "restart-fails", "removed", "logout", "service-replaced"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+
+    void downloadRetryWaitsForFreshSessionAndRetainsFailures()
+    {
+        QFETCH(QString, scenario);
+        Fixture fixture;
+        FileClient files(&fixture.api), replacement(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        fixture.files = [](const Request &) { return Response{QJsonObject{}, 503}; };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto rows = [&] { return fixture.controller.downloadEntries(); };
+        QCOMPARE(rows().size(), 1);
+        const auto original = rows().first().toMap();
+        const auto oldId = original.value("id");
+        std::function<void()> refresh, metadata;
+        auto cleanup = qScopeGuard([&] { if (refresh) refresh(); if (metadata) metadata(); });
+        int refreshes = 0, starts = 0;
+        QByteArray bearer;
+        fixture.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (request.target.path().endsWith("/actions/get_token/invoke")) {
+                ++refreshes;
+                if (scenario == "refresh-fails") response.status = 503;
+                else if (scenario != "same-token") {
+                    auto body = response.data.toObject(); body.insert("access_token", "synthetic-refreshed-token"); response.data = body;
+                }
+                response.defer = [&](auto send) { refresh = std::move(send); };
+            }
+            return response;
+        };
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) return Response{QJsonObject{}};
+            ++starts; bearer = request.headers.value("authorization");
+            Response response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            if (scenario == "restart-fails") response.status = 503;
+            response.defer = [&](auto send) { metadata = std::move(send); };
+            return response;
+        };
+        fixture.controller.retryDownload(oldId.toString());
+        fixture.controller.retryDownload(oldId.toString());
+        QTRY_VERIFY(bool(refresh));
+        QCOMPARE(refreshes, 1); QCOMPARE(starts, 0);
+        QCOMPARE(rows().first().toMap().value("id"), oldId);
+        QVERIFY(rows().first().toMap().value("retrying").toBool());
+        if (scenario == "removed") fixture.controller.dismissDownload(oldId.toString());
+        if (scenario == "logout") fixture.controller.logout();
+        if (scenario == "service-replaced") fixture.controller.useFiles(&replacement);
+        refresh(); refresh = {};
+        if (scenario == "removed" || scenario == "logout") {
+            QTest::qWait(150); QCOMPARE(starts, 0); QVERIFY(rows().isEmpty()); return;
+        }
+        if (scenario == "refresh-fails" || scenario == "service-replaced") {
+            QTRY_VERIFY(!rows().first().toMap().value("retrying").toBool());
+            QCOMPARE(rows().size(), 1); QCOMPARE(rows().first().toMap().value("id"), oldId);
+            QCOMPARE(rows().first().toMap().value("status").toString(), QString("error"));
+            QVERIFY(!fixture.controller.error().isEmpty()); QCOMPARE(starts, 0); return;
+        }
+        QTRY_VERIFY(bool(metadata));
+        QCOMPARE(starts, 1); QCOMPARE(rows().size(), 1);
+        const auto retry = rows().first().toMap();
+        QVERIFY(retry.value("id") != oldId);
+        QCOMPARE(retry.value("fileName"), original.value("fileName"));
+        QCOMPARE(retry.value("fileUuid"), original.value("fileUuid"));
+        QCOMPARE(retry.value("status").toString(), QString("starting"));
+        QCOMPARE(bearer, scenario == "same-token" ? QByteArray("Bearer synthetic-project-token") : QByteArray("Bearer synthetic-refreshed-token"));
+        fixture.controller.retryDownload(retry.value("id").toString());
+        QCOMPARE(refreshes, 1);
+        metadata(); metadata = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(rows().size(), 1);
+        QCOMPARE(rows().first().toMap().value("id"), retry.value("id"));
+        QCOMPARE(rows().first().toMap().value("status").toString(), scenario == "restart-fails" ? QString("error") : QString("downloaded"));
+    }
+
+    void downloadRowsRetireTransfersAndNeverCrossOwners()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        std::function<void()> release;
+        auto cleanup = qScopeGuard([&] { if (release) release(); });
+        fixture.files = [&](const Request &) {
+            Response response{QJsonObject{}, 503};
+            response.defer = [&](auto send) { release = std::move(send); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(bool(release));
+        fixture.api.setAccessToken("synthetic-replacement-token");
+        QVERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("error"));
+        release(); release = {};
+        fixture.controller.logout();
+        QVERIFY(fixture.controller.downloadEntries().isEmpty());
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.downloadEntries().isEmpty());
+        QVERIFY(!QFileInfo::exists(directory.filePath("report.txt")));
+    }
+
+    void downloadedFileActionsUseTheVerifiedLocalPath()
+    {
+#ifdef Q_OS_LINUX
+        if (!qEnvironmentVariableIsSet("CASSI_NATIVE_DOWNLOAD_ACTION_CHILD")) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert("CASSI_NATIVE_DOWNLOAD_ACTION_CHILD", "1");
+            environment.insert("QT_QPA_PLATFORM", "offscreen");
+            child.setProcessEnvironment(environment);
+            child.start("dbus-run-session", {"--", QCoreApplication::applicationFilePath(),
+                "downloadedFileActionsUseTheVerifiedLocalPath"});
+            QVERIFY(child.waitForFinished(15000));
+            const auto output = child.readAllStandardOutput() + child.readAllStandardError();
+            QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+            QVERIFY2(child.exitCode() == 0, output.constData());
+            return;
+        }
+#endif
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report with spaces.txt");
+        fixture.files = [](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) return Response{QJsonObject{}};
+            return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto id = fixture.controller.downloadEntries().first().toMap().value("id").toString();
+        DownloadDesktopProbe probe;
+        QDesktopServices::setUrlHandler("file", &probe, "open");
+        auto clearHandler = qScopeGuard([] { QDesktopServices::unsetUrlHandler("file"); });
+        fixture.controller.openDownload(id);
+        QCOMPARE(probe.opened, QList<QUrl>{QUrl::fromLocalFile(destination)});
+#ifdef Q_OS_LINUX
+        auto bus = QDBusConnection::sessionBus();
+        QVERIFY2(bus.registerService("org.freedesktop.FileManager1"), "Run this test under dbus-run-session; never replace the desktop file manager");
+        auto clearBus = qScopeGuard([&] { bus.unregisterObject("/org/freedesktop/FileManager1"); bus.unregisterService("org.freedesktop.FileManager1"); });
+        QVERIFY(bus.registerObject("/org/freedesktop/FileManager1", &probe, QDBusConnection::ExportAllSlots));
+        fixture.controller.revealDownload(id);
+        QTRY_COMPARE(probe.revealed, QStringList{QUrl::fromLocalFile(destination).toString(QUrl::FullyEncoded)});
+#endif
+        QVERIFY(QFile::remove(destination));
+        fixture.controller.openDownload(id);
+        QCOMPARE(probe.opened.size(), 1);
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("error"));
+        QVERIFY(fixture.controller.error().contains("missing"));
     }
 
     void attachmentDownloadUsesVerifiedFileClientAndLocalDestination()

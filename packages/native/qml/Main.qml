@@ -1759,6 +1759,12 @@ ApplicationWindow {
             anchors.verticalCenter: sectionButtons.verticalCenter
             anchors.alignWhenCentered: false
             spacing: 12
+            NativeDownloadCenter {
+                controller: root.controller
+                colors: root.colors
+                width: implicitWidth; height: implicitHeight
+                anchors.verticalCenter: parent.verticalCenter
+            }
             NativeIconButton {
                 id: updateIndicator
                 objectName: "nativeUpdateIndicator"

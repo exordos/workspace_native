@@ -13,6 +13,12 @@
 #include "power-watcher.h"
 #include "file-client.h"
 
+#include <QDir>
+#include <QDesktopServices>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QClipboard>
 #include <QImage>
 #include <QTemporaryDir>
@@ -7583,7 +7589,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(session, &Session::error, this, [this](const QString &message) {
         // Remembering a verified session can fail independently of live sync.
         m_error = message;
-        emit stateChanged();
+        const QPointer<NativeController> guard(this);
+        finishDownloadRetries(false);
+        if (guard) emit stateChanged();
     });
     connect(session, &Session::savedAccountsChanged, this, &NativeController::savedAccountsChanged);
     connect(this, &NativeController::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
@@ -7682,6 +7690,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
             m_snapshotParts = 0;
             emit resynchronizeRequested();
         }
+        if (!guard) return;
+        finishDownloadRetries(true);
         if (guard) emit stateChanged();
     });
     m_poll.setInterval(15000);
@@ -7718,12 +7728,19 @@ void NativeController::cancelFileTransfers(const QString &reason)
     }
     m_uploads = m_downloads = m_activeUploads = 0;
     m_pendingUploads.clear();
+    for (auto &row : m_downloadEntries) {
+        if (!row.active()) continue;
+        row.status = QStringLiteral("error");
+        row.error = reason;
+    }
     // FileClient may be shared. Cancel only operations initiated by this controller.
     // The epoch was invalidated first because cancellation callbacks can be synchronous.
     for (const auto &operation : operations)
         if (operation.service && operation.operation != 0)
             operation.service->cancel(operation.operation);
-    if (editWasWaiting) emit editSessionChanged();
+    const QPointer<NativeController> guard(this);
+    emit downloadsChanged();
+    if (guard && editWasWaiting) emit editSessionChanged();
 }
 
 void NativeController::useFiles(FileClient *client)
@@ -7926,41 +7943,261 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
         drainUploads();
 }
 
+QVariantList NativeController::downloadEntries() const
+{
+    QVariantList rows;
+    if (!authenticated()) return rows;
+    const auto owner = creationOwnerKey();
+    for (const auto &entry : m_downloadEntries) {
+        if (entry.owner != owner) continue;
+        rows.append(QVariantMap{{"id", entry.id}, {"fileUuid", entry.fileUuid},
+            {"fileName", entry.fileName}, {"status", entry.status}, {"error", entry.error},
+            {"receivedBytes", entry.received}, {"totalBytes", entry.total}, {"retrying", entry.retrying}});
+    }
+    return rows;
+}
+
+QString NativeController::uniqueDownloadPath(const QString &path) const
+{
+    const QFileInfo info(path);
+    if (info.fileName().isEmpty() || info.isDir()) return {};
+    const auto available = [this](const QString &candidate) {
+        const QFileInfo existing(candidate);
+        if (existing.exists() || existing.isSymLink()) return false;
+        return std::none_of(m_downloadEntries.cbegin(), m_downloadEntries.cend(),
+            [&candidate](const DownloadEntry &row) { return row.active() && row.path == candidate; });
+    };
+    auto candidate = info.absoluteFilePath();
+    if (available(candidate)) return candidate;
+    const auto suffix = info.completeSuffix();
+    const auto stem = suffix.isEmpty() ? info.fileName() : info.fileName().chopped(suffix.size() + 1);
+    for (int number = 1; number <= 10000; ++number) {
+        candidate = info.dir().filePath(stem + QStringLiteral(" (%1)").arg(number)
+            + (suffix.isEmpty() ? QString{} : '.' + suffix));
+        if (available(candidate)) return candidate;
+    }
+    return {};
+}
+
 void NativeController::downloadFile(const QString &id, const QUrl &destination)
 {
     if (!m_files || !authenticated() || !isUuid(id) || !destination.isLocalFile()
-        || destination.hasQuery() || destination.hasFragment())
-        return;
-    const auto generation = m_api->generation();
-    const auto epoch = m_fileEpoch;
-    const auto intent = ++m_nextFileOperation;
-    const QPointer<FileClient> service = m_files;
-    ++m_downloads;
-    m_error.clear();
-    m_notice = tr("Downloading attachment…");
-    m_fileOperations.insert(intent, {service, 0});
-    const QPointer<NativeController> self(this);
-    emit stateChanged();
-    if (!self || m_fileEpoch != epoch || !service)
-        return;
-    const auto operation = service->download(id, destination.toLocalFile(), [self, generation, epoch, intent](const FileResult &result) {
-        if (!self || self->m_api->generation() != generation || self->m_fileEpoch != epoch
-            || !self->m_fileOperations.remove(intent))
+        || destination.hasQuery() || destination.hasFragment()) return;
+    const auto owner = creationOwnerKey();
+    const auto uuid = id.toLower();
+    for (const auto &entry : m_downloadEntries) {
+        if (entry.owner == owner && entry.fileUuid == uuid && (entry.active() || entry.retrying)) {
+            emit downloadDuplicateRequested();
             return;
+        }
+    }
+    DownloadEntry entry;
+    entry.owner = owner; entry.fileUuid = uuid;
+    entry.requestedPath = destination.toLocalFile();
+    entry.fileName = QFileInfo(entry.requestedPath).fileName();
+    startDownload(std::move(entry));
+}
+
+void NativeController::startDownload(DownloadEntry entry)
+{
+    if (!authenticated() || entry.owner != creationOwnerKey()) return;
+    entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    entry.path = uniqueDownloadPath(entry.requestedPath);
+    entry.status = QStringLiteral("starting");
+    entry.received = 0; entry.total = -1; entry.error.clear(); entry.retrying = false;
+    entry.intent = ++m_nextFileOperation;
+    const auto id = entry.id;
+    const auto intent = entry.intent;
+    const auto epoch = m_fileEpoch;
+    const auto generation = m_api->generation();
+    const QPointer<FileClient> service = m_files;
+    const QPointer<NativeController> self(this);
+    const bool canStart = service && !entry.path.isEmpty();
+    if (!canStart) {
+        entry.status = QStringLiteral("error");
+        entry.error = tr("The attachment download could not be started.");
+    } else {
+        ++m_downloads;
+        m_fileOperations.insert(intent, {service, 0});
+    }
+    const auto uuid = entry.fileUuid, path = entry.path;
+    m_downloadEntries.prepend(std::move(entry));
+    m_error = canStart ? QString{} : tr("The attachment download could not be started.");
+    m_notice = canStart ? tr("Downloading attachment…") : QString{};
+    emit downloadsChanged();
+    if (!self) return;
+    emit stateChanged();
+    if (!self || !canStart || m_fileEpoch != epoch || !service || !m_fileOperations.contains(intent)) return;
+    const auto operation = service->download(uuid, path, [self, generation, epoch, intent, id](const FileResult &result) {
+        if (!self || self->m_api->generation() != generation || self->m_fileEpoch != epoch
+            || !self->m_fileOperations.remove(intent)) return;
         --self->m_downloads;
+        auto row = std::find_if(self->m_downloadEntries.begin(), self->m_downloadEntries.end(),
+            [&id](const DownloadEntry &entry) { return entry.id == id; });
+        if (row == self->m_downloadEntries.end()) return;
+        row->status = result.ok() ? QStringLiteral("downloaded") : QStringLiteral("error");
+        row->error = result.error;
         if (!result.ok()) {
             self->m_error = tr("The attachment could not be saved. %1").arg(result.error);
             self->m_notice.clear();
         } else {
+            row->received = row->total = result.metadata.sizeBytes;
             self->m_notice = tr("Saved %1.").arg(QFileInfo(result.path).fileName());
         }
-        emit self->stateChanged();
-    });
+        emit self->downloadsChanged();
+        if (self) emit self->stateChanged();
+    }, [self, generation, epoch, intent, id](qint64 received, qint64 total) {
+        if (!self || self->m_api->generation() != generation || self->m_fileEpoch != epoch
+            || !self->m_fileOperations.contains(intent)) return;
+        for (auto &row : self->m_downloadEntries) {
+            if (row.id != id) continue;
+            row.status = QStringLiteral("downloading"); row.received = received; row.total = total;
+            emit self->downloadsChanged();
+            return;
+        }
+    }, FileClient::DestinationMode::KeepExisting);
     if (self) {
         auto record = m_fileOperations.find(intent);
-        if (record != m_fileOperations.end())
-            record->operation = operation;
+        if (record != m_fileOperations.end()) record->operation = operation;
+        else if (service) service->cancel(operation);
     }
+}
+
+void NativeController::cancelDownload(const QString &id)
+{
+    const auto row = std::find_if(m_downloadEntries.begin(), m_downloadEntries.end(),
+        [&id](const DownloadEntry &entry) { return entry.id == id; });
+    if (row == m_downloadEntries.end() || !row->active() || !authenticated()
+        || row->owner != creationOwnerKey()) return;
+    const auto operation = m_fileOperations.take(row->intent);
+    m_downloadEntries.erase(row);
+    --m_downloads;
+    const QPointer<NativeController> guard(this);
+    if (operation.service && operation.operation) operation.service->cancel(operation.operation);
+    if (!guard) return;
+    if (m_downloads == 0) m_notice.clear();
+    emit downloadsChanged();
+    if (guard) emit stateChanged();
+}
+
+void NativeController::dismissDownload(const QString &id)
+{
+    if (!authenticated()) return;
+    const auto owner = creationOwnerKey();
+    const auto removed = m_downloadEntries.removeIf([&](const DownloadEntry &row) {
+        return row.id == id && row.owner == owner && !row.active();
+    });
+    if (removed) emit downloadsChanged();
+}
+
+void NativeController::clearDownloads()
+{
+    if (!authenticated()) return;
+    const auto owner = creationOwnerKey();
+    if (m_downloadEntries.removeIf([&](const DownloadEntry &row) { return row.owner == owner && !row.active(); }))
+        emit downloadsChanged();
+}
+
+void NativeController::retryDownload(const QString &id)
+{
+    if (!authenticated() || !m_files) return;
+    for (auto &row : m_downloadEntries) {
+        if (row.id != id || row.owner != creationOwnerKey() || row.status != "error" || row.retrying) continue;
+        for (const auto &other : m_downloadEntries) {
+            if (other.id != row.id && other.owner == row.owner && other.fileUuid == row.fileUuid
+                && (other.active() || other.retrying)) {
+                emit downloadDuplicateRequested();
+                return;
+            }
+        }
+        row.retrying = true;
+        row.retryService = m_fileServiceSerial;
+        const QPointer<NativeController> guard(this);
+        emit downloadsChanged();
+        if (guard && authenticated()) m_session->requestRefresh();
+        return;
+    }
+}
+
+void NativeController::finishDownloadRetries(bool success)
+{
+    QStringList retries;
+    for (const auto &row : m_downloadEntries) if (row.retrying) retries.append(row.id);
+    const QPointer<NativeController> guard(this);
+    for (const auto &id : retries) {
+        auto row = std::find_if(m_downloadEntries.begin(), m_downloadEntries.end(),
+            [&id](const DownloadEntry &entry) { return entry.id == id; });
+        if (row == m_downloadEntries.end()) continue;
+        row->retrying = false;
+        if (!success || !authenticated() || row->owner != creationOwnerKey()
+            || row->status != "error" || row->retryService != m_fileServiceSerial) {
+            m_error = tr("Something went wrong");
+            emit downloadsChanged();
+            if (!guard) return;
+            emit stateChanged();
+        } else {
+            const auto retry = *row;
+            m_downloadEntries.erase(row);
+            startDownload(retry);
+        }
+        if (!guard) return;
+    }
+}
+
+QString NativeController::completedDownloadPath(const QString &id)
+{
+    if (!authenticated()) return {};
+    for (auto &row : m_downloadEntries) {
+        if (row.id != id || row.owner != creationOwnerKey() || row.status != "downloaded") continue;
+        if (QFileInfo(row.path).isFile()) return row.path;
+        row.status = QStringLiteral("error"); row.error = tr("The downloaded file is missing.");
+        m_error = row.error;
+        const QPointer<NativeController> guard(this);
+        emit downloadsChanged();
+        if (guard) emit stateChanged();
+        return {};
+    }
+    return {};
+}
+
+void NativeController::openDownload(const QString &id)
+{
+    const QPointer<NativeController> guard(this);
+    const auto path = completedDownloadPath(id);
+    if (!guard || path.isEmpty()) return;
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)) && guard) {
+        m_error = tr("The downloaded file could not be opened.");
+        emit stateChanged();
+    }
+}
+
+void NativeController::revealDownload(const QString &id)
+{
+    const QPointer<NativeController> guard(this);
+    const auto path = completedDownloadPath(id);
+    if (!guard || path.isEmpty()) return;
+#ifdef Q_OS_LINUX
+    const auto owner = creationOwnerKey();
+    const auto epoch = m_fileEpoch;
+    auto message = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.FileManager1"),
+        QStringLiteral("/org/freedesktop/FileManager1"), QStringLiteral("org.freedesktop.FileManager1"),
+        QStringLiteral("ShowItems"));
+    message << QStringList{QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded)} << QString{};
+    auto *watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(message), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, owner, epoch] {
+        const QDBusPendingReply<> reply = *watcher;
+        watcher->deleteLater();
+        if (reply.isError() && authenticated() && creationOwnerKey() == owner && m_fileEpoch == epoch) {
+            m_error = tr("The download folder could not be opened.");
+            emit stateChanged();
+        }
+    });
+#else
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath())) && guard) {
+        m_error = tr("The download folder could not be opened.");
+        emit stateChanged();
+    }
+#endif
 }
 
 void NativeController::useRealtime(RealtimeClient *client)
@@ -8698,6 +8935,7 @@ void NativeController::reset()
     m_pendingSends.clear();
     m_pendingUploads.clear();
     m_attachmentNotices.clear();
+    m_downloadEntries.clear();
     m_uploads = m_downloads = 0;
     m_notice.clear();
     m_stream.clear();
@@ -8721,6 +8959,7 @@ void NativeController::reset()
     emit streamsChanged();
     emit topicsChanged();
     emit messagesChanged();
+    emit downloadsChanged();
     emit stateChanged();
 }
 

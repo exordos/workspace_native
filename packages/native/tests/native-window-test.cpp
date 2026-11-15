@@ -13349,6 +13349,127 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+    void failedAttachmentOffersRetryInDownloadCenter_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void failedAttachmentOffersRetryInDownloadCenter()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory;
+        MockServer server;
+        bool failFile = true, failRefresh = false;
+        int refreshes = 0;
+        std::function<void()> binary;
+        auto release = qScopeGuard([&] { if (binary) binary(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { binary = std::move(send); };
+                return response;
+            }
+            if (path.contains("/files/")) {
+                if (failFile) return Response{QJsonObject{}, 503};
+                return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            }
+            if (path.endsWith("/streams/") || path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/actions/get_token/invoke") && request.body.value("grant_type") == "refresh_token") {
+                ++refreshes;
+                if (failRefresh) return Response{QJsonObject{}, 503};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.authenticated());
+        preferences.setLocale(locale); preferences.setMode(mode);
+        auto *content = window->contentItem();
+        const auto destination = directory.filePath("report.txt");
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(!controller.fileBusy());
+        QVERIFY(!controller.error().isEmpty());
+        auto *trigger = item(content, "downloadCenterButton");
+        QVERIFY2(trigger && trigger->isVisible(), "Failed attachment must remain reachable in the download center");
+        click(window, trigger);
+        const auto rows = [&] { return controller.property("downloadEntries").toList(); };
+        QCOMPARE(rows().size(), 1);
+        const auto oldId = rows().first().toMap().value("id").toString();
+        QTRY_VERIFY(visibleItem(content, "downloadRetry-" + oldId));
+        auto *panel = window->findChild<QObject *>("downloadCenterPanel"); QVERIFY(panel);
+        QCOMPARE(panel->property("width").toInt(), 320);
+        const auto capture = [&](const QString &state) {
+            const auto directory = qEnvironmentVariable("CASSI_NATIVE_TEST_DOWNLOAD_CAPTURES");
+            if (!directory.isEmpty()) QVERIFY(window->grabWindow().save(QDir(directory).filePath(locale + '-' + mode + '-' + state + ".png")));
+        };
+        capture("error");
+        auto *retry = visibleItem(content, "downloadRetry-" + oldId);
+        auto *accessible = QAccessible::queryAccessibleInterface(retry); QVERIFY(accessible);
+        QVERIFY(accessible->text(QAccessible::Name).startsWith(locale == "ru" ? QString::fromUtf8("Повторить загрузку") : QString("Retry download")));
+        failRefresh = true;
+        const auto refreshBaseline = refreshes;
+        click(window, retry);
+        QTRY_COMPARE(refreshes, refreshBaseline + 1);
+        QTRY_VERIFY(!rows().first().toMap().value("retrying").toBool());
+        QCOMPARE(rows().first().toMap().value("id").toString(), oldId);
+        QVERIFY(!controller.error().isEmpty());
+        failRefresh = false; failFile = false;
+        click(window, visibleItem(content, "downloadRetry-" + oldId));
+        QTRY_VERIFY(bool(binary));
+        QCOMPARE(rows().size(), 1);
+        const auto newId = rows().first().toMap().value("id").toString();
+        QVERIFY(newId != oldId);
+        QCOMPARE(rows().first().toMap().value("status").toString(), QString("downloading"));
+        QTRY_VERIFY(visibleItem(content, "downloadCancel-" + newId));
+        QVERIFY(!item(content, "downloadClear")->isEnabled());
+        QCOMPARE(item(content, "downloadStatus-" + newId)->property("text").toString(), QString("0% - 0 B / 2 B"));
+        auto *progress = item(content, "downloadProgress-" + newId); QVERIFY(progress);
+        auto *progressAccessible = QAccessible::queryAccessibleInterface(progress); QVERIFY(progressAccessible);
+        QCOMPARE(progressAccessible->role(), QAccessible::ProgressBar);
+        QVERIFY(progressAccessible->valueInterface());
+        QCOMPARE(progressAccessible->valueInterface()->minimumValue().toInt(), 0);
+        QCOMPARE(progressAccessible->valueInterface()->maximumValue().toInt(), 100);
+        capture("downloading");
+        click(window, visibleItem(content, "downloadCancel-" + newId));
+        QTRY_VERIFY(rows().isEmpty());
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        QVERIFY(!trigger->isVisible());
+        binary(); binary = {};
+        QVERIFY(!QFileInfo::exists(destination));
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(bool(binary));
+        click(window, trigger);
+        binary(); binary = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        const auto savedId = rows().first().toMap().value("id").toString();
+        QTRY_VERIFY(visibleItem(content, "downloadReveal-" + savedId));
+        QVERIFY(visibleItem(content, "downloadOpen-" + savedId));
+        QCOMPARE(item(content, "downloadStatus-" + savedId)->property("text").toString(), locale == "ru" ? QString::fromUtf8("Готово") : QString("Ready"));
+        QVERIFY(QFileInfo::exists(destination));
+        capture("ready");
+        click(window, visibleItem(content, "downloadRemove-" + savedId));
+        QVERIFY(QFileInfo::exists(destination)); // Removing the row never deletes the saved file.
+        QTRY_VERIFY(rows().isEmpty());
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()
     {
         QTemporaryDir directory;

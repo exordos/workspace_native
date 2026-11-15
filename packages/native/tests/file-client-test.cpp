@@ -1,5 +1,6 @@
 #include "api-client.h"
 #include "file-client.h"
+#include "file-download-staging.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -9,6 +10,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -88,6 +91,15 @@ class FileClientTest : public QObject {
 private slots:
     void multipartUpload();
     void downloadAclAndAtomicCommit();
+#ifdef Q_OS_UNIX
+    void privateStagingPublicationRetainsDirectoryIdentity();
+    void stagingCleanupPreservesASubstitutedDirectory();
+    void stagingCommitNeverOverwritesARedirectedPayload();
+#endif
+#ifdef Q_OS_LINUX
+    void stagedPublicationKeepsVerifiedIdentity_data();
+    void stagedPublicationKeepsVerifiedIdentity();
+#endif
     void rejectedDownloads_data();
     void rejectedDownloads();
     void generationCancelsPartialDownload();
@@ -98,6 +110,8 @@ private slots:
     void absentChecksumAndEmptyDownload();
     void typedUrns();
     void streamingAcrossMultipleChunks();
+    void progressObserversMayCancelOrDestroyTheTransfer_data();
+    void progressObserversMayCancelOrDestroyTheTransfer();
     void apiDestructionCancelsTransfers();
     void realWriteFailurePreservesDestination();
     void memoryDownloadReturnsBytes_data();
@@ -157,6 +171,131 @@ void FileClientTest::downloadAclAndAtomicCommit()
     QVERIFY(server.requests[1].startsWith("GET /api/workspace/v1/messenger/files/" + FileUuid.toUtf8() + "/actions/download HTTP/1.1"));
     for (const auto &request : server.requests) QCOMPARE(header(request, "Authorization"), "Bearer file-test-token");
 }
+
+#ifdef Q_OS_UNIX
+void FileClientTest::stagingCleanupPreservesASubstitutedDirectory()
+{
+    QTemporaryDir directory;
+    QString victim;
+    {
+        FileDownloadStaging staging(directory.filePath("saved.bin"));
+        QVERIFY(staging.isValid());
+        const auto original = QFileInfo(staging.fileName()).absolutePath();
+        QVERIFY(QDir().rename(original, original + ".retained"));
+        QVERIFY(QDir().mkdir(original));
+        victim = QDir(original).filePath("unrelated.txt");
+        write(victim, "preserve this file");
+    }
+    QCOMPARE(read(victim), QByteArray("preserve this file"));
+}
+
+void FileClientTest::stagingCommitNeverOverwritesARedirectedPayload()
+{
+    QTemporaryDir directory;
+    const auto victimDirectory = directory.filePath("victim");
+    QVERIFY(QDir().mkdir(victimDirectory));
+    const auto victim = QDir(victimDirectory).filePath("payload");
+    write(victim, "preserve this payload");
+    bool redirected = false;
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) { Server::reply(socket, metadata()); return; }
+        const auto entries = QDir(directory.path()).entryList({".workspace-download-*"}, QDir::Dirs | QDir::Hidden);
+        QCOMPARE(entries.size(), 1);
+        const auto staging = directory.filePath(entries.first());
+        QVERIFY(QDir().rename(staging, staging + ".retained"));
+        QVERIFY(QFile::link(victimDirectory, staging));
+        redirected = true;
+        Server::reply(socket, Bytes);
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    FileResult result; bool done = false;
+    QByteArray victimAtCompletion;
+    client.download(FileUuid, directory.filePath("saved.bin"),
+        [&](const FileResult &value) { result = value; victimAtCompletion = read(victim); done = true; },
+        {}, FileClient::DestinationMode::KeepExisting);
+    QTRY_VERIFY(done);
+    QVERIFY(redirected);
+    QCOMPARE(victimAtCompletion, QByteArray("preserve this payload"));
+    QCOMPARE(read(victim), QByteArray("preserve this payload"));
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QCOMPARE(read(directory.filePath("saved.bin")), Bytes);
+}
+
+void FileClientTest::privateStagingPublicationRetainsDirectoryIdentity()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto destination = directory.filePath("saved.bin");
+    FileDownloadStaging staging(destination);
+    QVERIFY(staging.isValid());
+    QCOMPARE(staging.write(Bytes), Bytes.size());
+    const auto original = QFileInfo(staging.fileName()).absolutePath();
+    const auto renamed = original + ".retained";
+    QVERIFY(QDir().rename(original, renamed));
+    QVERIFY(QDir().mkdir(original));
+    write(QDir(original).filePath("payload"), "unverified replacement");
+    // Execute the non-Linux POSIX backend on Linux too. A pathname-based link
+    // would select the replacement directory; the retained dirfd must not.
+    QVERIFY(staging.publishFromPrivateDirectory(destination));
+    QCOMPARE(read(destination), Bytes);
+    QVERIFY(!staging.publishFromPrivateDirectory(destination));
+    QCOMPARE(read(destination), Bytes);
+    QCOMPARE(read(QDir(original).filePath("payload")), QByteArray("unverified replacement"));
+}
+#endif
+
+#ifdef Q_OS_LINUX
+void FileClientTest::stagedPublicationKeepsVerifiedIdentity_data()
+{
+    QTest::addColumn<QString>("substitution");
+    QTest::newRow("file") << QStringLiteral("file");
+    QTest::newRow("symlink") << QStringLiteral("symlink");
+}
+
+void FileClientTest::stagedPublicationKeepsVerifiedIdentity()
+{
+    QFETCH(QString, substitution);
+    if (!qEnvironmentVariableIsSet("WORKSPACE_TEST_PUBLICATION_CHILD")) {
+        // Interpose only the final publishing syscall in a child process. The
+        // replacement is a real directory operation, not a FileClient hook.
+        QProcess child;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("WORKSPACE_TEST_PUBLICATION_CHILD", "1");
+        environment.insert("LD_PRELOAD", QStringLiteral(WORKSPACE_PUBLICATION_RACE_LIBRARY));
+        child.setProcessEnvironment(environment);
+        child.start(QCoreApplication::applicationFilePath(),
+                    {QStringLiteral("stagedPublicationKeepsVerifiedIdentity:") + substitution});
+        QVERIFY(child.waitForFinished(10000));
+        const auto output = child.readAllStandardOutput() + child.readAllStandardError();
+        QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+        return;
+    }
+    Server server;
+    server.handler = [](QTcpSocket *socket, const QByteArray &request) {
+        Server::reply(socket, request.contains("/actions/download ") ? Bytes : metadata());
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto destination = directory.filePath("saved.bin");
+    const auto marker = directory.filePath("race-ran");
+    qputenv("WORKSPACE_TEST_PUBLICATION_DESTINATION", QFile::encodeName(destination));
+    qputenv("WORKSPACE_TEST_PUBLICATION_MARKER", QFile::encodeName(marker));
+    qputenv("WORKSPACE_TEST_PUBLICATION_SUBSTITUTION", substitution.toLatin1());
+    FileResult result; bool done = false;
+    client.download(FileUuid, destination, [&](const FileResult &value) { result = value; done = true; },
+                    {}, FileClient::DestinationMode::KeepExisting);
+    QTRY_VERIFY(done);
+    QVERIFY2(QFile::exists(marker), "The real staging substitution must execute before publication.");
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QVERIFY(!QFileInfo(destination).isSymLink());
+    QCOMPARE(read(destination), Bytes);
+    QVERIFY(result.checksumVerified);
+}
+#endif
 
 void FileClientTest::rejectedDownloads_data()
 {
@@ -411,9 +550,58 @@ void FileClientTest::streamingAcrossMultipleChunks()
     QVERIFY(server.requests.first().contains(bytes));
     const auto destination = directory.filePath("saved.bin");
     done = false;
-    client.download(FileUuid, destination, [&](const FileResult &r) { result = r; done = true; });
+    QList<qint64> progress;
+    client.download(FileUuid, destination, [&](const FileResult &r) { result = r; done = true; },
+        [&](qint64 received, qint64 total) {
+            QCOMPARE(total, bytes.size());
+            QVERIFY(!done);
+            QVERIFY(progress.isEmpty() || received >= progress.last());
+            progress.append(received);
+        });
     QTRY_VERIFY(done); QVERIFY2(result.ok(), qPrintable(result.error));
     QCOMPARE(read(destination), bytes); QVERIFY(result.checksumVerified);
+    QVERIFY(progress.size() > 2);
+    QCOMPARE(progress.first(), 0); QCOMPARE(progress.last(), bytes.size());
+    QVERIFY(std::any_of(progress.cbegin(), progress.cend(), [&](auto received) { return received > 0 && received < bytes.size(); }));
+}
+
+void FileClientTest::progressObserversMayCancelOrDestroyTheTransfer_data()
+{
+    QTest::addColumn<bool>("destroy"); QTest::addColumn<bool>("partial");
+    QTest::newRow("initial-cancel") << false << false;
+    QTest::newRow("initial-destroy") << true << false;
+    QTest::newRow("partial-cancel") << false << true;
+    QTest::newRow("partial-destroy") << true << true;
+}
+
+void FileClientTest::progressObserversMayCancelOrDestroyTheTransfer()
+{
+    QFETCH(bool, destroy); QFETCH(bool, partial);
+    Server server;
+    const QByteArray bytes(128 * 1024, 'x');
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) { Server::reply(socket, metadata(bytes)); return; }
+        socket->write("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: " + QByteArray::number(bytes.size()) + "\r\n\r\n" + bytes.left(8192));
+        QTimer::singleShot(100, socket, [socket, bytes] { socket->write(bytes.mid(8192)); socket->disconnectFromHost(); });
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    auto client = std::make_unique<FileClient>(&api);
+    QTemporaryDir directory;
+    const auto destination = directory.filePath("original.txt"); write(destination, "keep me");
+    quint64 operation = 0;
+    int completions = 0, progress = 0; bool acted = false;
+    operation = client->download(FileUuid, destination, [&](const FileResult &result) { QVERIFY(!result.ok()); ++completions; },
+        [&](qint64 received, qint64) {
+            QVERIFY(!acted); ++progress;
+            if (partial && received == 0) return;
+            acted = true;
+            if (destroy) client.reset(); else client->cancel(operation);
+        });
+    QTRY_VERIFY(acted);
+    const auto count = progress;
+    QTest::qWait(150);
+    QCOMPARE(progress, count); QCOMPARE(completions, destroy ? 0 : 1);
+    QCOMPARE(read(destination), QByteArray("keep me"));
 }
 
 void FileClientTest::apiDestructionCancelsTransfers()

@@ -1461,6 +1461,22 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>The attachment download could not be started.</source>
+            <translation>Не удалось начать загрузку вложения.</translation>
+        </message>
+        <message>
+            <source>The downloaded file is missing.</source>
+            <translation>Загруженный файл не найден.</translation>
+        </message>
+        <message>
+            <source>The downloaded file could not be opened.</source>
+            <translation>Не удалось открыть загруженный файл.</translation>
+        </message>
+        <message>
+            <source>The download folder could not be opened.</source>
+            <translation>Не удалось открыть папку загрузки.</translation>
+        </message>
+        <message>
             <source>All chats</source>
             <translation>Все</translation>
         </message>
@@ -3939,4 +3955,59 @@
             <translation>Неизвестно</translation>
         </message>
 </context>
+    <context>
+        <name>NativeDownloadCenter</name>
+        <message>
+            <source>Starting...</source>
+            <translation>Запуск...</translation>
+        </message>
+        <message>
+            <source>Ready</source>
+            <translation>Готово</translation>
+        </message>
+        <message>
+            <source>Failed</source>
+            <translation>Ошибка</translation>
+        </message>
+        <message>
+            <source>%1% - %2 / %3</source>
+            <translation>%1% - %2 / %3</translation>
+        </message>
+        <message>
+            <source>Downloading... %1</source>
+            <translation>Загрузка... %1</translation>
+        </message>
+        <message>
+            <source>Open downloads</source>
+            <translation>Открыть загрузки</translation>
+        </message>
+        <message>
+            <source>Downloads</source>
+            <translation>Загрузки</translation>
+        </message>
+        <message>
+            <source>Clear</source>
+            <translation>Очистить</translation>
+        </message>
+        <message>
+            <source>Retry download</source>
+            <translation>Повторить загрузку</translation>
+        </message>
+        <message>
+            <source>Open file</source>
+            <translation>Открыть файл</translation>
+        </message>
+        <message>
+            <source>Show in folder</source>
+            <translation>Показать в папке</translation>
+        </message>
+        <message>
+            <source>Cancel download</source>
+            <translation>Отменить загрузку</translation>
+        </message>
+        <message>
+            <source>Remove download</source>
+            <translation>Удалить загрузку</translation>
+        </message>
+    </context>
 </TS>

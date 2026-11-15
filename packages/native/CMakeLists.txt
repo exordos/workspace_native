@@ -22,7 +22,7 @@ add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
     src/workspace-reference.cpp src/workspace-reference.h
-    src/file-client.cpp src/file-client.h
+    src/file-client.cpp src/file-client.h src/file-download-staging.h
     src/native-markdown.cpp src/native-markdown.h
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
@@ -61,6 +61,9 @@ target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
 target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+if(WIN32)
+    target_link_libraries(workspace-native-core PRIVATE advapi32)
+endif()
 # The notification attention adapter asks the window manager for attention
 # over raw xcb on Linux; without the headers it degrades to a silent no-op.
 include(CheckIncludeFileCXX)
@@ -106,6 +109,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
+qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
@@ -115,7 +119,7 @@ foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
-set(native_icons chat_bubble calendar mail folders folder folder_open profile channels add attach smile
+set(native_icons chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
     composer-send composer-bottom-panel-open composer-bottom-panel-close
     composer-add-link composer-format-bold composer-format-italic composer-strikethrough
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
@@ -258,11 +262,20 @@ if(BUILD_TESTING)
     add_test(NAME native-about-policy COMMAND native-about-policy-test)
     set_tests_properties(native-about-policy PROPERTIES TIMEOUT 30)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(file-publication-race SHARED tests/file-publication-race.cpp)
+        target_link_libraries(file-publication-race PRIVATE ${CMAKE_DL_LIBS})
+    endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
     foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
+        if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_dependencies(file-client-test file-publication-race)
+            target_compile_definitions(file-client-test PRIVATE
+                WORKSPACE_PUBLICATION_RACE_LIBRARY="$<TARGET_FILE:file-publication-race>")
+        endif()
         if(test STREQUAL "native-desktop")
             target_link_libraries(${test}-test PRIVATE workspace-native-desktop)
         endif()
