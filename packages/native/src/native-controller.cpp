@@ -20,6 +20,8 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QClipboard>
+#include <QMimeData>
+#include <QMimeDatabase>
 #include <QImage>
 #include <QTemporaryDir>
 #include <QFile>
@@ -6144,6 +6146,8 @@ QString NativeController::draft() const
 {
     // An open edit session owns the composer text; the stored draft waits underneath it.
     if (!m_editingMessage.isEmpty()) return m_editBuffer;
+    if (m_inlineDraftOwner == creationOwnerKey() && m_inlineDraftRoute == conversationKey())
+        return m_inlineDraft;
     if (durableDraftRoute()) return m_draftStore->text(m_stream, m_topic);
     const auto *stream = currentStream();
     if (stream && !stream->encrypted && m_draftFallbackOwner == creationOwnerKey()
@@ -6163,7 +6167,7 @@ QString NativeController::notice() const
 {
     QStringList notices;
     const auto attachment = m_attachmentNotices.value(conversationKey());
-    if (!attachment.isEmpty()) notices.append(attachment);
+    if (!attachment.isEmpty() && uploadEntries().isEmpty()) notices.append(attachment);
     if (!m_notice.isEmpty()) notices.append(m_notice);
     if (m_draftStore && (m_draftFlushFailed || m_draftStore->failure() != NativeDraftService::Failure::None))
         notices.append(tr("The draft could not be saved on this computer. Your input is still in memory. Retry before quitting."));
@@ -8105,6 +8109,23 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (guard) hydrateSidebarSearchTopics();
         if (guard) hydrateExpandedSidebarStreams();
     });
+    // An ordinary upload cannot be sent by the encrypted composer. If the
+    // catalog changes while an upload is in flight, retire its cards and
+    // cancel the operation before that composer can show a misleading file.
+    connect(this, &NativeController::streamsChanged, this, [this] {
+        QList<quint64> invalid;
+        for (const auto &entry : std::as_const(m_uploadEntries)) {
+            const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+                [&](const Stream &row) { return row.uuid == entry.task.stream; });
+            if (stream != m_streams.cend() && stream->encrypted) invalid.append(entry.task.intent);
+        }
+        if (invalid.isEmpty()) return;
+        const QPointer<NativeController> guard(this);
+        discardUploads(invalid);
+        if (!guard) return;
+        emit stateChanged();
+        if (guard) drainUploads();
+    });
     connect(this, &NativeController::topicsChanged, this, [this] {
         const QPointer<NativeController> guard(this);
         emit sidebarTopicsChanged(m_stream);
@@ -8487,11 +8508,13 @@ NativeController::~NativeController()
 
 void NativeController::cancelFileTransfers(const QString &reason)
 {
+    m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
     const bool editWasWaiting = !m_editingMessage.isEmpty() && m_pendingUploads.value(m_editRoute) > 0;
     ++m_fileEpoch;
     const auto operations = m_fileOperations;
     m_fileOperations.clear();
     m_uploadQueue.clear();
+    m_uploadEntries.clear();
     if (!reason.isEmpty()) {
         for (const auto &conversation : m_pendingUploads.keys())
             m_attachmentNotices[conversation] = reason;
@@ -8543,32 +8566,10 @@ void NativeController::useFiles(FileClient *client)
 void NativeController::cancelEditUploads()
 {
     if (m_editingMessage.isEmpty()) return;
-    int removed = 0;
-    m_uploadQueue.removeIf([&](const UploadTask &task) {
-        if (task.editSession != m_editSession) return false;
-        ++removed;
-        return true;
-    });
-    QList<FileOperation> operations;
-    for (auto it = m_fileOperations.begin(); it != m_fileOperations.end();) {
-        if (it->editSession != m_editSession) { ++it; continue; }
-        operations.append(it.value());
-        it = m_fileOperations.erase(it);
-        --m_activeUploads;
-        ++removed;
-    }
-    m_uploads -= removed;
-    if (removed > 0) {
-        const auto remaining = m_pendingUploads.value(m_editRoute) - removed;
-        if (remaining > 0) m_pendingUploads[m_editRoute] = remaining;
-        else m_pendingUploads.remove(m_editRoute);
-    }
-    if (!m_pendingUploads.contains(m_editRoute)) m_attachmentNotices.remove(m_editRoute);
-    // Remove admission records before FileClient's synchronous cancellation callback.
-    // Downloads and uploads accepted by the ordinary draft keep their own lifetimes.
-    for (const auto &operation : operations)
-        if (operation.service && operation.operation != 0)
-            operation.service->cancel(operation.operation);
+    QList<quint64> intents;
+    for (const auto &entry : std::as_const(m_uploadEntries))
+        if (entry.task.editSession == m_editSession) intents.append(entry.task.intent);
+    discardUploads(intents);
 }
 
 bool NativeController::canAttach() const
@@ -8584,20 +8585,13 @@ void NativeController::attachFiles(const QVariantList &localUrls)
     if (!canAttach())
         return;
     m_error.clear();
-    const auto conversation = conversationKey();
     for (const auto &value : localUrls) {
         const auto url = value.toUrl();
         if (!url.isLocalFile() || url.hasQuery() || url.hasFragment()) {
             m_error = tr("Choose a local file to attach.");
             continue;
         }
-        const bool editing = !m_editingMessage.isEmpty();
-        m_uploadQueue.enqueue({++m_nextFileOperation, url.toLocalFile(), m_stream, conversation,
-            !editing && durableDraftRoute() ? m_draftStore->capture(m_stream, m_topic) : NativeDrafts::Token{},
-            editing ? m_editSession : 0, m_editRestoresReply ? m_replyActiveTab : QString{}});
-        ++m_uploads;
-        ++m_pendingUploads[conversation];
-        m_attachmentNotices[conversation] = tr("Uploading attachment…");
+        enqueueUpload(url.toLocalFile());
     }
     const QPointer<NativeController> guard(this);
     if (!m_editingMessage.isEmpty()) emit editSessionChanged();
@@ -8605,6 +8599,285 @@ void NativeController::attachFiles(const QVariantList &localUrls)
     emit stateChanged();
     if (guard)
         drainUploads();
+}
+
+void NativeController::enqueueUpload(const QString &path, const QString &name, std::shared_ptr<QTemporaryFile> temporary)
+{
+    const auto conversation = conversationKey();
+    const bool editing = !m_editingMessage.isEmpty();
+    UploadTask task{++m_nextFileOperation, path, m_stream, conversation,
+        !editing && durableDraftRoute() ? m_draftStore->capture(m_stream, m_topic) : NativeDrafts::Token{},
+        editing ? m_editSession : 0, m_editRestoresReply ? m_replyActiveTab : QString{}, name, std::move(temporary)};
+    UploadEntry entry{task, creationOwnerKey(), QStringLiteral("validating"), {}, {}, {}, QFileInfo(path).size()};
+    entry.generation = m_api->generation(); entry.epoch = m_fileEpoch;
+    m_uploadEntries.append(std::move(entry));
+    ++m_uploads; ++m_pendingUploads[conversation];
+    m_attachmentNotices[conversation] = tr("Uploading attachment…");
+    const auto epoch = m_fileEpoch;
+    QTimer::singleShot(0, this, [this, intent = task.intent, epoch] { validateQueuedUpload(intent, epoch); });
+}
+
+void NativeController::validateQueuedUpload(quint64 intent, quint64 epoch)
+{
+    if (epoch != m_fileEpoch) return;
+    auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) {
+        return entry.task.intent == intent && entry.status == "validating" && entry.owner == creationOwnerKey();
+    });
+    if (row == m_uploadEntries.end()) return;
+    const auto task = row->task;
+    const auto error = FileClient::validateUpload(task.path, task.stream, task.uploadName);
+    if (error.isEmpty()) {
+        row->status = "queued";
+        m_uploadQueue.enqueue(task);
+    } else {
+        row->status = "error"; row->retryable = false;
+        if (QFileInfo(task.path).exists() && QFileInfo(task.path).size() == 0) row->error = tr("The file is empty");
+        else if (QFileInfo(task.path).size() > 25 * 1024 * 1024) row->error = tr("The file is too large (maximum 25 MB)");
+        else if (error == FileClient::tr("The image file type does not match its contents.")) row->error = tr("The image file type does not match its contents");
+        else row->error = tr("The file could not be validated");
+        --m_uploads;
+        if (--m_pendingUploads[task.conversation] <= 0) m_pendingUploads.remove(task.conversation);
+        if (task.conversation == conversationKey()) m_error = tr("The attachment could not be uploaded. %1").arg(error);
+    }
+    const QPointer<NativeController> guard(this);
+    emit stateChanged();
+    if (guard && task.editSession) emit editSessionChanged();
+    if (guard) drainUploads();
+}
+
+bool NativeController::pasteAttachments()
+{
+    if (!canAttach()) return false;
+    const auto *clipboard = QGuiApplication::clipboard();
+    const auto *data = clipboard ? clipboard->mimeData() : nullptr;
+    if (!data) return false;
+    QStringList names;
+    for (const auto &entry : std::as_const(m_uploadEntries))
+        names.append((entry.task.uploadName.isEmpty() ? QFileInfo(entry.task.path).fileName() : entry.task.uploadName).toLower());
+    const auto generatedName = [&](const QString &extension, bool image) {
+        const auto stem = (image ? QStringLiteral("pasted-image-") : QStringLiteral("pasted-file-"))
+            + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+        auto candidate = stem + extension; int suffix = 2;
+        while (names.contains(candidate.toLower())) candidate = stem + '-' + QString::number(suffix++) + extension;
+        names.append(candidate.toLower()); return candidate;
+    };
+    int added = 0;
+    for (const auto &url : data->urls()) {
+        if (!url.isLocalFile() || url.hasQuery() || url.hasFragment()) continue;
+        const QFileInfo info(url.toLocalFile());
+        auto name = info.fileName();
+        static const QRegularExpression generic(QStringLiteral("^(?:image|pasted[-_ ]?image|blob)(?:[-_ ]?\\(?\\d+\\)?)?(?:\\.[^.]+)?$"), QRegularExpression::CaseInsensitiveOption);
+        if (generic.match(name).hasMatch()) {
+            const bool image = QMimeDatabase().mimeTypeForFile(info.filePath(), QMimeDatabase::MatchExtension).name().startsWith("image/");
+            name = generatedName(info.suffix().isEmpty() ? QStringLiteral(".bin") : '.' + info.suffix().toLower(), image);
+        }
+        enqueueUpload(info.filePath(), name); ++added;
+    }
+    if (!added && data->hasImage()) {
+        const auto image = qvariant_cast<QImage>(data->imageData());
+        // Bound the decoded image before encoding it; FileClient enforces the
+        // same 25 MiB upload limit on the resulting private temporary file.
+        if (!image.isNull() && qint64(image.width()) * image.height() <= 25'000'000) {
+            auto temporary = std::make_shared<QTemporaryFile>(QDir::tempPath() + "/cassi-clipboard-XXXXXX.png");
+            if (temporary->open() && image.save(temporary.get(), "PNG")) {
+                temporary->flush(); temporary->close();
+                enqueueUpload(temporary->fileName(), generatedName(QStringLiteral(".png"), true), temporary); ++added;
+            }
+        }
+    }
+    if (!added) return false;
+    const QPointer<NativeController> guard(this);
+    if (!m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (guard) emit stateChanged();
+    if (guard) drainUploads();
+    return true;
+}
+
+bool NativeController::uploadPending() const
+{
+    const auto session = m_editingMessage.isEmpty() ? quint64(0) : m_editSession;
+    const auto owner = creationOwnerKey();
+    for (const auto &entry : m_uploadEntries)
+        if (entry.owner == owner && entry.task.conversation == conversationKey()
+            && entry.task.editSession == session && entry.status != "ready") return true;
+    return false;
+}
+
+QStringList NativeController::readyUploadLinks(quint64 session) const
+{
+    QStringList links;
+    const auto owner = creationOwnerKey();
+    for (const auto &entry : m_uploadEntries) {
+        if (entry.owner != owner || entry.task.conversation != conversationKey()
+            || entry.task.editSession != session
+            || entry.status != "ready" || links.contains(entry.markdown)) continue;
+        const auto alias = imageAlias(entry);
+        const QRegularExpression token(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()"));
+        bool inlineImage = !alias.isEmpty() && (draft().contains(entry.markdown) || draft().contains(token));
+        if (!alias.isEmpty()) for (const auto &tab : m_replyTabs)
+            inlineImage = inlineImage || tab.answer.contains(entry.markdown) || tab.answer.contains(token);
+        if (inlineImage) continue;
+        links.append(entry.markdown);
+    }
+    return links;
+}
+
+QString NativeController::imageAlias(const UploadEntry &entry) const
+{
+    return entry.status == "ready" ? entry.alias : QString{};
+}
+
+QString NativeController::replaceImageAliases(const QString &text, bool serialize) const
+{
+    auto result = text;
+    const auto session = m_editingMessage.isEmpty() ? quint64(0) : m_editSession;
+    QList<QPair<QString, QString>> replacements;
+    for (const auto &entry : m_uploadEntries) {
+        if (entry.owner != creationOwnerKey() || entry.task.conversation != conversationKey() || entry.task.editSession != session) continue;
+        const auto alias = imageAlias(entry);
+        if (!alias.isEmpty()) replacements.append({alias, serialize ? entry.markdown : QString{}});
+    }
+    std::sort(replacements.begin(), replacements.end(), [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
+    for (const auto &entry : replacements) {
+        const QRegularExpression pattern(QRegularExpression::escape(entry.first) + QStringLiteral("(?!\\()"));
+        QList<QPair<qsizetype, qsizetype>> matches;
+        auto it = pattern.globalMatch(result);
+        while (it.hasNext()) { const auto match = it.next(); matches.append({match.capturedStart(), match.capturedLength()}); }
+        for (auto i = matches.crbegin(); i != matches.crend(); ++i) result.replace(i->first, i->second, entry.second);
+    }
+    return result;
+}
+
+QVariantList NativeController::uploadEntries() const
+{
+    QVariantList rows;
+    const auto owner = creationOwnerKey();
+    const auto session = m_editingMessage.isEmpty() ? quint64(0) : m_editSession;
+    for (const auto &entry : m_uploadEntries) {
+        const auto &task = entry.task;
+        if (entry.owner != owner || task.conversation != conversationKey() || task.editSession != session) continue;
+        rows.append(QVariantMap{{"id", QString::number(task.intent)},
+            {"name", task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName},
+            {"path", QUrl::fromLocalFile(task.path)}, {"image", QMimeDatabase().mimeTypeForFile(task.uploadName.isEmpty() ? task.path : task.uploadName, QMimeDatabase::MatchExtension).name().startsWith("image/")}, {"size", entry.size}, {"status", entry.status},
+            {"error", entry.error}, {"retryable", entry.retryable}, {"sent", entry.sent}, {"total", entry.total},
+            {"alias", imageAlias(entry)}, {"inText", !imageAlias(entry).isEmpty() && (draft().contains(entry.markdown)
+                || draft().contains(QRegularExpression(QRegularExpression::escape(imageAlias(entry)) + QStringLiteral("(?!\\()"))))}});
+    }
+    return rows;
+}
+
+void NativeController::removeUpload(const QString &id)
+{
+    bool ok = false; const auto intent = id.toULongLong(&ok);
+    if (!ok) return;
+    auto it = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &row) {
+        return row.task.intent == intent && row.owner == creationOwnerKey()
+            && row.task.conversation == conversationKey()
+            && row.task.editSession == (m_editingMessage.isEmpty() ? quint64(0) : m_editSession);
+    });
+    if (it == m_uploadEntries.end()) return;
+    const QPointer<NativeController> guard(this);
+    removeUploadFromText(id);
+    if (guard) removeUploadEntry(intent, true);
+}
+
+void NativeController::removeUploadFromText(const QString &id)
+{
+    bool ok = false; const auto intent = id.toULongLong(&ok); if (!ok) return;
+    const auto it = std::find_if(m_uploadEntries.cbegin(), m_uploadEntries.cend(), [&](const UploadEntry &entry) {
+        return entry.task.intent == intent && entry.owner == creationOwnerKey() && entry.task.conversation == conversationKey()
+            && entry.task.editSession == (m_editingMessage.isEmpty() ? quint64(0) : m_editSession);
+    });
+    if (it == m_uploadEntries.cend()) return;
+    const auto alias = imageAlias(*it); if (alias.isEmpty()) return;
+    auto value = draft(); value.replace(it->markdown, QString{});
+    value.replace(QRegularExpression(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()")), QString{});
+    setDraft(value);
+}
+
+void NativeController::removeUploadEntry(quint64 intent, bool notify)
+{
+    auto it = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &row) {
+        return row.task.intent == intent;
+    });
+    if (it == m_uploadEntries.end()) return;
+    const auto entry = *it;
+    const QPointer<NativeController> guard(this);
+    m_uploadEntries.erase(it);
+    if (entry.status != "ready" && entry.status != "error") {
+        const auto operation = m_fileOperations.take(intent);
+        const auto queued = m_uploadQueue.removeIf([&](const UploadTask &task) { return task.intent == intent; });
+        if (operation.service) --m_activeUploads;
+        if (operation.service || queued || entry.status == "validating") {
+            --m_uploads;
+            if (--m_pendingUploads[entry.task.conversation] <= 0) m_pendingUploads.remove(entry.task.conversation);
+        }
+        if (operation.service && operation.operation) operation.service->cancel(operation.operation);
+        if (!guard) return;
+    }
+    if (!m_pendingUploads.contains(entry.task.conversation)) m_attachmentNotices.remove(entry.task.conversation);
+    if (entry.status == "error" && m_error.startsWith(tr("The attachment could not be uploaded. %1").arg(QString{}))
+        && std::none_of(m_uploadEntries.cbegin(), m_uploadEntries.cend(), [](const UploadEntry &row) { return row.status == "error"; }))
+        m_error.clear();
+    // A send intent owns every referenced file from admission onwards. Even a
+    // lost acknowledgement may mean the message exists, so never delete a
+    // file named by a pending intent (or by an edit already submitted).
+    const bool usedBySend = std::any_of(m_pendingSends.cbegin(), m_pendingSends.cend(), [&](const SendIntent &send) {
+        return !entry.markdown.isEmpty() && send.wire.contains(entry.markdown);
+    });
+    if (entry.status == "ready" && !entry.serverProtected && !usedBySend && isUuid(entry.fileUuid)
+        && authenticated() && entry.owner == creationOwnerKey() && entry.generation == m_api->generation()
+        && entry.epoch == m_fileEpoch) {
+        request("DELETE", messenger + "/files/" + entry.fileUuid, {}, {}, [](const ApiResult &) {});
+        if (!guard) return;
+    }
+    if (notify) {
+        emit stateChanged();
+        if (guard && entry.task.editSession) emit editSessionChanged();
+        if (guard) drainUploads();
+    }
+}
+
+void NativeController::discardUploads(const QList<quint64> &intents)
+{
+    const QPointer<NativeController> guard(this);
+    for (const auto intent : intents) {
+        removeUploadFromText(QString::number(intent));
+        if (!guard) return;
+        removeUploadEntry(intent, false);
+        if (!guard) return;
+    }
+}
+
+void NativeController::discardUploadsOutsideConversation()
+{
+    QList<quint64> intents;
+    const auto conversation = conversationKey();
+    if (m_inlineDraftRoute != conversation || m_inlineDraftOwner != creationOwnerKey()) {
+        m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
+    }
+    for (const auto &entry : std::as_const(m_uploadEntries))
+        if (entry.task.conversation != conversation) intents.append(entry.task.intent);
+    discardUploads(intents);
+}
+
+void NativeController::retryUpload(const QString &id)
+{
+    bool ok = false; const auto intent = id.toULongLong(&ok);
+    if (!ok || !canAttach()) return;
+    auto it = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &row) {
+        return row.task.intent == intent && row.owner == creationOwnerKey() && row.status == "error" && row.retryable
+            && row.task.conversation == conversationKey()
+            && row.task.editSession == (m_editingMessage.isEmpty() ? quint64(0) : m_editSession);
+    });
+    if (it == m_uploadEntries.end()) return;
+    it->status = "validating"; it->error.clear(); it->sent = 0; it->total = -1;
+    const auto epoch = m_fileEpoch;
+    QTimer::singleShot(0, this, [this, intent, epoch] { validateQueuedUpload(intent, epoch); });
+    ++m_uploads; ++m_pendingUploads[it->task.conversation];
+    const QPointer<NativeController> guard(this); emit stateChanged();
+    if (guard && !m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (guard) drainUploads();
 }
 
 void NativeController::drainUploads()
@@ -8620,17 +8893,30 @@ void NativeController::drainUploads()
         const QPointer<FileClient> service = m_files;
         m_fileOperations.insert(task.intent, {service, 0, task.editSession});
         ++m_activeUploads;
-        const auto operation = service->upload(task.path, task.stream, {},
+        const auto operation = service->upload(task.path, task.stream, task.uploadName,
             [self, generation, epoch, task](const FileResult &result) {
                 if (self)
                     self->finishUpload(task, generation, epoch, result);
+            }, [self, generation, epoch, intent = task.intent](qint64 sent, qint64 total) {
+                if (!self || self->m_api->generation() != generation || self->m_fileEpoch != epoch
+                    || !self->m_fileOperations.contains(intent)) return;
+                auto row = std::find_if(self->m_uploadEntries.begin(), self->m_uploadEntries.end(),
+                    [&](const UploadEntry &entry) { return entry.task.intent == intent; });
+                if (row == self->m_uploadEntries.end()) return;
+                row->sent = sent; row->total = total; row->status = "uploading";
+                emit self->stateChanged();
             });
         if (!self)
             return;
         // A local validation failure may already have completed synchronously.
         auto record = m_fileOperations.find(task.intent);
-        if (record != m_fileOperations.end())
+        if (record != m_fileOperations.end()) {
             record->operation = operation;
+            auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
+            if (row != m_uploadEntries.end()) row->status = "uploading";
+            emit stateChanged();
+            if (!self) return;
+        }
     }
     m_drainingUploads = false;
 }
@@ -8638,8 +8924,10 @@ void NativeController::drainUploads()
 void NativeController::finishUpload(const UploadTask &task, quint64 generation, quint64 epoch,
                                     const FileResult &result)
 {
-    if (m_api->generation() != generation || m_fileEpoch != epoch || !m_fileOperations.remove(task.intent))
+    if (m_api->generation() != generation || m_fileEpoch != epoch || !m_fileOperations.contains(task.intent))
         return;
+    const auto fileOperation = m_fileOperations.take(task.intent);
+    const bool validationFailure = fileOperation.operation == 0;
     const auto &conversation = task.conversation;
     --m_activeUploads;
     --m_uploads;
@@ -8651,9 +8939,19 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
             || (!task.editReplyTab.isEmpty() && std::none_of(m_replyTabs.cbegin(), m_replyTabs.cend(),
                 [&](const ReplyTab &tab) { return tab.id == task.editReplyTab; })));
     if (abandonedEdit) {
+        m_uploadEntries.removeIf([&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
         if (!m_pendingUploads.contains(conversation)) m_attachmentNotices.remove(conversation);
     } else if (!result.ok()) {
         const auto error = tr("The attachment could not be uploaded. %1").arg(result.error);
+        auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
+        if (row != m_uploadEntries.end()) {
+            row->status = "error"; row->retryable = !validationFailure;
+            if (!validationFailure) row->error = tr("Upload failed");
+            else if (QFileInfo(task.path).exists() && QFileInfo(task.path).size() == 0) row->error = tr("The file is empty");
+            else if (QFileInfo(task.path).size() > 25 * 1024 * 1024) row->error = tr("The file is too large (maximum 25 MB)");
+            else if (result.error == FileClient::tr("The image file type does not match its contents.")) row->error = tr("The image file type does not match its contents");
+            else row->error = tr("The file could not be validated");
+        }
         m_attachmentNotices[conversation] = error;
         if (conversation == conversationKey())
             m_error = error;
@@ -8664,48 +8962,31 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
         label.replace(']', "\\]");
         label.replace('\r', ' ');
         label.replace('\n', ' ');
-        const auto prefix = result.metadata.kind() == FileKind::File ? QString{} : QStringLiteral("!");
+        const auto prefix = result.metadata.kind() == FileKind::Image ? QStringLiteral("!") : QString{};
         const auto attachment = prefix + '[' + label + "](<" + result.metadata.urn() + ">)";
-        if (task.editSession != 0) {
-            if (task.editReplyTab.isEmpty() || task.editReplyTab == m_replyActiveTab) {
-                setDraft(attachment + "\n\n" + m_editBuffer);
-            } else {
-                for (auto &tab : m_replyTabs) {
-                    if (tab.id != task.editReplyTab) continue;
-                    tab.answer = attachment + "\n\n" + tab.answer;
-                    ++m_editRevision;
-                    break;
-                }
-                emit replySessionChanged();
+        auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
+        if (row != m_uploadEntries.end()) {
+            row->status = "ready"; row->markdown = attachment;
+            if (result.metadata.kind() == FileKind::Image) {
+                auto name = result.metadata.name.trimmed(); if (name.isEmpty()) name = QStringLiteral("image");
+                QSet<QString> used;
+                for (const auto &entry : std::as_const(m_uploadEntries))
+                    if (entry.owner == row->owner && entry.task.conversation == task.conversation && entry.task.editSession == task.editSession)
+                        used.insert(entry.alias);
+                int count = 1;
+                do {
+                    auto candidate = name + (count == 1 ? QString{} : QStringLiteral(" (%1)").arg(count));
+                    candidate.replace('\\', "\\\\"); candidate.replace(']', "\\]");
+                    row->alias = QStringLiteral("![") + candidate + ']'; ++count;
+                } while (used.contains(row->alias));
             }
-        } else {
-            const auto stream = conversation.section('/', 0, 0), topic = conversation.section('/', 1, 1);
-            const auto capturedStream = std::find_if(m_streams.cbegin(), m_streams.cend(),
-                [&stream](const Stream &row) { return row.uuid == stream; });
-            const bool persistent = m_draftStore && m_draftStore->owner() == creationOwnerKey()
-                && capturedStream != m_streams.cend() && !capturedStream->encrypted
-                && m_draftRoutes.contains(conversation);
-            auto draft = persistent ? m_draftStore->text(stream, topic) : m_drafts.value(conversation);
-            const bool imageParagraph = result.metadata.kind() == FileKind::Image;
-            if (!draft.isEmpty()) {
-                if (!draft.endsWith('\n'))
-                    draft += '\n';
-                if (imageParagraph && !draft.endsWith("\n\n"))
-                    draft += '\n';
-            }
-            const auto text = draft + attachment + (imageParagraph ? "\n\n" : "\n");
-            if (persistent) {
-                m_draftStore->edit(stream, topic, text);
-            } else {
-                m_drafts.insert(conversation, text); ++m_draftRevisions[conversation];
-            }
+            if (result.checksumVerified)
+                row->fileUuid = result.metadata.uuid;
         }
-        if (!guard) return;
-        if (task.editSession == 0 || (!m_editingMessage.isEmpty() && task.editSession == m_editSession)) {
-            m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
-                ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
-            if (task.editSession == 0 && conversation == conversationKey()) emit draftChanged();
-        }
+        // Ready attachments remain independent of the visible draft. Their
+        // immutable Markdown enters the outgoing body only when the composer
+        // transfers ownership to the send/edit operation.
+
     }
     if (!guard) return;
     if (!m_editingMessage.isEmpty()) emit editSessionChanged();
@@ -12524,8 +12805,8 @@ bool NativeController::canSend() const
         && (!durableDraftRoute() || m_draftStore->ready(m_stream, m_topic))
         && answerAllowed(draft())
         && !m_pendingSends.value(conversationKey()).encrypted
-        && !topicClosed() && !m_sending && m_pendingUploads.value(conversationKey()) == 0
-        && (!draft().trimmed().isEmpty() || anyReplyAnswer) && repliesAllowed;
+        && !topicClosed() && !m_sending && m_pendingUploads.value(conversationKey()) == 0 && !uploadPending()
+        && (!draft().trimmed().isEmpty() || anyReplyAnswer || !readyUploadLinks(0).isEmpty()) && repliesAllowed;
 }
 
 bool NativeController::topicClosed() const
@@ -12623,11 +12904,18 @@ void NativeController::setDraft(const QString &text)
     if ((m_topic.isEmpty() && (!currentStream() || !currentStream()->encrypted || !hasConversation())) || draft() == text)
         return;
     const QPointer<NativeController> guard(this);
-    if (durableDraftRoute()) {
-        m_draftStore->edit(m_stream, m_topic, text);
+    const auto storedText = replaceImageAliases(text, false);
+    if (storedText != text) {
+        m_inlineDraft = text; m_inlineDraftOwner = creationOwnerKey(); m_inlineDraftRoute = conversationKey();
     } else {
-        m_drafts.insert(conversationKey(), text); ++m_draftRevisions[conversationKey()];
+        m_inlineDraft.clear(); m_inlineDraftOwner.clear(); m_inlineDraftRoute.clear();
     }
+    if (durableDraftRoute()) {
+        m_draftStore->edit(m_stream, m_topic, storedText);
+    } else {
+        m_drafts.insert(conversationKey(), storedText); ++m_draftRevisions[conversationKey()];
+    }
+    if (!guard) return;
     // Draft lockstep (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md): while a reply
     // session is open the composer value *is* the active tab's answer
     // (chat-page-workspace.ui.tsx:3085-3097 routes value changes to
@@ -13787,7 +14075,12 @@ void NativeController::send()
     // mention serialization happens before the reply quote prefix join) and
     // apply to every tab's answer, not just the active draft.
     const auto mentionEntries = composerMentionEntries();
-    auto wire = serializeComposerMentions(text, mentionEntries);
+    auto wire = replaceImageAliases(serializeComposerMentions(text, mentionEntries), true);
+    const auto attachments = readyUploadLinks(0);
+    QList<quint64> transferredUploads;
+    for (const auto &entry : std::as_const(m_uploadEntries))
+        if (entry.task.editSession == 0 && entry.task.conversation == conversationKey()
+            && entry.owner == creationOwnerKey() && entry.status == "ready") transferredUploads.append(entry.task.intent);
     if (!m_replyTabs.isEmpty()) {
         QStringList blocks;
         for (const auto &tab : std::as_const(m_replyTabs)) {
@@ -13800,19 +14093,24 @@ void NativeController::send()
             // The active tab answers with the live composer text; the others
             // carry the answer captured while they were active - both get the
             // same mention serialization.
-            const auto answer = (tab.id == m_replyActiveTab ? wire
-                : serializeComposerMentions(tab.answer, mentionEntries)).trimmed();
+            auto answer = (tab.id == m_replyActiveTab ? wire
+                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
+            if (blocks.isEmpty() && !attachments.isEmpty())
+                answer = attachments.join('\n') + (answer.isEmpty() ? QString{} : QStringLiteral("\n\n") + answer);
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
         auto body = blocks.join(QStringLiteral("\n\n"));
         while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
         wire = body;
+    } else if (!attachments.isEmpty()) {
+        wire = attachments.join('\n') + (wire.trimmed().isEmpty() ? QString{} : QStringLiteral("\n") + wire.trimmed());
     }
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
-    if (intent.uuid.isEmpty() || intent.text != text || intent.wire != wire) {
+    const auto storedText = replaceImageAliases(text, false);
+    if (intent.uuid.isEmpty() || intent.text != storedText || intent.wire != wire) {
         intent = SendIntent{};
-        intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces); intent.text = text;
+        intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces); intent.text = storedText;
         intent.wire = wire;
         intent.draftRevision = m_draftRevisions.value(conversation);
         if (durableDraftRoute()) {
@@ -13833,7 +14131,17 @@ void NativeController::send()
     ++m_messageFields[intent.publicId].pending; m_sending = true;
     staleConversation(intent.stream, intent.topic);
     const QPointer<NativeController> guard(this); emit stateChanged();
-    if (guard) admitOutgoing(conversation, [this, conversation, id = intent.uuid, ticket = intent.ticket] {
+    if (guard) admitOutgoing(conversation, [this, conversation, id = intent.uuid, ticket = intent.ticket, transferredUploads] {
+        if (!outgoingContext(conversation, id, ticket)) return;
+        if (m_pendingSends.value(conversation).durable && m_pendingSends.value(conversation).admitted) {
+            m_uploadEntries.removeIf([&](const UploadEntry &entry) { return transferredUploads.contains(entry.task.intent); });
+            m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
+            const QPointer<NativeController> guard(this);
+            emit draftChanged();
+            if (!guard) return;
+            emit stateChanged();
+            if (!guard) return;
+        }
         if (outgoingContext(conversation, id, ticket)) postOrdinarySend(conversation, id, ticket);
     });
 }
@@ -13933,6 +14241,20 @@ void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString
         } else if (m_drafts.value(conversation) == text
                    && m_draftRevisions.value(conversation) == intent.draftRevision) m_drafts.remove(conversation);
         if (!draftGuard) return;
+        if (m_inlineDraftOwner == intent.owner && m_inlineDraftRoute == conversation) {
+            for (const auto &entry : std::as_const(m_uploadEntries)) {
+                if (entry.task.editSession || entry.task.conversation != conversation || !intent.wire.contains(entry.markdown)) continue;
+                const auto alias = imageAlias(entry); if (alias.isEmpty()) continue;
+                m_inlineDraft.replace(QRegularExpression(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()")), QString{});
+            }
+            if (m_inlineDraft == replaceImageAliases(m_inlineDraft, false)) {
+                m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
+            }
+        }
+        m_uploadEntries.removeIf([&](const UploadEntry &entry) {
+            return entry.task.editSession == 0 && entry.task.conversation == conversation
+                && entry.status == "ready" && intent.wire.contains(entry.markdown);
+        });
         m_attachmentNotices.remove(conversation);
         if (!deleted && conversation == conversationKey()) {
             ++m_messageRevision;
@@ -15813,6 +16135,16 @@ bool NativeController::beginEditMessage(const QString &id)
         return false;
     }
     cancelEditUploads();
+    // The reference composer has separate compose and edit lifetimes.
+    QList<quint64> composeUploads;
+    for (const auto &entry : std::as_const(m_uploadEntries))
+        if (!entry.task.editSession && entry.task.conversation == conversationKey()) composeUploads.append(entry.task.intent);
+    const QPointer<NativeController> uploadGuard(this);
+    discardUploads(composeUploads);
+    if (!uploadGuard) return false;
+    m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
+    message = editableMessage(id);
+    if (!message) return false;
     // Reply and edit sessions are mutually exclusive (one composer, one mode).
     // A reopened session replaces the previous buffer; closeReplySession also
     // drops any restored tabs from an earlier edit session.
@@ -15931,14 +16263,41 @@ void NativeController::submitEditMessage()
         text = blocks.join(QStringLiteral("\n\n"));
         while (!text.isEmpty() && text.back().isSpace()) text.chop(1); // reference trimEnd
     }
+    text = replaceImageAliases(text, true);
+    const auto newAttachments = readyUploadLinks(m_editSession);
+    if (!newAttachments.isEmpty())
+        text = newAttachments.join('\n') + (text.isEmpty() ? QString{} : QStringLiteral("\n") + text);
     // Issue #115: the completion may only close the exact session and buffer revision it
     // submitted. Text typed after Save, or a session reopened for the same UUID, gets a
     // newer identity and survives this completion; B stays savable.
     const auto session = m_editSession, revision = m_editRevision;
-    submitMessageEdit(id, text, [this, id, session, revision](bool confirmed) {
+    QList<quint64> submittedUploads;
+    for (auto &entry : m_uploadEntries) {
+        if (entry.task.editSession != session || entry.status != "ready" || !text.contains(entry.markdown)) continue;
+        // A failed or lost PUT reply does not prove the server did not save it.
+        // Protect the file from best-effort cleanup once it is submitted.
+        entry.serverProtected = true; submittedUploads.append(entry.task.intent);
+    }
+    submitMessageEdit(id, text, [this, id, session, revision, submittedUploads](bool confirmed) {
+        if (confirmed && m_editingMessage == id && session == m_editSession && revision != m_editRevision) {
+            NativeMarkdown parser;
+            for (const auto &entry : std::as_const(m_uploadEntries)) {
+                if (!submittedUploads.contains(entry.task.intent)) continue;
+                auto &cards = m_editAttachments[entry.task.editReplyTab];
+                for (const auto &value : parser.editContent(entry.markdown).value("attachments").toList()) {
+                    auto card = value.toMap(); card.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
+                    card.insert("retained", true); cards.append(card);
+                }
+            }
+        }
+        if (confirmed) m_uploadEntries.removeIf([&](const UploadEntry &entry) { return submittedUploads.contains(entry.task.intent); });
         if (confirmed && m_editingMessage == id
             && session == m_editSession && revision == m_editRevision)
             closeEditSession();
+        else if (confirmed && !submittedUploads.isEmpty()) {
+            const QPointer<NativeController> guard(this); emit editSessionChanged();
+            if (guard) emit stateChanged();
+        }
     });
 }
 
@@ -15962,6 +16321,7 @@ void NativeController::editLastMessage()
 bool NativeController::canSaveEdit() const
 {
     if (m_editingMessage.isEmpty() || !authoritativeRoute()) return false;
+    if (uploadPending()) return false;
     if (conversationKey() != m_editRoute) return false;
     // While a save for this message is in flight a second save would race the first PUT
     // (issue #115); the save control waits for the pending completion.
@@ -15974,7 +16334,7 @@ bool NativeController::canSaveEdit() const
     const auto *stream = currentStream();
     if (!stream || stream->encrypted) return false;
     const auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
-    return !text.trimmed().isEmpty() && text.size() <= 40000;
+    return (!text.trimmed().isEmpty() || !readyUploadLinks(m_editSession).isEmpty()) && text.size() <= 40000;
 }
 
 void NativeController::closeEditSession()
@@ -15998,8 +16358,12 @@ void NativeController::closeEditSession()
 
 void NativeController::settleEditRouteChange()
 {
+    const QPointer<NativeController> guard(this);
     if (!m_editingMessage.isEmpty() && conversationKey() != m_editRoute)
         closeEditSession();
+    if (!guard) return;
+    discardUploadsOutsideConversation();
+    if (!guard) return;
     // The reply session belongs to the conversation that started it, so it
     // survives navigation: park a session from another conversation under its
     // own key and adopt the one this conversation parked (issue #201,

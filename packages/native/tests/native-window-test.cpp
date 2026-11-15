@@ -26,6 +26,9 @@
 #include <QtMath>
 #include <QApplication>
 #include <QClipboard>
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QAccessible>
 #include <QDateTime>
 #include <QDir>
@@ -15043,6 +15046,200 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!panel->property("visible").toBool());
     }
 
+    void composerShowsAnIndependentPendingUploadCard_data()
+    {
+        QTest::addColumn<bool>("checkEnter"); QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                for (const bool checkEnter : {false, true})
+                    QTest::newRow(qPrintable((checkEnter ? QString("enter-") : QString("card-")) + locale + '-' + mode)) << checkEnter << locale << mode;
+    }
+
+    void composerShowsAnIndependentPendingUploadCard()
+    {
+        QFETCH(bool, checkEnter); QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        std::function<void()> complete;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) {
+                Response response{QJsonObject{}, 503};
+                response.defer = [&](auto send) { complete = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        const auto path = directory.filePath("window-example.txt");
+        QFile input(path); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("upload"); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), &complete] {
+            if (complete) complete();
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Upload card window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Keep editing");
+        controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(bool(complete));
+        if (checkEnter) {
+            auto *composer = item(window->contentItem(), "messageComposer");
+            QVERIFY(composer);
+            click(window, composer);
+            QTest::keyClick(window, Qt::Key_Return);
+            QCOMPARE(controller.draft(), QString("Keep editing"));
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "uploadCard-1"), 3000);
+            QVERIFY(visibleItem(window->contentItem(), "uploadCancel-1"));
+            auto *status = visibleItem(window->contentItem(), "uploadStatus-1"); QVERIFY(status);
+            QVERIFY(status->property("text").toString().startsWith(locale == "ru" ? QString::fromUtf8("Загрузка") : QString("Uploading")));
+        }
+        QVERIFY(!controller.canSend());
+    }
+
+    void readyImageCanBeDraggedIntoComposerText()
+    {
+        WindowChannelFixture fixture; const auto fallback = fixture.server.handler;
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll(); input.close();
+        QString wire;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/"))
+                return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                    {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                    {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                wire = request.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Inline image window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Before after");
+        controller.attachFiles({QUrl::fromLocalFile(path)}); QTRY_VERIFY(!controller.fileBusy());
+        QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
+        auto *card = visibleItem(window->contentItem(), "uploadCard-1"); QVERIFY(card);
+        auto *composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer);
+        const auto start = card->mapToScene(QPointF(29, 29)).toPoint();
+        const auto end = composer->mapToScene(QPointF(composer->width() / 2, composer->height() / 2)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(window, start + QPoint(20, 0), 50);
+        QTest::mouseMove(window, end, 100);
+        QVERIFY(!visibleItem(window->contentItem(), "composerDropRing")); // Only external file drags highlight the shell.
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, end);
+        QTRY_VERIFY_WITH_TIMEOUT(composer->property("text").toString().contains("![diagram.png]"), 3000);
+        auto *removeInline = visibleItem(window->contentItem(), "uploadRemoveInline-1"); QVERIFY(removeInline);
+        click(window, removeInline);
+        QTRY_VERIFY(!composer->property("text").toString().contains("![diagram.png]"));
+        card = visibleItem(window->contentItem(), "uploadCard-1"); QVERIFY(card);
+        const auto again = card->mapToScene(QPointF(29, 29)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, again);
+        QTest::mouseMove(window, again + QPoint(20, 0), 50);
+        QTest::mouseMove(window, end, 100);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, end);
+        QTRY_VERIFY_WITH_TIMEOUT(composer->property("text").toString().contains("![diagram.png]"), 3000);
+        QTRY_VERIFY(controller.canSend()); controller.send(); QTRY_VERIFY(!wire.isEmpty());
+        QCOMPARE(wire.count("urn:image:" + returnedId), 1);
+        QVERIFY(!wire.contains("![diagram.png]\n"));
+    }
+
+    void composerAcceptsClipboardImagesAndFileDrops_data()
+    {
+        QTest::addColumn<bool>("paste");
+        QTest::newRow("clipboard-image") << true;
+        QTest::newRow("file-drop") << false;
+    }
+
+    void composerAcceptsClipboardImagesAndFileDrops()
+    {
+        QFETCH(bool, paste);
+        WindowChannelFixture fixture; const auto fallback = fixture.server.handler;
+        QList<std::function<void()>> held; int uploads = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) {
+                ++uploads; Response response{QJsonObject{}, 503};
+                response.defer = [&](auto send) { held.append(std::move(send)); }; return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; const auto path = directory.filePath("dropped.txt");
+        QFile input(path); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("drop"); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto *clipboard = QGuiApplication::clipboard();
+        auto *originalClipboard = new QMimeData;
+        if (const auto *previous = clipboard->mimeData())
+            for (const auto &format : previous->formats()) originalClipboard->setData(format, previous->data(format));
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), &held, clipboard, originalClipboard] {
+            for (auto &complete : held) complete();
+            clipboard->setMimeData(originalClipboard);
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Upload intake window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Caption");
+        if (paste) {
+            QImage image(4, 4, QImage::Format_ARGB32); image.fill(Qt::red); clipboard->setImage(image);
+            auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+            QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+            QTRY_COMPARE(uploads, 1);
+            QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+            QTRY_COMPARE(uploads, 2);
+            const auto rows = controller.property("uploadEntries").toList();
+            QCOMPARE(rows.size(), 2);
+            QVERIFY(rows.at(0).toMap().value("name").toString().startsWith("pasted-image-"));
+            QVERIFY(rows.at(0).toMap().value("name").toString() != rows.at(1).toMap().value("name").toString());
+            QCOMPARE(controller.draft(), QString("Caption"));
+        } else {
+            auto *shell = item(window->contentItem(), "composerDropArea"); QVERIFY(shell);
+            const auto point = shell->mapToScene(QPointF(shell->width() / 2, shell->height() / 2));
+            QMimeData nonfile; nonfile.setText("not a file");
+            QDragEnterEvent other(point.toPoint(), Qt::CopyAction, &nonfile, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &other); QVERIFY(!other.isAccepted());
+            QDragLeaveEvent leave; QCoreApplication::sendEvent(window, &leave);
+            QMimeData file; file.setUrls({QUrl::fromLocalFile(path)});
+            QDragEnterEvent enter(point.toPoint(), Qt::CopyAction, &file, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &enter); QVERIFY(enter.isAccepted());
+            QTRY_VERIFY(visibleItem(window->contentItem(), "composerDropRing"));
+            QDragMoveEvent move(point.toPoint(), Qt::CopyAction, &file, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &move); QVERIFY(move.isAccepted());
+            QDropEvent drop(point, Qt::CopyAction, &file, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &drop); QVERIFY(drop.isAccepted());
+            QTRY_COMPARE(uploads, 1);
+            QCOMPARE(controller.property("uploadEntries").toList().first().toMap().value("name").toString(), QString("dropped.txt"));
+        }
+    }
+
     void mislabeledImageShowsALocalizedAttachmentError_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
@@ -15092,7 +15289,10 @@ mv -Tf "$root/.current-new" "$root/current"
             : QString("The image file type does not match its contents.");
         QVERIFY2(controller.error().contains(detail), qPrintable(controller.error()));
         QTRY_VERIFY(hasVisibleText(window->contentItem(), controller.error()));
-        QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(controller.canSend());
+        QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(!controller.canSend());
+        const auto rows = controller.uploadEntries(); QCOMPARE(rows.size(), 1);
+        QVERIFY(!rows.first().toMap().value("retryable").toBool());
+        controller.removeUpload(rows.first().toMap().value("id").toString()); QVERIFY(controller.canSend());
     }
 
     void quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()

@@ -25,6 +25,7 @@
 #include <QQueue>
 #include <QTimer>
 #include <QVariantList>
+#include <QTemporaryFile>
 #include <memory>
 
 namespace workspace {
@@ -191,6 +192,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool topicClosed READ topicClosed NOTIFY stateChanged)
     Q_PROPERTY(bool canReopenTopic READ canReopenTopic NOTIFY stateChanged)
     Q_PROPERTY(bool fileBusy READ fileBusy NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList uploadEntries READ uploadEntries NOTIFY stateChanged)
+    Q_PROPERTY(bool uploadPending READ uploadPending NOTIFY stateChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY stateChanged)
     Q_PROPERTY(bool draftsVisible READ draftsVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap draftPage READ draftPage NOTIFY stateChanged)
@@ -710,6 +713,12 @@ public:
     // (workspace-message-poll.ui.tsx:47-49 in the reference).
     Q_INVOKABLE QString formatPollDate(const QString &isoDateTime) const;
     Q_INVOKABLE void attachFiles(const QVariantList &localUrls);
+    QVariantList uploadEntries() const;
+    bool uploadPending() const;
+    Q_INVOKABLE bool pasteAttachments();
+    Q_INVOKABLE void removeUpload(const QString &id);
+    Q_INVOKABLE void removeUploadFromText(const QString &id);
+    Q_INVOKABLE void retryUpload(const QString &id);
     Q_INVOKABLE void downloadFile(const QString &id, const QUrl &destination);
     QVariantList downloadEntries() const;
     Q_INVOKABLE void cancelDownload(const QString &id);
@@ -1305,6 +1314,17 @@ private:
         NativeDrafts::Token draftResidency{};
         quint64 editSession = 0; // zero belongs to the ordinary conversation draft
         QString editReplyTab;
+        QString uploadName;
+        std::shared_ptr<QTemporaryFile> temporary;
+    };
+    struct UploadEntry {
+        UploadTask task;
+        QString owner, status, error, markdown, fileUuid;
+        qint64 size = 0, sent = 0, total = -1;
+        bool retryable = true;
+        bool serverProtected = false;
+        quint64 generation = 0, epoch = 0;
+        QString alias;
     };
     struct FileOperation {
         QPointer<FileClient> service;
@@ -1323,7 +1343,15 @@ private:
     QString uniqueDownloadPath(const QString &path) const;
     QString completedDownloadPath(const QString &id);
     void cancelFileTransfers(const QString &reason = {});
+    void enqueueUpload(const QString &path, const QString &name = {}, std::shared_ptr<QTemporaryFile> temporary = {});
+    void validateQueuedUpload(quint64 intent, quint64 epoch);
+    QStringList readyUploadLinks(quint64 session) const;
+    QString imageAlias(const UploadEntry &entry) const;
+    QString replaceImageAliases(const QString &text, bool serialize) const;
     void cancelEditUploads();
+    void removeUploadEntry(quint64 intent, bool notify);
+    void discardUploads(const QList<quint64> &intents);
+    void discardUploadsOutsideConversation();
     void drainUploads();
     void finishUpload(const UploadTask &task, quint64 generation, quint64 epoch,
                       const FileResult &result);
@@ -1891,6 +1919,8 @@ private:
     QHash<QString, PollSendAttempt> m_pollSendAttempts; // Owner + conversation retry identity
     QSet<QString> m_pendingPollCreations; // Dialog submission tokens, never canonical UUIDs
     QHash<QString, int> m_pendingUploads;
+    QList<UploadEntry> m_uploadEntries;
+    QString m_inlineDraft, m_inlineDraftRoute, m_inlineDraftOwner;
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;
     QString m_topic;

@@ -127,7 +127,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-add-link composer-format-bold composer-format-italic composer-strikethrough
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
     composer-inline-code composer-visibility
-    composer-emoji composer-attach-compact side_panel phone chevron-down close check
+    composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
     reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     at bell bell_off person_add

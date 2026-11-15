@@ -59,8 +59,11 @@ public:
 
     // Local validation can complete synchronously. Cancellation completes once
     // with status 0; destruction suppresses callbacks and removes staged files.
+    // Lightweight admission validation; upload rechecks its immutable snapshot
+    // because the selected file can change while it is queued.
+    static QString validateUpload(const QString &path, const QString &streamUuid, const QString &name);
     quint64 upload(const QString &path, const QString &streamUuid, const QString &name,
-                   Completion completion);
+                   Completion completion, Progress progress = {});
     quint64 download(const QString &uuid, const QString &destination, Completion completion,
                      Progress progress = {}, DestinationMode mode = DestinationMode::Replace);
     // Fixed memory cap; metadata and the streamed body must both fit. No disk staging.

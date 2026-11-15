@@ -234,7 +234,28 @@ void FileClient::cancelAll()
     }
 }
 
-quint64 FileClient::upload(const QString &path, const QString &streamUuid, const QString &name, Completion completion)
+QString FileClient::validateUpload(const QString &path, const QString &streamUuid, const QString &name)
+{
+    const QFileInfo info(path);
+    if (!validUuid(streamUuid) || !info.isFile() || info.size() <= 0 || info.size() > 25 * 1024 * 1024)
+        return FileClient::tr("Select a nonempty file of at most 25 MiB and a valid stream.");
+    const auto uploadName = safeName(name.isEmpty() ? info.fileName() : name);
+    if (uploadName.isEmpty()) return FileClient::tr("Enter a valid file name.");
+    QFile input(path);
+    if (!input.open(QIODevice::ReadOnly)) return FileClient::tr("Cannot read the selected file.");
+    const QMimeDatabase mime;
+    const auto declared = mime.mimeTypeForFile(path, QMimeDatabase::MatchExtension).name();
+    const auto uploaded = mime.mimeTypeForFile(uploadName, QMimeDatabase::MatchExtension).name();
+    if (declared.startsWith("image/") || uploaded.startsWith("image/")) {
+        const auto header = input.read(12);
+        if (!imageSignatureMatches(declared, header) || !imageSignatureMatches(uploaded, header))
+            return FileClient::tr("The image file type does not match its contents.");
+    }
+    return {};
+}
+
+quint64 FileClient::upload(const QString &path, const QString &streamUuid, const QString &name, Completion completion,
+                           Progress progress)
 {
     const auto id = begin(std::move(completion));
     const QFileInfo info(path);
@@ -279,6 +300,7 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
         fail(id, FileClient::tr("Cannot rewind the selected file.")); return id;
     }
     const auto operation = m_operations.value(id);
+    operation->progress = std::move(progress);
     operation->upload = true;
     operation->metadata.streamUuid = streamUuid.toLower();
     operation->metadata.name = uploadName;
@@ -308,6 +330,11 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     operation->reply->setReadBufferSize(m_limits.metadataBytes + 1);
     connect(operation->reply, &QNetworkReply::readyRead, this, [this, id] { readMetadata(id); });
     connect(operation->reply, &QNetworkReply::finished, this, [this, id] { finishMetadata(id); });
+    connect(operation->reply, &QNetworkReply::uploadProgress, this, [this, id](qint64 sent, qint64 total) {
+        if (!current(id)) return;
+        const auto operation = m_operations.value(id);
+        if (operation && operation->progress) operation->progress(sent, total);
+    });
     return id;
 }
 
