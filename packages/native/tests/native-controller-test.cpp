@@ -5761,20 +5761,52 @@ private slots:
             "a budget-starved encrypted create did not settle locally");
         QCOMPARE(test.posts, 0);
         QVERIFY(!controller.channelCreationError().isEmpty());
-        // The user resolves one attempt whose stream is STILL definitively
-        // absent: a human terminal decision, so the stage record is released
-        // and the budget slot freed — no possibly-live key was discarded
-        // (this attempt's stream does not exist and the human was told so).
-        const auto released = attempts.last();
+        // Review finding 4576938727 (critical, R8): the user checks one
+        // attempt whose stream is still absent. A 404 at resolve time is NOT
+        // a terminal outcome — a delayed POST can still land and commit that
+        // channel — so the check must KEEP the stage and its key and simply
+        // report "not found yet". (Pre-fix RED: resolve destroyed the stage
+        // on a bare 404, deleting the only copy of a possibly-live key.)
+        const auto checked = attempts.last();
         {
             QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
-            controller.resolveChannelCreateStage(released);
+            controller.resolveChannelCreateStage(checked);
             QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
-                "resolving a definitively-missing attempt never settled");
-            QCOMPARE(done.at(0).at(0).toString(), released);
-            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("released"));
+                "checking a missing attempt never settled");
+            QCOMPARE(done.at(0).at(0).toString(), checked);
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
         }
-        QCOMPARE(keys.readCreateStage(keys.lease(), released).failure, NativeChatKeyVault::Failure::MissingKey);
+        QVERIFY(keys.readCreateStage(keys.lease(), checked).value.has_value());
+        QCOMPARE(controller.unresolvedChannelCreateStages().size(), int(NativeChatKeyVault::MaximumCreateStages));
+        // The budget is still full: keeping the checked attempt keeps its
+        // slot, so an encrypted create is still rejected until an explicit,
+        // informed DISCARD closes the attempt the human refuses to await.
+        controller.createChannel("Still starved", "", false, false, {}, true);
+        QVERIFY2(QTest::qWaitFor([&] { return !controller.channelCreationBusy(); }, 8000),
+            "a budget-starved encrypted create did not settle locally");
+        QCOMPARE(test.posts, 0);
+        QVERIFY(!controller.channelCreationError().isEmpty());
+        // An unconfirmed discard is refused and changes nothing — the key
+        // removal must ride on an explicit confirmation the UI names.
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.discardChannelCreateStage(checked, false);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "an unconfirmed discard never settled");
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        }
+        QVERIFY(keys.readCreateStage(keys.lease(), checked).value.has_value());
+        // The informed explicit discard: frees the budget slot and removes
+        // the staged key record exactly as the warned user asked.
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.discardChannelCreateStage(checked, true);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "the confirmed discard never settled");
+            QCOMPARE(done.at(0).at(0).toString(), checked);
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("discarded"));
+        }
+        QCOMPARE(keys.readCreateStage(keys.lease(), checked).failure, NativeChatKeyVault::Failure::MissingKey);
         QCOMPARE(controller.unresolvedChannelCreateStages().size(), int(NativeChatKeyVault::MaximumCreateStages) - 1);
         // The freed slot: the 33rd encrypted create now goes through and
         // completes end-to-end.
@@ -5798,6 +5830,173 @@ private slots:
         QCOMPARE(stored.value.bytes, QByteArray(32, char('a'))); // committed, not discarded
         stored.value.bytes.fill('\\0');
         QCOMPARE(keys.readCreateStage(keys.lease(), late).failure, NativeChatKeyVault::Failure::MissingKey);
+    }
+
+    // Review finding 4576938727 (critical, R8): the client can never prove a
+    // terminal outcome from absence — a dispatch-attempted create POST may
+    // still land arbitrarily late, and its stage may hold the only copy of
+    // the group key. A user-invokable check must therefore treat a 404 as
+    // "not found yet": report unresolved and retain the stage and key
+    // byte-for-byte. Only the positive proof (the stream served with a
+    // verifying encrypted echo) is terminal for a check, and it commits the
+    // key instead of discarding it. (Pre-fix RED: resolve cleared the stage
+    // on a bare 404 and reported "released".)
+    void encryptedChannelCreationUserResolveKeepsKeyOnMissingStream()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('c'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto visible = std::make_shared<std::atomic<bool>>(false);
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, visible, &attempt,
+            &keyUuid](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                if (!visible->load()) return {QJsonObject{}, 404}; // the late commit has not landed
+                auto row = creationChannel(attempt); // and now it lands
+                row["encryption"] = true;
+                row["current_encryption_key_uuid"] = keyUuid;
+                return {row, 200};
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.resolveChannelCreateStage(attempt);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "the user check never settled");
+            QCOMPARE(done.at(0).at(0).toString(), attempt);
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        }
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY2(kept.value.has_value(),
+            "a resolve 404 destroyed the only staged group key although a delayed POST could still land");
+        QCOMPARE(kept.value->groupKey.size(), 32);
+        kept.value->clearSecrets();
+        QVERIFY(keys.read(keys.lease(), {attempt, keyUuid}).value.bytes.isEmpty()); // not committed
+        // The channel lands after all. The check's positive-proof branch
+        // commits the key and frees the slot (re-adoption, never discard).
+        *visible = true;
+        QSignalSpy landed(&controller, &NativeController::channelCreateStageResolved);
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return landed.size() == 1; }, 8000),
+            "checking the landed attempt never settled");
+        QCOMPARE(landed.at(0).at(1).toString(), QStringLiteral("committed"));
+        auto stored = keys.read(keys.lease(), {attempt, keyUuid});
+        QCOMPARE(stored.value.bytes, groupKey);
+        stored.value.bytes.fill('\0');
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+    }
+
+    // Review finding 4576938727 fix half (b): because no check can ever prove
+    // a negative, stopping to await a late channel is a human decision with a
+    // named consequence: the channel may still appear later and would then be
+    // permanently unreadable. discardChannelCreateStage only acts on an
+    // explicit confirmation argument; without it nothing changes, and no
+    // network round trip is even attempted (a discard proves nothing — it
+    // abandons waiting). It removes the staged key record and frees the
+    // create-budget slot the dormant quarantine held.
+    void encryptedChannelCreationUserDiscardIsInformedAndFreesSlot()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('d'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        int stageGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt,
+            &stageGets](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) { ++stageGets; return {QJsonObject{}, 404}; }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        // An unconfirmed discard is refused and changes nothing.
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.discardChannelCreateStage(attempt, false);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "an unconfirmed discard never settled");
+            QCOMPARE(done.at(0).at(0).toString(), attempt);
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        }
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY2(kept.value.has_value(), "an unconfirmed discard destroyed the staged key");
+        kept.value->clearSecrets();
+        // Discarding an unknown attempt settles unresolved without a check.
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.discardChannelCreateStage(QUuid::createUuid().toString(QUuid::WithoutBraces), true);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "discarding an unknown attempt never settled");
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        }
+        // The informed explicit discard: the stage (and its budget slot) are
+        // removed by the human's warned decision, with no server round trip.
+        const auto getsBefore = stageGets;
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.discardChannelCreateStage(attempt, true);
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+            "the confirmed discard never settled");
+        QCOMPARE(done.at(0).at(0).toString(), attempt);
+        QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("discarded"));
+        QCOMPARE(stageGets, getsBefore); // a discard is a decision, not a proof attempt
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+        QVERIFY(controller.unresolvedChannelCreateStages().isEmpty());
+    }
+
+    // Review finding 4576938732 (medium, R8): the inventory and its two user
+    // decisions must have a user-facing caller, or a budget-full user is
+    // directed to resolve attempts that the application cannot show or
+    // resolve. Source contract: the shipped Main.qml must call all three
+    // controller entry points and its discard confirmation must name the
+    // key-loss risk the user is warned about.
+    void encryptedChannelCreationUnresolvedFlowIsWiredIntoTheUi()
+    {
+#ifdef WORKSPACE_NATIVE_MAIN_QML_SOURCE
+        QFile file(QStringLiteral(WORKSPACE_NATIVE_MAIN_QML_SOURCE));
+        QVERIFY2(file.open(QIODevice::ReadOnly),
+            "Main.qml source contract: the shipped UI source must be readable");
+        const auto text = QString::fromUtf8(file.readAll());
+        QVERIFY2(text.contains("unresolvedChannelCreateStages("),
+            "Main.qml never calls the unresolved create-stage inventory");
+        QVERIFY2(text.contains("resolveChannelCreateStage("),
+            "Main.qml never offers the user-invokable check of an unresolved attempt");
+        QVERIFY2(text.contains("discardChannelCreateStage("),
+            "Main.qml never offers the explicit informed discard of an unresolved attempt");
+        QVERIFY2(text.contains("channelStageReviewButton"),
+            "Main.qml has no entry point opening the unresolved-creations inventory");
+        QVERIFY2(text.contains("channelStageDiscardConfirm"),
+            "Main.qml has no explicit discard confirmation control");
+        QVERIFY2(text.contains("never be read"),
+            "Main.qml's discard confirmation never names the key-loss risk");
+#else
+        QSKIP("built without the Main.qml source contract path");
+#endif
     }
 
     void channelMemberRecoveryPreservesTheConfirmedStreamAndFrozenSet_data()

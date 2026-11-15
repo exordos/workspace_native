@@ -458,6 +458,16 @@ public:
     // scope for this slice.
     Q_INVOKABLE QJsonArray unresolvedChannelCreateStages() const;
     Q_INVOKABLE void resolveChannelCreateStage(const QString &attempt);
+    // Review finding 4576938727 (critical, R8): because a check can NEVER
+    // prove a terminal negative (a delayed POST may land arbitrarily late),
+    // the only way for the user to stop awaiting an unresolved attempt and
+    // free its create-budget slot is an informed explicit key-discard: the
+    // channel may still appear later and would then be permanently
+    // unreadable. discardChannelCreateStage only acts when the caller
+    // carries the user's explicit confirmation (a UI dialog that names that
+    // risk); unconfirmed calls change nothing. Outcomes arrive via
+    // channelCreateStageResolved.
+    Q_INVOKABLE void discardChannelCreateStage(const QString &attempt, bool confirmed);
     Q_INVOKABLE void refreshChannelInfo();
     Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);

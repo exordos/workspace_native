@@ -4740,6 +4740,11 @@ void NativeController::resolveChannelCreateStage(const QString &attempt)
     });
 }
 
+void NativeController::discardChannelCreateStage(const QString &attempt, bool confirmed)
+{
+    Q_UNUSED(attempt); Q_UNUSED(confirmed); // RED repro stub: the fix commit implements the informed discard.
+}
+
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,
     const QString &path, QUrlQuery query, std::function<void(const QJsonArray &)> done,
     QJsonArray rows, QSet<QByteArray> markers)
