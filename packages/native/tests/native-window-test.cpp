@@ -14956,24 +14956,25 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(harness.readString("currentProfileOverride"), QString(""));
     }
 
-    void rightDrawerResetIgnoresScopeWithoutOwner()
+    void rightDrawerResetIsSkippedWithoutAuthenticatedSession()
     {
         RightDrawerHarness harness;
-        // An ownerless scope (the unauthenticated live projection) is not a
-        // scope change: resetChatScreens cannot prove open chat screens stale,
-        // and an unknown scope must never project mid-cascade. Answering an
-        // unknown scope by dropping screens wiped the chat stack from inside
-        // the topScreen change cascade (Bug #300 binding-loop repro) and froze
-        // the projections, so back() popped nothing.
+        // The unauthenticated live scope is unknown information, not a scope
+        // change: resetRightDrawerChatScreens must not project while no
+        // session owns the screens. Answering an unknown scope by dropping
+        // screens wiped the chat stack from inside the topScreen change
+        // cascade (Bug #300 binding-loop repro) and froze the projections, so
+        // back() popped nothing.
         harness.evaluate("rightDrawer.toggleChatInfo()");
         const auto scope = [&](const QString &screen) { return drawerChatScope("o1", 1, "s1", screen); };
         harness.evaluate("rightDrawer.openChatScreen(" + scope("settings") + ")");
         harness.evaluate("rightDrawer.openChatScreen(" + scope("key") + ")");
         QCOMPARE(harness.readInt("topScreenCount"), 3);
-        harness.evaluate("rightDrawer.resetChatScreens({ownerKey:'',runtimeGeneration:0,streamUuid:''})");
+        harness.evaluate("root.resetRightDrawerChatScreens()");
         QCOMPARE(harness.readInt("topScreenCount"), 3);
         QCOMPARE(harness.readString("currentChatScreen"), QString("key"));
-        // A real generation change still drops chat screens back to the root.
+        // The store itself still honors a real scope change (same owner, new
+        // generation): chat screens drop to the root.
         harness.evaluate("rightDrawer.resetChatScreens({ownerKey:'o1',runtimeGeneration:2,streamUuid:'s1'})");
         QCOMPARE(harness.readString("currentChatScreen"), QString(""));
         QCOMPARE(harness.readInt("topScreenCount"), 1);

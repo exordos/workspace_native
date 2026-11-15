@@ -179,6 +179,16 @@ ApplicationWindow {
         streamUuid: root.controller.selectedStream
     })
     function resetRightDrawerChatScreens() {
+        // The live scope is only meaningful for an authenticated session. The
+        // unauthenticated projection reports an empty scope, and treating that
+        // as a scope change let a controller signal emitted inside a drawer
+        // change cascade (the reveal-driven key refresh firing stateChanged)
+        // wipe the open chat screens mid-cascade and trip binding-loop
+        // detection on topScreen (Bug #300). Logout already drops everything
+        // via clearAll, so an unauthenticated reset can only ever act on
+        // unknown information.
+        if (!root.controller.authenticated)
+            return;
         rightDrawer.resetChatScreens(root.rightDrawerChatScope);
     }
     onRightDrawerRuntimeGenerationChanged: root.resetRightDrawerChatScreens()
