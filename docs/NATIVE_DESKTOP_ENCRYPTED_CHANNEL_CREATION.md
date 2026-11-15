@@ -189,25 +189,40 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   create, restarts included. If the dispatch marker itself cannot be written,
   creation is rejected locally and the stage cleared on the spot: at that
   point the POST has provably not been dispatched and never will be, so the
-  reclaim is safe. Residual hole (closed by conclusive-absence evidence): a
-  crash between the durable marker and the actual socket write leaves a
-  `dispatch-attempted` stage whose POST also never left, and whose stream
-  answers `404` to every recovery GET forever — retention alone could never
-  remove it, so a bounded run of such crashes would permanently exhaust the
-  budget. Each recovery scan cycle that gets a DEFINITIVE `404` durably
-  bumps the stage record's `missingEvidence` counter; a `2xx` answer (the
-  stream exists) resets it to `0`; transport errors and `5xx` prove neither
-  presence nor absence and leave it untouched. The controller retires the
-  stage only once FIVE consecutive definitive `404` observations recorded
-  across SEPARATE scan cycles are on the record AND the stage is at least
-  10 minutes old (`minimumChannelStageMissingObservations` /
-  `minimumChannelStageReclaimAgeMs`). That combination is what keeps the R2
-  retention contract closed: a POST still in flight or still committing is
-  never reclassified — in-session the live intent is skipped by the scan and
-  only the POST's own definite rejection (400/401/403/404) or the verified
-  echo closes it, and after a restart a late commit lands within seconds,
-  long before the age floor, where its first `2xx` re-verifies the echo and
-  voids the evidence. Stage records written before this contract existed
+  reclaim is safe. Dormant quarantine (review finding 4576535469, which
+  replaces the earlier conclusive-absence reclaim): a crash between the
+  durable marker and the actual socket write leaves a `dispatch-attempted`
+  stage whose POST also never left, and whose stream answers `404` to every
+  recovery GET forever — retention alone could never remove it. But a `404`
+  proves absence now, not a terminal outcome: a POST that was dispatched
+  but whose response was never observed may still commit server-side
+  arbitrarily late, and this client can observe no deadline or cancellation
+  for the attempt. Because a `dispatch-attempted` stage can hold the only
+  copy of the group key, recovery must never destroy it on absence evidence
+  alone — an earlier revision retired such stages after five definitive
+  `404` observations across separate cycles once the stage aged past 10
+  minutes, and that reclaim deleted the key of a channel whose POST landed
+  late. Now each scan cycle that gets a DEFINITIVE `404` durably bumps the
+  stage record's `missingEvidence` counter (a `2xx` answer — the stream
+  exists — resets it to `0`; transport errors and `5xx` prove neither
+  presence nor absence and leave it untouched), and the counter saturates
+  at `minimumChannelStageMissingObservations`. A stage at saturation is
+  DORMANT: its group key and attempt identity stay in the same durable
+  stage record, inside the same bounded 32-record create budget — dormant
+  records are ordinary stage records, never a separate quota and never
+  evicted — and the bounded backoff rescans keep re-checking them. When a
+  later cycle's GET finally serves the stream, the verified echo commits
+  the key and frees the slot (re-adoption). The residual starvation bound
+  this design accepts: 32 dispatched-but-unresolved attempts hold the whole
+  budget and a later encrypted create is rejected locally until one of the
+  dormant streams lands — the only alternative, evicting dormant keys,
+  would restore exactly the key loss this finding reported. The mechanism
+  keeps the R2 retention contract closed: a POST still in flight or still
+  committing is never reclassified — in-session the live intent is skipped
+  by the scan and only the POST's own definite rejection (400/401/403/404)
+  or the verified echo closes it, and after a restart a late commit is
+  found by the re-arming rescans, where the first verifying `2xx` commits
+  the key and clears the stage. Stage records written before this contract existed
   carry no phase and decode as `dispatch-attempted` with zero evidence (the
   same never-lossy default).
 - Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
@@ -283,11 +298,16 @@ any recovery GET for the never-dispatched attempts
 (`encryptedChannelCreationCrashBeforeDispatchStagesCannotStarveLaterCreates`);
 and the guard that a dispatched stage whose recovery sees `404` is retained,
 never retired (`encryptedChannelCreationDispatchAttemptedStageSurvivesRecoveryScan`).
-The conclusive-absence follow-ups add: 32 dispatch-attempted stages whose
-streams 404 forever are reclaimed from durable evidence accumulated across
-separate scan cycles, freeing the budget for a later create
-(`encryptedChannelCreationDispatchAttemptedStagesWithConclusiveMissingEvidenceAreReclaimed`);
-and recovery re-arming with bounded backoff after the fast retry window ends
+The R6 dormant quarantine (finding 4576535469) removes the absence-based
+retire: a dispatch-attempted stage is never deleted on 404 evidence alone —
+it saturates its durable absence counter, stays DORMANT with its key inside
+the bounded create budget, and is re-adopted when its late stream finally
+lands (`encryptedChannelCreationDispatchAttemptedKeySurvivesConclusiveAbsence`;
+`encryptedChannelCreationDispatchAttemptedStagesGoDormantWithoutKeyLoss`
+additionally pins the accepted residual bound: a dormant-full budget
+rejects a new encrypted create locally rather than evicting any key, and
+after re-adoption creates complete again); recovery re-arms with bounded
+backoff after the fast retry window ends
 while the failure is still in effect, so an outage longer than the window
 still commits the stage in-session
 (`encryptedChannelCreationRecoveryReArmsAfterFastRetryWindowEnds`).
