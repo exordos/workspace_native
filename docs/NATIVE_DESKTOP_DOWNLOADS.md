@@ -109,3 +109,16 @@ native picker, packaged installation, Windows/macOS and a full matched-pixel
 reference comparison were not run. The reference contracts are the pinned
 workspace_ui `workspace-file-download.lib.ts`, `workspace-downloads.ts`,
 `top-bar-download-center.ui.tsx` and `top-bar-download-row.ui.tsx`.
+# Windows staging permission regression
+
+The standalone Qt Core/Test project in
+`packages/native/tests/windows-file-staging` exercises the production staging
+helper on native Windows without building or accepting the full application.
+It substitutes a real directory junction immediately before the helper's file
+creation syscall, publishes the verified bytes, and attempts a real read with
+a restricted token that must be granted Everyone access. A public control file
+proves that the restricted reader is functional. The contract is that the
+download remains readable by its owner while the substituted parent cannot
+grant another principal access. Existing-destination preservation is checked
+separately. The dedicated Windows workflow has read-only repository permissions
+and a bounded runtime; it does not package or release the application.
