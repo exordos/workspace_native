@@ -5603,8 +5603,19 @@ private slots:
     // Issue #222: a quoted e2ee origin inside the opened encrypted conversation
     // follows the chat-prepared decryption states (locked -> ready, error plus
     // the per-message retry path) instead of collapsing into "unavailable".
+    void e2eeQuoteOriginFollowsChatPreparedDecryptionStates_data()
+    {
+        QTest::addColumn<bool>("fetched");
+        QTest::addColumn<QString>("fence");
+        QTest::newRow("loaded-origin") << false << QString{};
+        QTest::newRow("fetched-origin") << true << QString{};
+        QTest::newRow("fetched-close-before-decrypt") << true << QString("close");
+        QTest::newRow("fetched-switch-after-decrypt") << true << QString("switch");
+        QTest::newRow("fetched-logout-after-decrypt") << true << QString("logout");
+    }
     void e2eeQuoteOriginFollowsChatPreparedDecryptionStates()
     {
+        QFETCH(bool, fetched); QFETCH(QString, fence);
         auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
         auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
         auto wrongKey = NativeChatCrypto::createGroupKey(); QVERIFY(wrongKey);
@@ -5635,8 +5646,10 @@ private slots:
         Fixture f; f.stream = fullEncryptedStream();
         const auto normal = f.http.handler;
         f.http.handler = [&, origin, reply](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
-                return Response{QJsonArray{origin, reply}, 200};
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                if (QUrlQuery(request.target).hasQueryItem("uuid")) return Response{QJsonArray{origin}, 200};
+                return Response{fetched ? QJsonArray{reply} : QJsonArray{origin, reply}, 200};
+            }
             return normal(request);
         };
         // Manual start: this fixture conversation holds two history rows (start() pins one).
@@ -5647,7 +5660,7 @@ private slots:
         f.controller.selectStream(streamId);
         QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
         f.controller.selectTopic(topicId);
-        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 2; }, 2000), "history");
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == (fetched ? 1 : 2); }, 2000), "history");
         bool opened = false;
         f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
             [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
@@ -5688,6 +5701,37 @@ private slots:
         QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
         QSignalSpy transitions(&f.controller, &NativeController::decryptRetryStateChanged);
         QVERIFY(transitions.isValid());
+        if (!fence.isEmpty()) {
+            {
+                const QSignalBlocker quiet(&f.vault);
+                QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+                const auto repaired = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+                QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, repaired.value.deletionRevision),
+                    NativeChatKeyVault::Failure::None);
+            }
+            bool interrupted = false, publishedPlaintext = false;
+            const auto observe = QObject::connect(&f.controller, &NativeController::messagesChanged, [&] {
+                publishedPlaintext = publishedPlaintext || displayed(f.controller, replyId).value("quoteContent").toString()
+                    == QString("Origin secret body");
+            });
+            const auto interrupt = QObject::connect(&f.controller, &NativeController::decryptRetryStateChanged, [&] {
+                if (interrupted) return;
+                const bool pending = f.controller.decryptRetryPendingUuids().contains(originId);
+                if ((fence == "close") != pending) return;
+                interrupted = true;
+                if (fence == "close") f.vault.close();
+                else if (fence == "switch") f.controller.selectTopic(secondTopicId);
+                else f.controller.logout();
+            });
+            const auto disconnect = qScopeGuard([&] { QObject::disconnect(observe); QObject::disconnect(interrupt); });
+            f.controller.retryMessageDecrypt(originId);
+            QTRY_VERIFY(interrupted);
+            QTRY_VERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
+            QCoreApplication::processEvents();
+            QVERIFY(!publishedPlaintext);
+            QVERIFY(displayed(f.controller, replyId).value("quoteContent").toString().isEmpty());
+            return;
+        }
         f.controller.retryMessageDecrypt(originId);
         QVERIFY(f.controller.decryptRetryPendingUuids().contains(originId));
         QCOMPARE(transitions.size(), 1);
@@ -5698,11 +5742,20 @@ private slots:
         QVERIFY(f.controller.decryptRetryPendingUuids().isEmpty());
 
         // Repaired material returns the frame to ready with the decrypted text.
-        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
-        const auto repairedSlot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
-        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, repairedSlot.value.deletionRevision),
-            NativeChatKeyVault::Failure::None);
+        {
+            // Model a recovered store without its automatic key-change refresh:
+            // the explicit Retry must read the now-correct material itself.
+            const QSignalBlocker quiet(&f.vault);
+            QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+            const auto repairedSlot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+            QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, repairedSlot.value.deletionRevision),
+                NativeChatKeyVault::Failure::None);
+        }
+        QCOMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        f.controller.retryMessageDecrypt(originId);
+        QTRY_COMPARE(transitions.size(), 4);
         QTRY_COMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(f.controller.messages().size(), fetched ? 1 : 2);
         QCOMPARE(displayed(f.controller, replyId).value("quoteContent").toString(), QString("Origin secret body"));
     }
 
@@ -9789,10 +9842,14 @@ private slots:
     // repair replaces the row body with the decrypted text.
     void uiE2eeQuoteErrorFrameRetryRepairsTheOrigin_data() {
         QTest::addColumn<QString>("locale");
-        QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
+        QTest::addColumn<bool>("fetched");
+        QTest::newRow("loaded-en") << QString("en") << false;
+        QTest::newRow("loaded-ru") << QString("ru") << false;
+        QTest::newRow("fetched-en") << QString("en") << true;
+        QTest::newRow("fetched-ru") << QString("ru") << true;
     }
     void uiE2eeQuoteErrorFrameRetryRepairsTheOrigin() {
-        QFETCH(QString, locale);
+        QFETCH(QString, locale); QFETCH(bool, fetched);
         auto replyKey = NativeChatCrypto::createGroupKey(); QVERIFY(replyKey);
         auto originKey = NativeChatCrypto::createGroupKey(); QVERIFY(originKey);
         auto wrongKey = NativeChatCrypto::createGroupKey(); QVERIFY(wrongKey);
@@ -9823,8 +9880,10 @@ private slots:
         Fixture f; f.stream = fullEncryptedStream();
         const auto normal = f.http.handler;
         f.http.handler = [&, origin, reply](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/")
-                return Response{QJsonArray{origin, reply}, 200};
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                if (QUrlQuery(request.target).hasQueryItem("uuid")) return Response{QJsonArray{origin}, 200};
+                return Response{fetched ? QJsonArray{reply} : QJsonArray{origin, reply}, 200};
+            }
             return normal(request);
         };
         f.controller.login(f.tls.origin().toString(), "Synthetic", "synthetic-password", "");
@@ -9834,7 +9893,7 @@ private slots:
         f.controller.selectStream(streamId);
         QVERIFY2(QTest::qWaitFor([&] { return f.controller.topics().size() == 2; }, 2000), "topics");
         f.controller.selectTopic(topicId);
-        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == 2; }, 2000), "history");
+        QVERIFY2(QTest::qWaitFor([&] { return !f.controller.busy() && f.controller.messages().size() == (fetched ? 1 : 2); }, 2000), "history");
         bool opened = false;
         f.vault.open(f.tls.origin(), projectId, userId, f.deviceName,
             [&opened](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
@@ -9879,11 +9938,18 @@ private slots:
         QTRY_VERIFY(retry->isEnabled());
         QVERIFY(row->isVisible());
         // Repairing the material replaces the row body with the decrypted text.
-        QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
-        const auto slot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
-        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, slot.value.deletionRevision),
-            NativeChatKeyVault::Failure::None);
+        {
+            const QSignalBlocker quiet(&f.vault);
+            QCOMPARE(f.vault.remove(f.vault.lease(), {streamId, OtherGeneration}), NativeChatKeyVault::Failure::None);
+            const auto slot = f.vault.read(f.vault.lease(), {streamId, OtherGeneration});
+            QCOMPARE(f.vault.put(f.vault.lease(), {streamId, OtherGeneration}, originKey.bytes, slot.value.deletionRevision),
+                NativeChatKeyVault::Failure::None);
+        }
+        QCOMPARE(displayed(f.controller, replyId).value("quoteStatus").toString(), QString("error"));
+        encryptedUiClick(retry);
+        QTRY_COMPARE(transitions.size(), 4);
         QTRY_VERIFY(displayed(f.controller, replyId).value("quoteStatus").toString() == QLatin1String("ready"));
+        QCOMPARE(f.controller.messages().size(), fetched ? 1 : 2);
         QTRY_VERIFY(!row->isVisible());
         auto *body = encryptedUiItem(window, "quoteBodyHtml-" + replyId);
         QVERIFY(body && body->isVisible());
