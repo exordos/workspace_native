@@ -277,6 +277,13 @@ if(BUILD_TESTING)
             target_compile_definitions(${test}-test PRIVATE
                 WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
         endif()
+        if(test STREQUAL "native-controller")
+            # R9 (review finding 4576938732): source-contract guard — the
+            # unresolved create-stage inventory and its check/discard entry
+            # points must stay wired into the shipped Main.qml UI.
+            target_compile_definitions(${test}-test PRIVATE
+                WORKSPACE_NATIVE_MAIN_QML_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
+        endif()
         # Only the window harness loads the scene; the production executable embeds
         # the same sources as a QML module so deployment scans its actual imports.
         if(test STREQUAL "native-window")
