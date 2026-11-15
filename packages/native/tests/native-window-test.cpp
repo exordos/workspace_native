@@ -2477,6 +2477,8 @@ struct NativeWindowScene {
     MockServer server;
     ApiClient api;
     Session session;
+    std::unique_ptr<FileClient> files;
+    std::unique_ptr<MessageImages> images;
     NativeController controller;
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
@@ -2492,7 +2494,7 @@ struct NativeWindowScene {
         return QStringLiteral("81000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
     }
 
-    NativeWindowScene()
+    explicit NativeWindowScene(bool withImages = false)
         : preferences(preferencesDirectory.filePath("preferences.ini")),
           api(nullptr, true), session(&api), controller(&api, &session)
     {
@@ -2542,7 +2544,12 @@ struct NativeWindowScene {
             }
             return sessionResponse(request);
         };
-        loadNativeUi(engine, &controller, &preferences);
+        if (withImages) {
+            files = std::make_unique<FileClient>(&api);
+            images = std::make_unique<MessageImages>(&api, &session, files.get());
+            controller.useFiles(files.get());
+        }
+        loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, images.get());
         window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
     }
     ~NativeWindowScene()
@@ -20162,6 +20169,246 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
     }
 
+
+    void quickReactionsPaintAndReceiveClicksAboveAdjacentMessages_data()
+    {
+        QTest::addColumn<bool>("own");
+        QTest::addColumn<QString>("state");
+        QTest::addColumn<bool>("checkPaint");
+        for (bool own : {false, true})
+            for (const QString &state : {QString("initial"), QString("revisited"), QString("image-update")})
+                for (bool paint : {false, true})
+                    QTest::newRow(qPrintable(QString("%1-%2-%3")
+                        .arg(own ? "own" : "peer", state, paint ? "paint" : "click")))
+                        << own << state << paint;
+    }
+
+    void quickReactionsPaintAndReceiveClicksAboveAdjacentMessages()
+    {
+        QFETCH(bool, own);
+        QFETCH(QString, state);
+        QFETCH(bool, checkPaint);
+        NativeWindowScene scene(state == "image-update");
+        for (auto it = scene.history.begin(); it != scene.history.end(); ++it) {
+            it.value()["is_own"] = own;
+            if (!own) it.value()["author_uuid"] = returnedId;
+            it.value()["reactions"] = QJsonObject{};
+            it.value()["reaction_users"] = QJsonObject{};
+        }
+        std::function<void()> deliverImage;
+        const QString fileId = "83000000-0000-4000-8000-000000000172";
+        const auto png = avatarProbePng(false);
+        auto metadata = avatarProbeMetadata(fileId, png);
+        metadata["stream_uuid"] = streamId;
+        if (state == "image-update")
+            scene.history[44]["payload"] = QJsonObject{{"kind", "markdown"},
+                {"content", "Before image\n\n![fixture](urn:image:" + fileId + ")"}};
+        else if (state == "revisited")
+            scene.history[44]["payload"] = QJsonObject{{"kind", "markdown"},
+                {"content", QString("Variable height fixture\n").repeated(4)}};
+        QJsonArray posted;
+        const auto originalHandler = scene.server.handler;
+        scene.server.handler = [&](const Request &request) -> Response {
+            const auto filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (request.target.path() == filePath) return Response{metadata};
+            if (request.target.path() == filePath + "/actions/download") {
+                Response response;
+                response.rawBody = png;
+                response.rawContentType = "image/png";
+                response.defer = [&](auto send) { deliverImage = std::move(send); };
+                return response;
+            }
+            if (request.target.path().endsWith("/message_reactions/") && request.method == "GET")
+                return Response{QJsonArray{}};
+            if (request.target.path().endsWith("/message_reactions/") && request.method == "POST") {
+                posted.append(request.body);
+                return Response{QJsonObject{}, 503}; // Keep the mutation observable without replacing the rows.
+            }
+            return originalHandler(request);
+        };
+        const auto restoreHandler = qScopeGuard([&] { scene.server.handler = originalHandler; });
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *content = window->contentItem();
+        auto *list = item(content, "messageList");
+        QVERIFY(list);
+        const auto outside = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        if (state == "revisited") {
+            for (int step = 0; step < 8; ++step) {
+                QTest::wheelEvent(window, outside, QPoint(0, 120));
+                QTest::qWait(10);
+            }
+            QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+            QTest::qWait(100);
+        }
+        const auto id = NativeWindowScene::messageUuid(46);
+        QTRY_VERIFY(item(content, "message-" + id));
+        auto *bubble = item(content, "message-" + id);
+        QTest::mouseMove(window, bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *trigger = item(content, "add-reaction-" + id);
+        QVERIFY(trigger);
+        QTest::mouseMove(window, trigger->mapToScene(QPointF(trigger->width() / 2, trigger->height() / 2)).toPoint());
+        auto *capsule = item(content, "quickReactionCapsule-" + id);
+        QVERIFY(capsule);
+        QTRY_VERIFY(capsule->property("expanded").toBool());
+        auto *viewport = item(content, "quick-reactions-" + id);
+        QVERIFY(viewport);
+        if (state == "image-update") {
+            const auto photo = [&] { return visibleItem(content, "inline-image-" + NativeWindowScene::messageUuid(44)); };
+            QVERIFY(photo());
+            QTRY_VERIFY(bool(deliverImage));
+            const auto placeholderHeight = photo()->height();
+            deliverImage();
+            QTRY_VERIFY(photo() && photo()->height() != placeholderHeight);
+            QTest::qWait(100);
+            QTRY_COMPARE(photo()->property("naturalHeight").toReal(), qreal(64));
+            QVERIFY(capsule->property("expanded").toBool());
+        }
+        viewport->forceActiveFocus(Qt::TabFocusReason);
+        QTest::mouseMove(window, outside.toPoint());
+        // Keep the real keyboard-owned capsule open while taking matched frames.
+        QTest::keyClick(window, Qt::Key_End);
+        QQuickItem *choice = nullptr;
+        QQuickItem *neighbor = nullptr;
+        QRectF overlap;
+        const QRectF visible = viewport->mapRectToScene(viewport->boundingRect());
+        for (const auto *name : {"clap", "cry", "open_mouth", "joy", "thumbs_up"}) {
+            auto *candidate = item(content, "quick-reaction-" + id + "-" + name);
+            if (!candidate) continue;
+            const auto cell = candidate->mapRectToScene(candidate->boundingRect());
+            if (!visible.contains(cell)) continue;
+            for (int number = 40; number < 46; ++number) {
+                auto *other = item(content, "message-" + NativeWindowScene::messageUuid(number));
+                if (!other) continue;
+                // Compare opaque pixels, excluding the capsule's rounded corners
+                // where the neighboring bubble is correctly visible underneath.
+                const auto intersection = cell.adjusted(6, 6, -6, -6).intersected(
+                    other->mapRectToScene(other->boundingRect()).adjusted(3, 3, -3, -3));
+                if (intersection.width() > 7 && intersection.height() > 7) {
+                    choice = candidate; neighbor = other; overlap = intersection; break;
+                }
+            }
+            if (choice) break;
+        }
+        if (qEnvironmentVariableIsSet("CASSI_NATIVE_TEST_QUICK_SCREENSHOT"))
+            window->grabWindow().save(qEnvironmentVariable("CASSI_NATIVE_TEST_QUICK_SCREENSHOT"));
+        QVERIFY2(choice && neighbor, "The fixture must overlap a visible emoji with an adjacent bubble");
+        const auto outerBefore = list->property("contentY").toReal();
+        const auto bubbleBefore = bubble->mapRectToScene(bubble->boundingRect());
+        const auto chosenName = choice->objectName().mid(QString("quick-reaction-" + id + "-").size());
+        QTest::mouseMove(window, overlap.center().toPoint());
+        QTest::qWait(250);
+        QVERIFY(capsule->property("expanded").toBool());
+        QCOMPARE(list->property("contentY").toReal(), outerBefore);
+        QCOMPARE(bubble->mapRectToScene(bubble->boundingRect()), bubbleBefore);
+        if (checkPaint) {
+            QTest::qWait(50);
+            const auto actual = window->grabWindow();
+            neighbor->setVisible(false);
+            QTest::qWait(50);
+            const auto uncovered = window->grabWindow();
+            neighbor->setVisible(true);
+            const auto scale = actual.devicePixelRatio();
+            const QRect pixels(qRound(overlap.x() * scale), qRound(overlap.y() * scale),
+                qRound(overlap.width() * scale), qRound(overlap.height() * scale));
+            QCOMPARE(actual.copy(pixels), uncovered.copy(pixels));
+        } else {
+            QTest::mouseClick(window, Qt::LeftButton, {}, overlap.center().toPoint());
+            QTRY_COMPARE(posted.size(), 1);
+            QCOMPARE(posted.first().toObject().value("message_uuid").toString(), id);
+            QCOMPARE(posted.first().toObject().value("emoji_name").toString(),
+                chosenName);
+        }
+        if (checkPaint) {
+            QCOMPARE(list->property("contentY").toReal(), outerBefore);
+            QCOMPARE(bubble->mapRectToScene(bubble->boundingRect()), bubbleBefore);
+        }
+    }
+
+    void quickReactionWheelStaysInsideCapsule_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"overflow", "top", "bottom", "fits", "precise", "precise-top", "precise-bottom", "precise-fits", "border", "fine-angle"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+
+    void quickReactionWheelStaysInsideCapsule()
+    {
+        QFETCH(QString, scenario);
+        NativeWindowScene scene;
+        const auto id = NativeWindowScene::messageUuid(49);
+        scene.history[49]["payload"] = QJsonObject{{"kind", "markdown"},
+            {"content", QString("Reaction wheel fixture\n").repeated(12)}};
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *content = window->contentItem();
+        auto *list = item(content, "messageList");
+        auto *bubble = item(content, "message-" + id);
+        QVERIFY(list && bubble);
+        QTest::mouseMove(window, bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *trigger = item(content, "add-reaction-" + id);
+        QVERIFY(trigger);
+        QTest::mouseMove(window, trigger->mapToScene(QPointF(trigger->width() / 2, trigger->height() / 2)).toPoint());
+        auto *capsule = item(content, "quickReactionCapsule-" + id);
+        QVERIFY(capsule);
+        QTRY_VERIFY(capsule->property("expanded").toBool());
+        auto *viewport = item(content, "quick-reactions-" + id);
+        QVERIFY(viewport);
+        if (scenario.endsWith("fits")) {
+            auto choices = capsule->property("choices").value<QJSValue>().toVariant().toList();
+            QVERIFY(choices.size() >= 2);
+            capsule->setProperty("choices", choices.mid(0, 2));
+            QTRY_VERIFY(viewport->property("contentHeight").toReal() <= viewport->height());
+        } else {
+            QTRY_VERIFY(viewport->property("contentHeight").toReal() > viewport->height());
+        }
+        const auto maximum = std::max(qreal(0), viewport->property("contentHeight").toReal() - viewport->height());
+        viewport->setProperty("contentY", scenario.endsWith("top") ? 0 : scenario == "precise" || scenario == "fine-angle" ? maximum / 2 : maximum);
+        const auto innerBefore = viewport->property("contentY").toReal();
+        const auto outerBefore = list->property("contentY").toReal();
+        const auto anchorBefore = bubble->mapToScene(QPointF());
+        const auto center = viewport->mapToScene(QPointF(scenario == "border" ? -1 : viewport->width() / 2, viewport->height() / 2));
+        QTest::mouseMove(window, center.toPoint());
+        const auto send = [&](QPoint pixelDelta, QPoint angleDelta, Qt::ScrollPhase phase) {
+            QWheelEvent event(center, window->mapToGlobal(center), pixelDelta, angleDelta,
+                Qt::NoButton, Qt::NoModifier, phase, false, Qt::MouseEventSynthesizedBySystem);
+            event.setAccepted(false);
+            QCoreApplication::sendEvent(window, &event);
+            return event.isAccepted();
+        };
+        if (scenario.startsWith("precise")) {
+            QVERIFY(send({}, {}, Qt::ScrollBegin));
+            const int direction = scenario == "precise-bottom" ? -1 : 1;
+            for (int step = 0; step < 3; ++step) QVERIFY(send(QPoint(0, direction), QPoint(0, direction), Qt::ScrollUpdate));
+            QVERIFY(send({}, {}, Qt::ScrollEnd));
+            QTest::qWait(100);
+            QCOMPARE(viewport->property("contentY").toReal(), scenario == "precise" ? innerBefore - 3 : innerBefore);
+            if (scenario == "precise") {
+                QVERIFY(send({}, {}, Qt::ScrollBegin));
+                QVERIFY(send(QPoint(0, -2), QPoint(0, -2), Qt::ScrollUpdate));
+                QVERIFY(send({}, {}, Qt::ScrollEnd));
+                QCOMPARE(viewport->property("contentY").toReal(), innerBefore - 1);
+            }
+        } else if (scenario == "fine-angle") {
+            QVERIFY(send({}, QPoint(0, 1), Qt::NoScrollPhase));
+            QVERIFY(qAbs(viewport->property("contentY").toReal() - (innerBefore - 0.3)) < 0.01);
+            QVERIFY(send({}, QPoint(0, -1), Qt::NoScrollPhase));
+            QCOMPARE(viewport->property("contentY").toReal(), innerBefore);
+        } else {
+            QVERIFY(send({}, QPoint(0, scenario == "bottom" ? -120 : 120), Qt::NoScrollPhase));
+            QTest::qWait(150);
+            qInfo() << "wheel inner" << innerBefore << viewport->property("contentY").toReal() << "outer" << outerBefore << list->property("contentY").toReal();
+            if (scenario == "overflow" || scenario == "border") QVERIFY(viewport->property("contentY").toReal() < innerBefore);
+            else QCOMPARE(viewport->property("contentY").toReal(), innerBefore);
+        }
+        QCOMPARE(list->property("contentY").toReal(), outerBefore);
+        QCOMPARE(bubble->mapToScene(QPointF()), anchorBefore);
+        QVERIFY(capsule->property("expanded").toBool());
+        const auto outside = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QTest::mouseMove(window, outside.toPoint());
+        QTest::wheelEvent(window, outside, QPoint(0, 120));
+        QTRY_VERIFY(list->property("contentY").toReal() < outerBefore);
+    }
 
     // Issue #142: the wheel distance must match the measured reference notch.
     // The reference (workspace_ui) never remaps the vertical wheel:

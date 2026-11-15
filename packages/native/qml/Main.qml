@@ -3584,7 +3584,14 @@ ApplicationWindow {
                     // did not move. A WheelHandler inside a ListView would
                     // swallow the wheel instead; verified against the wheel
                     // tests.
-                    anchors.fill: parent
+                    // Share the delegate content plane: nested controls get
+                    // first refusal, while ordinary wheels still reach this
+                    // observer before the ListView's default flick handling.
+                    parent: messageList.contentItem
+                    x: messageList.contentX
+                    y: messageList.contentY
+                    width: messageList.width
+                    height: messageList.height
                     acceptedButtons: Qt.NoButton
                     propagateComposedEvents: true
                     onWheel: function (wheel) {
@@ -4341,6 +4348,9 @@ ApplicationWindow {
                     displayIndex: index
                     readonly property bool own: Boolean(entry.own)
                     width: messageList.width - 24
+                    // The capsule can extend into another delegate. Its local
+                    // z cannot cross the Loader/list-row stacking boundary.
+                    z: messageBodyLoader.item ? messageBodyLoader.item.quickReactionsLayer : 1
                     readonly property real bodyTop: (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeader.height : 0)
                     height: bodyTop + (messageBodyLoader.active && messageBodyLoader.item ? messageBodyLoader.item.height : 0) + (serviceLast ? (index + 1 < messageList.count ? 8 : 4) : 0)
                     readId: String(entry.id)
@@ -4476,6 +4486,7 @@ ApplicationWindow {
                 }
                 component MessageContentRow: MessageBoundaryRow {
                     id: messageRow
+                    readonly property real quickReactionsLayer: quickReactions.expanded || quickReactions.hasFocus ? 3 : quickReactions.visible ? 2 : 1
                     required property var entry
                     required property int index
                     required property bool groupFirst
