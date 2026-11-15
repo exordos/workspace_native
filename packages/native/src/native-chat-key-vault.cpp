@@ -845,7 +845,11 @@ Failure NativeChatKeyVault::markCreateStageDispatchAttempted(const Lease &value,
     if (!m_database.transaction()) return Failure::Unavailable;
     Failure result = Failure::None;
     auto old = readCreateStageRecord(attempt.toLower(), result);
-    if (result != Failure::None) return finishTransaction(result); // MissingKey / Corrupt
+    if (result != Failure::None) return finishTransaction(result); // Corrupt
+    // Issue #298: same fence as setCreateStageMissingEvidence - a marker that
+    // arrives after the informed discard already removed the stage is a
+    // MissingKey no-op, never a dereference of an absent record.
+    if (!old) return finishTransaction(Failure::MissingKey);
     if (old->dispatchAttempted) { // idempotent: the phase may never move backwards
         cleanse(old->groupKey);
         return finishTransaction(Failure::None);
@@ -867,7 +871,15 @@ Failure NativeChatKeyVault::setCreateStageMissingEvidence(const Lease &value, co
     if (!m_database.transaction()) return Failure::Unavailable;
     Failure result = Failure::None;
     auto old = readCreateStageRecord(attempt.toLower(), result);
-    if (result != Failure::None) return finishTransaction(result); // MissingKey / Corrupt
+    if (result != Failure::None) return finishTransaction(result); // Corrupt
+    // Issue #298: the informed discard is the terminal authority and completes
+    // synchronously, while a recovery scan may hold a stage snapshot across
+    // its GET. When that GET answers after the discard removed the record,
+    // the late bookkeeping is a no-op: a missing stage reports MissingKey
+    // (the documented contract) instead of dereferencing an absent record or
+    // resurrecting the discarded stage from stale snapshot data. Same fence
+    // as the rotation-stage twin below and in markCreateStageDispatchAttempted.
+    if (!old) return finishTransaction(Failure::MissingKey);
     if (old->missingEvidence == evidence) { // idempotent: evidence-only bookkeeping
         cleanse(old->groupKey);
         return finishTransaction(Failure::None);

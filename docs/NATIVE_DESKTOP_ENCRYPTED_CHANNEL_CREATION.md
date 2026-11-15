@@ -266,7 +266,13 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
     permanently unreadable. An unconfirmed call is refused and changes
     nothing. A discard is a decision, not a proof attempt: no GET is issued;
     the stage record and its staged key are removed and the budget slot is
-    freed, exactly as the warned user asked.
+    freed, exactly as the warned user asked. Because the discard completes
+    synchronously it also fences the automatic scan: a recovery GET still in
+    flight when the discard ran, later answering a definitive `404`, finds the
+    stage record already gone and its late `missingEvidence` write is a
+    `MissingKey` no-op that never touches, resurrects or mis-accounts a
+    discarded record (issue #298; the vault enforces the same fence on the
+    two-phase marker write and on the rotation-stage twin).
   A never-dispatched `prepared` stage may also be `released` by a check
   without a GET (its POST provably never left any process — the same reclaim
   the recovery scan performs).
