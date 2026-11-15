@@ -739,6 +739,20 @@ or checked within small documented tolerances, so the suite is portable across
 host font stacks (issue #16). The reference window-test stand is a bare Xvnc
 session at 1440x900 with a panel-less window manager.
 
+The topic-open watchdog resolves sidebar items by their logical object name
+after its readiness wait. A topic update or cache revalidation can replace a
+delegate during that wait, so retaining the earlier raw item pointer is unsafe.
+`topicClickResolvesTheCurrentDelegateAfterReadinessWait` schedules a real
+`topic.updated` event during the wait and requires the replacement delegate to
+receive the click. Pointer-based test clicks guard item lifetime and fail clearly
+if their target disappears.
+
+This covers the test-helper crash tracked in issue #211. It does not establish a
+product crash fix or resolve the topic-opening livelock in issue #141. The
+watchdog still relaunches a crashed child once, rejects a silent child, and
+checks every monitor report for responsiveness, settled geometry and bounded
+memory.
+
 The two encrypted-read test binaries share one source file. CTest runs the core
 suite through `native-e2ee-read-test` and the visible slice through
 `native-e2ee-ui-test` with an explicit function list. Running

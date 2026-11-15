@@ -83,15 +83,31 @@ static QQuickItem *item(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
-static void click(QQuickWindow *window, QQuickItem *target, QPointF *dispatchedAt = nullptr)
+static void clickReadyItem(QQuickWindow *window, QQuickItem *target, QPointF *dispatchedAt = nullptr)
 {
     QVERIFY(target);
-    QTest::qWait(50);
     QVERIFY(target->isVisible());
     QVERIFY(target->width() > 0 && target->height() > 0);
     const auto point = target->mapToScene(QPointF(target->width() / 2, target->height() / 2));
     if (dispatchedAt) *dispatchedAt = point;
     QTest::mouseClick(window, Qt::LeftButton, {}, point.toPoint());
+}
+
+static void click(QQuickWindow *window, QQuickItem *target, QPointF *dispatchedAt = nullptr)
+{
+    const QPointer<QQuickItem> guard(target);
+    QVERIFY(guard);
+    QTest::qWait(50);
+    QVERIFY2(guard, "The click target disappeared during the readiness wait");
+    clickReadyItem(window, guard.data(), dispatchedAt);
+}
+
+static void clickCurrentItem(QQuickWindow *window, const QString &name)
+{
+    // A sidebar refresh may recreate the delegate while events are processed.
+    // Resolve its logical identity only after the readiness wait has finished.
+    QTest::qWait(50);
+    clickReadyItem(window, item(window->contentItem(), name));
 }
 
 static int itemCountWithPrefix(QQuickItem *root, const QString &prefix)
@@ -22096,6 +22112,52 @@ QTRY_VERIFY(create->property("enabled").toBool());
     }
 
 
+    void topicClickResolvesTheCurrentDelegateAfterReadinessWait()
+    {
+        WindowChannelFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("topic-click.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Topic-click window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.setRealtimeMode(true);
+        QTest::qWait(150);
+        const auto name = "topic-" + topicId;
+        QPointer<QQuickItem> original = item(window->contentItem(), name);
+        QVERIFY(original);
+        QSignalSpy retired(original, &QObject::destroyed);
+        bool applied = false;
+        QTimer::singleShot(10, &controller, [&] {
+            auto renamed = windowChannelTopic(topicId, streamId, "Renamed topic");
+            renamed["kind"] = "topic.updated";
+            applied = controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                {"uuid", "99000000-0000-4000-8000-000000000211"}, {"payload", renamed}});
+        });
+        clickCurrentItem(window, name);
+        QVERIFY(applied);
+        QCOMPARE(retired.size(), 1);
+        QVERIFY(original.isNull());
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+    }
+
     // #141: opening a populated text-only topic must not livelock the Qt Quick
     // layout (GUI thread pinned at ~1 CPU and unbounded RSS growth, reported
     // against 0.10.0; both direct topic selection and a message deep link from
@@ -22343,11 +22405,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
             *out = QString::fromUtf8(process.readAll());
             *crashed = process.exitStatus() == QProcess::CrashExit;
         };
-        // On a software-raster stand the child occasionally dies inside
-        // QQuickItem::isVisible within the first second (seen identically with
-        // and without the extended scene - a harness/renderer instability, not
-        // the reported livelock, which is CPU+RSS growth without a crash).
-        // A crashed child is therefore relaunched once; a silent child still
+        // Issue #211 traced the isVisible crash to a test click retaining a
+        // replaced sidebar delegate across its readiness wait. Resolve those
+        // targets after the wait, but keep crashes distinct from the reported
+        // livelock: a crashed child is relaunched once, a silent child still
         // fails as the reproduction, and a child that crashes twice fails too.
         const auto runMeasured = [&](const QString &phase, int timeoutMs, QString *out) {
             bool crashed = false;
@@ -22636,7 +22697,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 15000);
         session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 15000);
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.topics().size(), 2, 15000);
         // Monitors the presented scene for windowMs. An optional scroll hook
         // runs once early inside the window so the exercise happens inside
@@ -22728,7 +22789,7 @@ private slots:
         if (phase == "cache-seed") {
             // Persist one full topic page into the shared cache directory and
             // end cleanly, mirroring the installed app quitting after browsing.
-            click(window, item(content, "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             QTest::qWait(700);
             window->close();
@@ -22739,13 +22800,13 @@ private slots:
             // Cached rows appear instantly; the delayed revalidation commits
             // mid-monitor - the exact "history presented then re-positioned"
             // transition the live report froze on.
-            click(window, item(content, "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             monitor();
             cache->shutdown();
             QTRY_VERIFY_WITH_TIMEOUT(cache->stopped(), 20000);
         } else if (phase.startsWith(QLatin1String("topic-open"))) {
-            click(window, item(content, "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             monitor();
         } else if (phase == "aggregate-deeplink") {
@@ -22753,13 +22814,13 @@ private slots:
             controller.openMessageInChat(anchor);
             monitor();
         } else if (phase == "repeat-switch") {
-            click(window, item(content, "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             monitor(2000, scrollExercise);
-            click(window, item(content, "topic-" + secondTopicId));
+            clickCurrentItem(window, "topic-" + secondTopicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 20, 15000);
             monitor(2000, scrollExercise);
-            click(window, item(content, "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_COMPARE_WITH_TIMEOUT(controller.messages().size(), 50, 15000);
             monitor(2000, scrollExercise);
         } else {
