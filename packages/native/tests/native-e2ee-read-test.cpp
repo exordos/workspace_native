@@ -10676,6 +10676,96 @@ private slots:
         QVERIFY(scene.item("encryptedChatLocalKeyScreen"));
     }
 
+    // Review finding 4577281965: a check that settles unresolved after crossing
+    // the dormancy threshold must still re-read the key inventory, or the row
+    // keeps rendering the pre-dormancy badge ("Announcing…" / "Announcement in
+    // flight", no discard affordance) until some unrelated refresh happens.
+    void uiEncryptedChatKeyScreenDormantBadgeRefreshesAfterUnresolvedCheck() {
+        ProtectedChatInfoScene scene("en", "dark", true, 2, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat dormancy badge window did not close", __FILE__, __LINE__);
+        });
+        const QString pendingKey = QStringLiteral("b1b1b1b1-0000-4000-8000-0000000000b1");
+        const QString announcement = QStringLiteral("b2b2b2b2-2222-4222-8222-2222222222b2");
+        QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, pendingKey}, QByteArray(32, 'k'), 0),
+            NativeChatKeyVault::Failure::None);
+        QCOMPARE(scene.f.vault.putRotationStage(scene.f.vault.lease(), {announcement, streamId,
+            pendingKey, false, QDateTime::currentMSecsSinceEpoch()}), NativeChatKeyVault::Failure::None);
+        QCOMPARE(scene.f.vault.markRotationStageDispatched(scene.f.vault.lease(), {streamId, pendingKey}),
+            NativeChatKeyVault::Failure::None);
+        // One conclusive absence short of the dormancy threshold, and the
+        // navigation's automatic re-check passes are held inconclusive (500
+        // proves neither presence nor absence) so exactly the user's check is
+        // the one that saturates the durable evidence.
+        QCOMPARE(scene.f.vault.setRotationStageMissingEvidence(scene.f.vault.lease(),
+            {streamId, pendingKey}, 4), NativeChatKeyVault::Failure::None);
+        bool answerAbsent = false;
+        const auto previous = scene.f.http.handler;
+        scene.f.http.handler = [&](const Request &request) -> Response {
+            if (!answerAbsent && request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/messages/" + announcement)
+                return Response{QJsonObject{}, 500};
+            return previous(request);
+        };
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeysToggle"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeysList"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyRowRotation-" + pendingKey), QString("Announcing…"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + pendingKey));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        QVERIFY(scene.require("encryptedChatRotationStageBlock")->isVisible());
+        QCOMPARE(scene.text("encryptedChatRotationStageStatus"), QString("Announcement in flight"));
+        QVERIFY(!scene.item("encryptedChatRotationDiscardButton"));
+        // The user's check: the announcement answers 404 now, the fifth
+        // definitive absence saturates the durable evidence and the stage
+        // goes dormant while the check itself still settles unresolved
+        // (absence alone is never terminal for the pin).
+        answerAbsent = true;
+        // Same-window hit points can still be stale a beat after the details
+        // screen opens (the discard case documents the same re-assert loop).
+        // A repeat click while a check is in flight is ignored by the
+        // controller's one-check-per-stage guard, so retrying is safe.
+        const auto checkButton = scene.require("encryptedChatRotationCheckButton");
+        QVERIFY(QTest::qWaitFor([&] {
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (attempt)
+                    QTest::qWait(150);
+                encryptedUiClick(checkButton);
+                if (scene.text("encryptedChatRotationStageMessage").contains("not found yet"))
+                    return true;
+            }
+            return false;
+        }, 8000));
+        QTRY_VERIFY2(scene.text("encryptedChatRotationStageMessage").contains("not found yet"),
+            "the unresolved check must report its settled outcome under the rotation block");
+        QTRY_VERIFY2(([&]{
+            const auto pin = scene.f.vault.readRotationStage(scene.f.vault.lease(), {streamId, pendingKey});
+            return pin.failure == NativeChatKeyVault::Failure::None && pin.value
+                && pin.value->missingEvidence >= 5;
+        })(), "the definitive absence check must saturate the durable evidence");
+        // The settled unresolved check must refresh the inventory so the
+        // projection (the key screen derives entirely from it) repaints the
+        // dormancy: status text and the dormancy-gated discard affordance.
+        // The window's only other refresh is a stream change, which never
+        // fires here - without an inventory re-read this stays stale forever.
+        QVERIFY2(QTest::qWaitFor([&] {
+            return scene.text("encryptedChatRotationStageStatus") == QString("Announcement unresolved")
+                && scene.item("encryptedChatRotationDiscardButton");
+        }, 4000),
+            "the dormancy badge must repaint once the repeated check crosses the threshold");
+        // The settle's inventory refresh re-arms the automatic announcement
+        // re-check for the still-pinned dormant stage; let that GET land
+        // while the fixture is alive, not as a dangling callback after it.
+        QTest::qWait(500);
+    }
+
     void uiEncryptedChatKeyScreenSourceGeometry_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
     void uiEncryptedChatKeyScreenSourceGeometry() {
         QFETCH(QString, locale); QFETCH(QString, mode);

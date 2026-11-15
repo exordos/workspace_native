@@ -78,13 +78,15 @@ Item {
                 page.refresh()
         }
         // Issue #244 review 4577108887: report how a rotation-stage check or
-        // discard settled, and re-read the inventory when the decision was
-        // terminal (the freed pin repaints the row).
+        // discard settled. Review 4577281965: re-read the inventory for every
+        // settled outcome, unresolved included - a repeated check can saturate
+        // the durable absence evidence into dormancy while still settling
+        // unresolved, and without this refresh the row's dormancy badge and
+        // its discard affordance stay stale until an unrelated refresh.
         function onRotationStageResolved(streamUuid, keyUuid, outcome, message) {
             page.rotationStageMessage = String(message)
             page.rotationStageMessageKey = String(keyUuid)
-            if (String(outcome) !== "unresolved")
-                page.controller.refreshChatLocalKeys()
+            page.controller.refreshChatLocalKeys()
         }
     }
 
