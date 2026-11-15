@@ -3004,7 +3004,7 @@ void NativeController::maybeRestoreConversation()
         cancelConversationRestore(); // One automatic attempt; explicit navigation wins thereafter.
         if (route.size() != 2 || route[0].isEmpty()) return;
         if (!route[1].isEmpty()) {
-            openTopic(route[1], route[0]); // Canonical resolver owns moved/merged placement.
+            beginTopicOpening(route[1], {}, true); // Canonical resolver owns moved/merged placement.
             return;
         }
         const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &value) {
@@ -3014,7 +3014,10 @@ void NativeController::maybeRestoreConversation()
             const auto id = stream->uuid;
             selectStream(id);
         }
-        else report(tr("The saved conversation is no longer available."));
+        else {
+            preferences->recordLastConversation(owner, {}, {});
+            showInbox();
+        }
     });
 }
 
@@ -6103,6 +6106,7 @@ NativeController::MentionCollection &NativeController::mentionCollection(const Q
 
 void NativeController::closeOtherContentPages(ContentPage keep)
 {
+    cancelConversationRestore(); // A deliberate page visit retires automatic startup navigation.
     m_deepLinkTopic = {}; // A page visit retires a pending named-topic navigation.
     if (keep != ContentPage::Drafts)
         closeDrafts();
@@ -11687,6 +11691,7 @@ void NativeController::interruptTopicOpening()
 bool NativeController::topicOpeningContext(quint64 ticket) const
 {
     const auto &intent = m_topicOpening;
+    if (intent.automaticRestore && intent.restoreTicket != m_conversationRestoreTicket) return false;
     if (!intent.active || intent.ticket != ticket || !intent.api || intent.api != m_api
         || intent.owner != creationOwnerKey() || intent.generation != m_api->generation()
         || intent.catalog != m_catalog || intent.selection != m_selection
@@ -11707,13 +11712,19 @@ bool NativeController::topicOpeningContext(quint64 ticket) const
     return true;
 }
 
-void NativeController::finishTopicOpening(quint64 ticket, const QString &error)
+void NativeController::finishTopicOpening(quint64 ticket, const QString &error, bool unavailable)
 {
     if (!m_topicOpening.active || m_topicOpening.ticket != ticket) return;
     const bool current = topicOpeningContext(ticket);
+    const bool quietFallback = current && unavailable && m_topicOpening.automaticRestore;
     const QPointer<NativeController> guard(this);
     interruptTopicOpening();
     if (!guard) return;
+    if (quietFallback) {
+        if (m_statusPreferences) m_statusPreferences->recordLastConversation(creationOwnerKey(), {}, {});
+        showInbox();
+        return;
+    }
     if (current && !error.isEmpty()) m_error = error;
     emit stateChanged();
 }
@@ -11744,7 +11755,7 @@ void NativeController::openTopic(const QString &id, const QString &)
     beginTopicOpening(target);
 }
 
-void NativeController::beginTopicOpening(const QString &requested, std::optional<Topic> canonical)
+void NativeController::beginTopicOpening(const QString &requested, std::optional<Topic> canonical, bool automaticRestore)
 {
     const QPointer<NativeController> guard(this);
     const auto previousOpening = m_nextTopicOpening;
@@ -11753,6 +11764,8 @@ void NativeController::beginTopicOpening(const QString &requested, std::optional
     TopicOpening intent;
     intent.active = true;
     intent.requested = requested;
+    intent.automaticRestore = automaticRestore;
+    intent.restoreTicket = m_conversationRestoreTicket;
     intent.canonical = std::move(canonical);
     intent.owner = creationOwnerKey();
     intent.api = m_api;
@@ -11790,7 +11803,8 @@ void NativeController::beginTopicOpening(const QString &requested, std::optional
         const auto topic = result.ok() && isUuid(stream) ? creationTopicDto(raw, m_session->project(),
             stream, m_session->user()) : std::optional<Topic>{};
         if (!topic) {
-            finishTopicOpening(ticket, result.ok() ? tr("The server returned invalid topic metadata.") : result.error);
+            finishTopicOpening(ticket, result.ok() ? tr("The server returned invalid topic metadata.") : result.error,
+                result.status == 403 || result.status == 404);
             return;
         }
         // The owned DTO is canonical; requested UUID and stream hint need not match.
@@ -11816,7 +11830,8 @@ void NativeController::resolveTopicOpeningStream(quint64 ticket)
         const auto stream = result.ok() ? creationStreamDto(result.data.toObject(), m_session->project(),
             m_session->user(), false) : std::optional<Stream>{};
         if (!stream || stream->uuid != id) {
-            finishTopicOpening(ticket, result.ok() ? tr("The server returned invalid channel metadata.") : result.error);
+            finishTopicOpening(ticket, result.ok() ? tr("The server returned invalid channel metadata.") : result.error,
+                result.status == 403 || result.status == 404);
             return;
         }
         const auto known = std::find_if(m_streams.cbegin(), m_streams.cend(), [&](const Stream &row) { return row.uuid == id; });
@@ -11843,6 +11858,9 @@ void NativeController::publishTopicOpening(quint64 ticket)
 {
     if (!topicOpeningContext(ticket) || !m_topicOpening.canonical) { finishTopicOpening(ticket); return; }
     const auto topic = *m_topicOpening.canonical;
+    // Restoration has resolved authoritatively; ordinary route publication now
+    // owns cancellation, including its synchronous selection notifications.
+    m_topicOpening.automaticRestore = false;
     const QPointer<NativeController> guard(this);
     activateStream(topic.stream, nullptr, {}, &topic, ticket);
     if (!guard) return;
