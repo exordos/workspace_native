@@ -167,6 +167,22 @@ private slots:
         QVERIFY(!saved->fresh); QVERIFY(reopened.diskUsageBytes() <= reopened.diskLimitBytes());
     }
 
+    void cachedUserRetainsProfileDates()
+    {
+        QTemporaryDir directory;
+        const NativeCache::Key users{NativeCache::Kind::Users, {}, {}, {}};
+        const QJsonObject row{{"uuid", User}, {"username", "cassi"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-03T10:00:00Z"}};
+        {
+            NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
+            QVERIFY(cache.put(cache.lease(), users, {row}));
+        }
+        NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
+        const auto saved = cache.get(cache.lease(), users); QVERIFY(saved);
+        QCOMPARE(saved->rows.first().toObject().value("created_at"), row.value("created_at"));
+        QCOMPARE(saved->rows.first().toObject().value("updated_at"), row.value("updated_at"));
+    }
+
     void optionalImageAvatarReferenceSurvivesOwnedUsersCacheReopen_data()
     {
         QTest::addColumn<QJsonValue>("wireAvatar"); QTest::addColumn<QString>("expected");

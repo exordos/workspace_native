@@ -37,6 +37,7 @@
 #include <QLocale>
 #include <QRegularExpression>
 #include <algorithm>
+#include <utility>
 
 namespace workspace {
 
@@ -8296,6 +8297,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(this, &NativeController::messagesChanged, this, &NativeController::scheduleChatControls);
     connect(this, &NativeController::streamsChanged, this, &NativeController::archivedChatsChanged);
     connect(this, &NativeController::stateChanged, this, &NativeController::archivedChatsChanged);
+    connect(this, &NativeController::stateChanged, this, [this] {
+        if (m_profileLinkFailed && (m_profileLinkFailureSelection != m_selection
+            || m_profileLinkFailureInbox != m_inboxVisible || m_profileLinkFailureMentions != m_mentionsVisible
+            || m_profileLinkFailureDrafts != m_draftsVisible)) m_profileLinkFailed = false;
+    });
     connect(this, &NativeController::stateChanged, this, [this] { flushPendingDeepLink(); });
     connect(this, &NativeController::messagesChanged, this, [this] { reanchorFromWindow(); });
     connect(this, &NativeController::stateChanged, this, [this] { reanchorFromWindow(); });
@@ -9638,6 +9644,10 @@ void NativeController::reset()
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
     if (!m_startingWizardLogin) {
+        ++m_deepLinkSerial;
+        disconnect(m_profileLinkCacheDestroyed);
+        m_profileLinkSelection.reset();
+        m_profileLinkFailed = false;
         ++m_organizationAttempt;
         m_loginStep = QStringLiteral("organization");
         m_organizationRealm.clear();
@@ -12740,6 +12750,13 @@ void NativeController::reloadSnapshot()
     m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
     const auto catalog = ++m_catalog;
     resetReadState();
+    // Snapshot refresh advances selection but leaves the route unchanged.
+    // Keep only a still-current profile lookup alive; a real navigation has
+    // already changed selection and cannot be rebound.
+    if (const auto selection = m_profileLinkSelection.lock(); selection && *selection == m_selection)
+        ++*selection;
+    if (m_profileLinkFailed && m_profileLinkFailureSelection == m_selection)
+        ++m_profileLinkFailureSelection;
     ++m_selection;
     m_loading = false;
     m_snapshotActive = true;
@@ -14067,13 +14084,17 @@ bool NativeController::copyMessageImage(const QString &id)
 void NativeController::openMessageLink(const QString &url)
 {
     if (!workspace::parseExternalDeepLink(url)) return;
-    ++m_deepLinkSerial;
+    const auto serial = ++m_deepLinkSerial;
+    disconnect(m_profileLinkCacheDestroyed);
+    m_profileLinkSelection.reset();
     m_deepLinkTopic = {};
-    if (!authenticated() || busy()) {
-        m_pendingDeepLink = url;
-        return;
-    }
     m_pendingDeepLink.clear();
+    const bool defer = !authenticated() || busy();
+    if (defer) m_pendingDeepLink = url;
+    const bool clearedFailure = std::exchange(m_profileLinkFailed, false);
+    const QPointer<NativeController> guard(this);
+    if (clearedFailure) emit stateChanged();
+    if (!guard || serial != m_deepLinkSerial || defer) return;
     applyDeepLink(url);
 }
 
@@ -14083,6 +14104,16 @@ void NativeController::applyDeepLink(const QString &url)
     if (!route.has_value()) return;
     ++m_deepLinkSerial;
     m_deepLinkTopic = {};
+    if (const auto user = workspace::parseProfileShareRoute(*route)) {
+        static const QRegularExpression organization("^/org/([^/?#]+)(?:/|[?#]|$)");
+        static const QRegularExpression project("^/org/[^/?#]+/project/([^/?#]+)(?:/|[?#]|$)");
+        const auto org = organization.match(*route);
+        const auto targetProject = project.match(*route);
+        if ((org.hasMatch() && org.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0)
+            || (targetProject.hasMatch() && targetProject.captured(1).compare(m_session->project(), Qt::CaseInsensitive) != 0)) return;
+        openProfileShareLink(*user);
+        return;
+    }
     static const QRegularExpression streamRoutePattern(
         "^/org/([^/?#]+)/project/([^/?#]+)/stream/([^/?#]+)(?:/topic/([^/?#]+))?/?(?:[?#].*)?$");
     if (const auto match = streamRoutePattern.match(*route); match.hasMatch()) {
@@ -14115,6 +14146,130 @@ void NativeController::applyDeepLink(const QString &url)
     const auto message = workspace::parseMessageRoute(*route);
     if (!message.has_value()) return; // Other whitelisted routes only activate the window.
     applyMessageRoute(message->org, message->project, message->message);
+}
+
+void NativeController::dismissProfileLinkFailure()
+{
+    if (!m_profileLinkFailed) return;
+    m_profileLinkFailed = false;
+    emit stateChanged();
+}
+
+void NativeController::openProfileShareLink(const QString &user)
+{
+    const auto ticket = m_deepLinkSerial;
+    const auto owner = creationOwnerKey();
+    const auto generation = m_api->generation();
+    const auto selection = std::make_shared<quint64>(m_selection);
+    m_profileLinkSelection = selection;
+    const auto inbox = m_inboxVisible, mentions = m_mentionsVisible, drafts = m_draftsVisible;
+    const QPointer<NativeController> guard(this);
+    const auto current = [guard, ticket, owner, generation, selection, inbox, mentions, drafts] {
+        return guard && guard->authenticated() && guard->m_deepLinkSerial == ticket
+            && guard->creationOwnerKey() == owner && guard->m_api->generation() == generation
+            && guard->m_selection == *selection && guard->m_inboxVisible == inbox
+            && guard->m_mentionsVisible == mentions && guard->m_draftsVisible == drafts;
+    };
+    emit profileLinkStarted();
+    if (!current()) return;
+    auto opened = std::make_shared<bool>(false);
+    const auto open = [this, current, opened, user] {
+        if (!current() || *opened) return;
+        *opened = true;
+        emit profileLinkOpened(user);
+    };
+    const auto owned = [this, owner, user] {
+        return m_channelDirectoryOwner == owner && m_names.contains(user);
+    };
+    if (owned()) open();
+    if (!current()) return;
+    const auto fetch = [this, current, open, owned, opened, owner, user] {
+        if (!current()) return;
+        disconnect(m_profileLinkCacheDestroyed);
+        request("GET", messenger + "/users/" + user, {}, {},
+            [this, current, open, owned, opened, owner, user](const ApiResult &result) {
+            if (!current()) return;
+            const auto row = result.ok() && result.data.isObject() ? result.data.toObject() : QJsonObject{};
+            const auto source = row.value("source").toString();
+            const auto status = row.value("status").toString();
+            bool valid = row.value("uuid").toString().toLower() == user
+                && channelDirectoryChoice(row, m_session->project()).has_value()
+                && (source == "iam" || source == "zulip")
+                && (status == "active" || status == "offline" || status == "idle" || status == "do_not_disturb");
+            for (const auto *field : {"avatar", "status_text", "status_emoji"}) {
+                const auto value = row.value(field);
+                valid = valid && (value.isUndefined() || value.isNull() || value.isString());
+            }
+            for (const auto *field : {"last_ping_at", "created_at", "updated_at"})
+                valid = valid && validCreationDate(row.value(field));
+            if (valid) {
+                if (m_channelDirectoryOwner != owner) {
+                    m_names.clear(); m_channelChoices.clear(); m_channelDirectoryOwner = owner;
+                    m_channelDirectoryValid = false;
+                }
+                m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, true, m_names.value(user)));
+                if (m_cache && m_cache->available())
+                    m_cache->put(m_cacheLease, {NativeCache::Kind::Users, {}, {}, ("profile:" + user).toUtf8()},
+                        QJsonArray{row});
+                emit stateChanged();
+                if (current()) open();
+            } else if (!*opened) {
+                if (owned()) open();
+                else {
+                    m_profileLinkFailureSelection = m_selection;
+                    m_profileLinkFailureInbox = m_inboxVisible;
+                    m_profileLinkFailureMentions = m_mentionsVisible;
+                    m_profileLinkFailureDrafts = m_draftsVisible;
+                    m_profileLinkFailed = true;
+                    emit stateChanged();
+                }
+            }
+        });
+    };
+    // The directory snapshot is owner-scoped and read before the network just
+    // like resolveCachedWorkspaceUser. A cache miss never blocks the request.
+    const QPointer<NativeCacheService> cache = m_cache;
+    const auto lease = m_cacheLease;
+    if (*opened || !cache || !cache->available()) { fetch(); return; }
+    // The service suppresses callbacks while it is being destroyed. Continue
+    // resolution over the network if that happens before the cache read ends.
+    m_profileLinkCacheDestroyed = connect(cache, &QObject::destroyed, this, [current, fetch] {
+        if (current()) fetch();
+    });
+    const auto install = [this, current, open, owned, cache, lease, owner, user](std::optional<NativeCache::Entry> entry) {
+        if (!current()) return false;
+        if (owned()) return true;
+        if (!cache || m_cache != cache || m_cacheLease.owner != lease.owner
+            || m_cacheLease.generation != lease.generation || !entry) return false;
+        for (const auto &value : entry->rows) {
+            const auto row = value.toObject();
+            if (row.value("uuid").toString().toLower() != user
+                || !channelDirectoryChoice(row, m_session->project())) continue;
+            if (m_channelDirectoryOwner != owner) {
+                m_names.clear(); m_channelChoices.clear(); m_channelDirectoryOwner = owner;
+                m_channelDirectoryValid = false;
+            }
+            m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, false, {}));
+            emit stateChanged();
+            if (current()) open();
+            return true;
+        }
+        return false;
+    };
+    cache->get(lease, {NativeCache::Kind::Users, {}, {}, ("profile:" + user).toUtf8()}, this,
+        [this, current, install, fetch, cache, lease](std::optional<NativeCache::Entry> entry) {
+        if (!current()) return;
+        if (install(std::move(entry))) { if (current()) fetch(); return; }
+        if (!current()) return;
+        if (!cache || m_cache != cache || m_cacheLease.owner != lease.owner
+            || m_cacheLease.generation != lease.generation) { fetch(); return; }
+        cache->get(lease, {NativeCache::Kind::Users, {}, {}, {}}, this,
+            [current, install, fetch](std::optional<NativeCache::Entry> snapshot) {
+            if (!current()) return;
+            install(std::move(snapshot));
+            if (current()) fetch();
+        });
+    });
 }
 
 void NativeController::applyStreamRoute(const QString &org, const QString &project,

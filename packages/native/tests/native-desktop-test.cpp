@@ -232,6 +232,25 @@ private slots:
                 qPrintable(QStringLiteral("accepted: %1").arg(value)));
     }
 
+    void profileShareHashSurvivesExistingRouteAndQuery()
+    {
+        const QString uuid = "aa000000-0000-0000-0000-000000000123";
+        const QList<QPair<QString, QString>> urls{
+            {"ew://open/?view=all#user/" + uuid, "/?view=all#user/" + uuid},
+            {"ew://open/org/acme#user/" + uuid, "/org/acme#user/" + uuid},
+            {"ew://open/org/acme/project/p1/messenger?view=all#USER/" + uuid,
+                "/org/acme/project/p1/messenger?view=all#USER/" + uuid},
+        };
+        for (const auto &[url, expected] : urls) {
+            const auto route = workspace::parseExternalDeepLink(url);
+            QVERIFY2(route.has_value(), qPrintable(url));
+            QCOMPARE(*route, expected);
+            const auto user = workspace::parseProfileShareRoute(*route);
+            QVERIFY(user.has_value());
+            QCOMPARE(*user, uuid);
+        }
+    }
+
     void messageRouteExtractionReadsTheMessageTriple()
     {
         const QString uuid = "66666666-6666-4666-8666-666666666666";
