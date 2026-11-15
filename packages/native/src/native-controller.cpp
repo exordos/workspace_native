@@ -10187,7 +10187,10 @@ QVariantMap NativeController::chatActionState(const QString &id) const
     const bool pending = (hasAction && action->pending) || (hasArchive && archive->pending);
     const QString error = hasAction && (!hasArchive || action->ticket > archive->ticket)
         ? action->error : hasArchive ? archive->error : QString{};
-    return {{"available", archiveAvailable() && row != m_streams.cend() && !row->archived && !pending},
+    int pendingActions = 0;
+    for (auto it = m_chatActions.cbegin(); it != m_chatActions.cend(); ++it)
+        pendingActions += it->pending && streamOperationContext(it.key(), *it);
+    return {{"available", archiveAvailable() && row != m_streams.cend() && !row->archived && !pending && pendingActions < 32},
         {"pending", pending}, {"canArchive", canSetChatArchived(id, true)},
         {"error", error}};
 }

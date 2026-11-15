@@ -3987,6 +3987,78 @@ private slots:
             QCOMPARE(target().value("name").toString(), QString("Archived channel")); QCOMPARE(target().value("unread").toInt(), 2);
         }
     }
+    void sidebarChatActionCapacityMatchesAvailability_data()
+    {
+        QTest::addColumn<bool>("read"); QTest::addColumn<bool>("stale");
+        for (const bool read : {false, true}) for (const bool stale : {false, true})
+            QTest::addRow("%s-%s", read ? "read" : "rename", stale ? "stale-slot" : "completed-slot") << read << stale;
+    }
+    void sidebarChatActionCapacityMatchesAvailability()
+    {
+        QFETCH(bool, read); QFETCH(bool, stale);
+        Fixture f; QJsonArray streams; QStringList ids;
+        QMap<QString, QJsonObject> rows;
+        for (int i = 0; i < 33; ++i) {
+            const auto id = QString("aaaaaaaa-aaaa-4aaa-8aaa-%1").arg(i + 1, 12, 16, QLatin1Char('0'));
+            auto row = creationChannel(id, QString("Capacity %1").arg(i));
+            row["unread_count"] = 1; row["active_unread_count"] = 1;
+            rows.insert(id, row); ids.append(id); streams.append(row);
+        }
+        f.streams = [&](const Request &) { return Response{streams}; };
+        QVector<QPair<QString, std::function<void()>>> held;
+        QStringList submitted; bool drain = false;
+        const auto original = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.contains("/streams/") && (request.method == "PUT" || path.endsWith("/actions/read/invoke"))) {
+                const auto id = path.section("/streams/", 1).section('/', 0, 0);
+                submitted.append(id);
+                auto row = rows.value(id);
+                if (read) { row["unread_count"] = 0; row["active_unread_count"] = 0; }
+                else row["name"] = request.body.value("name");
+                Response response{row};
+                if (!drain) response.defer = [&, id](std::function<void()> send) { held.append({id, std::move(send)}); };
+                return response;
+            }
+            return original(request);
+        };
+        auto &c = f.controller;
+        c.login(f.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId); QTRY_COMPARE(c.streams().size(), 33);
+        const auto submit = [&](const QString &id) { if (read) c.markChatRead(id); else c.renameChat(id, "Changed"); };
+        for (int i = 0; i < 32; ++i) {
+            QVERIFY(c.chatActionState(ids[i]).value("available").toBool());
+            submit(ids[i]); QVERIFY(c.chatActionState(ids[i]).value("pending").toBool());
+        }
+        QTRY_VERIFY(!held.isEmpty());
+        const auto target = ids.last();
+        const bool advertisedUnavailable = !c.chatActionState(target).value("available").toBool();
+        QVERIFY(c.chatActionState(target).value("canArchive").toBool());
+        submit(target);
+        QVERIFY(!c.chatActionState(target).value("pending").toBool());
+        QVERIFY(!submitted.contains(target));
+        QSignalSpy changed(&c, &NativeController::streamsChanged);
+        const auto released = held.first().first;
+        if (stale) {
+            auto row = rows.value(released); row["role"] = "guest";
+            row["updated_at"] = "2026-01-02T10:02:00Z";
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.updated", row)));
+        } else held.first().second();
+        QTRY_VERIFY(!c.chatActionState(released).value("pending").toBool());
+        QVERIFY(!changed.isEmpty());
+        QVERIFY(c.chatActionState(target).value("available").toBool());
+        submit(target); QVERIFY(c.chatActionState(target).value("pending").toBool());
+        // Qt may queue requests behind its per-host transport limit. Releasing
+        // the accepted sockets lets every admitted operation reach the server.
+        drain = true;
+        const auto releases = held; held.clear();
+        for (const auto &entry : releases) if (stale || entry.first != released) entry.second();
+        QTRY_COMPARE(submitted.size(), 33);
+        QTRY_VERIFY(!c.chatActionState(target).value("pending").toBool());
+        QCOMPARE(submitted.count(target), 1);
+        QVERIFY(c.chatActionState(target).value("error").toString().isEmpty());
+        QVERIFY2(advertisedUnavailable, "The 33rd read/rename was advertised as available although admission silently rejected it");
+    }
     void sidebarNewActionReplacesPreviousFailure()
     {
         Fixture f; auto stream = creationChannel(streamId, "Original");

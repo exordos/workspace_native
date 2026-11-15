@@ -6537,6 +6537,71 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem(window->contentItem(), "streamNewTopicAction"));
     }
 
+    void sidebarFullActionCapacityKeepsArchiveIndependent()
+    {
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowChannelFixture fixture; auto target = windowChannel(streamId, "A target");
+        target["unread_count"] = 1; target["active_unread_count"] = 1;
+        QJsonArray streams{target}; QStringList busyIds; QMap<QString, QJsonObject> rows;
+        for (int i = 0; i < 32; ++i) {
+            const auto id = QString("aaaaaaaa-aaaa-4aaa-8aaa-%1").arg(i + 1, 12, 16, QLatin1Char('0'));
+            auto row = windowChannel(id, QString("Busy %1").arg(i));
+            row["unread_count"] = 1; row["active_unread_count"] = 1;
+            busyIds.append(id); rows.insert(id, row); streams.append(row);
+        }
+        QVector<std::function<void()>> held; bool drain = false; int archives = 0;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/") && request.method == "GET") return {streams};
+            if (path.endsWith("/actions/read/invoke")) {
+                auto row = rows.value(path.section("/streams/", 1).section('/', 0, 0));
+                row["unread_count"] = 0; row["active_unread_count"] = 0;
+                Response response{row};
+                if (!drain) response.defer = [&](std::function<void()> send) { held.append(std::move(send)); };
+                return response;
+            }
+            if (path.endsWith("/streams/" + streamId + "/actions/archive/invoke")) {
+                ++archives; target["is_archived"] = true;
+                target["updated_at"] = "2026-01-02T10:01:00Z";
+                return {target, 200, 100, {}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Chat capacity window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 33); QTRY_VERIFY(!controller.busy());
+        for (const auto &id : busyIds) { controller.markChatRead(id); QVERIFY(controller.chatActionState(id).value("pending").toBool()); }
+        QTRY_VERIFY(!held.isEmpty());
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
+        auto *row = item(window->contentItem(), "stream-" + streamId); row->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Menu);
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu); QTRY_VERIFY(menu->property("opened").toBool());
+        auto *read = window->findChild<QQuickItem *>("streamMarkReadAction"); QVERIFY(read);
+        auto *rename = window->findChild<QQuickItem *>("streamRenameAction"); QVERIFY(rename);
+        auto *archive = window->findChild<QQuickItem *>("streamArchiveAction"); QVERIFY(archive);
+        awaitTopicMenuLayout(window, archive, streamId);
+        QVERIFY(read->isVisible()); QVERIFY(rename->isVisible());
+        const bool unavailable = !read->isEnabled() && !rename->isEnabled();
+        QVERIFY(archive->isEnabled()); click(window, archive);
+        auto *dialog = window->findChild<QObject *>("chatActionDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *confirm = visibleItem("chatActionConfirm"); QVERIFY(confirm); QVERIFY(confirm->isEnabled());
+        click(window, confirm); QVERIFY(controller.chatActionState(streamId).value("pending").toBool()); QVERIFY(!confirm->isEnabled());
+        drain = true; const auto releases = held; held.clear(); for (const auto &release : releases) release();
+        QTRY_COMPARE(archives, 1); QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(controller.archivedChats().size(), 1);
+        QCOMPARE(controller.archivedChats().first().toMap().value("id").toString(), streamId);
+        QVERIFY2(unavailable, "The full read/rename capacity must disable both menu actions without blocking Archive");
+    }
+
     void sidebarChatActionsCompleteFromMenu_data()
     {
         QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("scenario");

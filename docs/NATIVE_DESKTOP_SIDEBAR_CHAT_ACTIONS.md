@@ -33,6 +33,10 @@ and error. Read and rename requests keep the existing owner, API generation,
 catalog, cache lease and stream ACL fences. An ACL excursion permanently retires
 the old request, even if the role later returns to its original value. Duplicate
 submissions share the pending gate; at most 32 read/rename requests are retained.
+While all slots hold valid pending requests, read and rename are unavailable in
+the menu and confirmation form. A completed or invalidated request releases its
+slot through the existing state notifications. Archive keeps its separate limit
+and remains available when only the read/rename slots are full.
 The most recent action owns its error, so a successful rename cannot display an
 older archive failure. Names longer than 255 Unicode code points report the
 existing translated channel-name validation error without sending a request.

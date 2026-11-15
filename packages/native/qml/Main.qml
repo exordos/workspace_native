@@ -887,7 +887,7 @@ ApplicationWindow {
     }
     function openChatAction(mode) {
         const stream = currentStream(streamMenuTarget);
-        if (!stream || !streamMenuState.available) return;
+        if (!stream || !(mode === "archive" ? streamMenuState.canArchive : streamMenuState.available)) return;
         chatActionTarget = stream.id;
         chatActionOwner = root.controller.ownerKey;
         chatActionContext = String(stream.contextKey || "");
@@ -900,7 +900,7 @@ ApplicationWindow {
         else chatActionDialog.open();
     }
     function submitChatAction() {
-        if (!chatActionTarget.length || chatActionState.pending || !chatActionState.available) return;
+        if (!chatActionTarget.length || chatActionState.pending || !(chatActionMode === "archive" ? chatActionState.canArchive : chatActionState.available)) return;
         const stream = currentStream(chatActionTarget);
         if (!stream) return;
         if (chatActionMode === "rename" && (!chatRenameInput.text.trim().length || chatRenameInput.text.trim() === stream.name)) return;
@@ -7989,7 +7989,7 @@ ApplicationWindow {
                     objectName: "chatActionConfirm"
                     colors: root.colors; primary: true
                     text: root.chatActionState.pending ? qsTr("Please wait…") : root.chatActionMode === "archive" ? qsTranslate("SidebarChatActions", "Archive") : root.chatActionMode === "rename" ? qsTr("Save") : qsTr("Try again")
-                    enabled: root.chatActionState.available && (root.chatActionMode !== "rename"
+                    enabled: (root.chatActionMode === "archive" ? root.chatActionState.canArchive : root.chatActionState.available) && (root.chatActionMode !== "rename"
                         || chatRenameInput.text.trim().length > 0 && chatRenameInput.text.trim() !== String((root.currentStream(root.chatActionTarget) || {}).name || ""))
                     onClicked: root.submitChatAction()
                     KeyNavigation.tab: root.chatActionMode === "rename" ? chatRenameInput : chatActionCancel
