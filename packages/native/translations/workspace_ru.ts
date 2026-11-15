@@ -1125,6 +1125,38 @@
             <source>Discard key</source>
             <translation>Удалить ключ</translation>
         </message>
+        <message>
+            <source>Mark all as read</source>
+            <translation>Отметить всё как прочитанное</translation>
+        </message>
+        <message>
+            <source>Rename</source>
+            <translation>Переименовать</translation>
+        </message>
+        <message>
+            <source>Archive chat?</source>
+            <translation>Архивировать чат?</translation>
+        </message>
+        <message>
+            <source>Archive your conversation with “%1”? The chat will be archived for both of you.</source>
+            <translation>Архивировать вашу переписку с пользователем «%1»? Чат попадёт в архив у вас обоих.</translation>
+        </message>
+        <message>
+            <source>Archive “%1” for all participants?</source>
+            <translation>Архивировать «%1» для всех участников?</translation>
+        </message>
+        <message>
+            <source>The history will remain available in New chat → Archive. You can restore the chat there.</source>
+            <translation>История останется доступна в разделе «Новый чат → Архив». Там можно восстановить чат.</translation>
+        </message>
+        <message>
+            <source>Please wait…</source>
+            <translation>Подождите…</translation>
+        </message>
+        <message>
+            <source>Try again</source>
+            <translation>Попробовать снова</translation>
+        </message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -2259,6 +2291,18 @@
         <message>
             <source>The rotation stage was discarded. If its announcement lands later, this device may never read that rotation.</source>
             <translation>Этап ротации отменён. Если его объявление будет доставлено позже, это устройство может никогда не прочитать ту ротацию.</translation>
+        </message>
+        <message>
+            <source>Could not archive the chat. Try again.</source>
+            <translation>Не удалось архивировать чат. Попробуйте снова.</translation>
+        </message>
+        <message>
+            <source>Could not mark the chat as read. Try again.</source>
+            <translation>Не удалось отметить чат как прочитанный. Попробуйте снова.</translation>
+        </message>
+        <message>
+            <source>Could not rename the chat. Try again.</source>
+            <translation>Не удалось переименовать чат. Попробуйте снова.</translation>
         </message>
 </context>
     <context>
@@ -4032,6 +4076,13 @@
         <message>
             <source>Remove download</source>
             <translation>Удалить загрузку</translation>
+        </message>
+    </context>
+    <context>
+        <name>SidebarChatActions</name>
+        <message>
+            <source>Archive</source>
+            <translation>Архивировать</translation>
         </message>
     </context>
 </TS>

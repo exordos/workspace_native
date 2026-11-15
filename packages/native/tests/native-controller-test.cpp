@@ -3916,6 +3916,183 @@ private slots:
         QTRY_VERIFY(!c.busy());
         QVERIFY2(modelMessage(c,messageId).isEmpty(),"An older in-flight REST page restored moved membership");
     }
+    void sidebarChatActionsOwnTheirTarget_data()
+    {
+        QTest::addColumn<QString>("action"); QTest::addColumn<QString>("scenario");
+        for (const auto &action : {"rename", "read", "archive"})
+            for (const auto &scenario : {"success", "refusal", "foreign", "newer", "acl", "logout", "deleted"})
+                QTest::newRow(qPrintable(QString(action) + "-" + scenario)) << QString(action) << QString(scenario);
+    }
+    void sidebarChatActionsOwnTheirTarget()
+    {
+        QFETCH(QString, action); QFETCH(QString, scenario);
+        ArchiveFixture test; auto &c = test.fixture.controller;
+        test.archived["is_archived"] = false; test.archived["unread_count"] = 2; test.archived["active_unread_count"] = 2;
+        const auto original = test.fixture.server.handler;
+        int mutations = 0;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if ((path.endsWith("/streams/"+archiveId) && request.method == "PUT")
+                || path.endsWith("/streams/"+archiveId+"/actions/read/invoke")
+                || path.endsWith("/streams/"+archiveId+"/actions/archive/invoke")) {
+                ++mutations;
+                auto response = test.archived;
+                response["updated_at"] = "2026-01-02T10:01:00Z";
+                if (action == "rename") { if (request.body.value("name").toString() != "Renamed team") return {QJsonObject{}, 400}; response["name"] = "Renamed team"; }
+                else if (action == "read") { response["unread_count"] = 0; response["active_unread_count"] = 0; }
+                else response["is_archived"] = true;
+                if (scenario == "foreign") response["user_uuid"] = otherArchiveId;
+                if (scenario == "success") test.archived = response;
+                return {response, scenario == "refusal" ? 403 : 200, 120, {}};
+            }
+            return original(request);
+        };
+        // The target is deliberately not the selected channel.
+        c.login(test.fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId); QTRY_COMPARE(c.streams().size(), 2);
+        c.selectStream(streamId); QTRY_VERIFY(!c.busy());
+        const auto target = [&] { for (const auto &v : c.streams()) if (v.toMap().value("id") == archiveId) return v.toMap(); return QVariantMap{}; };
+        const auto submit = [&] { if (action == "rename") c.renameChat(archiveId, "  Renamed team  "); else if (action == "read") c.markChatRead(archiveId); else c.archiveChat(archiveId); };
+        QSignalSpy markedRead(&c, &NativeController::conversationMarkedRead);
+        submit(); submit(); QTRY_COMPARE(mutations, 1);
+        QVERIFY(c.chatActionState(archiveId).value("pending").toBool());
+        if (scenario == "logout") c.logout();
+        else if (scenario == "deleted") QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.deleted", QJsonObject{{"uuid", archiveId}})));
+        else if (scenario == "acl" || scenario == "newer") {
+            auto event = test.archived; event["updated_at"] = "2026-01-02T10:02:00Z";
+            event["name"] = "Live name"; event["unread_count"] = 7; event["active_unread_count"] = 7;
+            if (scenario == "acl") event["role"] = "guest";
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.updated", event)));
+            if (scenario == "acl") { event["role"] = "owner"; QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.updated", event))); }
+        }
+        QTest::qWait(180);
+        QCOMPARE(mutations, 1);
+        const bool acceptedRead = action == "read" && (scenario == "success" || scenario == "newer");
+        QCOMPARE(markedRead.size(), acceptedRead ? 1 : 0);
+        if (acceptedRead) {
+            QCOMPARE(markedRead.first().at(0).toString(), archiveId);
+            QVERIFY(markedRead.first().at(1).toString().isEmpty());
+        }
+        if (scenario == "logout") { QVERIFY(!c.authenticated()); QVERIFY(c.streams().isEmpty()); return; }
+        if (scenario == "deleted") { QVERIFY(target().isEmpty()); return; }
+        QCOMPARE(c.selectedStream(), streamId);
+        if (scenario == "success") {
+            if (action == "archive") { QVERIFY(target().isEmpty()); QCOMPARE(c.archivedChats().size(), 1); c.unarchiveChat(archiveId); QTRY_VERIFY(c.archivedChats().isEmpty()); QVERIFY(!target().isEmpty()); }
+            else if (action == "rename") { QCOMPARE(target().value("name").toString(), QString("Renamed team")); QCOMPARE(target().value("unread").toInt(), 2); }
+            else { QCOMPARE(target().value("unread").toInt(), 0); QCOMPARE(target().value("name").toString(), QString("Archived channel")); }
+        } else if (scenario == "newer" || scenario == "acl") {
+            QCOMPARE(target().value("name").toString(), QString("Live name")); QCOMPARE(target().value("unread").toInt(), 7);
+        } else {
+            QVERIFY(!c.chatActionState(archiveId).value("error").toString().isEmpty());
+            QCOMPARE(target().value("name").toString(), QString("Archived channel")); QCOMPARE(target().value("unread").toInt(), 2);
+        }
+    }
+    void sidebarNewActionReplacesPreviousFailure()
+    {
+        Fixture f; auto stream = creationChannel(streamId, "Original");
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        const auto original = f.server.handler;
+        f.server.handler = [&](const Request &r) -> Response {
+            if (r.target.path().endsWith("/actions/archive/invoke")) return {QJsonObject{}, 403};
+            if (r.method == "PUT" && r.target.path().endsWith("/streams/"+streamId)) { stream["name"] = r.body.value("name"); return {stream}; }
+            return original(r);
+        };
+        QVERIFY(f.start()); auto &c = f.controller;
+        c.archiveChat(streamId); QTRY_VERIFY(!c.chatActionState(streamId).value("pending").toBool());
+        QVERIFY(!c.chatActionState(streamId).value("error").toString().isEmpty());
+        c.renameChat(streamId, "Renamed"); QTRY_COMPARE(c.streams().first().toMap().value("name").toString(), QString("Renamed"));
+        QVERIFY2(c.chatActionState(streamId).value("error").toString().isEmpty(), "A successful new action must not inherit an older archive failure");
+    }
+    void sidebarReadPreservesMessagesArrivingDuringPost()
+    {
+        Fixture f; auto stream = creationChannel(streamId, "Original");
+        stream["unread_count"] = 1; stream["active_unread_count"] = 1;
+        auto oldMessage = message(); oldMessage["read"] = false;
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        f.messages = [&](const Request &) { return Response{QJsonArray{oldMessage}}; };
+        int posts = 0; const auto original = f.server.handler;
+        f.server.handler = [&](const Request &r) -> Response {
+            if (r.target.path().endsWith("/actions/read/invoke")) {
+                ++posts; auto response = stream; response["unread_count"] = 0; response["active_unread_count"] = 0;
+                response["updated_at"] = "2026-01-02T10:01:00Z"; return {response, 200, 150, {}};
+            }
+            return original(r);
+        };
+        QVERIFY(f.start()); auto &c = f.controller; QTRY_COMPARE(c.messages().size(), 1);
+        QSignalSpy markedRead(&c, &NativeController::conversationMarkedRead);
+        c.markChatRead(streamId); QTRY_COMPARE(posts, 1);
+        auto incoming = message("New while marking read", returnedId); incoming["read"] = false;
+        incoming["created_at"] = "2026-01-02T10:02:00Z"; incoming["updated_at"] = "2026-01-02T10:02:00Z";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("message.created", incoming)));
+        stream["updated_at"] = "2026-01-02T10:02:00Z"; stream["name"] = "Concurrent name";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.updated", stream)));
+        QTRY_VERIFY(!c.chatActionState(streamId).value("pending").toBool());
+        QCOMPARE(c.streams().first().toMap().value("unread").toInt(), 1);
+        QCOMPARE(c.streams().first().toMap().value("name").toString(), QString("Concurrent name"));
+        QVERIFY(modelMessage(c, messageId).value("read").toBool());
+        QVERIFY(!modelMessage(c, returnedId).isEmpty());
+        QVERIFY(!modelMessage(c, returnedId).value("read").toBool());
+        QCOMPARE(markedRead.size(), 1);
+        QCOMPARE(markedRead.first().at(0).toString(), streamId);
+        QVERIFY(markedRead.first().at(1).toString().isEmpty());
+    }
+    void sidebarReadDoesNotFollowAMovedMessageIntoAnotherStream()
+    {
+        Fixture f; auto stream = creationChannel(streamId, "Original"); stream["unread_count"] = 1;
+        auto originalMessage = message(); originalMessage["read"] = false;
+        auto moved = originalMessage; moved["stream_uuid"] = otherArchiveId; moved["topic_uuid"] = secondTopicId;
+        moved["updated_at"] = "2026-01-02T10:02:00Z";
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        f.messages = [&](const Request &r) { return Response{QJsonArray{QUrlQuery(r.target).queryItemValue("stream_uuid") == otherArchiveId ? moved : originalMessage}}; };
+        int posts = 0; const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &r) -> Response {
+            if (r.target.path().endsWith("/actions/read/invoke")) { ++posts; auto result = stream; result["unread_count"] = 0; return {result, 200, 150, {}}; }
+            return fallback(r);
+        };
+        QVERIFY(f.start()); auto &c = f.controller; QTRY_COMPARE(c.messages().size(), 1);
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.created", creationChannel(otherArchiveId, "Destination"))));
+        c.markChatRead(streamId); QTRY_COMPARE(posts, 1);
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("message.updated", moved)));
+        QTRY_VERIFY(!c.chatActionState(streamId).value("pending").toBool());
+        f.aggregateMessages = true; c.selectStream(otherArchiveId); QTRY_COMPARE(c.messages().size(), 1);
+        QCOMPARE(c.selectedStream(), otherArchiveId);
+        QVERIFY(!modelMessage(c, messageId).isEmpty());
+        QVERIFY2(!modelMessage(c, messageId).value("read").toBool(), "Reading the old stream cannot mark a moved placement in another stream as read");
+    }
+
+    void sidebarArchiveReconcilesLostAcknowledgement_data()
+    {
+        QTest::addColumn<bool>("applied"); QTest::newRow("applied") << true; QTest::newRow("not-applied") << false;
+    }
+    void sidebarArchiveReconcilesLostAcknowledgement()
+    {
+        QFETCH(bool, applied); Fixture f; auto stream = creationChannel(streamId, "Original");
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        int posts = 0, reads = 0; const auto original = f.server.handler;
+        f.server.handler = [&](const Request &r) -> Response {
+            if (r.target.path().endsWith("/actions/archive/invoke")) { ++posts; stream["is_archived"] = applied; return {QJsonObject{}, 503}; }
+            if (r.target.path().endsWith("/streams/"+streamId) && r.method == "GET") { ++reads; return {stream}; }
+            return original(r);
+        };
+        QVERIFY(f.start()); auto &c = f.controller; const auto initialReads = reads;
+        c.archiveChat(streamId); QTRY_VERIFY(!c.chatActionState(streamId).value("pending").toBool());
+        QCOMPARE(posts, 1); QCOMPARE(reads, initialReads + 1);
+        QCOMPARE(c.archivedChats().size(), applied ? 1 : 0);
+        if (!applied) QVERIFY(!c.chatActionState(streamId).value("error").toString().isEmpty());
+    }
+
+    void sidebarRenameRejectsEmptyUnchangedAndDirect()
+    {
+        Fixture f; auto stream = creationChannel(streamId, "Original");
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        QVERIFY(f.start()); const auto before = f.server.requests.size();
+        f.controller.renameChat(streamId, "  "); f.controller.renameChat(streamId, " Original ");
+        stream["private"] = true; stream["direct_user_uuid"] = otherArchiveId;
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream.updated", stream)));
+        f.controller.renameChat(streamId, "Different");
+        QTest::qWait(50); QCOMPARE(f.server.requests.size(), before);
+    }
+
     void archiveMetadataKindsAndForeignOwners_data() {
         QTest::addColumn<QString>("kind");
         for (const auto &kind : {"ordinary", "member", "direct", "encrypted", "provider", "foreign-user", "foreign-project"}) QTest::newRow(kind) << QString(kind);

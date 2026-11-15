@@ -8899,6 +8899,7 @@ void NativeController::reset()
     m_folders.clear();
     m_selectedFolder.clear();
     m_archiveOperations.clear();
+    m_chatActions.clear();
     m_topics.clear();
     m_messages.clear();
     m_messageFields.clear();
@@ -9267,6 +9268,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             op->uncertain |= op->dispatched;
             op->pending = false;
         }
+        if (auto op = m_chatActions.find(stream->uuid); op != m_chatActions.end()
+            && (op->acl != streamAcl(authority) || stream->archived)) op->invalidated = true;
         noteTopicCreationEvent(stream->uuid);
         if (kind == QLatin1String("stream.read")) inboxSlotStreamRead(stream->uuid);
         bool matchingOwn = false;
@@ -9293,6 +9296,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (kind == "stream.read") {
             const QPointer<NativeController> positionGuard(this);
             const auto positionGeneration = m_api->generation();
+            if (m_stream == stream->uuid && m_conversationOpening.pending && !m_conversationOpening.savedAnchor.isEmpty())
+                retireConversationOpening();
             emit conversationMarkedRead(stream->uuid, {});
             if (!positionGuard || positionGeneration != m_api->generation()) return true;
             // Reading a stream drops its mention index entries
@@ -9345,6 +9350,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             op->uncertain |= op->dispatched;
             op->pending = false;
         }
+        if (m_chatActions.contains(id)) m_chatActions[id].invalidated = true;
         noteTopicCreationEvent(id);
         noteChannelCreationEvent(id, {}, true);
         noteDirectChatEvent(id, {}, true);
@@ -9419,6 +9425,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (kind == "topic.read") {
             const QPointer<NativeController> positionGuard(this);
             const auto positionGeneration = m_api->generation();
+            if (m_stream == streamId && (m_topic.isEmpty() || m_topic == topic->uuid)
+                && m_conversationOpening.pending && !m_conversationOpening.savedAnchor.isEmpty())
+                retireConversationOpening();
             emit conversationMarkedRead(streamId, topic->uuid);
             if (!positionGuard || positionGeneration != m_api->generation()) return true;
             // Reading a topic drops its mention index entries
@@ -9976,21 +9985,33 @@ QString NativeController::archiveError() const
     return authenticated() && !m_catalogVerified && !m_snapshotActive ? m_error : QString{};
 }
 
+bool NativeController::streamOperationContext(const QString &id, const ArchiveOperation &op) const
+{
+    const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
+    return !op.invalidated && op.owner == creationOwnerKey()
+        && op.generation == m_api->generation() && op.catalog == m_catalog && archiveAvailable()
+        && op.cache == m_cache && op.lease.owner == m_cacheLease.owner && op.lease.generation == m_cacheLease.generation
+        && row != m_streams.cend() && archiveAuthority(*row) == op.acl;
+}
+
 bool NativeController::archiveContext(const QString &id, quint64 ticket) const
 {
     const auto op = m_archiveOperations.constFind(id);
-    const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
-    return op != m_archiveOperations.cend() && op->ticket == ticket && !op->invalidated && op->owner == creationOwnerKey()
-        && op->generation == m_api->generation() && op->catalog == m_catalog && archiveAvailable()
-        && op->cache == m_cache && op->lease.owner == m_cacheLease.owner && op->lease.generation == m_cacheLease.generation
-        && row != m_streams.cend() && archiveAuthority(*row) == op->acl;
+    return op != m_archiveOperations.cend() && op->ticket == ticket && streamOperationContext(id, *op);
 }
 
 bool NativeController::canUnarchiveChat(const QString &id) const
 {
+    return canSetChatArchived(id, false);
+}
+
+bool NativeController::canSetChatArchived(const QString &id, bool archived) const
+{
     const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
     const auto op = m_archiveOperations.constFind(id);
-    if (!archiveAvailable() || row == m_streams.cend() || !row->archived
+    const auto action = m_chatActions.constFind(id);
+    if (!archiveAvailable() || row == m_streams.cend() || row->archived == archived
+        || (action != m_chatActions.cend() && streamOperationContext(id, *action) && action->pending)
         || (op != m_archiveOperations.cend() && archiveContext(id, op->ticket) && op->pending)) return false;
     int pending = 0;
     bool terminal = false;
@@ -10032,9 +10053,12 @@ void NativeController::openArchivedChat(const QString &id)
     if (row != m_streams.cend()) activateStream(id);
 }
 
-void NativeController::unarchiveChat(const QString &id)
+void NativeController::unarchiveChat(const QString &id) { setChatArchived(id, false); }
+void NativeController::archiveChat(const QString &id) { setChatArchived(id, true); }
+
+void NativeController::setChatArchived(const QString &id, bool archived)
 {
-    if (!canUnarchiveChat(id)) return;
+    if (!canSetChatArchived(id, archived)) return;
     const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
     const auto old = m_archiveOperations.value(id);
     const bool reconcile = old.owner == creationOwnerKey() && (old.uncertain || (old.pending && old.dispatched));
@@ -10052,7 +10076,7 @@ void NativeController::unarchiveChat(const QString &id)
     operation.owner = creationOwnerKey(); operation.acl = archiveAuthority(*row);
     operation.generation = m_api->generation(); operation.catalog = m_catalog;
     operation.cache = m_cache; operation.lease = m_cacheLease; operation.ticket = ++m_nextArchiveOperation;
-    operation.pending = true; operation.uncertain = reconcile;
+    operation.pending = true; operation.uncertain = reconcile; operation.archived = archived;
     m_archiveOperations[id] = operation;
     const QPointer<NativeController> guard(this);
     emit streamsChanged();
@@ -10065,16 +10089,16 @@ void NativeController::postUnarchive(const QString &id, quint64 ticket)
 {
     if (!archiveContext(id, ticket)) return;
     m_archiveOperations[id].dispatched = true;
-    request("POST", messenger + "/streams/" + id + "/actions/unarchive/invoke", {}, {},
+    request("POST", messenger + "/streams/" + id + (m_archiveOperations[id].archived ? "/actions/archive/invoke" : "/actions/unarchive/invoke"), {}, {},
         [this, id, ticket](const ApiResult &result) {
         if (!archiveContext(id, ticket)) return;
         const auto raw = result.data.toObject();
         const auto row = result.ok() ? creationStreamDto(raw, m_session->project(), m_session->user(), false) : std::optional<Stream>{};
-        if (row && row->uuid == id && !row->archived) { applyUnarchive(id, ticket, raw); return; }
+        if (row && row->uuid == id && row->archived == m_archiveOperations.value(id).archived) { applyUnarchive(id, ticket, raw); return; }
         // Known refusals do not imply a command was applied. Other outcomes are
         // reconciled by one exact read; never repeat a POST automatically.
         if (result.status >= 400 && result.status < 500 && result.status != 408 && result.status != 429) {
-            finishUnarchive(id, ticket, tr("Could not unarchive the chat. Try again."), false); return;
+            finishUnarchive(id, ticket, (m_archiveOperations.value(id).archived ? tr("Could not archive the chat. Try again.") : tr("Could not unarchive the chat. Try again.")), false); return;
         }
         readUnarchive(id, ticket, false);
     });
@@ -10088,7 +10112,7 @@ void NativeController::readUnarchive(const QString &id, quint64 ticket, bool may
         const auto raw = result.data.toObject();
         const auto row = result.ok() ? creationStreamDto(raw, m_session->project(), m_session->user(), false) : std::optional<Stream>{};
         if (row && row->uuid == id) {
-            if (!row->archived) { applyUnarchive(id, ticket, raw); return; }
+            if (row->archived == m_archiveOperations.value(id).archived) { applyUnarchive(id, ticket, raw); return; }
             const auto current = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
             if (mayPost && current != m_streams.cend() && row->updatedMicros >= current->updatedMicros
                 && archiveAuthority(*row) == m_archiveOperations.value(id).acl) {
@@ -10118,7 +10142,7 @@ void NativeController::readUnarchive(const QString &id, quint64 ticket, bool may
             emit streamsChanged();
             return;
         }
-        finishUnarchive(id, ticket, tr("Could not unarchive the chat. Try again."), true);
+        finishUnarchive(id, ticket, (m_archiveOperations.value(id).archived ? tr("Could not archive the chat. Try again.") : tr("Could not unarchive the chat. Try again.")), true);
     });
 }
 
@@ -10134,14 +10158,14 @@ void NativeController::applyUnarchive(const QString &id, quint64 ticket, const Q
     if (!archiveContext(id, ticket)) return;
     const auto canonical = creationStreamDto(raw, m_session->project(), m_session->user(), false);
     const auto found = std::find_if(m_streams.begin(), m_streams.end(), [&id](const Stream &v) { return v.uuid == id; });
-    if (!canonical || canonical->uuid != id || canonical->archived || found == m_streams.end()
+    if (!canonical || canonical->uuid != id || canonical->archived != m_archiveOperations.value(id).archived || found == m_streams.end()
         || archiveAuthority(*canonical) != m_archiveOperations.value(id).acl) {
-        finishUnarchive(id, ticket, tr("Could not unarchive the chat. Try again."), true); return;
+        finishUnarchive(id, ticket, (m_archiveOperations.value(id).archived ? tr("Could not archive the chat. Try again.") : tr("Could not unarchive the chat. Try again.")), true); return;
     }
     // Only archive state/timestamp are owned by this command. A newer event and
     // all concurrent counters/name/notification projections retain authority.
     if (canonical->updatedMicros >= found->updatedMicros) {
-        found->archived = false; found->updatedMicros = canonical->updatedMicros;
+        found->archived = canonical->archived; found->updatedMicros = canonical->updatedMicros;
     }
     auto &op = m_archiveOperations[id]; op.pending = op.uncertain = false; op.error.clear();
     ++m_streamRevision;
@@ -10149,6 +10173,115 @@ void NativeController::applyUnarchive(const QString &id, quint64 ticket, const Q
     persistStreams();
     if (!guard || !archiveContext(id, ticket)) return;
     emit streamsChanged();
+}
+
+QVariantMap NativeController::chatActionState(const QString &id) const
+{
+    const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
+    const auto action = m_chatActions.constFind(id);
+    const auto archive = m_archiveOperations.constFind(id);
+    const bool hasAction = action != m_chatActions.cend() && streamOperationContext(id, *action);
+    const bool hasArchive = archive != m_archiveOperations.cend() && archiveContext(id, archive->ticket);
+    const bool pending = (hasAction && action->pending) || (hasArchive && archive->pending);
+    const QString error = hasAction && (!hasArchive || action->ticket > archive->ticket)
+        ? action->error : hasArchive ? archive->error : QString{};
+    return {{"available", archiveAvailable() && row != m_streams.cend() && !row->archived && !pending},
+        {"pending", pending}, {"canArchive", canSetChatArchived(id, true)},
+        {"error", error}};
+}
+
+void NativeController::renameChat(const QString &id, const QString &name) { mutateChat(id, sourceTrimmed(name), false); }
+void NativeController::markChatRead(const QString &id) { mutateChat(id, {}, true); }
+
+void NativeController::mutateChat(const QString &id, const QString &name, bool read)
+{
+    if (!chatActionState(id).value("available").toBool()) return;
+    const auto row = std::find_if(m_streams.cbegin(), m_streams.cend(), [&id](const Stream &v) { return v.uuid == id; });
+    if (row == m_streams.cend() || (read ? row->unread <= 0 : !row->directUser.isEmpty()
+        || name.isEmpty() || name == row->name)) return;
+    // Only live requests need a slot; completed errors may be replaced.
+    for (auto it = m_chatActions.begin(); it != m_chatActions.end(); ) {
+        if (!it->pending || !streamOperationContext(it.key(), *it)) it = m_chatActions.erase(it);
+        else ++it;
+    }
+    if (m_chatActions.size() >= 32) return;
+    ArchiveOperation operation;
+    operation.owner = creationOwnerKey(); operation.acl = archiveAuthority(*row);
+    operation.generation = m_api->generation(); operation.catalog = m_catalog;
+    operation.cache = m_cache; operation.lease = m_cacheLease;
+    operation.ticket = ++m_nextArchiveOperation;
+    operation.pending = read || boundedText(name, 255);
+    if (!operation.pending) operation.error = tr("Enter a channel name with 1 to 255 characters.");
+    m_chatActions[id] = operation;
+    const auto ticket = operation.ticket;
+    const auto topicRevision = m_topicRevision;
+    QSet<QString> loaded;
+    if (read) for (const auto &message : m_messages) if (message.stream == id) loaded.insert(message.uuid);
+    const QPointer<NativeController> guard(this);
+    emit streamsChanged();
+    if (!guard || !operation.pending || !streamOperationContext(id, operation)) return;
+    request(read ? "POST" : "PUT", messenger + "/streams/" + id + (read ? "/actions/read/invoke" : ""),
+        read ? QJsonObject{} : QJsonObject{{"name", name}}, {},
+        [this, id, ticket, read, loaded, topicRevision](const ApiResult &result) {
+        auto op = m_chatActions.find(id);
+        if (op == m_chatActions.end() || op->ticket != ticket || !streamOperationContext(id, *op)) return;
+        const auto canonical = result.ok() ? creationStreamDto(result.data.toObject(), m_session->project(), m_session->user(), false) : std::optional<Stream>{};
+        const auto current = std::find_if(m_streams.begin(), m_streams.end(), [&id](const Stream &v) { return v.uuid == id; });
+        op->pending = false;
+        if (!canonical || canonical->uuid != id || canonical->archived || current == m_streams.end()
+            || archiveAuthority(*canonical) != op->acl) {
+            op->error = read ? tr("Could not mark the chat as read. Try again.") : tr("Could not rename the chat. Try again.");
+            emit streamsChanged(); return;
+        }
+        op->error.clear();
+        const auto operation = *op;
+        const QPointer<NativeController> guard(this);
+        const auto owned = [&] { return guard && streamOperationContext(id, operation); };
+        // The command owns only these fields. Newer server events win.
+        if (canonical->updatedMicros >= current->updatedMicros) {
+            if (read) {
+                current->unread = canonical->unread; current->activeUnread = canonical->activeUnread;
+                current->passiveUnread = canonical->passiveUnread;
+            } else current->name = canonical->name;
+            current->updatedMicros = canonical->updatedMicros;
+        }
+        const bool allRead = current->unread == 0;
+        ++m_streamRevision;
+        if (read) {
+            // A delayed saved-position lookup must not restore a position that
+            // this accepted bulk read invalidates. Later projection notifications
+            // prepare the remaining unread boundary under a fresh opening ticket.
+            if (m_stream == id && m_conversationOpening.pending && !m_conversationOpening.savedAnchor.isEmpty())
+                retireConversationOpening();
+            emit conversationMarkedRead(id, {});
+            if (!owned()) return;
+            // Patch only messages observed before dispatch. A message arriving
+            // while the POST is in flight must remain unread.
+            m_confirmedReadIds.unite(loaded);
+            for (auto &message : m_messages) if (loaded.contains(message.uuid)) message.read = true;
+            if (m_cache && !loaded.isEmpty()) m_cache->markHistoryRead(m_cacheLease, id, {}, loaded);
+            if (!owned()) return;
+            staleCache(NativeCache::Kind::History, id); if (!owned()) return;
+            staleCache(NativeCache::Kind::Topics, id); if (!owned()) return;
+            if (allRead && m_stream == id && topicRevision == m_topicRevision) {
+                for (auto &topic : m_topics) topic.unread = topic.activeUnread = topic.passiveUnread = 0;
+                ++m_topicRevision;
+                emit topicsChanged(); if (!owned()) return;
+            }
+            // Clear the stream-wide index only when the authoritative counters
+            // confirm no remaining unread; otherwise remove exact loaded IDs.
+            if (allRead) {
+                mentionIndexClearStream(id); inboxSlotStreamRead(id);
+            } else for (const auto &message : loaded) mentionIndexRemove(message);
+            m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(loaded.cbegin(), loaded.cend()));
+            if (!owned()) return;
+            ++m_messageRevision;
+            emit messagesChanged(); if (!owned()) return;
+        }
+        persistStreams(); if (!owned()) return;
+        emit streamsChanged(); if (!owned()) return;
+        emit stateChanged();
+    });
 }
 
 void NativeController::persistStreams()
