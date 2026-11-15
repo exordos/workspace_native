@@ -182,3 +182,13 @@ the media label once the preview is ready.
   is driven by the excerpt text instead of a thumbnail min-height; widening the
   frame to force the 48 px floor was rejected because it would change bubble
   rhythm for every quote, not just media ones.
+
+## Image scope renewal (#276)
+
+A thumbnail lease belongs to the image manager's current account/project/API
+scope. Reusing a lease only because the manager object and URN stayed equal is
+invalid after token renewal. The scope notification must force release and
+reacquisition while preserving the existing refresh-ticket reentrancy guard.
+Other demand updates may reuse a current lease. Tests cover mounted quote and
+composer previews with no other image consumer, and a scope change during
+acquisition, so renewal cannot retain or leak a retired token.

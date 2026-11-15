@@ -82,7 +82,7 @@ Rectangle {
         else if (failedLoadUrn === urn) failedLoadUrn = ""
         if (imageUrl !== nextUrl) imageUrl = nextUrl
     }
-    function refresh() {
+    function refresh(forceAcquire) {
         const ticket = ++thumb.refreshTicket
         const previous = thumb.lease
         thumb.lease = null
@@ -95,7 +95,7 @@ Rectangle {
             if (previous) previous.manager.release(previous.token)
             return
         }
-        if (previous && previous.manager === wanted && previous.urn === urn && !imageFailed) {
+        if (!forceAcquire && previous && previous.manager === wanted && previous.urn === urn && !imageFailed) {
             thumb.lease = previous
             updateState()
             return
@@ -134,7 +134,8 @@ Rectangle {
     Connections {
         target: thumb.images
         enabled: thumb.images !== null
-        function onScopeChanged() { thumb.refresh() }
+        // A scope reset retires every token, even when the manager and URN stay.
+        function onScopeChanged() { thumb.refresh(true) }
         function onRevisionChanged() { thumb.updateState() }
     }
 
