@@ -1912,7 +1912,7 @@ ApplicationWindow {
         visible: root.controller.authenticated && root.controller.profileLinkFailed
         anchors.top: parent.top
         width: parent.width
-        height: visible ? 45 : 0
+        height: visible ? Math.max(profileLinkFailureText.implicitHeight, profileLinkFailureClose.height) + 25 : 0
         readonly property color tone: root.colors["notice-base"]
         color: Qt.rgba(tone.r, tone.g, tone.b, 0.2)
         Accessible.role: Accessible.AlertMessage
@@ -1931,8 +1931,10 @@ ApplicationWindow {
             text: qsTr("Could not open this profile. It may be unavailable or you may not have access.")
             textFormat: Text.PlainText
             font.pixelSize: 14
+            lineHeight: 20
+            lineHeightMode: Text.FixedHeight
             color: profileLinkFailure.tone
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
         }
         NativeButton {
             id: profileLinkFailureClose
@@ -1941,6 +1943,20 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter
             colors: root.colors
             text: qsTr("Close")
+            height: 32
+            implicitWidth: contentItem.implicitWidth + 24
+            horizontalPadding: 12
+            verticalPadding: 0
+            font.pixelSize: 12
+            font.weight: Font.Medium
+            background: Rectangle {
+                radius: 6
+                color: profileLinkFailureClose.down ? root.colors["card-bg"]
+                    : profileLinkFailureClose.hovered ? root.colors["bg-elevated"] : root.colors["card-bg-active"]
+                border.width: profileLinkFailureClose.visualFocus ? 2 : 1
+                border.color: profileLinkFailureClose.visualFocus ? root.colors.accent
+                    : profileLinkFailureClose.hovered ? root.colors["border-subtle"] : "transparent"
+            }
             onClicked: root.controller.dismissProfileLinkFailure()
         }
     }

@@ -24,3 +24,11 @@ a recognized external route has a query or an organization path.
 Validation uses synthetic users and a real Quick window plus mock HTTP. Linux
 checks do not establish live deployment, OS URL registration, Windows or macOS
 acceptance.
+
+For the failure notice, the current web source uses a 32 px small neutral
+button and 12 px vertical padding with a 1 px bottom border. A local visible
+browser reconstruction measured 57 px for a single line at both 1440 px
+English and 700 px Russian viewport widths. This differs from the issue's
+45 px estimate, which did not account for the button height. The notice grows
+for wrapped text; the 14 px message uses a 20 px line height. The measurement
+used the source classes and a saved Workspace CSS build, not a live service.
