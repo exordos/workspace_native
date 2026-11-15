@@ -51,6 +51,7 @@ class FileClient final : public QObject {
 public:
     using Completion = std::function<void(const FileResult &)>;
     using Progress = std::function<void(qint64 received, qint64 total)>;
+    enum class DestinationMode { Replace, KeepExisting };
     static constexpr qint64 MemoryDownloadLimitBytes = 25 * 1024 * 1024;
     explicit FileClient(ApiClient *api, QObject *parent = nullptr,
                         const FileTransferLimits &limits = {});
@@ -61,7 +62,7 @@ public:
     quint64 upload(const QString &path, const QString &streamUuid, const QString &name,
                    Completion completion);
     quint64 download(const QString &uuid, const QString &destination, Completion completion,
-                     Progress progress = {});
+                     Progress progress = {}, DestinationMode mode = DestinationMode::Replace);
     // Fixed memory cap; metadata and the streamed body must both fit. No disk staging.
     quint64 downloadBytes(const QString &uuid, Completion completion);
     void cancel(quint64 operation);

@@ -7980,8 +7980,8 @@ void NativeController::downloadFile(const QString &id, const QUrl &destination)
     }
     DownloadEntry entry;
     entry.owner = owner; entry.fileUuid = uuid;
-    entry.path = destination.toLocalFile();
-    entry.fileName = QFileInfo(entry.path).fileName();
+    entry.requestedPath = destination.toLocalFile();
+    entry.fileName = QFileInfo(entry.requestedPath).fileName();
     startDownload(std::move(entry));
 }
 
@@ -7989,7 +7989,7 @@ void NativeController::startDownload(DownloadEntry entry)
 {
     if (!authenticated() || entry.owner != creationOwnerKey()) return;
     entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    entry.path = uniqueDownloadPath(entry.path);
+    entry.path = uniqueDownloadPath(entry.requestedPath);
     entry.status = QStringLiteral("starting");
     entry.received = 0; entry.total = -1; entry.error.clear(); entry.retrying = false;
     entry.intent = ++m_nextFileOperation;
@@ -8042,7 +8042,7 @@ void NativeController::startDownload(DownloadEntry entry)
             emit self->downloadsChanged();
             return;
         }
-    });
+    }, FileClient::DestinationMode::KeepExisting);
     if (self) {
         auto record = m_fileOperations.find(intent);
         if (record != m_fileOperations.end()) record->operation = operation;

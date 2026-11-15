@@ -1205,7 +1205,7 @@ private:
         quint64 editSession = 0;
     };
     struct DownloadEntry {
-        QString id, owner, fileUuid, fileName, path, status, error;
+        QString id, owner, fileUuid, fileName, requestedPath, path, status, error;
         qint64 received = 0, total = -1;
         quint64 intent = 0, retryService = 0;
         bool retrying = false;

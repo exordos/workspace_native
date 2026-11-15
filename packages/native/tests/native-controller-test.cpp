@@ -13314,6 +13314,86 @@ private slots:
         QVERIFY(QFileInfo::exists(destination) || QFileInfo(destination).isSymLink());
     }
 
+    void downloadCommitPreservesAFileCreatedDuringTransfer_data()
+    {
+        QTest::addColumn<bool>("symbolic");
+        QTest::newRow("regular-file") << false;
+#ifdef Q_OS_UNIX
+        QTest::newRow("symbolic-link") << true;
+#endif
+    }
+
+    void downloadCommitPreservesAFileCreatedDuringTransfer()
+    {
+        QFETCH(bool, symbolic);
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report.txt");
+        std::function<void()> release;
+        auto cleanup = qScopeGuard([&] { if (release) release(); });
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release = std::move(send); };
+                return response;
+            }
+            return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(bool(release));
+        if (symbolic) {
+#ifdef Q_OS_UNIX
+            QCOMPARE(::symlink(QFile::encodeName(directory.filePath("missing.txt")).constData(),
+                QFile::encodeName(destination).constData()), 0);
+#endif
+        } else {
+            QFile other(destination); QVERIFY(other.open(QIODevice::WriteOnly));
+            QCOMPARE(other.write("other application"), 17); other.close();
+        }
+        release(); release = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        if (symbolic) {
+            QVERIFY(QFileInfo(destination).isSymLink());
+            QVERIFY(!QFileInfo::exists(directory.filePath("missing.txt")));
+        } else {
+            QFile other(destination); QVERIFY(other.open(QIODevice::ReadOnly));
+            QCOMPARE(other.readAll(), QByteArray("other application"));
+        }
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("error"));
+        QCOMPARE(QDir(directory.path()).entryList(QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot).size(), 1);
+    }
+
+    void downloadRetryRecoversAfterDestinationAllocationFailure()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report.txt");
+        QVERIFY(QDir().mkdir(destination));
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) return Response{QJsonObject{}};
+            return Response{QJsonObject{{"uuid", returnedId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QCOMPARE(fixture.controller.downloadEntries().size(), 1);
+        const auto row = fixture.controller.downloadEntries().first().toMap();
+        QCOMPARE(row.value("status").toString(), QString("error"));
+        QVERIFY(QDir().rmdir(destination));
+        fixture.controller.retryDownload(row.value("id").toString());
+        QTRY_VERIFY(fixture.controller.downloadEntries().first().toMap().value("id") != row.value("id"));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(fixture.controller.downloadEntries().first().toMap().value("status").toString(), QString("downloaded"));
+        QFile saved(destination); QVERIFY(saved.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), QByteArray("{}"));
+    }
+
     void downloadRetryWaitsForFreshSessionAndRetainsFailures_data()
     {
         QTest::addColumn<QString>("scenario");

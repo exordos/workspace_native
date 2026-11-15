@@ -16,6 +16,15 @@ removed. Failed rows can retry without finding the attachment in the chat again.
 Names and destinations remain stable across a retry, except that existing files, including dangling symbolic links,
 and destinations reserved by active downloads require a unique numeric suffix.
 
+Destination selection is advisory: another process can create that name during
+the transfer. Download-center saves therefore use FileClient's explicit
+KeepExisting mode: verify and commit into an owned temporary file in the target
+directory, then publish without replacing the destination (hard-link creation
+on Unix, MoveFile on Windows). Unsupported filesystems report an error rather
+than falling back to replacement. Existing FileClient callers keep their
+replacement behavior. Retry retains the original requested path separately from
+the allocated attempt path, including when allocation failed before transfer.
+
 Each attempt has its own id. Retry first uses the existing Session refresh and
 waits for verified authentication. A transient refresh failure retains the old
 error row. Only a still-owned error row can be removed and restarted; a failed

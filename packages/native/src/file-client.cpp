@@ -2,6 +2,7 @@
 #include "api-client.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
@@ -13,11 +14,18 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStorageInfo>
+#include <QTemporaryFile>
 #include <QTimer>
 #include <QUrl>
 
 #include <algorithm>
 #include <cmath>
+
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#elif defined(Q_OS_WIN)
+#include <qt_windows.h>
+#endif
 
 namespace workspace {
 namespace {
@@ -25,6 +33,22 @@ const QRegularExpression UuidPattern(QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]
 const QRegularExpression HashPattern(QStringLiteral("^[0-9a-fA-F]{64}$"));
 constexpr qint64 ChunkSize = 64 * 1024;
 constexpr double MaxJsonInteger = 9007199254740991.0;
+
+bool publishWithoutReplacing(const QString &source, const QString &destination)
+{
+    // Both names are in the destination directory. Never fall back to a
+    // check-then-rename operation: a concurrent file or symlink must survive.
+#ifdef Q_OS_UNIX
+    return ::link(QFile::encodeName(source).constData(), QFile::encodeName(destination).constData()) == 0;
+#elif defined(Q_OS_WIN)
+    return MoveFileW(reinterpret_cast<LPCWSTR>(source.utf16()),
+                     reinterpret_cast<LPCWSTR>(destination.utf16())) != 0;
+#else
+    Q_UNUSED(source);
+    Q_UNUSED(destination);
+    return false;
+#endif
+}
 
 bool validUuid(const QString &uuid) { return UuidPattern.match(uuid).hasMatch(); }
 int status(QNetworkReply *reply) { return reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(); }
@@ -98,6 +122,8 @@ struct FileClient::Operation {
     QByteArray json;
     QString uuid;
     QString destination;
+    DestinationMode destinationMode = DestinationMode::Replace;
+    std::unique_ptr<QTemporaryFile> staging;
     FileMetadata metadata;
     std::unique_ptr<QSaveFile> output;
     QCryptographicHash hash{QCryptographicHash::Sha256};
@@ -271,7 +297,7 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
 }
 
 quint64 FileClient::download(const QString &uuid, const QString &destination, Completion completion,
-                             Progress progress)
+                             Progress progress, DestinationMode mode)
 {
     const auto id = begin(std::move(completion));
     if (!validUuid(uuid) || destination.isEmpty()) { fail(id, FileClient::tr("Invalid file identifier or destination.")); return id; }
@@ -279,6 +305,7 @@ quint64 FileClient::download(const QString &uuid, const QString &destination, Co
     operation->progress = std::move(progress);
     operation->uuid = uuid.toLower();
     operation->destination = destination;
+    operation->destinationMode = mode;
     operation->reply = m_api ? m_api->startFileMetadata(operation->uuid) : nullptr;
     if (!operation->reply) { fail(id, FileClient::tr("Sign in to download files.")); return id; }
     operation->reply->setReadBufferSize(m_limits.metadataBytes + 1);
@@ -363,7 +390,17 @@ void FileClient::startDownload(quint64 id)
             && operation->metadata.sizeBytes > storage.bytesAvailable()) {
             fail(id, FileClient::tr("Not enough free space to save the file.")); return;
         }
-        operation->output = std::make_unique<QSaveFile>(operation->destination);
+        auto outputPath = operation->destination;
+        if (operation->destinationMode == DestinationMode::KeepExisting) {
+            operation->staging = std::make_unique<QTemporaryFile>(
+                QFileInfo(outputPath).dir().filePath(QStringLiteral(".workspace-download-XXXXXX")));
+            if (!operation->staging->open()) {
+                fail(id, FileClient::tr("Cannot create the destination file.")); return;
+            }
+            outputPath = operation->staging->fileName();
+            operation->staging->close();
+        }
+        operation->output = std::make_unique<QSaveFile>(outputPath);
         operation->output->setDirectWriteFallback(false);
         if (!operation->output->open(QIODevice::WriteOnly)) { fail(id, FileClient::tr("Cannot create the destination file.")); return; }
     }
@@ -421,6 +458,10 @@ void FileClient::finishDownload(quint64 id)
     // Check ownership immediately before the only operation that replaces a file.
     if (!current(id)) return;
     if (!operation->memory && !operation->output->commit()) { fail(id, FileClient::tr("Cannot commit the destination file."), code); return; }
+    if (operation->staging
+        && !publishWithoutReplacing(operation->staging->fileName(), operation->destination)) {
+        fail(id, FileClient::tr("Cannot commit the destination file."), code); return;
+    }
     FileResult result;
     result.metadata = operation->metadata;
     result.path = operation->destination;
