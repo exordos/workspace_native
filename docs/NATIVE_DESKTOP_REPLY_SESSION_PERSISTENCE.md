@@ -115,3 +115,27 @@ QHash<QString /*conversationKey()*/, StashedReplySession> m_replySessions;
   tabs/answers; closing the session in B leaves A's parked session untouched.
 - a multi-tab session (order, active pointer, per-tab answers, composer
   lockstep) survives navigation away and back.
+
+## Confirmation after an in-flight answer edit (issue #248)
+
+A confirmed send closes its reply session only when the ordered tab identities,
+quoted-message identities, every tab's answer and active tab still match the
+send snapshot. The sending conversation's draft revision must also match. This
+keeps an edit followed by a return to the original text from being mistaken for
+untouched input. The same checks apply to a session parked by navigation.
+
+For durable drafts, the controller compares the existing owner/UUID/snapshot/text
+token before consuming the sent draft. `NativeDrafts::consume` already rejects a
+stale token; its persistence and deletion behavior are unchanged. Reply-session
+cleanup now observes that protection too. Ordinary sends and unchanged replies
+retain their existing confirmed-send cleanup. Reply tabs themselves remain in
+memory; this does not add durable reply-session storage.
+
+The held-HTTP controller regression covers active and inactive answers, clearing,
+edit-and-revert, parked sessions, edits during POST or canonical read-back, and
+ordinary sends with both memory and durable drafts. Durable checks flush and
+reopen the local store to verify the retained text. The visible-window regression
+types an answer, clicks Send, types again while POST is held, then confirms that
+the reply banner, tab answer and composer text survive the acknowledgement.
+These are local synthetic HTTP/Qt checks, not live-service or cross-platform
+acceptance.
