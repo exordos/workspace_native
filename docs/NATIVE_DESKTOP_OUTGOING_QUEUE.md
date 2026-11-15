@@ -45,9 +45,8 @@ re-encrypts under a replacement key or silently converts to plaintext.
 A confirmed server message is distinct from external-provider delivery. Canonical
 readback retires the client queue and never creates a new message to retry an
 external provider. The backend worker's one-hour new-send expiry does not expire
-a client's UUID. The current v2 message model exposes no provider-delivery status
-field, so this change does not infer one from elapsed time or transport errors;
-a separate provider-delivery UI requires that server contract.
+a client's UUID. This client queue does not infer provider delivery from elapsed
+time or transport errors; provider-delivery presentation is separate work.
 
 ## Completion and lifecycle
 
@@ -55,7 +54,12 @@ Only exact own canonical message verification completes an entry. Consume only
 the captured draft snapshot: edits made during a send or after restart survive,
 including editing away and back to the same text. Persist queue retirement;
 if retirement fails, retain an unresolved entry and reconcile again, never POST
-blindly. Logout/account switch stop publication and preserve the owning queue;
+blindly. Deletion observation and the final retirement commit share a short
+cancellation guard: deletion before commit rolls back both changes, preserving
+the draft and recoverable queue entry. SQL statements and their busy waits are
+outside the guard. Deletion after the durable commit completes the send without
+putting the deleted message back into the visible history or cache.
+Logout/account switch stop publication and preserve the owning queue;
 explicitly forgetting a saved account discards that owner's queued sends before
 removing its credentials. Access loss prevents both replay and body publication.
 Discard stays busy until its owner-scoped deletion commits, including during

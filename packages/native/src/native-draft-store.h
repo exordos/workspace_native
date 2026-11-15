@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QSet>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 class QLockFile;
@@ -43,6 +44,15 @@ struct OutgoingRecord {
     QString replyActive;
     QJsonArray replySnapshot;
     qint64 createdAt = 0, deletionRevision = 0;
+};
+
+// One controller and its existing storage worker order deletion observation
+// against retirement. SQL statement/busy waits run outside this short guard;
+// only the final WAL commit shares the deletion boundary.
+struct OutgoingRetirement {
+    std::mutex mutex;
+    bool cancelled = false;
+    void cancel() { const std::lock_guard<std::mutex> lock(mutex); cancelled = true; }
 };
 
 // Durable unsent work is separate from the evictable history cache. This
@@ -89,7 +99,8 @@ public:
     OutgoingPage outgoing();
     Failure putOutgoing(const OutgoingRecord &record);
     // Atomically retire the send and mark only its captured draft consumed.
-    Failure finishOutgoing(const QString &uuid, bool consumeDraft);
+    Failure finishOutgoing(const QString &uuid, bool consumeDraft,
+                           const std::shared_ptr<OutgoingRetirement> &retirement = {});
     Failure clearOutgoing();
     static constexpr qsizetype MaximumRecordBytes = 4 * 1024 * 1024;
     static constexpr int MaximumPageRows = 100;

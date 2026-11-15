@@ -14660,6 +14660,166 @@ private slots:
         QVERIFY(store.latest(streamId, topicId).record); QCOMPARE(store.outgoing().rows.size(), 1);
     }
 
+    void outgoingDeletionDuringRetirementPreservesTheRestartRecord()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.path()); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts);
+        QJsonObject saved; std::function<void()> confirm;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                const auto placement = QUuid::createUuidV5(QUuid(topicId), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message(request.body.value("payload").toObject().value("content").toString(), placement); return Response{saved};
+            }
+            if (!request.target.path().endsWith('/')) {
+                Response response{saved}; response.defer = [&](auto send) { confirm = std::move(send); }; return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Keep text deleted during retirement");
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(bool(confirm));
+        QTRY_VERIFY(!storage.busy());
+        const auto connection = "cassi-outgoing-hold-retirement";
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(directory.filePath(drafts.owner() + ".sqlite3")); QVERIFY(db.open());
+        auto release = qScopeGuard([&] { { QSqlQuery query(db); query.exec("ROLLBACK"); } db.close(); db = {}; QSqlDatabase::removeDatabase(connection); });
+        { QSqlQuery query(db); QVERIFY(query.exec("BEGIN IMMEDIATE")); }
+        // A real queued worker write holds retirement until the main thread has
+        // observed the deletion. The removed UUID is deliberately absent.
+        bool precedingWrite = false;
+        QVERIFY(storage.apply(storage.lease(), {}, {secondTopicId}, this,
+            [&](auto result) { precedingWrite = result == NativeDraftService::Failure::None; }));
+        confirm(); QTRY_COMPARE(storage.pendingDataJobs(), 2);
+        QElapsedTimer observation; observation.start();
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", QJsonObject{
+            {"uuid", saved.value("uuid")}, {"project_id", projectId}, {"stream_uuid", streamId}, {"topic_uuid", topicId}})));
+        QVERIFY2(observation.elapsed() < 100, "Deletion must not wait on the worker's held SQLite writer");
+        { QSqlQuery query(db); QVERIFY(query.exec("COMMIT")); }
+        QTRY_VERIFY(precedingWrite); QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(fixture.controller.draft(), "Keep text deleted during retirement");
+        bool flushed = false; drafts.flush(this, [&](bool okay) { flushed = okay; }); QTRY_VERIFY(flushed);
+        const auto owner = drafts.owner(); fixture.controller.useDrafts(nullptr); storage.shutdown(); QTRY_VERIFY(storage.stopped());
+        NativeDraftStore store(directory.path()); QCOMPARE(store.open(owner), NativeDraftStore::Failure::None);
+        const auto restored = store.latest(streamId, topicId);
+        QVERIFY(restored.record); QVERIFY(!restored.record->consumed);
+        QCOMPARE(restored.record->text, "Keep text deleted during retirement");
+        QCOMPARE(store.outgoing().rows.size(), 1);
+    }
+
+    void encryptedOutgoingDeletionDuringRetirementKeepsTheCiphertextRecord()
+    {
+        QTemporaryDir directory; KeyManagementFixture fixture;
+        NativeDraftService storage(directory.path()); NativeDrafts drafts(&storage); fixture.controller.useDrafts(&drafts);
+        QJsonObject saved; std::function<void()> confirm; const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            if (request.method == "POST" && request.body.value("payload").toObject().value("kind") == QJsonValue("e2ee")) {
+                const auto topic = request.body.value("topic_uuid").toString();
+                const auto placement = QUuid::createUuidV5(QUuid(topic), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message({}, placement, topic); saved["payload"] = request.body.value("payload"); return Response{saved};
+            }
+            if (!saved.isEmpty() && request.target.path().endsWith(saved.value("uuid").toString())) {
+                Response response{saved}; response.defer = [&](auto send) { confirm = std::move(send); }; return response;
+            }
+            return fallback(request);
+        };
+        QVERIFY(fixture.start()); fixture.seedKey(KeyManagementFixture::KeyCurrent); fixture.controller.refreshChatLocalKeys();
+        fixture.controller.setDraft("Private text deleted during retirement");
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(bool(confirm)); QTRY_VERIFY(!storage.busy());
+        const auto connection = "cassi-encrypted-outgoing-hold-retirement";
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(directory.filePath(fixture.controller.creationOwnerKey() + ".sqlite3")); QVERIFY(db.open());
+        auto release = qScopeGuard([&] { { QSqlQuery query(db); query.exec("ROLLBACK"); } db.close(); db = {}; QSqlDatabase::removeDatabase(connection); });
+        { QSqlQuery query(db); QVERIFY(query.exec("BEGIN IMMEDIATE")); }
+        bool precedingWrite = false;
+        QVERIFY(storage.apply(storage.lease(), {}, {secondTopicId}, this,
+            [&](auto result) { precedingWrite = result == NativeDraftService::Failure::None; }));
+        confirm(); QTRY_COMPARE(storage.pendingDataJobs(), 2);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", QJsonObject{
+            {"uuid", saved.value("uuid")}, {"project_id", projectId}, {"stream_uuid", streamId}, {"topic_uuid", saved.value("topic_uuid")}})));
+        { QSqlQuery query(db); QVERIFY(query.exec("COMMIT")); }
+        QTRY_VERIFY(precedingWrite); QTRY_VERIFY(!storage.busy());
+        const auto owner = fixture.controller.creationOwnerKey(); fixture.controller.useDrafts(nullptr);
+        storage.shutdown(); QTRY_VERIFY(storage.stopped());
+        NativeDraftStore store(directory.path()); QCOMPARE(store.open(owner), NativeDraftStore::Failure::None);
+        const auto rows = store.outgoing().rows; QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows[0].payload, saved.value("payload").toObject());
+        QVERIFY(rows[0].draftText.isEmpty()); QVERIFY(rows[0].draftUuid.isEmpty());
+        QVERIFY(!fixture.controller.busy());
+    }
+
+    void outgoingDeletionAfterRetirementDoesNotResurrectOrStrandTheSend()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.path()); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts); QJsonObject saved; bool deleted = false;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                const auto placement = QUuid::createUuidV5(QUuid(topicId), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message(request.body.value("payload").toObject().value("content").toString(), placement); return Response{saved};
+            }
+            if (!request.target.path().endsWith('/')) return Response{saved};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        connect(&storage, &NativeDraftService::stateChanged, &fixture.controller, [&] {
+            if (saved.isEmpty() || deleted || storage.busy()) return;
+            // The worker has committed and emits its state before delivering the
+            // controller receipt. Observe the actual database, not a test hook.
+            const auto connection = "cassi-outgoing-observe-retired"; bool retired = false;
+            {
+                auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+                db.setDatabaseName(directory.filePath(drafts.owner() + ".sqlite3"));
+                if (db.open()) { QSqlQuery query(db); retired = query.exec("SELECT count(*) FROM outgoing_messages") && query.next() && query.value(0).toInt() == 0; }
+            }
+            QSqlDatabase::removeDatabase(connection);
+            if (!retired) return;
+            deleted = true;
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", QJsonObject{
+                {"uuid", saved.value("uuid")}, {"project_id", projectId}, {"stream_uuid", streamId}, {"topic_uuid", topicId}})));
+        });
+        fixture.controller.setDraft("Confirmed before deletion"); QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send();
+        QTRY_VERIFY(deleted); QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(fixture.controller.outgoingSend().isEmpty()); QVERIFY(fixture.controller.draft().isEmpty());
+        for (const auto &row : fixture.controller.messages()) QVERIFY(row.toMap().value("id").toString() != saved.value("uuid").toString());
+    }
+
+    void encryptedOutgoingDeletionAfterRetirementDoesNotResurrectOrStrandTheSend()
+    {
+        QTemporaryDir directory; KeyManagementFixture fixture;
+        NativeDraftService storage(directory.path()); NativeDrafts drafts(&storage);
+        fixture.controller.useDrafts(&drafts); QJsonObject saved; bool deleted = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            if (request.method == "POST" && request.body.value("payload").toObject().value("kind") == QJsonValue("e2ee")) {
+                const auto topic = request.body.value("topic_uuid").toString();
+                const auto placement = QUuid::createUuidV5(QUuid(topic), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message({}, placement, topic); saved["payload"] = request.body.value("payload"); return Response{saved};
+            }
+            if (!saved.isEmpty() && request.target.path().endsWith(saved.value("uuid").toString())) return Response{saved};
+            return fallback(request);
+        };
+        QVERIFY(fixture.start()); fixture.seedKey(KeyManagementFixture::KeyCurrent); fixture.controller.refreshChatLocalKeys();
+        connect(&storage, &NativeDraftService::stateChanged, &fixture.controller, [&] {
+            if (saved.isEmpty() || deleted || storage.busy()) return;
+            // The worker has committed and emits its state before delivering the
+            // controller receipt. Observe the actual database, not a test hook.
+            const auto connection = "cassi-outgoing-observe-retired"; bool retired = false;
+            {
+                auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+                db.setDatabaseName(directory.filePath(fixture.controller.creationOwnerKey() + ".sqlite3"));
+                if (db.open()) { QSqlQuery query(db); retired = query.exec("SELECT count(*) FROM outgoing_messages") && query.next() && query.value(0).toInt() == 0; }
+            }
+            QSqlDatabase::removeDatabase(connection);
+            if (!retired) return;
+            deleted = true;
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", QJsonObject{
+                {"uuid", saved.value("uuid")}, {"project_id", projectId}, {"stream_uuid", streamId}, {"topic_uuid", saved.value("topic_uuid")}})));
+        });
+        fixture.controller.setDraft("Confirmed before deletion"); QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send();
+        QTRY_VERIFY(deleted); QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(fixture.controller.outgoingSend().isEmpty()); QVERIFY(fixture.controller.draft().isEmpty());
+        for (const auto &row : fixture.controller.messages()) QVERIFY(row.toMap().value("id").toString() != saved.value("uuid").toString());
+    }
+
     void encryptedOutgoingRestartsWithoutPlaintextAndWaitsForItsOriginalKey_data()
     {
         QTest::addColumn<bool>("deleteKey");

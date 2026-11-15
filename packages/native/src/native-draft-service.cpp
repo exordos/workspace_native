@@ -29,6 +29,7 @@ struct Job {
     QVector<DraftRecord> writes;
     OutgoingRecord outgoing;
     bool consumeDraft = false;
+    std::shared_ptr<OutgoingRetirement> retirement;
     QStringList removals;
     QSet<QString> authorized;
     qsizetype bytes = 0;
@@ -63,7 +64,7 @@ public:
                 case Op::Retain: result.failure = store->retainStreams(job.authorized); break;
                 case Op::Outgoing: result.outgoing = store->outgoing(); result.failure = result.outgoing.failure; break;
                 case Op::PutOutgoing: result.failure = store->putOutgoing(job.outgoing); break;
-                case Op::FinishOutgoing: result.failure = store->finishOutgoing(job.id, job.consumeDraft); break;
+                case Op::FinishOutgoing: result.failure = store->finishOutgoing(job.id, job.consumeDraft, job.retirement); break;
                 case Op::ClearOutgoing: result.failure = store->clearOutgoing(); break;
                 default: break;
                 }
@@ -290,9 +291,11 @@ bool NativeDraftService::putOutgoing(const Lease &lease, const OutgoingRecord &r
     if (!NativeDraftStore::valid(record)) { d->reject(std::move(job), Failure::InvalidRecord); return false; }
     job.bytes = NativeDraftStore::serializedSize(record); return d->enqueue(std::move(job));
 }
-bool NativeDraftService::finishOutgoing(const Lease &lease, const QString &uuid, bool consumeDraft, QObject *receiver, Done done)
+bool NativeDraftService::finishOutgoing(const Lease &lease, const QString &uuid, bool consumeDraft, QObject *receiver, Done done,
+    std::shared_ptr<OutgoingRetirement> retirement)
 {
     Job job; job.op = Op::FinishOutgoing; job.lease = lease; job.id = uuid; job.consumeDraft = consumeDraft;
+    job.retirement = std::move(retirement);
     job.receiver = receiver ? receiver : this; job.done = [done = std::move(done)](Result r) { if (done) done(r.failure); };
     if (!d->current(lease) || !d->available) { d->reject(std::move(job), Failure::Unavailable); return false; }
     if (!isUuid(uuid)) { d->reject(std::move(job), Failure::InvalidRecord); return false; }

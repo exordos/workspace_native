@@ -9172,6 +9172,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (!isUuid(id) || !isUuid(payload.value("stream_uuid").toString())
             || !isUuid(payload.value("topic_uuid").toString()))
             return false;
+        cancelOutgoingRetirement(id);
         // A confirmed deletion is final, not a read event (issue #56): the
         // uuid leaves the unread index, the live card and every fetched
         // collection in place (activity-realtime-applier.lib.ts:66-71 and
@@ -11480,7 +11481,8 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
 {
     if (!encryptedSendContext(conversation, id, ticket)) return false;
     const auto intent = m_pendingSends.value(conversation);
-    if (!matchesEncryptedSend(raw, intent, realtime) || m_messageFields.value(intent.publicId).deleted) return false;
+    if (!matchesEncryptedSend(raw, intent, realtime)
+        || (m_messageFields.value(intent.publicId).deleted && !intent.retired)) return false;
     auto saved = parseMessage(raw, intent.project);
     if (!saved) return false;
     const auto field = m_messageFields.value(intent.publicId);
@@ -11517,8 +11519,9 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     const auto visible = [&] {
         return owned() && intent.selection == m_selection && m_stream == intent.stream && m_topic == intent.routeTopic;
     };
+    const bool deleted = m_messageFields.value(intent.publicId).deleted;
     const bool show = visible();
-    if (show && !findMessage(saved->uuid)) {
+    if (!deleted && show && !findMessage(saved->uuid)) {
         if (m_confirmedReadIds.contains(saved->uuid)) saved->read = true;
         observeMessage(raw); m_messages = mergeMessages(m_messages, {*saved}); ++m_messageRevision;
     }
@@ -11526,14 +11529,14 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     // any publication can reenter, navigate or admit another conversation.
     finishMessageIntent(intent.publicId);
     if (show) m_error.clear();
-    projectCanonical(raw, NativeCache::Projection::Insert, intent.projection);
+    if (!deleted) projectCanonical(raw, NativeCache::Projection::Insert, intent.projection);
     if (!owned()) return true;
     if (visible()) {
         emit draftChanged(); if (!owned()) return true;
         if (visible()) { emit messagesChanged(); if (!owned()) return true; }
     }
     emit stateChanged();
-    if (visible()) emit messageSent(intent.publicId, intent.stream, intent.topic);
+    if (!deleted && visible()) emit messageSent(intent.publicId, intent.stream, intent.topic);
     return true;
 }
 
@@ -12960,8 +12963,9 @@ void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString
         const auto saved = parseMessage(raw, intent.project); if (!saved) return;
         const bool deleted = m_messageFields.value(canonicalId).deleted;
         m_sending = false;
-        if (deleted) { failOutgoing(conversation, id, ticket, tr("The saved message was deleted. Your text is preserved.")); return; }
-        projectCanonical(raw, NativeCache::Projection::Insert, context);
+        // Retirement committed before this deletion was observed. Complete the
+        // send without publishing the now-deleted message again.
+        if (!deleted) projectCanonical(raw, NativeCache::Projection::Insert, context);
         if (m_pendingSends.value(conversation).uuid == intent.uuid)
             m_pendingSends.remove(conversation);
         // Check before consuming the sent draft. Content equality alone
@@ -12984,7 +12988,7 @@ void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString
                    && m_draftRevisions.value(conversation) == intent.draftRevision) m_drafts.remove(conversation);
         if (!draftGuard) return;
         m_attachmentNotices.remove(conversation);
-        if (conversation == conversationKey()) {
+        if (!deleted && conversation == conversationKey()) {
             ++m_messageRevision;
             if (!findMessage(saved->uuid)) {
                 observeMessage(raw);
@@ -13022,7 +13026,7 @@ void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString
         emit messagesChanged();
         if (!guard) return;
         emit stateChanged();
-        if (guard && conversation == conversationKey())
+        if (guard && !deleted && conversation == conversationKey())
             emit messageSent(saved->uuid, stream, topic);
     });
 }
@@ -14985,6 +14989,7 @@ void NativeController::deleteMessage(const QString &id)
             report(tr("Could not delete the message. %1").arg(result.error));
             return;
         }
+        cancelOutgoingRetirement(id);
         if (m_messageFields.contains(id)) m_messageFields[id].deleted = true;
         ++m_messageRevision;
         m_messages.erase(std::remove_if(m_messages.begin(), m_messages.end(),

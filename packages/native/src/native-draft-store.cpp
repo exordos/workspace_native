@@ -511,7 +511,8 @@ NativeDraftStore::Failure NativeDraftStore::putOutgoing(const OutgoingRecord &r)
     return protectFiles() ? Failure::None : Failure::Unavailable;
 }
 
-NativeDraftStore::Failure NativeDraftStore::finishOutgoing(const QString &uuid, bool consumeDraft)
+NativeDraftStore::Failure NativeDraftStore::finishOutgoing(const QString &uuid, bool consumeDraft,
+    const std::shared_ptr<OutgoingRetirement> &retirement)
 {
     if (!available()) return Failure::Unavailable;
     if (!isUuid(uuid)) return Failure::InvalidRecord;
@@ -532,7 +533,16 @@ NativeDraftStore::Failure NativeDraftStore::finishOutgoing(const QString &uuid, 
         }
     }
     QSqlQuery query(m_database); query.prepare("DELETE FROM outgoing_messages WHERE uuid=?"); query.addBindValue(uuid);
-    if (!okay || !query.exec() || !m_database.commit()) { m_database.rollback(); return Failure::Unavailable; }
+    if (!okay || !query.exec()) { m_database.rollback(); return Failure::Unavailable; }
+    bool committed = false;
+    if (retirement) {
+        // The writer lock is already held. WAL commit cannot wait for another
+        // writer or reader here; never hold the GUI cancellation lock over SQL
+        // statement execution or its busy timeout.
+        const std::lock_guard<std::mutex> lock(retirement->mutex);
+        if (!retirement->cancelled) committed = m_database.commit();
+    } else committed = m_database.commit();
+    if (!committed) { m_database.rollback(); return Failure::Unavailable; }
     return protectFiles() ? Failure::None : Failure::Unavailable;
 }
 NativeDraftStore::Failure NativeDraftStore::clearOutgoing()

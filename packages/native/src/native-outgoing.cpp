@@ -172,14 +172,23 @@ void NativeController::retireOutgoing(const SendIntent &intent, std::function<vo
     const auto conversation = intent.stream + '/' + intent.routeTopic;
     auto *storage = outgoingStorage();
     if (!storage || !outgoingReady()) { failOutgoing(conversation, intent.uuid, intent.ticket, tr("Message confirmation could not be saved. Check its status again.")); return; }
+    auto retirement = std::make_shared<OutgoingRetirement>();
+    m_pendingSends[conversation].retirement = retirement;
     storage->finishOutgoing(m_outgoingLease, intent.uuid, true, this,
         [this, conversation, id = intent.uuid, ticket = intent.ticket, complete = std::move(complete)](NativeDraftService::Failure failure) {
         if (!outgoingContext(conversation, id, ticket)) return;
         if (failure != NativeDraftService::Failure::None) {
             failOutgoing(conversation, id, ticket, tr("Message confirmation could not be saved. Check its status again.")); return;
         }
+        m_pendingSends[conversation].retired = true;
         complete();
-    });
+    }, retirement);
+}
+
+void NativeController::cancelOutgoingRetirement(const QString &publicId)
+{
+    for (const auto &intent : std::as_const(m_pendingSends))
+        if (intent.publicId == publicId && intent.retirement) intent.retirement->cancel();
 }
 
 void NativeController::failOutgoing(const QString &conversation, const QString &id, quint64 ticket, const QString &error)

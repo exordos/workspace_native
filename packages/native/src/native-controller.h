@@ -1256,6 +1256,7 @@ private:
         QString uuid, text; // Existing ordinary-send representation remains first.
         bool durable = false, restored = false, retired = false, admitted = false, automaticChecked = false;
         qint64 createdAt = 0;
+        std::shared_ptr<OutgoingRetirement> retirement;
         QString replyActive;
         QJsonArray replySnapshot;
         QString wire; // Wire markdown: the draft, or the urn:quote line plus the answer.
@@ -1278,6 +1279,7 @@ private:
     OutgoingRecord outgoingRecord(const SendIntent &intent) const;
     void admitOutgoing(const QString &conversation, std::function<void()> dispatch);
     void retireOutgoing(const SendIntent &intent, std::function<void()> complete);
+    void cancelOutgoingRetirement(const QString &publicId);
     void failOutgoing(const QString &conversation, const QString &id, quint64 ticket, const QString &error);
     void recoverOrdinarySend(bool retry);
     void postOrdinarySend(const QString &conversation, const QString &id, quint64 ticket);

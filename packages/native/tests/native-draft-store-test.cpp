@@ -84,14 +84,15 @@ private slots:
 
     void outgoingCompletionAtomicallyConsumesOnlyTheCapturedDraft_data()
     {
-        QTest::addColumn<bool>("edited"); QTest::addColumn<bool>("failCommit");
-        QTest::newRow("exact") << false << false;
-        QTest::newRow("newer-same-text") << true << false;
-        QTest::newRow("failed-retirement") << false << true;
+        QTest::addColumn<bool>("edited"); QTest::addColumn<bool>("failCommit"); QTest::addColumn<bool>("cancelled");
+        QTest::newRow("exact") << false << false << false;
+        QTest::newRow("newer-same-text") << true << false << false;
+        QTest::newRow("failed-retirement") << false << true << false;
+        QTest::newRow("cancelled-retirement") << false << false << true;
     }
     void outgoingCompletionAtomicallyConsumesOnlyTheCapturedDraft()
     {
-        QFETCH(bool, edited); QFETCH(bool, failCommit);
+        QFETCH(bool, edited); QFETCH(bool, failCommit); QFETCH(bool, cancelled);
         QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
         auto draft = record(); QCOMPARE(store.put(draft), Failure::None);
         OutgoingRecord outgoing; outgoing.uuid = messageId; outgoing.stream = draft.stream; outgoing.topic = draft.topic;
@@ -102,11 +103,13 @@ private slots:
         if (edited) { draft.snapshot = secondTopicId; QCOMPARE(store.put(draft), Failure::None); }
         if (failCommit) QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"),
             "CREATE TRIGGER block_retirement BEFORE DELETE ON outgoing_messages BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END"));
-        QCOMPARE(store.finishOutgoing(outgoing.uuid, true), failCommit ? Failure::Unavailable : Failure::None);
+        auto retirement = std::make_shared<OutgoingRetirement>();
+        if (cancelled) retirement->cancel();
+        QCOMPARE(store.finishOutgoing(outgoing.uuid, true, retirement), failCommit || cancelled ? Failure::Unavailable : Failure::None);
         store.close(); QCOMPARE(store.open(ownerA), Failure::None);
-        QCOMPARE(store.outgoing().rows.size(), failCommit ? 1 : 0);
+        QCOMPARE(store.outgoing().rows.size(), failCommit || cancelled ? 1 : 0);
         QVERIFY(store.read(draft.uuid).record);
-        QCOMPARE(store.read(draft.uuid).record->consumed, !edited && !failCommit);
+        QCOMPARE(store.read(draft.uuid).record->consumed, !edited && !failCommit && !cancelled);
         QCOMPARE(store.read(draft.uuid).record->text, draft.text);
     }
 

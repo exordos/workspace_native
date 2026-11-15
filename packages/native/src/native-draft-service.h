@@ -43,7 +43,8 @@ public:
                        QObject *receiver = nullptr, Done done = {});
     bool outgoing(const Lease &lease, QObject *receiver, OutgoingDone done);
     bool putOutgoing(const Lease &lease, const OutgoingRecord &record, QObject *receiver, Done done);
-    bool finishOutgoing(const Lease &lease, const QString &uuid, bool consumeDraft, QObject *receiver, Done done);
+    bool finishOutgoing(const Lease &lease, const QString &uuid, bool consumeDraft, QObject *receiver, Done done,
+                        std::shared_ptr<OutgoingRetirement> retirement = {});
     // Explicit account forgetting uses a captured verified owner even when it is
     // not selected. The worker drains prior accepted writes before this purge.
     bool clearOutgoing(const QString &owner, QObject *receiver, Done done);
