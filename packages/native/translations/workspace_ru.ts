@@ -2156,6 +2156,10 @@
             <source>Could not reissue the encryption key. Please try again.</source>
             <translation>Не удалось сменить ключ шифрования. Попробуйте ещё раз.</translation>
         </message>
+        <message>
+            <source>This key is still being announced. It cannot be deleted yet.</source>
+            <translation>Ключ ещё объявляется в чате. Пока его удалить нельзя.</translation>
+        </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
@@ -3761,6 +3765,18 @@
         <message>
             <source>Delete from this device</source>
             <translation>Удалить с этого устройства</translation>
+        </message>
+        <message>
+            <source>Delete the saved key?</source>
+            <translation>Удалить сохранённый ключ?</translation>
+        </message>
+        <message>
+            <source>Messages encrypted with this key will be unavailable on this device until you obtain the key again. The key in the chat and on other devices will remain unchanged.</source>
+            <translation>Сообщения, зашифрованные этим ключом, будут недоступны на этом устройстве до повторного получения ключа. Ключ в чате и на других устройствах сохранится.</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
         </message>
         <message>
             <source>Historical</source>

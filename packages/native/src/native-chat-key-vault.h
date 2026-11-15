@@ -140,10 +140,33 @@ public:
     CreateStageResult readCreateStage(const Lease &lease, const QString &attempt);
     CreateStageListResult createStages(const Lease &lease);
     Failure clearCreateStage(const Lease &lease, const QString &attempt);
+    // Issue #244 review 4576750798: durable in-flight marker for a key-rotation
+    // announcement. The reissue action stages the fresh generation in the vault
+    // and writes this record BEFORE the key_announced POST is dispatched; while
+    // the record exists the (stream, key) row is pinned - deleting it could lose
+    // the only copy of a generation the server may promote to current. The mark
+    // clears only on a verified announcement echo or a definite refusal;
+    // timeouts, 5xx and mere absence are not terminal.
+    struct RotationStage {
+        QString announcement; // the deterministic message uuid carried by the POST
+        QString stream;
+        QString key;          // the staged new generation
+        bool dispatched = false; // set once the POST has left the process
+        qint64 createdAt = 0;
+    };
+    struct RotationStageResult { Failure failure = Failure::Unavailable; std::optional<RotationStage> value; };
+    struct RotationStageListResult { Failure failure = Failure::Unavailable; QVector<RotationStage> values; };
+    Failure putRotationStage(const Lease &lease, const RotationStage &stage);
+    RotationStageResult readRotationStage(const Lease &lease, const Address &address);
+    // Enumerate the pinned stages; an empty stream lists the whole device.
+    RotationStageListResult rotationStages(const Lease &lease, const QString &stream = {});
+    Failure markRotationStageDispatched(const Lease &lease, const Address &address);
+    Failure clearRotationStage(const Lease &lease, const Address &address);
 
     static constexpr qsizetype MaximumRecordBytes = 2048;
     static constexpr qint64 MaximumDatabaseBytes = 64 * 1024 * 1024;
     static constexpr qsizetype MaximumPendingRequests = 32;
+    static constexpr qsizetype MaximumRotationStages = 32;
     static constexpr qsizetype MaximumRequestRecordBytes = 1024 * 1024;
     static constexpr qsizetype MaximumRecoveryEnvelopeBytes = 512 * 1024;
     static constexpr qint64 MaximumPendingBytes = 8 * 1024 * 1024;
@@ -172,6 +195,9 @@ private:
     QString createStagePrefix() const;
     QString createStageAddress(const QString &attempt) const;
     std::optional<CreateStage> readCreateStageRecord(const QString &attempt, Failure &failure);
+    QString rotationStagePrefix(const QString &stream) const;
+    QString rotationStageAddress(const Address &address) const;
+    std::optional<RotationStage> readRotationStageRecord(const Address &address, Failure &failure);
     Failure finishTransaction(Failure result);
     void resetStorage();
     void startNextOpen();

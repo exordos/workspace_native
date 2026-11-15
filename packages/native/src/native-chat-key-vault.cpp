@@ -929,4 +929,152 @@ Failure NativeChatKeyVault::clearCreateStage(const Lease &value, const QString &
     return finishTransaction(result);
 }
 
+namespace {
+QByteArray encodeRotationStage(const NativeChatKeyVault::RotationStage &stage)
+{
+    return encode({{"announcement", stage.announcement}, {"stream", stage.stream}, {"key", stage.key},
+        {"dispatched", stage.dispatched ? 1 : 0}, {"createdAt", stage.createdAt}});
+}
+
+std::optional<NativeChatKeyVault::RotationStage> decodeRotationStage(const QByteArray &bytes)
+{
+    const auto object = QJsonDocument::fromJson(bytes).object();
+    const auto created = object.value("createdAt").toDouble(-1);
+    const auto dispatched = object.value("dispatched").toDouble(-1);
+    if (created < 0 || created != std::floor(created) || (dispatched != 0 && dispatched != 1)) return {};
+    NativeChatKeyVault::RotationStage stage{object.value("announcement").toString().toLower(),
+        object.value("stream").toString().toLower(), object.value("key").toString().toLower(),
+        dispatched == 1, qint64(created)};
+    if (!isUuid(stage.announcement) || !isUuid(stage.stream) || !isUuid(stage.key)) return {};
+    return stage;
+}
+} // namespace
+
+QString NativeChatKeyVault::rotationStagePrefix(const QString &stream) const
+{
+    QJsonArray parts{QLatin1String("rotation-stage"), m_device.id};
+    if (!stream.isEmpty())
+    {
+        if (!isUuid(stream)) return {};
+        parts.append(stream.toLower());
+    }
+    auto value = QString::fromUtf8(QJsonDocument(parts).toJson(QJsonDocument::Compact));
+    value.chop(1); return value + ',';
+}
+
+QString NativeChatKeyVault::rotationStageAddress(const Address &address) const
+{
+    const auto prefix = rotationStagePrefix(address.stream);
+    return !prefix.isEmpty() && isUuid(address.key) ? prefix + '"' + address.key.toLower() + "\"]" : QString{};
+}
+
+std::optional<NativeChatKeyVault::RotationStage> NativeChatKeyVault::readRotationStageRecord(
+    const Address &address, Failure &failure)
+{
+    const auto record = rotationStageAddress(address);
+    if (record.isEmpty()) { failure = Failure::InvalidAddress; return {}; }
+    auto bytes = readRecord(record, failure);
+    if (!bytes) return {};
+    auto stage = decodeRotationStage(*bytes); cleanse(*bytes);
+    if (!stage || stage->stream != address.stream.toLower() || stage->key != address.key.toLower())
+    { failure = Failure::Corrupt; return {}; }
+    return stage;
+}
+
+Failure NativeChatKeyVault::putRotationStage(const Lease &value, const RotationStage &stage)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = rotationStageAddress({stage.stream, stage.key});
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!isUuid(stage.announcement) || stage.createdAt < 0 || quint64(stage.createdAt) > MaximumRevision)
+        return Failure::InvalidKey;
+    auto captured = stage;
+    captured.announcement = captured.announcement.toLower();
+    captured.stream = captured.stream.toLower();
+    captured.key = captured.key.toLower();
+    auto encoded = encodeRotationStage(captured);
+    if (encoded.size() > MaximumRecordBytes) return Failure::Capacity;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    Failure result = Failure::None;
+    auto old = readRotationStageRecord({captured.stream, captured.key}, result);
+    // The staged record is immutable (the dispatched flag flips only through
+    // markRotationStageDispatched): an identical rewrite is idempotent, any
+    // different stage for the same (stream, key) is a conflict.
+    if (result == Failure::None && old)
+        result = encodeRotationStage(*old) == encodeRotationStage(captured) ? Failure::None : Failure::Conflict;
+    if (result == Failure::None && !old) {
+        const auto prefix = rotationStagePrefix(QString{});
+        QSqlQuery query(m_database);
+        query.prepare("SELECT COUNT(*) FROM secrets WHERE address>=? AND address<? AND address!=?");
+        query.addBindValue(prefix); query.addBindValue(prefix.chopped(1) + '-'); query.addBindValue(record);
+        if (!query.exec() || !query.next()) result = Failure::Unavailable;
+        else if (query.value(0).toLongLong() >= MaximumRotationStages) result = Failure::Capacity;
+    }
+    if (result == Failure::None) result = writeRecord(record, encoded);
+    return finishTransaction(result);
+}
+
+NativeChatKeyVault::RotationStageResult NativeChatKeyVault::readRotationStage(const Lease &value, const Address &address)
+{
+    if (!accepts(value)) return {Failure::Superseded, {}};
+    if (rotationStageAddress(address).isEmpty()) return {Failure::InvalidAddress, {}};
+    Failure failure = Failure::None;
+    auto stage = readRotationStageRecord(address, failure);
+    if (!stage && failure == Failure::None) failure = Failure::MissingKey;
+    return {failure, std::move(stage)};
+}
+
+NativeChatKeyVault::RotationStageListResult NativeChatKeyVault::rotationStages(const Lease &value, const QString &stream)
+{
+    if (!accepts(value)) return {Failure::Superseded, {}};
+    const auto prefix = rotationStagePrefix(stream);
+    if (prefix.isEmpty()) return {Failure::InvalidAddress, {}};
+    QSqlQuery query(m_database);
+    query.prepare("SELECT address FROM secrets WHERE address>=? AND address<? ORDER BY address LIMIT ?");
+    query.addBindValue(prefix); query.addBindValue(prefix.chopped(1) + '-');
+    query.addBindValue(int(MaximumRotationStages + 1));
+    if (!query.exec()) return {Failure::Unavailable, {}};
+    QList<QString> records;
+    while (query.next()) records.append(query.value(0).toString());
+    query.finish();
+    RotationStageListResult result{Failure::None, {}};
+    for (const auto &record : records) {
+        Failure failure = Failure::None;
+        auto bytes = readRecord(record, failure);
+        if (!bytes) return {failure == Failure::None ? Failure::Corrupt : failure, {}};
+        auto stage = decodeRotationStage(*bytes); cleanse(*bytes);
+        if (!stage || rotationStageAddress({stage->stream, stage->key}) != record) return {Failure::Corrupt, {}};
+        result.values.append(std::move(*stage));
+    }
+    return result;
+}
+
+Failure NativeChatKeyVault::markRotationStageDispatched(const Lease &value, const Address &address)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = rotationStageAddress(address);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    Failure result = Failure::None;
+    auto stage = readRotationStageRecord(address, result);
+    if (result == Failure::None && !stage) result = Failure::MissingKey;
+    if (result == Failure::None && !stage->dispatched) {
+        stage->dispatched = true;
+        result = writeRecord(record, encodeRotationStage(*stage));
+    }
+    return finishTransaction(result);
+}
+
+Failure NativeChatKeyVault::clearRotationStage(const Lease &value, const Address &address)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    const auto record = rotationStageAddress(address);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    QSqlQuery query(m_database);
+    query.prepare("DELETE FROM secrets WHERE address=?");
+    query.addBindValue(record);
+    return finishTransaction(query.exec() ? Failure::None : Failure::Unavailable);
+}
+
 } // namespace workspace

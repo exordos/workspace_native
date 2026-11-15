@@ -330,6 +330,11 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
     refreshQuoteOriginDecryptions();
     scheduleChatPreparation();
     if (!lookupGuard) return;
+    // Issue #244 review 4576750798: a vault attached to a (re)started
+    // controller re-checks durable rotation announcements right away, so a
+    // success that landed while the process was gone resolves the pin.
+    maybeResolveRotationStages();
+    if (!lookupGuard) return;
     const QPointer<NativeController> guard(this); emit stateChanged();
     if (guard) emit messagesChanged();
 }
@@ -622,8 +627,17 @@ void NativeController::refreshChatLocalKeys()
     std::stable_sort(rows.begin(), rows.end(), [](const QVariant &left, const QVariant &right) {
         return left.toMap().value("isCurrent").toBool() && !right.toMap().value("isCurrent").toBool();
     });
+    // Issue #244 review 4576750798: the stream's current key equals the staged
+    // generation only after the announcement landed and the stream update
+    // verified - the most direct echo, so that pin resolves right here. Every
+    // reveal also re-arms the announcement GET recheck for unresolved pins.
+    const auto pinned = m_chatKeys->rotationStages(m_chatVaultLease, m_stream);
+    if (pinned.failure == NativeChatKeyVault::Failure::None && isUuid(current))
+        for (const auto &stage : pinned.values)
+            if (stage.key == current) m_chatKeys->clearRotationStage(m_chatVaultLease, {m_stream, stage.key});
     m_chatLocalKeysInventory = {{"state", QStringLiteral("ready")}, {"error", QString{}}, {"keys", rows}};
     emit stateChanged();
+    maybeResolveRotationStages();
 }
 
 void NativeController::reissueChatKey()
@@ -658,10 +672,30 @@ void NativeController::reissueChatKey()
         const auto staged = m_chatKeys->put(m_chatVaultLease, address, generation.bytes, 0);
         wipeChatBytes(generation.bytes);
         if (staged != NativeChatKeyVault::Failure::None) { failReissue(); return; }
+        // Issue #244 review 4576750798: mark the announcement as in-flight in the
+        // durable vault BEFORE the POST is dispatched. While the mark exists,
+        // deleteChatLocalKey refuses to drop the staged row, so losing the POST
+        // response - even across a restart - cannot lose the only copy of a
+        // generation the server may promote to current.
+        const auto announcement = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const NativeChatKeyVault::RotationStage stage{announcement, m_stream, newKey, false,
+            QDateTime::currentMSecsSinceEpoch()};
+        if (m_chatKeys->putRotationStage(m_chatVaultLease, stage) != NativeChatKeyVault::Failure::None)
+        { failReissue(); return; }
         const QJsonObject payload{{"kind", "key_announced"}, {"key_uuid", newKey}};
-        const QJsonObject body{{"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+        const QJsonObject body{{"uuid", announcement},
             {"stream_uuid", m_stream}, {"topic_uuid", m_chatAuthority.defaultTopic}, {"payload", payload}};
-        request("POST", messenger + "/messages/", body, {}, [this, newKey, epoch, selection](const ApiResult &result) {
+        m_chatKeys->markRotationStageDispatched(m_chatVaultLease, address);
+        request("POST", messenger + "/messages/", body, {}, [this, address, epoch, selection](const ApiResult &result) {
+            // Resolve the durable mark from the outcome (review 4576750798): an
+            // accepted announcement or a definite 4xx refusal clears the pin; any
+            // other answer (timeout, 5xx, transport failure) leaves the mark set
+            // for the GET recheck - an unknown outcome is never terminal.
+            if (m_chatKeys && chatVaultMatches()) {
+                const bool definitive = result.ok()
+                    || (result.status >= 400 && result.status < 500 && result.status != 408 && result.status != 429);
+                if (definitive) m_chatKeys->clearRotationStage(m_chatVaultLease, address);
+            }
             if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
             m_chatReissueBusy = false;
             if (!result.ok()) {
@@ -686,9 +720,63 @@ void NativeController::deleteChatLocalKey(const QString &keyUuid)
         emit stateChanged();
     };
     if (!isUuid(key) || !chatVaultMatches() || !currentStream() || !currentStream()->encrypted) { failDelete(); return; }
+    // Issue #244 review 4576750798: a row whose rotation announcement is still
+    // in flight is pinned by the durable stage record - dropping it could lose
+    // the only copy of a generation the server may promote to current. An
+    // unreadable stage state stays fail-closed.
+    const auto pin = m_chatKeys->readRotationStage(m_chatVaultLease, {m_stream, key});
+    if (pin.failure != NativeChatKeyVault::Failure::MissingKey) {
+        m_chatKeyActionError = pin.value
+            ? tr("This key is still being announced. It cannot be deleted yet.")
+            : tr("Could not delete the key from this device. Please try again.");
+        emit stateChanged();
+        return;
+    }
     if (m_chatKeys->remove(m_chatVaultLease, {m_stream, key}) != NativeChatKeyVault::Failure::None) { failDelete(); return; }
     m_chatKeyActionError.clear();
     refreshChatLocalKeys();
+}
+
+// Issue #244 review 4576750798: an unresolved rotation pin is retried with a
+// GET-only recheck of the announcement message (the same echo the live POST
+// response verifies). Vault attach on a (re)start, login and the inventory
+// reveal each arm one pass; the single-flight flag prevents overlap. A delayed
+// success that landed while the process was gone resolves the pin here.
+void NativeController::maybeResolveRotationStages()
+{
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available() || m_rotationResolveActive) return;
+    const auto lease = m_chatKeys->lease();
+    auto stages = m_chatKeys->rotationStages(lease);
+    if (stages.failure != NativeChatKeyVault::Failure::None || stages.values.isEmpty()) return;
+    m_rotationResolveActive = true;
+    QTimer::singleShot(0, this, [this, lease, stages = std::move(stages.values)] {
+        resolveRotationStagePass(lease, std::move(stages));
+    });
+}
+
+void NativeController::resolveRotationStagePass(const NativeChatKeyVault::Lease &lease,
+    QVector<NativeChatKeyVault::RotationStage> stages)
+{
+    if (stages.isEmpty() || !authenticated() || !m_chatKeys || !m_chatKeys->available()
+        || !sameChatLease(m_chatKeys->lease(), lease)) { m_rotationResolveActive = false; return; }
+    const auto stage = stages.takeFirst();
+    request("GET", messenger + "/messages/" + stage.announcement, {}, {},
+        [this, lease, stage, stages](const ApiResult &result) mutable {
+        // Verified echo: the accepted key_announced message for the staged
+        // generation exists server-side, so the delayed success has landed.
+        const auto parsed = result.ok()
+            ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
+        const bool echoed = parsed && parsed->kind == QLatin1String("key_announced") && parsed->crypto
+            && parsed->crypto->keyUuid.compare(stage.key, Qt::CaseInsensitive) == 0
+            && parsed->stream.compare(stage.stream, Qt::CaseInsensitive) == 0;
+        // Absence after dispatch is NOT terminal: the pin stays until a later
+        // recheck resolves or the user resolves it. Only a stage that never
+        // dispatched (crash before the POST left the process) is safe to clear.
+        if (m_chatKeys && m_chatKeys->available() && sameChatLease(m_chatKeys->lease(), lease)
+            && (echoed || (result.status == 404 && !stage.dispatched)))
+            m_chatKeys->clearRotationStage(lease, {stage.stream, stage.key});
+        resolveRotationStagePass(lease, std::move(stages));
+    });
 }
 
 void NativeController::startChatRequest(const QString &keyUuid, bool checking, bool retrying)
@@ -704,7 +792,12 @@ void NativeController::startChatRequest(const QString &keyUuid, bool checking, b
     auto existing = m_chatKeys->read(m_chatVaultLease, address);
     const bool usable = existing.failure == NativeChatKeyVault::Failure::None && existing.value.bytes.size() == 32;
     wipeChatBytes(existing.value.bytes);
-    if (usable) { scheduleChatPreparation(); return; }
+    // Issue #244 review 4576750804: the local short-circuit stays for the
+    // implicit current-key recovery and for check/retry passes, but a fresh
+    // explicit request for a saved generation goes to the wire: the reference
+    // posts a new key_request while the saved copy stays intact ("Request sent.
+    // The saved key remains available.").
+    if (usable && (checking || retrying || keyUuid.isEmpty())) { scheduleChatPreparation(); return; }
     const auto operation = ++m_chatOperation;
     const auto epoch = m_chatEpoch, selection = m_selection;
     m_chatRequestKey = key; m_chatLocalRequest.clear(); m_chatBusy = true; m_chatPhase = "verifying"; m_chatError.clear();
@@ -798,9 +891,13 @@ void NativeController::postChatRequest(const QString &key, const NativeChatKeyVa
 {
     if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection) || pending.targetTopic != m_chatAuthority.defaultTopic) return;
     const NativeChatKeyVault::Address address{m_stream, key};
+    // A fresh request stages an empty pending slot; a saved-generation re-request
+    // (review 4576750804) keeps its durable bytes - either way the row must not
+    // have changed since staging (deletionRevision covers delete/replace).
     auto snapshot = m_chatKeys->read(m_chatVaultLease, address);
     const bool current = snapshot.failure == NativeChatKeyVault::Failure::None
-        && snapshot.value.deletionRevision == pending.deletionRevision && snapshot.value.bytes.isEmpty();
+        && snapshot.value.deletionRevision == pending.deletionRevision
+        && (snapshot.value.bytes.isEmpty() || snapshot.value.bytes.size() == 32);
     wipeChatBytes(snapshot.value.bytes);
     if (!current) { finishChatOperation(operation, key, "unresolved", tr("The key request was superseded by a local change.")); return; }
     const QJsonObject payload{{"kind", "key_request"}, {"key_uuid", key}, {"device_id", m_chatKeys->device().id},
@@ -7043,6 +7140,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // Issue #161: the Workspace meet host lives only as long as the session
     // does (reference per-owner store, cleared on logout).
     connect(m_session, &Session::authenticated, this, [this] { fetchCallMeetHost(); });
+    // Issue #244 review 4576750798: a login that happens with an already-open
+    // vault re-checks durable rotation announcements (login-only restarts).
+    connect(m_session, &Session::authenticated, this, [this] { maybeResolveRotationStages(); });
     connect(m_session, &Session::signedOut, this, [this] {
         ++m_callMeetAttempt;
         m_callStore.clear();

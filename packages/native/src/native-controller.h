@@ -746,6 +746,11 @@ private:
         int pages = 0, qint64 bytes = 0);
     void finishChatOperation(quint64 operation, const QString &key, const QString &phase, const QString &error = {});
     void startChatRequest(const QString &key, bool checking, bool retrying);
+    // Issue #244 review 4576750798: GET-only recheck pass over durable
+    // in-flight rotation announcements (see native-chat-key-vault.h).
+    void maybeResolveRotationStages();
+    void resolveRotationStagePass(const NativeChatKeyVault::Lease &lease,
+        QVector<NativeChatKeyVault::RotationStage> stages);
     void postChatRequest(const QString &key, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
     bool matchesChatRequest(const Message &message, const QString &key,
                             const NativeChatKeyVault::PendingRequest &pending, bool observed) const;
@@ -776,6 +781,7 @@ private:
     // Issue #244: cached local-key inventory projection + action pending/error.
     QVariantMap m_chatLocalKeysInventory{{{"state", QStringLiteral("loading")}}};
     bool m_chatReissueBusy = false;
+    bool m_rotationResolveActive = false;
     QString m_chatKeyActionError;
     quint64 m_chatEpoch = 0, m_chatApiGeneration = 0, m_chatCatalog = 0;
     quint64 m_chatOperation = 0, m_chatAccessRevision = 0;

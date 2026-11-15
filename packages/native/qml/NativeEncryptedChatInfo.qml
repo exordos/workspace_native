@@ -1427,9 +1427,97 @@ Item {
                         radius: 8
                         color: deleteLocalKeyButton.hovered ? page.colors["sidebar-item-hover"] : "transparent"
                     }
-                    // The reference confirmation dialog is not ported yet
-                    // (design doc deviation 1); the action itself is identical.
-                    onClicked: page.controller.deleteChatLocalKey(page.keyUuid)
+                    // R2 review 4576750806: the reference routes the danger
+                    // button through the shared confirmation dialog; deleting a
+                    // local key may drop the only copy of a historical key, so
+                    // the dialog naming that consequence gates the action.
+                    onClicked: { console.log("PROBE-DELETE-CLICK"); deleteLocalKeyConfirm.open() }
+                }
+                Dialog {
+                    id: deleteLocalKeyConfirm
+                    objectName: "encryptedChatDeleteLocalKeyConfirm"
+                    onVisibleChanged: console.log("PROBE-DIALOG-VISIBLE", visible)
+                    parent: Overlay.overlay
+                    anchors.centerIn: parent
+                    width: Math.min(360, page.width - 48)
+                    modal: true
+                    dim: true
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    Overlay.modal: Rectangle { color: "#80000000" }
+                    background: Rectangle {
+                        radius: 10
+                        color: page.colors["bg-elevated"]
+                        border.color: page.colors["border-subtle"]
+                    }
+                    contentItem: Column {
+                        spacing: 12
+                        Text {
+                            objectName: "encryptedChatDeleteLocalKeyConfirmTitle"
+                            width: parent.width
+                            text: qsTr("Delete the saved key?")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-primary"]
+                        }
+                        Text {
+                            objectName: "encryptedChatDeleteLocalKeyConfirmDescription"
+                            width: parent.width
+                            text: qsTr("Messages encrypted with this key will be unavailable on this device until you obtain the key again. The key in the chat and on other devices will remain unchanged.")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-muted"]
+                        }
+                        Row {
+                            spacing: 8
+                            layoutDirection: Qt.RightToLeft
+                            Button {
+                                objectName: "encryptedChatDeleteLocalKeyConfirmDelete"
+                                height: 36
+                                padding: 0
+                                leftPadding: 14; rightPadding: 14
+                                Accessible.name: qsTr("Delete from this device")
+                                contentItem: Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Delete from this device")
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    font.weight: Font.Medium
+                                    color: page.colors["notice-base"]
+                                }
+                                background: Rectangle {
+                                    radius: 8
+                                    color: parent.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                                    border.width: 1
+                                    border.color: page.colors["notice-base"]
+                                }
+                                onClicked: {
+                                    deleteLocalKeyConfirm.close()
+                                    page.controller.deleteChatLocalKey(page.keyUuid)
+                                }
+                            }
+                            Button {
+                                objectName: "encryptedChatDeleteLocalKeyConfirmCancel"
+                                height: 36
+                                padding: 0
+                                leftPadding: 14; rightPadding: 14
+                                Accessible.name: qsTr("Cancel")
+                                contentItem: Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Cancel")
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    font.weight: Font.Medium
+                                    color: page.colors["text-primary"]
+                                }
+                                background: Rectangle { radius: 8; color: page.colors["card-bg-active"] }
+                                onClicked: deleteLocalKeyConfirm.close()
+                            }
+                        }
+                    }
                 }
                 Text {
                     objectName: "encryptedChatLocalKeyActionError"
