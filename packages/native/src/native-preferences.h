@@ -59,6 +59,8 @@ public:
     void recordOwnStatusAway(const QString &owner, bool away);
     QStringList loadLastConversation(const QString &owner);
     void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
+    QStringList loadExpandedStreams(const QString &owner);
+    void recordExpandedStreams(const QString &owner, const QStringList &streams);
     QStringList organizationHistory() const { return m_organizationHistory; }
     // Issue #165: the reference authIdleTimeout setting (enforced by
     // NativeAuthGuard; the settings row itself is issue #135). Absent or

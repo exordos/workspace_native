@@ -3043,9 +3043,11 @@ void NativeController::usePreferences(NativePreferences *preferences)
     m_statusPreferences = preferences;
     m_statusPreferenceOwner.clear();
     m_conversationPreferenceOwner.clear();
+    m_sidebarExpansionOwner.clear();
     cancelConversationRestore();
     prepareOwnStatusPreferences();
     prepareConversationRestore();
+    if (!guard) return;
     if (!m_stream.isEmpty()) rememberConversation();
     maybeRestoreConversation();
     emit stateChanged();
@@ -3060,6 +3062,9 @@ void NativeController::cancelConversationRestore()
 
 void NativeController::prepareConversationRestore()
 {
+    const QPointer<NativeController> guard(this);
+    prepareSidebarExpansion();
+    if (!guard) return;
     const auto owner = creationOwnerKey();
     if (owner == m_conversationPreferenceOwner) return;
     cancelConversationRestore();
@@ -3104,7 +3109,10 @@ void NativeController::maybeRestoreConversation()
         });
         if (stream != m_streams.cend()) {
             const auto id = stream->uuid;
+            const QPointer<NativeController> guard(this);
+            m_restoringSidebarRoute = true;
             selectStream(id);
+            if (guard) m_restoringSidebarRoute = false;
         }
         else {
             preferences->recordLastConversation(owner, {}, {});
@@ -7281,20 +7289,23 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
     // attempt's marker, so reopen can retry a failed hydration while an
     // in-flight successful one stays deduplicated.
     const auto token = ++m_inboxHydrationToken;
+    const auto selectedRevision = m_inboxSelectedRevisions.value(streamUuid);
     m_inboxHydrating.insert(streamUuid, token);
     const auto settle = [this, streamUuid, token] {
-        if (m_inboxHydrating.value(streamUuid) == token)
-            m_inboxHydrating.remove(streamUuid);
+        if (m_inboxHydrating.value(streamUuid) != token) return;
+        m_inboxHydrating.remove(streamUuid);
+        if (m_sidebarTopicHydrating.remove(streamUuid))
+            QTimer::singleShot(0, this, &NativeController::pumpSidebarTopicHydration);
     };
     QUrlQuery query;
     query.addQueryItem("stream_uuid", streamUuid);
     cachedCollection({NativeCache::Kind::Topics, streamUuid, {}, {}},
         messenger + "/stream_topics/", query,
-        [this, streamUuid, owner, generation, catalog, settle](const QJsonArray &rows, bool) {
+        [this, streamUuid, owner, generation, catalog, selectedRevision, settle](const QJsonArray &rows, bool authoritative) {
         // Stale-owner guard: an owner switch or catalog epoch change may
         // not write into the new inbox (same contract as mentions).
         if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
-            || catalog != m_catalog) {
+            || catalog != m_catalog || m_inboxSelectedRevisions.value(streamUuid) != selectedRevision) {
             settle();
             return false;
         }
@@ -7333,10 +7344,14 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
-        settle();
+        // Stale cache can be shown immediately but its network revalidation
+        // remains in flight and continues to occupy the background slot.
+        if (authoritative) settle();
         const QPointer<NativeController> guard(this);
+        emit sidebarTopicsChanged(streamUuid);
+        if (!guard) return true;
         if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
-        if (guard) emit stateChanged();
+        if (guard && m_inboxVisible) emit stateChanged();
         return true;
     }, false, settle);
 }
@@ -7434,7 +7449,10 @@ void NativeController::resetInbox()
 {
     m_inboxVisible = false;
     m_inboxTopics.clear();
+    m_inboxSelectedRevisions.clear();
     m_inboxHydrating.clear();
+    m_sidebarTopicPending.clear();
+    m_sidebarTopicHydrating.clear();
     m_inboxPlacementEvents.clear();
     m_inboxDeletedTopics.clear();
 }
@@ -8064,9 +8082,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         const QPointer<NativeController> guard(this);
         emit sidebarStreamsChanged();
         if (guard) hydrateSidebarSearchTopics();
+        if (guard) hydrateExpandedSidebarStreams();
     });
     connect(this, &NativeController::topicsChanged, this, [this] {
-        if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
+        const QPointer<NativeController> guard(this);
+        emit sidebarTopicsChanged(m_stream);
+        if (guard && !m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
     });
     // #162: the call window shell follows the single-active-call store. An
     // active call opens the shell; closing the shell (close button or
@@ -8397,6 +8418,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         resetReadState();
         ++m_selection;
         prepareConversationRestore();
+        if (!guard) return;
         m_loading = false;
         m_sending = false;
         m_topicChanging = false;
@@ -10149,6 +10171,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 && creationTopicDto(payload, m_session->project(), streamId, m_session->user()).has_value());
         inboxSlotTopicEvent(kind, *topic, inboxOwnsPlacement);
         if (!openingGuard) return true;
+        emit sidebarTopicsChanged({});
+        if (!openingGuard) return true;
         if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
         if (!openingGuard) return true;
         bool matchingOwn = false;
@@ -10251,7 +10275,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             Topic tombstone;
             tombstone.uuid = id;
             tombstone.stream = deletedStream;
+            const QPointer<NativeController> guard(this);
             inboxSlotTopicEvent("topic.deleted", tombstone);
+            if (!guard) return true;
+            emit sidebarTopicsChanged({});
+            if (!guard) return true;
         }
         if (deletedStream == m_stream && id == m_topic) {
             // Keep the explicit A/T intent, but revoke its authority and retire
@@ -11368,6 +11396,105 @@ void NativeController::hydrateSidebarSearchTopics()
         hydrateInboxStream(stream);
         if (!guard || owner != creationOwnerKey() || generation != m_api->generation()) return;
     }
+}
+
+void NativeController::prepareSidebarExpansion()
+{
+    const auto owner = creationOwnerKey();
+    if (owner == m_sidebarExpansionOwner) return;
+    m_sidebarExpansionOwner = owner;
+    m_sidebarTopicPending.clear();
+    m_sidebarTopicHydrating.clear();
+    m_expandedSidebarStreams = m_statusPreferences && !owner.isEmpty()
+        ? m_statusPreferences->loadExpandedStreams(owner) : QStringList{};
+    const QPointer<NativeController> guard(this);
+    emit sidebarExpansionChanged();
+    if (guard) hydrateExpandedSidebarStreams();
+}
+
+void NativeController::hydrateExpandedSidebarStreams()
+{
+    if (!authenticated()) return;
+    const auto streams = m_expandedSidebarStreams;
+    const QPointer<NativeController> guard(this);
+    for (const auto &stream : streams) {
+        requestSidebarTopics(stream);
+        if (!guard) return;
+    }
+}
+
+void NativeController::requestSidebarTopics(const QString &stream)
+{
+    if (!authenticated() || (stream == m_stream && m_topicsVerified)) return;
+    const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&stream](const Stream &value) { return value.uuid == stream; });
+    if (found == m_streams.cend() || found->archived || m_inboxTopics.contains(stream)
+        || m_inboxHydrating.contains(stream) || m_sidebarTopicPending.contains(stream)) return;
+    m_sidebarTopicPending.append(stream);
+    pumpSidebarTopicHydration();
+}
+
+void NativeController::pumpSidebarTopicHydration()
+{
+    // Two background requests leave capacity for the active chat and search.
+    // Inbox/search continue to use their existing independent hydration path.
+    constexpr int maxSidebarRequests = 2;
+    const QPointer<NativeController> guard(this);
+    while (authenticated() && m_sidebarTopicHydrating.size() < maxSidebarRequests
+           && !m_sidebarTopicPending.isEmpty()) {
+        const auto stream = m_sidebarTopicPending.takeFirst();
+        if (m_inboxTopics.contains(stream) || m_inboxHydrating.contains(stream)) continue;
+        const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&stream](const Stream &value) { return value.uuid == stream && !value.archived; });
+        if (found == m_streams.cend()) continue;
+        m_sidebarTopicHydrating.insert(stream);
+        hydrateInboxStream(stream);
+        if (!guard) return;
+        // A synchronous refusal cannot consume a permanent slot.
+        if (!m_inboxHydrating.contains(stream)) m_sidebarTopicHydrating.remove(stream);
+    }
+}
+
+void NativeController::toggleSidebarStream(const QString &stream)
+{
+    if (!authenticated() || creationOwnerKey() != m_sidebarExpansionOwner) return;
+    const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&stream](const Stream &value) { return value.uuid == stream; });
+    if (found == m_streams.cend() || found->archived) return;
+    const bool expanding = !m_expandedSidebarStreams.contains(stream);
+    if (expanding) m_expandedSidebarStreams.append(stream);
+    else {
+        m_expandedSidebarStreams.removeAll(stream);
+        m_sidebarTopicPending.removeAll(stream);
+    }
+    if (m_statusPreferences) m_statusPreferences->recordExpandedStreams(m_sidebarExpansionOwner, m_expandedSidebarStreams);
+    const QPointer<NativeController> guard(this);
+    emit sidebarExpansionChanged();
+    if (guard && expanding) requestSidebarTopics(stream);
+}
+
+void NativeController::collapseSidebarExcept(const QString &stream)
+{
+    if (m_sidebarExpansionOwner.isEmpty() || creationOwnerKey() != m_sidebarExpansionOwner) return;
+    const QStringList next = stream.isEmpty() ? QStringList{} : QStringList{stream};
+    if (next == m_expandedSidebarStreams) return;
+    m_expandedSidebarStreams = next;
+    QTimer::singleShot(0, this, [this] { emit sidebarExpansionChanged(); });
+    for (auto it = m_sidebarTopicPending.begin(); it != m_sidebarTopicPending.end();)
+        if (*it != stream) it = m_sidebarTopicPending.erase(it); else ++it;
+    if (m_statusPreferences) m_statusPreferences->recordExpandedStreams(m_sidebarExpansionOwner, next);
+}
+
+QVariantMap NativeController::sidebarTopicState(const QString &id, bool includeRows) const
+{
+    const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&id](const Stream &entry) { return entry.uuid == id && !entry.archived; });
+    if (stream == m_streams.cend() || !authenticated()) return {};
+    const bool current = id == m_stream && m_topicsVerified;
+    const bool known = current || m_inboxTopics.contains(id);
+    const auto &topics = current ? m_topics : m_inboxTopics.value(id);
+    return {{"known", known}, {"count", topics.size()},
+        {"rows", includeRows ? topicRows(topics, &*stream) : QVariantList{}}};
 }
 
 QVariantList NativeController::sidebarStreams() const
@@ -12757,6 +12884,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     ++m_topicMutation;
     ++m_selection;
     m_stream = id;
+    if (!m_restoringSidebarRoute) collapseSidebarExcept(id);
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
     rememberConversation();
@@ -12829,6 +12957,12 @@ void NativeController::loadTopics()
             topics.append(*topic);
         }
         m_topics = topics;
+        // A verified foreground catalog supersedes an older sidebar snapshot;
+        // its revision fences an already-running background revalidation.
+        if (authoritative && (m_inboxTopics.contains(m_stream) || m_inboxHydrating.contains(m_stream))) {
+            ++m_inboxSelectedRevisions[m_stream];
+            m_inboxTopics.insert(m_stream, topics);
+        }
         ++m_readCounterInvalidation;
         m_topicsVerified = authoritative;
         if (authoritative) m_topicSeedUnverified = false;
@@ -13050,10 +13184,13 @@ void NativeController::publishTopicOpening(quint64 ticket)
     const auto topic = *m_topicOpening.canonical;
     // Restoration has resolved authoritatively; ordinary route publication now
     // owns cancellation, including its synchronous selection notifications.
+    const bool restoringRoute = m_topicOpening.automaticRestore;
     m_topicOpening.automaticRestore = false;
     const QPointer<NativeController> guard(this);
+    m_restoringSidebarRoute = restoringRoute;
     activateStream(topic.stream, nullptr, {}, &topic, ticket);
     if (!guard) return;
+    m_restoringSidebarRoute = false;
     if (m_topicOpening.active && m_topicOpening.ticket == ticket) finishTopicOpening(ticket);
 }
 
@@ -13130,6 +13267,7 @@ void NativeController::selectTopic(const QString &id)
     ++m_topicMutation;
     ++m_selection;
     m_topic = id;
+    if (!m_restoringSidebarRoute) collapseSidebarExcept(m_stream);
     rememberConversation();
     settleEditRouteChange();
     m_historyVerified = false;

@@ -9723,6 +9723,368 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void sidebarExpandsUnselectedStreamWithoutNavigating()
+    {
+        WindowChannelFixture fixture;
+        const QString otherStream = "91000000-0000-4000-8000-000000000001";
+        const QString otherTopic = "91000000-0000-4000-8000-000000000002";
+        const auto first = windowChannel(streamId, "Engineering");
+        const auto second = windowChannel(otherStream, "Support");
+        const auto planning = windowChannelTopic(topicId, streamId, "Planning");
+        const auto support = windowChannelTopic(otherTopic, otherStream, "Help");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return {QJsonArray{first, second}};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/"))
+                return {QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId
+                    ? QJsonArray{planning} : QJsonArray{support}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-expand.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Sidebar expansion teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-expansion", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        controller.selectStream(otherStream);
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        auto *row = visibleItem(window->contentItem(), "stream-" + streamId);
+        QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+        QTRY_VERIFY2(visibleItem(window->contentItem(), "expandTopics-" + streamId),
+                     "An unselected channel with topics must expose an expansion control on hover");
+        click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        QCOMPARE(controller.selectedStream(), otherStream);
+        QVERIFY(controller.selectedTopic().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarExpansionPersistsAndRevealsTopics_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void sidebarExpansionPersistsAndRevealsTopics()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const QString otherStream = "91000000-0000-4000-8000-000000000001";
+        const auto first = windowChannel(streamId, "Engineering");
+        const auto second = windowChannel(otherStream, "Support");
+        QStringList ids;
+        QJsonArray planning;
+        for (int i = 0; i < 7; ++i) {
+            const auto id = QString("92000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id);
+            auto topic = windowChannelTopic(id, streamId, QString("Topic %1").arg(i));
+            topic["is_default"] = i == 0; topic["is_done"] = i >= 5;
+            planning.append(topic);
+        }
+        const auto otherTopic = windowChannelTopic(secondTopicId, otherStream, "Support topic");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {QJsonArray{first, second}};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/"))
+                return {QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId ? planning : QJsonArray{otherTopic}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto settingsFile = directory.filePath("expansion-persist.ini");
+        for (int phase = 0; phase < 2; ++phase) {
+            NativePreferences preferences(settingsFile); preferences.setLocale(locale); preferences.setMode(mode);
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Sidebar expansion teardown", __FILE__, __LINE__);
+            });
+            window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+            window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+            session.login(fixture.server.origin(), "synthetic-expansion", "synthetic-password");
+            QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+            QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+            const auto topic = [&](int i) { return visibleItem(window->contentItem(), "topic-" + ids.at(i)); };
+            const auto more = [&] { return visibleItem(window->contentItem(), "showMoreTopics-" + streamId); };
+            if (phase == 0) {
+                controller.selectStream(otherStream);
+                QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
+                QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
+                auto *row = visibleItem(window->contentItem(), "stream-" + streamId); QVERIFY(row);
+                QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+                QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+                click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+            }
+            QTRY_VERIFY_WITH_TIMEOUT(topic(0) && topic(1) && topic(2), 5000);
+            QVERIFY(!topic(3) && !topic(5));
+            QTRY_VERIFY(more());
+            QCOMPARE(more()->property("text").toString(), locale == "en" ? QString("Show more topics (2)") : QString::fromUtf8("Показать ещё темы (2)"));
+            QCOMPARE(controller.selectedStream(), otherStream);
+            QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
+            if (phase == 0) {
+                click(window, more()); QTRY_VERIFY(topic(3) && topic(4)); QVERIFY(!topic(5));
+                QTRY_VERIFY(topic(3)->hasActiveFocus());
+                QCOMPARE(more()->property("text").toString(), locale == "en" ? QString("Show completed topics (2)") : QString::fromUtf8("Показать завершённые темы (2)"));
+                click(window, more()); QTRY_VERIFY(topic(5) && topic(6));
+                QTRY_VERIFY(topic(5)->hasActiveFocus());
+                QCOMPARE(more()->property("text").toString(), locale == "en" ? QString("Hide extra topics") : QString::fromUtf8("Скрыть лишние темы"));
+                click(window, more()); QTRY_VERIFY(!topic(3) && !topic(5));
+            } else {
+                // Explicit navigation keeps only the target stream expanded.
+                click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+                QTRY_COMPARE(controller.selectedStream(), streamId);
+                QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + secondTopicId));
+            }
+            const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+        }
+    }
+
+    void sidebarReexpandedStreamUsesUpdatedCatalog_data()
+    {
+        QTest::addColumn<bool>("holdBackground");
+        QTest::newRow("completed-background") << false;
+        QTest::newRow("late-background") << true;
+    }
+
+    void sidebarReexpandedStreamUsesUpdatedCatalog()
+    {
+        QFETCH(bool, holdBackground);
+        WindowChannelFixture fixture;
+        const QString otherStream = "97000000-0000-4000-8000-000000000001";
+        const QString otherTopic = "97000000-0000-4000-8000-000000000002";
+        const auto first = windowChannel(streamId, "Engineering");
+        const auto second = windowChannel(otherStream, "Support");
+        const auto fallback = fixture.server.handler;
+        auto revision = std::make_shared<int>(1);
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {QJsonArray{first, second}};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (id == otherStream) return {QJsonArray{windowChannelTopic(otherTopic, otherStream, "Support topic")}};
+                QJsonArray rows{windowChannelTopic(topicId, streamId, "Planning")};
+                if (*revision == 2) {
+                    auto later = windowChannelTopic(secondTopicId, streamId, "Later topic");
+                    later["is_default"] = false; rows.append(later);
+                }
+                Response response{rows};
+                if (holdBackground && *revision == 1) response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-refresh.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Sidebar refresh teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-refresh", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        controller.selectStream(otherStream); QTRY_VERIFY(controller.topicsComplete());
+        auto hoverFirst = [&] {
+            auto *row = visibleItem(window->contentItem(), "stream-" + streamId);
+            if (row) QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+        };
+        hoverFirst();
+        if (holdBackground) QTRY_VERIFY_WITH_TIMEOUT(bool(*held), 3000);
+        else {
+            QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+            click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+            QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        }
+        *revision = 2;
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_VERIFY(controller.topicsComplete() && controller.topics().size() == 2);
+        click(window, visibleItem(window->contentItem(), "stream-" + otherStream));
+        QTRY_VERIFY(controller.selectedStream() == otherStream && controller.topicsComplete());
+        if (holdBackground) { (*held)(); *held = {}; QTest::qWait(250); }
+        hoverFirst(); QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        QCOMPARE(controller.selectedStream(), otherStream);
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarSearchHighlightsVisibleTopicInsteadOfCollapsedStream()
+    {
+        WindowChannelFixture fixture;
+        const auto first = windowChannel(streamId, "Engineering");
+        const auto planning = windowChannelTopic(topicId, streamId, "Planning needle");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {QJsonArray{first}};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")) return {QJsonArray{planning}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-highlight.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Sidebar search teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-highlight", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 1);
+        controller.selectStream(streamId); QTRY_VERIFY(controller.topicsComplete());
+        controller.selectTopic(topicId); QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *row = visibleItem(window->contentItem(), "stream-" + streamId); QVERIFY(row);
+        QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + topicId));
+        auto *search = visibleItem(window->contentItem(), "sidebarSearch"); QVERIFY(search); click(window, search);
+        for (const auto key : QByteArray("needle")) QTest::keyClick(window, key);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
+        QTest::mouseMove(window, QPoint(1300, 850));
+        auto *streamRow = visibleItem(window->contentItem(), "stream-" + streamId); QVERIFY(streamRow);
+        auto *topicRow = visibleItem(window->contentItem(), "topic-" + topicId); QVERIFY(topicRow);
+        auto *streamBackground = streamRow->property("background").value<QQuickItem *>(); QVERIFY(streamBackground);
+        auto *topicBackground = topicRow->property("background").value<QQuickItem *>(); QVERIFY(topicBackground);
+        const auto active = QColor(window->property("colors").toMap().value("card-bg-active").toString());
+        QCOMPARE(topicBackground->property("color").value<QColor>(), active);
+        QVERIFY2(streamBackground->property("color").value<QColor>() != active,
+                 "Search displays the active topic, so its stream must not also be highlighted");
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarExpansionWindowLoadDiagnostic_data()
+    {
+        QTest::addColumn<bool>("expanded");
+        QTest::newRow("collapsed-baseline") << false;
+        QTest::newRow("expanded") << true;
+    }
+
+    void sidebarExpansionWindowLoadDiagnostic()
+    {
+        QFETCH(bool, expanded);
+        WindowChannelFixture fixture; QStringList ids; QJsonArray streams;
+        QHash<QString, QJsonArray> topics;
+        for (int i = 0; i < 120; ++i) {
+            const auto stream = QString("a1000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(stream); streams.append(windowChannel(stream, QString("Stream %1").arg(i)));
+            QJsonArray rows;
+            for (int j = 0; j < 20; ++j) {
+                const auto id = QString("a2000000-0000-4000-8000-%1").arg(i * 100 + j + 1, 12, 10, QLatin1Char('0'));
+                auto topic = windowChannelTopic(id, stream, QString("Topic %1").arg(j));
+                topic["is_default"] = j == 0; rows.append(topic);
+            }
+            topics.insert(stream, rows);
+        }
+        const auto fallback = fixture.server.handler; auto gets = std::make_shared<int>(0);
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {streams};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")) {
+                ++*gets; return {topics.value(QUrlQuery(request.target).queryItemValue("stream_uuid")), 200, 50};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-load.ini"));
+        const auto owner = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
+            fixture.server.origin().toString(QUrl::FullyEncoded), projectId, userId}).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex());
+        if (expanded) preferences.recordExpandedStreams(owner, ids);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Sidebar load teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-load", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        QElapsedTimer gap; gap.start(); QVector<qint64> gaps; int keySamples = 0; qint64 maxKeyMs = 0;
+        QTimer heartbeat; heartbeat.setInterval(10);
+        connect(&heartbeat, &QTimer::timeout, window, [&] { gaps.append(gap.restart()); });
+        QTimer keyboard; keyboard.setInterval(300);
+        connect(&keyboard, &QTimer::timeout, window, [&] {
+            QElapsedTimer elapsed; elapsed.start(); QTest::keyClick(window, Qt::Key_Tab);
+            maxKeyMs = qMax(maxKeyMs, elapsed.elapsed()); ++keySamples;
+        });
+        heartbeat.start(); session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(session.ready() && controller.streams().size() == 120, 5000);
+        auto *search = visibleItem(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        search->forceActiveFocus(Qt::TabFocusReason); keyboard.start();
+        QTest::qWait(7000); keyboard.stop(); heartbeat.stop();
+        QVERIFY(!gaps.isEmpty()); QVERIFY(keySamples > 0);
+        std::sort(gaps.begin(), gaps.end());
+        qInfo() << "SIDEBAR_WINDOW_LOAD" << (expanded ? "expanded" : "baseline")
+                << "requests" << *gets << "samples" << gaps.size()
+                << "heartbeat-p95-ms" << gaps.at((gaps.size() - 1) * 95 / 100)
+                << "heartbeat-max-ms" << gaps.last() << "key-samples" << keySamples << "key-max-ms" << maxKeyMs;
+        if (expanded) QVERIFY2(gaps.at((gaps.size() - 1) * 95 / 100) <= 50,
+            "Background topic hydration must leave the visible window responsive");
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarHydrationKeepsFocusOnOtherStream()
+    {
+        WindowChannelFixture fixture;
+        const QString otherStream = "a3000000-0000-4000-8000-000000000001";
+        const auto first = windowChannel(streamId, "Engineering");
+        const auto second = windowChannel(otherStream, "Support");
+        const auto fallback = fixture.server.handler;
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {QJsonArray{first, second}};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                Response response{QJsonArray{windowChannelTopic(id == streamId ? topicId : secondTopicId, id, "Topic")}};
+                if (id == otherStream) response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-focus.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Sidebar focus teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-focus", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        controller.requestSidebarTopics(streamId);
+        const auto known = [&](const QString &id) { return controller.sidebarTopicState(id, false).value("known").toBool(); };
+        QTRY_VERIFY(known(streamId));
+        QPointer<QQuickItem> firstRow = visibleItem(window->contentItem(), "stream-" + streamId); QVERIFY(firstRow);
+        firstRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(firstRow->hasActiveFocus());
+        controller.requestSidebarTopics(otherStream); QTRY_VERIFY(bool(*held));
+        (*held)(); *held = {};
+        QTRY_VERIFY(known(otherStream));
+        QVERIFY2(firstRow && firstRow->hasActiveFocus(), "Loading another stream must not destroy the focused row or move keyboard focus");
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
     void sidebarChannelOffersTopicCreationWithoutChangingSelection()
     {
         QTemporaryDir directory;

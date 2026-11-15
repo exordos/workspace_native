@@ -34,6 +34,20 @@ ApplicationWindow {
     readonly property var preferences: nativePreferences
     readonly property var updater: nativeUpdater
     readonly property var messageImages: nativeMessageImages
+    // Per-window reveal level; stream expansion itself is persisted by owner.
+    property var sidebarTopicRevealLevels: ({})
+    Connections {
+        target: root.controller
+        function onStateChanged() {
+            if (!root.controller.authenticated && Object.keys(root.sidebarTopicRevealLevels).length)
+                root.sidebarTopicRevealLevels = ({});
+        }
+    }
+    function setSidebarTopicReveal(id, level) {
+        const next = Object.assign({}, sidebarTopicRevealLevels);
+        next[id] = level;
+        sidebarTopicRevealLevels = next;
+    }
     property bool updatesVisible: false
     property bool aboutFromProfile: false
     function openAbout(fromProfile) {
@@ -3159,6 +3173,35 @@ ApplicationWindow {
                     required property var modelData
                     // workspace_ui 61dacef sidebar-message-preview.ui.tsx: sender in the
                     // sidebar-sender token + ": " + body in text-secondary, one 20 px line.
+                    property var sidebarTopicState: ({ known: false, count: 0, rows: [] })
+                    readonly property bool expanded: root.controller.expandedSidebarStreams.indexOf(modelData.id) >= 0
+                    readonly property var allTopics: sidebarTopicState.rows || []
+                    function refreshTopics() {
+                        sidebarTopicState = root.controller.sidebarTopicState(modelData.id, expanded);
+                    }
+                    onExpandedChanged: {
+                        if (!expanded && root.sidebarTopicRevealLevels[modelData.id] && root.sidebarTopicRevealLevels[modelData.id] !== "collapsed")
+                            root.setSidebarTopicReveal(modelData.id, "collapsed");
+                        refreshTopics();
+                    }
+                    onModelDataChanged: refreshTopics()
+                    Component.onCompleted: refreshTopics()
+                    Connections {
+                        target: root.controller
+                        function onSidebarTopicsChanged(stream) {
+                            if (!stream.length || stream === streamDelegate.modelData.id) streamDelegate.refreshTopics();
+                        }
+                    }
+                    readonly property string reveal: root.sidebarTopicRevealLevels[modelData.id] || "collapsed"
+                    readonly property int unfinishedCount: allTopics.filter(topic => !Boolean(topic.done)).length
+                    readonly property int collapsedCount: Math.min(3, allTopics.length)
+                    readonly property int visibleCount: reveal === "all" ? allTopics.length
+                        : reveal === "unfinished" ? Math.max(collapsedCount, unfinishedCount) : collapsedCount
+                    readonly property int hiddenUnfinished: Math.max(0, unfinishedCount - visibleCount)
+                    readonly property int hiddenCompleted: Math.max(0, allTopics.length - Math.max(unfinishedCount, visibleCount))
+                    readonly property string nextAction: hiddenUnfinished > 0 ? "more"
+                        : hiddenCompleted > 0 ? "completed" : visibleCount > collapsedCount ? "collapse" : ""
+                    readonly property int hiddenCount: nextAction === "more" ? hiddenUnfinished : hiddenCompleted
                     readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
                     readonly property string previewSenderLabel: {
                         const sender = String(modelData.previewSender || "")
@@ -3176,6 +3219,10 @@ ApplicationWindow {
                         horizontalPadding: 10
                         verticalPadding: 10
                         onClicked: { root.controller.closeDrafts(); root.controller.selectStream(streamDelegate.modelData.id); }
+                        onHoveredChanged: if (hovered)
+                            root.controller.requestSidebarTopics(streamDelegate.modelData.id)
+                        onActiveFocusChanged: if (activeFocus)
+                            root.controller.requestSidebarTopics(streamDelegate.modelData.id)
                         Keys.onMenuPressed: event => {
                             root.openStreamMenu(streamDelegate.modelData.id, streamButton, streamButton.mapToItem(root.contentItem, streamButton.width, streamButton.height / 2));
                             event.accepted = true;
@@ -3193,7 +3240,7 @@ ApplicationWindow {
                         }
                         background: Rectangle {
                             radius: 6
-                            color: root.controller.selectedStream === streamDelegate.modelData.id && root.controller.selectedTopic.length === 0 ? root.colors["card-bg-active"] : streamButton.hovered ? root.colors["sidebar-item-hover"] : root.colors["card-bg"]
+                            color: root.controller.selectedStream === streamDelegate.modelData.id && (root.controller.selectedTopic.length === 0 || !(streamDelegate.expanded || (root.normalizedSidebarQuery.length && (streamDelegate.modelData.searchTopics || []).length > 0))) ? root.colors["card-bg-active"] : streamButton.hovered ? root.colors["sidebar-item-hover"] : root.colors["card-bg"]
                             border.width: streamButton.visualFocus ? 1 : 0
                             border.color: root.colors.accent
                         }
@@ -3290,20 +3337,38 @@ ApplicationWindow {
                                 Layout.minimumWidth: 40
                                 Layout.fillHeight: true
                                 spacing: 0
-                                Rectangle {
+                                Item {
                                     Layout.alignment: Qt.AlignTop | Qt.AlignRight
-                                    visible: Number(streamDelegate.modelData.unread) > 0
                                     implicitWidth: Math.max(20, streamUnread.implicitWidth + 8)
                                     implicitHeight: 20
-                                    radius: 10
-                                    color: root.colors["badge-bg"]
-                                    Text {
-                                        id: streamUnread
-                                        anchors.centerIn: parent
-                                        text: root.countText(Number(streamDelegate.modelData.unread))
-                                        textFormat: Text.PlainText
-                                        color: root.colors["badge-text"]
-                                        font.pixelSize: 11
+                                    Rectangle {
+                                        anchors.right: parent.right
+                                        width: parent.width; height: 20; radius: 10
+                                        visible: Number(streamDelegate.modelData.unread) > 0 && !expandTopics.visible
+                                        color: root.colors["badge-bg"]
+                                        Text {
+                                            id: streamUnread
+                                            anchors.centerIn: parent
+                                            text: root.countText(Number(streamDelegate.modelData.unread))
+                                            textFormat: Text.PlainText
+                                            color: root.colors["badge-text"]
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                    NativeIconButton {
+                                        id: expandTopics
+                                        objectName: "expandTopics-" + streamDelegate.modelData.id
+                                        anchors.right: parent.right
+                                        width: 20; height: 20; glyphSize: 16
+                                        colors: root.colors; asset: "chevron-down.svg"
+                                        rotation: streamDelegate.expanded ? 180 : 0
+                                        help: streamDelegate.expanded ? qsTr("Collapse topics") : qsTr("Expand topics")
+                                        visible: !root.normalizedSidebarQuery.length && Boolean(streamDelegate.sidebarTopicState.known) && Number(streamDelegate.sidebarTopicState.count) > 0
+                                            && (streamButton.hovered || streamButton.activeFocus || activeFocus || hovered)
+                                        onClicked: {
+                                            if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
+                                            root.controller.toggleSidebarStream(streamDelegate.modelData.id);
+                                        }
                                     }
                                 }
                                 Item {
@@ -3322,9 +3387,10 @@ ApplicationWindow {
                         }
                     }
                     Repeater {
+                        id: sidebarTopicRepeater
                         model: root.normalizedSidebarQuery.length
                             ? (streamDelegate.modelData.searchTopics || [])
-                            : root.controller.selectedStream === streamDelegate.modelData.id ? root.controller.topics : []
+                            : streamDelegate.expanded ? streamDelegate.allTopics.slice(0, streamDelegate.visibleCount) : []
                         delegate: NativeButton {
                             id: topicButton
                             required property var modelData
@@ -3344,8 +3410,10 @@ ApplicationWindow {
                                 root.controller.closeDrafts();
                                 if (root.normalizedSidebarQuery.length)
                                     root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
-                                else
+                                else if (root.controller.selectedStream === streamDelegate.modelData.id)
                                     root.controller.selectTopic(modelData.id);
+                                else
+                                    root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
                             }
                             background: Rectangle {
                                 radius: 6
@@ -3447,6 +3515,49 @@ ApplicationWindow {
                                     font.pixelSize: 12
                                 }
                             }
+                        }
+                    }
+                    NativeButton {
+                        id: showMoreTopics
+                        objectName: "showMoreTopics-" + streamDelegate.modelData.id
+                        visible: !root.normalizedSidebarQuery.length && streamDelegate.expanded && streamDelegate.nextAction.length > 0
+                        width: streamList.width; height: visible ? 36 : 0
+                        colors: root.colors
+                        text: streamDelegate.nextAction === "collapse" ? qsTr("Hide extra topics")
+                            : streamDelegate.nextAction === "completed" ? qsTr("Show completed topics (%1)").arg(streamDelegate.hiddenCount)
+                            : qsTr("Show more topics (%1)").arg(streamDelegate.hiddenCount)
+                        Accessible.name: text
+                        padding: 0
+                        background: Rectangle {
+                            color: showMoreTopics.hovered ? root.colors["sidebar-item-hover"] : "transparent"
+                            border.width: showMoreTopics.visualFocus ? 1 : 0
+                            border.color: root.colors.accent
+                        }
+                        contentItem: Item {
+                            Text {
+                                x: 39; width: parent.width - 70; height: parent.height
+                                text: showMoreTopics.text; textFormat: Text.PlainText
+                                color: root.colors["text-primary"]; font.pixelSize: 14; font.weight: Font.Medium
+                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                            }
+                            NativeIconButton {
+                                anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                                width: 16; height: 16; glyphSize: 16
+                                colors: root.colors; asset: "chevron-down.svg"
+                                rotation: streamDelegate.nextAction === "collapse" ? 180 : 0
+                                enabled: false; opacity: 1; Accessible.ignored: true
+                                icon.color: root.colors["text-primary"]
+                            }
+                        }
+                        onClicked: {
+                            const priorCount = streamDelegate.visibleCount;
+                            const action = streamDelegate.nextAction;
+                            root.setSidebarTopicReveal(streamDelegate.modelData.id,
+                                action === "more" ? "unfinished" : action === "completed" ? "all" : "collapsed");
+                            if (action !== "collapse") Qt.callLater(function() {
+                                const nextTopic = sidebarTopicRepeater.itemAt(priorCount);
+                                if (nextTopic) nextTopic.forceActiveFocus(Qt.TabFocusReason);
+                            });
                         }
                     }
                 }

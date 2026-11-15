@@ -151,6 +151,32 @@ void NativePreferences::recordLastConversation(const QString &owner, const QStri
     m_conversationSaveTimer.start();
 }
 
+QStringList NativePreferences::loadExpandedStreams(const QString &owner)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (!hash.match(owner).hasMatch()) return {};
+    QStringList result;
+    const auto stored = m_settings.value("navigation/owners/" + owner + "/expandedStreams").toStringList();
+    for (const auto &id : stored) {
+        const auto normalized = id.toLower();
+        if (isUuid(normalized) && !result.contains(normalized)) result.append(normalized);
+    }
+    return result;
+}
+
+void NativePreferences::recordExpandedStreams(const QString &owner, const QStringList &streams)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (!hash.match(owner).hasMatch()) return;
+    QStringList normalized;
+    for (const auto &id : streams) {
+        const auto value = id.toLower();
+        if (isUuid(value) && !normalized.contains(value)) normalized.append(value);
+    }
+    m_settings.setValue("navigation/owners/" + owner + "/expandedStreams", normalized);
+    m_settings.sync();
+}
+
 void NativePreferences::recordOrganizationOrigin(const QString &origin)
 {
     const auto normalized = normalizeOrganizationOrigin(origin);
