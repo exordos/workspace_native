@@ -11359,6 +11359,17 @@ void NativeController::copyMessageLink(const QString &id)
     if (!link.isEmpty()) QGuiApplication::clipboard()->setText(link);
 }
 
+// RED stub (issue #79): filled in by the green implementation commit.
+bool NativeController::clipboardImageBytes(const QByteArray &)
+{
+    return false;
+}
+
+bool NativeController::copyMessageImage(const QString &)
+{
+    return false;
+}
+
 void NativeController::openMessageLink(const QString &url)
 {
     if (!authenticated() || busy()) {

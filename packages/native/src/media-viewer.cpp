@@ -153,6 +153,12 @@ void MediaViewerModel::close()
     closeSession();
 }
 
+// RED stub (issue #79): filled in by the green implementation commit.
+bool MediaViewerModel::copyCurrentImage()
+{
+    return false;
+}
+
 void MediaViewerModel::markSlotDisplayError(int index)
 {
     if (!m_open || index < 0 || index >= m_slots.size())

@@ -52,6 +52,9 @@ public:
     Q_INVOKABLE void next();
     Q_INVOKABLE void prev();
     Q_INVOKABLE void close();
+    // Issue #79: toolbar copy for image slots
+    // (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md).
+    Q_INVOKABLE bool copyCurrentImage();
     // Red test stub (issue #203): body intentionally empty until the
     // reference replace contract is implemented.
     Q_INVOKABLE void markSlotDisplayError(int index);

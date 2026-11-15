@@ -511,6 +511,11 @@ public:
     Q_INVOKABLE void copyMessage(const QString &id);
     Q_INVOKABLE QString messageLink(const QString &id) const;
     Q_INVOKABLE void copyMessageLink(const QString &id);
+    // Issue #79 (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md): counterpart of the
+    // Electron clipboard:writeImage handler (main.ts:1054-1067, cap main.ts:50).
+    static constexpr qint64 ClipboardImageBytesLimit = 64 * 1024 * 1024;
+    static bool clipboardImageBytes(const QByteArray &bytes);
+    Q_INVOKABLE bool copyMessageImage(const QString &id);
     Q_INVOKABLE void openMessageLink(const QString &url);
     Q_INVOKABLE void starMessage(const QString &id);
     Q_INVOKABLE void deleteMessage(const QString &id);
