@@ -13707,12 +13707,16 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                     updated.content = message->content;
                     // Confirmed payload edits flow into cached quote previews that
                     // reference this message from other conversations (review #119).
-                    // Issue #222: decrypt-pending encrypted records carry no display
-                    // content; ciphertext must never flow into a quote preview.
-                    if (auto quoteIt = m_quotes.find(id); quoteIt != m_quotes.end()
-                            && !quoteIt->missing && !quoteIt->decrypt) {
-                        quoteIt->content = message->content;
-                        quoteIt->authorId = message->author;
+                    if (auto quoteIt = m_quotes.find(id); quoteIt != m_quotes.end() && !quoteIt->missing) {
+                        if (quoteIt->decrypt) {
+                            // The fetched encrypted payload and its prepared plaintext
+                            // both predate this confirmation. Re-resolve the origin if
+                            // it leaves the window instead of reviving that old body.
+                            m_quotes.erase(quoteIt);
+                        } else {
+                            quoteIt->content = message->content;
+                            quoteIt->authorId = message->author;
+                        }
                     }
                     auto &state = m_messageFields[id];
                     state.payloadHash = QCryptographicHash::hash(

@@ -257,3 +257,29 @@ Window (`native-native-e2ee-ui`, display `:36`):
   quote frame is byte-for-byte unchanged).
 
 Locale: `native-native-locale` guard unchanged (no new strings).
+
+## Confirmed origin mutations
+
+A confirmed payload edit discards an existing fetched encrypted quote record,
+including both the retained encrypted origin and its prepared plaintext. The
+loaded message remains authoritative; after it leaves the conversation window,
+the quote uses a fresh UUID lookup. A successful deletion already uses the same
+discard-and-resolve behavior and reaches `unavailable` for a missing origin.
+Ordinary fetched markdown quotes retain their existing direct content update.
+Invalidation stays behind the existing confirmation checks for the active
+selection, payload revision, project, message UUID, topic and author.
+
+The controller regression
+`fetchedEncryptedQuoteDoesNotResurfaceAfterConfirmedMutation` covers the public
+HTTPS lookup, vault decryption, confirmed edit/delete and navigation that evicts
+the origin. The edit row first resolves an encrypted payload, then loads a newer
+markdown revision before using Native's ordinary editor. This transition is
+accepted by the backend's `WorkspaceUserMessage.validate_payload_update` contract;
+Native still does not offer editing of encrypted rows or encrypted streams.
+Before the fix, the edit row displayed the old decrypted text after navigation;
+the delete control already passed. Both rows require a second UUID lookup and
+the current body or `unavailable`, with no old plaintext resurfacing.
+
+These checks use synthetic accounts, messages and keys in the controller suite
+(`native-native-controller`). They do not establish live-service, rendered UI or
+Windows/macOS acceptance.
