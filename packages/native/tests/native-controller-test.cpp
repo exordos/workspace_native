@@ -24600,6 +24600,254 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(f.announcementPosts > postsBefore, 5000);
     }
 
+    // Issue #294: a key_announced POST in flight when the same-owner access
+    // token is replaced retires with the API generation: the shared request
+    // wrapper drops its callback, so nothing ever cleared m_chatReissueBusy
+    // and every later reissue returned silently. The renewal must release the
+    // transient busy state while the uncertain durable pin stays pinned
+    // (fail-closed #244 rules untouched); a NEW reissue must dispatch and
+    // settle under the renewed session; the retired POST's late answer must
+    // not settle or re-set the newer operation; and the surviving pin stays
+    // verifiable by the regular check (no blind resend).
+    void chatKeyReissueRenewalReleasesBusyAndReissueRetriesUnderRenewedSession()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        f.controller.refreshChatLocalKeys();
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        const auto inner = f.server.handler;
+        f.server.handler = [inner, hold, releases](const Request &request) -> Response {
+            auto response = inner(request);
+            if (hold->load() && request.method == "POST"
+                && request.target.path() == QLatin1String("/api/workspace/v1/messenger/messages/")
+                && request.body.value("payload").toObject().value("kind").toString()
+                    == QLatin1String("key_announced"))
+                response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+            return response;
+        };
+        f.controller.reissueChatKey();
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
+            "the reissue never dispatched its key_announced POST");
+        QVERIFY(f.controller.encryption().value("reissueBusy").toBool());
+        const auto first = f.announcementBodies.last().toObject();
+        const auto firstKey = first.value("payload").toObject().value("key_uuid").toString();
+        const auto firstAnnouncement = first.value("uuid").toString();
+        QCOMPARE(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).failure,
+            NativeChatKeyVault::Failure::None); // the durable pin exists while in flight
+        // A normal same-owner token replacement retires the in-flight POST.
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QVERIFY2(QTest::qWaitFor([&] {
+            return !f.controller.encryption().value("reissueBusy").toBool();
+        }, 5000), "token renewal left the reissue busy flag set forever");
+        QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
+        // Durable fail-closed retention: cancellation proves nothing about the
+        // announcement, so the pin and the staged key stay intact...
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).value);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, firstKey}).value.bytes.size(), 32);
+        // ...and the interrupted pin is user-visible again (the stranded busy
+        // marker no longer hides it from the unresolved inventory).
+        bool listed = false;
+        for (const auto &row : f.controller.unresolvedRotationStages())
+            listed = listed || row.toObject().value("keyUuid").toString() == firstKey;
+        QVERIFY2(listed, "the pin interrupted by the renewal stayed hidden from the unresolved inventory");
+        // A later operation can proceed under the renewed session.
+        f.controller.reissueChatKey();
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 2; }, 5000),
+            "reissue could not dispatch again after the token renewal");
+        QVERIFY(f.controller.encryption().value("reissueBusy").toBool());
+        const auto second = f.announcementBodies.last().toObject();
+        const auto secondKey = second.value("payload").toObject().value("key_uuid").toString();
+        // The retired POST's answer lands while the newer reissue is running:
+        // it must neither settle it nor clear the newer durable pin.
+        (*releases)[0]();
+        QTest::qWait(300);
+        QVERIFY(f.controller.encryption().value("reissueBusy").toBool());
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).value);
+        // The newer reissue's own answer then settles it cleanly.
+        hold->store(false);
+        (*releases)[1]();
+        QVERIFY2(QTest::qWaitFor([&] {
+            return !f.controller.encryption().value("reissueBusy").toBool();
+        }, 5000), "the reissue retried after the renewal never settled");
+        QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
+        QCOMPARE(f.vault.readRotationStage(f.vault.lease(), {streamId, secondKey}).failure,
+            NativeChatKeyVault::Failure::MissingKey); // accepted announcement frees its pin
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).value);
+        // The surviving pin is verified by the regular check - never resent.
+        f.serverAnnouncedMessages.insert(firstAnnouncement, firstKey);
+        QSignalSpy resolvedSpy(&f.controller, &NativeController::rotationStageResolved);
+        f.controller.checkRotationStage(streamId, firstKey);
+        QVERIFY2(QTest::qWaitFor([&] { return resolvedSpy.size() >= 1; }, 5000),
+            "the check of the pin that survived the cancellation never settled");
+        QCOMPARE(resolvedSpy.last().at(2).toString(), QStringLiteral("resolved"));
+        QCOMPARE(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).failure,
+            NativeChatKeyVault::Failure::MissingKey);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, firstKey}).value.bytes.size(), 32);
+    }
+
+    // Issue #294: the automatic rotation-resolution pass holds its single-flight
+    // marker only across its own GET chain, so a renewal that retires the GET
+    // strands m_rotationResolveActive forever - no later pass could ever start.
+    // The renewal must release the marker and re-arm the abandoned pass so the
+    // landed announcement is adopted without a restart.
+    void chatRotationAutoResolutionInterruptedByRenewalReArmsAndAdopts()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyOld);
+        const QString announcement = "b1b1b1b1-1111-4111-8111-1111111111b1";
+        const QString key = KeyManagementFixture::KeyOld;
+        QCOMPARE(f.vault.putRotationStage(f.vault.lease(), {announcement, streamId, key,
+            false, QDateTime::currentMSecsSinceEpoch()}), NativeChatKeyVault::Failure::None);
+        QCOMPARE(f.vault.markRotationStageDispatched(f.vault.lease(), {streamId, key}),
+            NativeChatKeyVault::Failure::None);
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        const auto inner = f.server.handler;
+        f.server.handler = [inner, hold, releases](const Request &request) -> Response {
+            if (request.method == "GET"
+                && request.target.path().startsWith(QLatin1String("/api/workspace/v1/messenger/messages/"))) {
+                auto response = inner(request);
+                if (hold->load())
+                    response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        f.controller.refreshChatLocalKeys(); // arms the automatic resolution pass
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
+            "the automatic rotation-resolution pass never dispatched its recheck GET");
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        (*releases)[0](); // the retired pass's answer lands on a retired generation
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 2; }, 5000),
+            "the rotation-resolution pass retired by the token renewal was never re-armed");
+        (*releases)[1](); // the re-armed pass's own inconclusive answer ends that pass
+        // The announcement lands after the renewal: a later inventory refresh
+        // can start a fresh pass and adopt it - no restart, no blind resend.
+        f.serverAnnouncedMessages.insert(announcement, key);
+        hold->store(false);
+        f.controller.refreshChatLocalKeys();
+        QVERIFY2(QTest::qWaitFor([&] {
+            return f.vault.readRotationStage(f.vault.lease(), {streamId, key}).failure
+                == NativeChatKeyVault::Failure::MissingKey;
+        }, 5000), "a rotation-resolution pass started after the renewal never adopted the landed announcement");
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, key}).value.bytes.size(), 32);
+    }
+
+    // Issue #294: a manual rotation check interrupted by a token renewal keeps
+    // its per-stage running marker: the interrupted check never reports, and
+    // every later Check for that stage is silently ignored. The renewal must
+    // settle the interrupted check as unresolved (pin and key intact - the
+    // answer was never conclusive) and a later check must work again.
+    void chatRotationManualCheckInterruptedByRenewalReleasesRunningMarkerAndRetries()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyOld);
+        const QString announcement = "b2b2b2b2-2222-4222-8222-2222222222b2";
+        const QString key = KeyManagementFixture::KeyOld;
+        QCOMPARE(f.vault.putRotationStage(f.vault.lease(), {announcement, streamId, key,
+            false, QDateTime::currentMSecsSinceEpoch()}), NativeChatKeyVault::Failure::None);
+        QCOMPARE(f.vault.markRotationStageDispatched(f.vault.lease(), {streamId, key}),
+            NativeChatKeyVault::Failure::None);
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        const auto inner = f.server.handler;
+        f.server.handler = [inner, hold, releases](const Request &request) -> Response {
+            if (request.method == "GET"
+                && request.target.path().startsWith(QLatin1String("/api/workspace/v1/messenger/messages/"))) {
+                auto response = inner(request);
+                if (hold->load())
+                    response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        QSignalSpy resolvedSpy(&f.controller, &NativeController::rotationStageResolved);
+        f.controller.checkRotationStage(streamId, key);
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
+            "the manual rotation check never dispatched its GET");
+        QCOMPARE(resolvedSpy.size(), 0); // the deferred GET keeps the check running
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QVERIFY2(QTest::qWaitFor([&] { return resolvedSpy.size() == 1; }, 5000),
+            "a manual rotation check interrupted by the token renewal never settled");
+        QCOMPARE(resolvedSpy.last().at(0).toString(), streamId);
+        QCOMPARE(resolvedSpy.last().at(1).toString().toLower(), key);
+        QCOMPARE(resolvedSpy.last().at(2).toString(), QStringLiteral("unresolved"));
+        QVERIFY(resolvedSpy.last().at(3).toString().contains(QStringLiteral("staged key was kept")));
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, key}).value);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, key}).value.bytes.size(), 32);
+        (*releases)[0](); // the retired generation's answer must not settle a second time
+        QTest::qWait(300);
+        QCOMPARE(resolvedSpy.size(), 1);
+        // The interrupted check is retryable under the renewed session.
+        f.serverAnnouncedMessages.insert(announcement, key);
+        hold->store(false);
+        f.controller.checkRotationStage(streamId, key);
+        QVERIFY2(QTest::qWaitFor([&] { return resolvedSpy.size() == 2; }, 5000),
+            "the running marker stranded by the renewal blocked every later manual check");
+        QCOMPARE(resolvedSpy.last().at(2).toString(), QStringLiteral("resolved"));
+        QCOMPARE(f.vault.readRotationStage(f.vault.lease(), {streamId, key}).failure,
+            NativeChatKeyVault::Failure::MissingKey);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, key}).value.bytes.size(), 32);
+    }
+
+    // Issue #294: sign-out across a deferred key_announced POST must not strand
+    // the reissue busy flag, and the next sign-in of the same owner must be
+    // able to reissue again (the durable pin of the retired attempt survives
+    // the sign-out fail-closed).
+    void chatKeyReissueSignOutSettlesAndReLoginAllowsFreshReissue()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        f.controller.refreshChatLocalKeys();
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        const auto inner = f.server.handler;
+        f.server.handler = [inner, hold, releases](const Request &request) -> Response {
+            auto response = inner(request);
+            if (hold->load() && request.method == "POST"
+                && request.target.path() == QLatin1String("/api/workspace/v1/messenger/messages/")
+                && request.body.value("payload").toObject().value("kind").toString()
+                    == QLatin1String("key_announced"))
+                response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+            return response;
+        };
+        f.controller.reissueChatKey();
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
+            "the reissue never dispatched its key_announced POST");
+        QVERIFY(f.controller.encryption().value("reissueBusy").toBool());
+        const auto first = f.announcementBodies.last().toObject();
+        const auto firstKey = first.value("payload").toObject().value("key_uuid").toString();
+        f.controller.logout(); // clearSession bumps the API generation too
+        QVERIFY2(QTest::qWaitFor([&] {
+            return !f.controller.encryption().value("reissueBusy").toBool();
+        }, 5000), "sign-out left the reissue busy flag set");
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).value);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, firstKey}).value.bytes.size(), 32);
+        // Sign back in as the same owner; the retired answer lands with no effect.
+        QVERIFY2(f.start(false), "the synthetic re-login failed");
+        f.controller.useChatKeys(&f.vault);
+        (*releases)[0]();
+        QTest::qWait(300);
+        QVERIFY(!f.controller.encryption().value("reissueBusy").toBool());
+        // A fresh reissue dispatches and settles under the new session.
+        hold->store(false);
+        f.controller.reissueChatKey();
+        QVERIFY2(QTest::qWaitFor([&] { return f.announcementPosts >= 2; }, 5000),
+            "no fresh reissue could be dispatched after sign-out and re-login");
+        QVERIFY2(QTest::qWaitFor([&] {
+            return !f.controller.encryption().value("reissueBusy").toBool();
+        }, 5000), "the fresh reissue after re-login never settled");
+        QVERIFY(f.controller.encryption().value("actionError").toString().isEmpty());
+        QVERIFY(f.vault.readRotationStage(f.vault.lease(), {streamId, firstKey}).value);
+    }
+
     // R2 medium (review thread 4576750804): the details screen's "Request this
     // key again" button is enabled for a saved generation, but the request
     // primitive short-circuited while the vault held the bytes and produced
