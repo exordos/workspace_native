@@ -18,18 +18,26 @@ and destinations reserved by active downloads require a unique numeric suffix.
 
 Destination selection is advisory: another process can create that name during
 the transfer. Download-center saves therefore use FileClient's explicit
-KeepExisting mode: verify and commit into a private staging directory on the
-target filesystem, then publish without replacing the destination. Linux retains
-the verified file descriptor across commit and creates a hard link through
-`/proc/self/fd`; it never reopens the staged filename. Other POSIX platforms pin
-the private 0700 directory with a verified owner and directory descriptor, then
-publish its fixed child with `linkat`. A writer of the parent may rename that
-directory, but another UID cannot replace its contents or redirect the held
-descriptor. The same UID already controls the user's files and is not an isolation
-boundary. Windows retains a duplicate of QSaveFile's exclusive, DELETE-capable
-handle and publishes through `SetFileInformationByHandle(FileRenameInfo)` with
-replacement disabled. Unsupported filesystems or unavailable safe operations
-report an error rather than falling back to pathname replacement. Existing FileClient callers keep their
+KeepExisting mode: create a private staging directory on the target filesystem
+and write directly to an exclusively created, held file. POSIX creates the file
+with `openat` through a verified owner/0700 directory descriptor. It never reopens
+the directory pathname to write or commit. Linux publishes the held file
+through `/proc/self/fd`; other POSIX platforms use `linkat` with the pinned
+directory descriptor. A writer of the parent may rename that directory, but
+another UID cannot replace its contents or redirect the held descriptor. The
+same UID already controls the user's files and is not an isolation boundary.
+Windows creates the file with `CREATE_NEW`, DELETE access and exclusive sharing,
+then publishes that same handle with `FileRenameInfo` and replacement disabled.
+It closes the exclusive handle before invoking completion consumers.
+
+Staging cleanup disables QTemporaryDir's recursive removal. It deletes only the
+held directory's fixed child with `unlinkat` on POSIX, or the held file through
+`FileDispositionInfo` on Windows, then attempts a nonrecursive empty-directory
+removal. A substituted directory's contents and symlink targets are never
+traversed. Renaming a staging directory can leave an empty directory at the
+attacker-selected new name; cleanup does not search for it by pathname.
+Unsupported filesystems or unavailable safe operations report an error rather
+than falling back to pathname replacement. Existing FileClient callers keep their
 replacement behavior. Retry retains the original requested path separately from
 the allocated attempt path, including when allocation failed before transfer.
 
@@ -71,8 +79,13 @@ verified bytes. A separate check executes the POSIX directory-descriptor backend
 on Linux after renaming the entire staging directory and replacing its old path,
 and confirms that a competing destination is preserved.
 
-The Windows implementation follows the Qt 6.10.2 QSaveFile/QTemporaryFile handle
-contract and the documented [DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)
+Two further regressions reproduced recursive cleanup deleting an unrelated file
+inside a substituted directory, and a symlink redirect overwriting an unrelated
+`payload` during commit. They now preserve the unrelated files and complete the
+verified download without reopening or recursively cleaning staging paths.
+
+The Windows implementation follows the documented
+[CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
 and [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)
 semantics. Windows runtime and native macOS acceptance remain **NOT RUN**; the
 POSIX backend's Linux check is not a macOS acceptance claim.

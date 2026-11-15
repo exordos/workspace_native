@@ -374,11 +374,11 @@ void FileClient::startDownload(quint64 id)
             if (!operation->staging->isValid()) {
                 fail(id, FileClient::tr("Cannot create the destination file.")); return;
             }
-            outputPath = operation->staging->fileName();
+        } else {
+            operation->output = std::make_unique<QSaveFile>(outputPath);
+            operation->output->setDirectWriteFallback(false);
+            if (!operation->output->open(QIODevice::WriteOnly)) { fail(id, FileClient::tr("Cannot create the destination file.")); return; }
         }
-        operation->output = std::make_unique<QSaveFile>(outputPath);
-        operation->output->setDirectWriteFallback(false);
-        if (!operation->output->open(QIODevice::WriteOnly)) { fail(id, FileClient::tr("Cannot create the destination file.")); return; }
     }
     operation->reply = m_api->startFileDownload(operation->uuid);
     if (!operation->reply) { fail(id, FileClient::tr("Sign in to download files.")); return; }
@@ -408,7 +408,10 @@ void FileClient::readDownload(quint64 id)
         // Metadata for memory mode was capped before the binary GET; the
         // shared declared-size check above bounds every append to that cap.
         if (operation->memory) operation->bytes.append(bytes);
-        else if (operation->output->write(bytes) != bytes.size()) { fail(id, FileClient::tr("Cannot write the destination file."), code); return; }
+        else {
+            const auto written = operation->staging ? operation->staging->write(bytes) : operation->output->write(bytes);
+            if (written != bytes.size()) { fail(id, FileClient::tr("Cannot write the destination file."), code); return; }
+        }
         operation->hash.addData(bytes);
         operation->received += bytes.size();
     }
@@ -435,7 +438,7 @@ void FileClient::finishDownload(quint64 id)
     if (!current(id)) return;
     if (!operation->memory) {
         const bool committed = operation->staging
-            ? operation->staging->commit(*operation->output, operation->destination)
+            ? operation->staging->commit(operation->destination)
             : operation->output->commit();
         if (!committed) { fail(id, FileClient::tr("Cannot commit the destination file."), code); return; }
     }

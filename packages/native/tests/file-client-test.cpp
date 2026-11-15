@@ -93,6 +93,8 @@ private slots:
     void downloadAclAndAtomicCommit();
 #ifdef Q_OS_UNIX
     void privateStagingPublicationRetainsDirectoryIdentity();
+    void stagingCleanupPreservesASubstitutedDirectory();
+    void stagingCommitNeverOverwritesARedirectedPayload();
 #endif
 #ifdef Q_OS_LINUX
     void stagedPublicationKeepsVerifiedIdentity_data();
@@ -171,6 +173,56 @@ void FileClientTest::downloadAclAndAtomicCommit()
 }
 
 #ifdef Q_OS_UNIX
+void FileClientTest::stagingCleanupPreservesASubstitutedDirectory()
+{
+    QTemporaryDir directory;
+    QString victim;
+    {
+        FileDownloadStaging staging(directory.filePath("saved.bin"));
+        QVERIFY(staging.isValid());
+        const auto original = QFileInfo(staging.fileName()).absolutePath();
+        QVERIFY(QDir().rename(original, original + ".retained"));
+        QVERIFY(QDir().mkdir(original));
+        victim = QDir(original).filePath("unrelated.txt");
+        write(victim, "preserve this file");
+    }
+    QCOMPARE(read(victim), QByteArray("preserve this file"));
+}
+
+void FileClientTest::stagingCommitNeverOverwritesARedirectedPayload()
+{
+    QTemporaryDir directory;
+    const auto victimDirectory = directory.filePath("victim");
+    QVERIFY(QDir().mkdir(victimDirectory));
+    const auto victim = QDir(victimDirectory).filePath("payload");
+    write(victim, "preserve this payload");
+    bool redirected = false;
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (!request.contains("/actions/download ")) { Server::reply(socket, metadata()); return; }
+        const auto entries = QDir(directory.path()).entryList({".workspace-download-*"}, QDir::Dirs | QDir::Hidden);
+        QCOMPARE(entries.size(), 1);
+        const auto staging = directory.filePath(entries.first());
+        QVERIFY(QDir().rename(staging, staging + ".retained"));
+        QVERIFY(QFile::link(victimDirectory, staging));
+        redirected = true;
+        Server::reply(socket, Bytes);
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    FileResult result; bool done = false;
+    QByteArray victimAtCompletion;
+    client.download(FileUuid, directory.filePath("saved.bin"),
+        [&](const FileResult &value) { result = value; victimAtCompletion = read(victim); done = true; },
+        {}, FileClient::DestinationMode::KeepExisting);
+    QTRY_VERIFY(done);
+    QVERIFY(redirected);
+    QCOMPARE(victimAtCompletion, QByteArray("preserve this payload"));
+    QCOMPARE(read(victim), QByteArray("preserve this payload"));
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QCOMPARE(read(directory.filePath("saved.bin")), Bytes);
+}
+
 void FileClientTest::privateStagingPublicationRetainsDirectoryIdentity()
 {
     QTemporaryDir directory;
@@ -178,10 +230,7 @@ void FileClientTest::privateStagingPublicationRetainsDirectoryIdentity()
     const auto destination = directory.filePath("saved.bin");
     FileDownloadStaging staging(destination);
     QVERIFY(staging.isValid());
-    QSaveFile output(staging.fileName());
-    QVERIFY(output.open(QIODevice::WriteOnly));
-    QCOMPARE(output.write(Bytes), Bytes.size());
-    QVERIFY(output.commit());
+    QCOMPARE(staging.write(Bytes), Bytes.size());
     const auto original = QFileInfo(staging.fileName()).absolutePath();
     const auto renamed = original + ".retained";
     QVERIFY(QDir().rename(original, renamed));
