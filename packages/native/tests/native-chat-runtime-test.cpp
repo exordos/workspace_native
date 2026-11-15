@@ -113,8 +113,9 @@ private slots:
         QCOMPARE(f.keys.device().name, QString("Linux — Desktop"));
         QCOMPARE(f.secrets.reads.size(), 1); QCOMPARE(f.secrets.writes.size(), 1);
         const auto state = f.controller.encryption();
-        QCOMPARE(state.keys(), (QStringList{"available", "busy", "canRequest", "canRequestCurrentKey", "currentKeyUuid", "error",
-            "keyRequests", "keyResponse", "keyUuid", "pendingSend", "sendingKeyUuid", "state", "storeOpening"}));
+        QCOMPARE(state.keys(), (QStringList{"actionError", "available", "busy", "canRequest", "canRequestCurrentKey", "canRotate",
+            "currentKeyUuid", "error", "keyAnnouncedAt", "keyRequests", "keyResponse", "keyUuid", "pendingSend", "reissueBusy",
+            "sendingKeyUuid", "state", "storeOpening"}));
         QVERIFY(state.value("keyRequests").toList().isEmpty());
         QVERIFY(state.value("keyResponse").toMap().isEmpty());
         QVERIFY(state.value("sendingKeyUuid").toString().isEmpty());
