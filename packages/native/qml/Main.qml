@@ -584,6 +584,7 @@ ApplicationWindow {
         return root.controller.authenticated && !root.controller.cacheStale && !root.controller.busy && menuOwner === root.controller.ownerKey && menuStream === root.controller.selectedStream && menuTopic === root.controller.selectedTopic && Boolean(message && message.canReact);
     }
     property string pickerOwner: ""
+    property string pickerEditSession: ""
     property string pickerStream: ""
     property string pickerTopic: ""
     property string streamMenuTarget: ""
@@ -1256,6 +1257,14 @@ ApplicationWindow {
             // destroyed (not just cleared) once a session or projects appear.
             messageList.updateServiceContext();
             messageList.scheduleVisibleRead();
+        }
+        function onEditSessionChanged() {
+            // A picker belongs to the editor that opened it, including a reopen
+            // of the same message. A late acceptance must not attach to a draft.
+            if (root.pickerEditSession !== root.controller.editSessionKey) {
+                root.pickerOwner = "";
+                attachmentPicker.close();
+            }
         }
         function onArchivedChatsChanged() {
             root.validateArchiveUi();
@@ -6716,6 +6725,7 @@ ApplicationWindow {
                                     glyphHeight: 24
                                     onClicked: {
                                         root.pickerOwner = root.controller.ownerKey;
+                                        root.pickerEditSession = root.controller.editSessionKey;
                                         root.pickerStream = root.controller.selectedStream;
                                         root.pickerTopic = root.controller.selectedTopic;
                                         attachmentPicker.open();
@@ -7313,7 +7323,7 @@ ApplicationWindow {
         title: qsTr("Attach files")
         fileMode: NativeDialogs.FileDialog.OpenFiles
         onAccepted: {
-            if (root.controller.canAttach && root.pickerOwner === root.controller.ownerKey && root.pickerStream === root.controller.selectedStream && root.pickerTopic === root.controller.selectedTopic)
+            if (root.controller.canAttach && root.pickerOwner === root.controller.ownerKey && root.pickerEditSession === root.controller.editSessionKey && root.pickerStream === root.controller.selectedStream && root.pickerTopic === root.controller.selectedTopic)
                 root.controller.attachFiles(selectedFiles);
         }
     }
