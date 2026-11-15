@@ -1,3 +1,40 @@
+# Workspace Native 0.25.0 - Linux development preview
+
+The protected-chat cluster and two chat surfaces landed from the reference desktop:
+
+- Encrypted channels can be created right in the create-chat dialog: the
+  protected switch generates the group key before the channel request is sent,
+  keeps it durably staged until the server confirms the channel, and recovers
+  an interrupted creation after a crash or restart - the channel key survives
+  every failure path. A stuck creation is never silently lost: an inventory of
+  unresolved creations offers Check and an explicitly confirmed Discard.
+- Encrypted chats now have the protected chat info drawer with the reference
+  member management (48 px rows with presence dots, owner-gated add and
+  remove) and the key management screens: channel key details, local key
+  inventory, key rotation with a fail-closed dispatch (nothing leaves the
+  device unless the durable rotation marker was written first) and deletion
+  with a confirm step. Stalled rotations surface a dormant badge and join the
+  same user-resolvable inventory as create stages.
+- The folder rail is real: folders load from the server with unread badges,
+  folder colors and the pinned All row first; selecting a folder scopes the
+  sidebar to that folder's chats.
+- Copy image landed: the message context menu and the media viewer copy a
+  message image onto the system clipboard silently, with the same 64 MiB
+  reference limit, and a copy that finishes after its session was retired is
+  discarded instead of overwriting the clipboard.
+- The client now understands power events: after a suspend/resume cycle all
+  realtime connections reconnect immediately, and the presence heartbeat
+  widens while the window is hidden or the machine runs on battery, matching
+  the reference cadence ladder.
+- Diagnostics gained a persistent rotating log file and a memory snapshot
+  provider for support flows.
+
+Existing installations download available updates automatically and offer
+**Install and restart**. For a new per-user installation, extract the archive
+and run `Exordos Workspace`; see README for the manual install path.
+
+---
+
 # Workspace Native 0.24.0 - Linux development preview
 
 Two surfaces ported from the reference desktop:
