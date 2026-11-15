@@ -19700,6 +19700,44 @@ private:
         QCOMPARE(requests, 3);
     }
 
+    void windowProfileShareFailurePresentation_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<bool>("dark");
+        QTest::newRow("en-light") << QString("en") << false;
+        QTest::newRow("en-dark") << QString("en") << true;
+        QTest::newRow("ru-light") << QString("ru") << false;
+        QTest::newRow("ru-dark") << QString("ru") << true;
+    }
+
+    void windowProfileShareFailurePresentation()
+    {
+        QFETCH(QString, locale); QFETCH(bool, dark);
+        ProfileWindowScene scene;
+        scene.preferences.setPaletteId("blue-cold");
+        scene.preferences.setMode(dark ? "dark" : "light");
+        scene.preferences.setLocale(locale);
+        const QString missing = QStringLiteral("aa000000-0000-0000-0000-000000000124");
+        const auto fallback = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/users/" + missing)
+                return {QJsonObject{}, 404};
+            return fallback(request);
+        };
+        scene.controller.openMessageLink("ew://open/#user/" + missing);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLinkFailure"), 3000);
+        auto *label = visibleItem("profileLinkFailureText"); QVERIFY(label);
+        const auto expected = locale == "ru"
+            ? QString::fromUtf8("Не удалось открыть профиль. Возможно, он недоступен или у вас нет доступа.")
+            : QStringLiteral("Could not open this profile. It may be unavailable or you may not have access.");
+        QCOMPARE(label->property("text").toString(), expected);
+        QCOMPARE(label->property("color").value<QColor>(), QColor(dark ? "#3d5eff" : "#7087ff"));
+        QCOMPARE(visibleItem("profileLinkFailure")->height(), 45.0);
+        auto *close = visibleItem("profileLinkFailureClose"); QVERIFY(close);
+        QCOMPARE(close->property("text").toString(), locale == "ru" ? QString::fromUtf8("Закрыть") : QString("Close"));
+        click(scene.window, close);
+        QTRY_VERIFY(!visibleItem("profileLinkFailure"));
+    }
+
     void windowProfileShareFailureIsScopedToRoute()
     {
         ProfileWindowScene scene;
