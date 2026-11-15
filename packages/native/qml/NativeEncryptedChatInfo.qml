@@ -743,6 +743,15 @@ Item {
             width: pageScroll.width - 32
             spacing: 12
             visible: page.keyScreen
+
+            // Same re-layout cure as localKeysFlow: the present-key block
+            // and the created line appear when the verified projection and
+            // the key_announced scan land asynchronously.
+            readonly property var layoutWatch: ({hasKey: page.hasCurrentKey ? 1 : 0,
+                announced: page.chatEncryption && page.chatEncryption.keyAnnouncedAt
+                    ? page.chatEncryption.keyAnnouncedAt : "",
+                missing: page.currentKeyMissing ? 1 : 0})
+            onLayoutWatchChanged: Qt.callLater(function () { keySummaryFlow.forceLayout() })
             Accessible.name: qsTr("Encryption keys")
 
             TextEdit {
@@ -927,6 +936,19 @@ Item {
                 y: 13 // pt-3
                 width: parent.width
                 spacing: 8
+
+                // Qt keeps the current Column layout when a child flips to
+                // visible through an async binding (the expand click lands
+                // before the inventory read settles): the flow would stay at
+                // the collapsed height, the rows would paint past the section
+                // bounds and the hit test would skip them entirely (#244
+                // window case evidence). Re-force the layout whenever one of
+                // the states behind the children's visible bindings changes.
+                readonly property var layoutWatch: ({expanded: page.localKeysExpanded,
+                    state: page.inventoryState, count: page.inventoryKeys.length,
+                    missing: page.currentKeyMissing, requested: page.requestedKeyUuid,
+                    current: page.currentKeyUuid})
+                onLayoutWatchChanged: Qt.callLater(function () { localKeysFlow.forceLayout() })
 
                 // currentKeyMissing block: hint + request-current-key recovery.
                 Column {
@@ -1187,6 +1209,14 @@ Item {
             width: pageScroll.width - 32
             spacing: 20
             visible: page.localKeyScreen
+
+            // Same re-layout cure as localKeysFlow: the details blocks swap
+            // on the async inventory read and on the vault deletion, and Qt
+            // keeps the stale layout otherwise (rows land outside the hit
+            // test bounds; see the localKeysFlow note).
+            readonly property var layoutWatch: ({state: page.inventoryState,
+                hasRow: page.localKeyRow ? 1 : 0, requested: page.requestedKeyUuid})
+            onLayoutWatchChanged: Qt.callLater(function () { localKeyFlow.forceLayout() })
             Accessible.name: qsTr("Saved key")
 
             Text {
