@@ -19624,6 +19624,126 @@ QTRY_VERIFY(create->property("enabled").toBool());
         }(), 3000);
     }
 
+    void pollCreateDialogSettlesInvalidatedSend_data()
+    {
+        QTest::addColumn<int>("transition");
+        QTest::newRow("token-renewal") << 0;
+        QTest::newRow("sign-out") << 1;
+        QTest::newRow("reopened-form") << 2;
+    }
+
+    void pollCreateDialogSettlesInvalidatedSend()
+    {
+        QFETCH(int, transition);
+        const bool signOut = transition == 1;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        QVector<QJsonObject> bodies;
+        QVector<std::function<void()>> releases;
+        QSet<QString> acceptedUuids;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                bodies.append(request.body);
+                const auto id = request.body.value("uuid").toString();
+                acceptedUuids.insert(id); // The server may commit before its response is lost.
+                Response response{pollCreateDto(id), 201};
+                response.defer = [&](std::function<void()> send) { releases.append(std::move(send)); };
+                return response;
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-create-lifecycle.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll lifecycle window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        const auto loginAndOpen = [&] {
+            session.login(fixture.server.origin(), "synthetic", "synthetic");
+            QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+            QTRY_COMPARE(controller.streams().size(), 1);
+            preferences.setOwner(controller.ownerKey());
+            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            QTRY_COMPARE(controller.topics().size(), 1);
+            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            QTRY_VERIFY(!controller.busy());
+            click(window, visibleItem(window->contentItem(), "pollButton"));
+        };
+        loginAndOpen();
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        const auto fill = [&] {
+            QTRY_VERIFY(dialog->property("visible").toBool());
+            QTRY_COMPARE(dialog->findChildren<QObject *>("pollAnswerField").size(), 1);
+            QTRY_VERIFY(dialog->findChildren<QObject *>("pollQuestionField").at(0)->property("enabled").toBool());
+            dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
+            dialog->findChildren<QObject *>("pollAnswerField").at(0)->setProperty("text", "First");
+            QTRY_COMPARE(dialog->findChildren<QObject *>("pollAnswerField").size(), 2);
+            dialog->findChildren<QObject *>("pollAnswerField").at(1)->setProperty("text", "Second");
+        };
+        fill();
+        auto *create = window->findChild<QQuickItem *>("pollCreateButton"); QVERIFY(create);
+        auto *cancel = window->findChild<QQuickItem *>("pollCancelButton"); QVERIFY(cancel);
+        QTRY_VERIFY(create->property("enabled").toBool()); click(window, create);
+        QTRY_COMPARE(releases.size(), 1);
+        QVERIFY(dialog->property("pending").toBool());
+        if (signOut) {
+            session.logout();
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
+            QVERIFY(!dialog->property("pending").toBool());
+            QVERIFY(!controller.authenticated());
+            QQuickItem *serverInput = nullptr;
+            QTRY_VERIFY((serverInput = visibleItem(window->contentItem(), "serverInput")));
+            click(window, serverInput);
+            QTRY_VERIFY(serverInput->hasActiveFocus());
+            // A fresh authenticated form must not inherit the old owner's draft or lock.
+            loginAndOpen();
+            QTRY_VERIFY(dialog->property("visible").toBool());
+            QCOMPARE(dialog->findChildren<QObject *>("pollQuestionField").at(0)->property("text").toString(), QString());
+            fill();
+        } else if (transition == 0) {
+            api.setAccessToken("synthetic-renewed-token");
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("pending").toBool(), 3000);
+            QVERIFY(dialog->property("visible").toBool());
+            QVERIFY(dialog->property("sendFailed").toBool());
+            QVERIFY(cancel->property("enabled").toBool());
+            QVERIFY(!dialog->findChildren<QObject *>("pollQuestionField").at(0)->property("enabled").toBool());
+        } else {
+            // Root-owned overlays can be reopened programmatically. An earlier
+            // live request must not own the new form's eventual completion.
+            QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+            QTRY_VERIFY(!dialog->property("visible").toBool());
+            QVERIFY(QMetaObject::invokeMethod(dialog, "openForCreate"));
+            fill();
+            dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "Another time?");
+        }
+        QTRY_VERIFY(create->property("enabled").toBool()); click(window, create);
+        QTRY_COMPARE(releases.size(), 2);
+        if (transition != 0) {
+            QVERIFY(bodies[1].value("uuid") != bodies[0].value("uuid"));
+        } else {
+            QCOMPARE(bodies[1], bodies[0]); // Message, questions and options retain every UUID.
+            QCOMPARE(acceptedUuids.size(), 1);
+        }
+        // Deliver the old response with the successor already in flight.
+        releases[0](); QTest::qWait(100);
+        QVERIFY(dialog->property("visible").toBool());
+        QVERIFY(dialog->property("pending").toBool());
+        QVERIFY(!dialog->property("sendFailed").toBool());
+        releases[1]();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(), 3000);
+        QVERIFY(!dialog->property("pending").toBool());
+        int count = 0;
+        for (const auto &row : controller.messages())
+            if (row.toMap().value("id").toString() == bodies[1].value("uuid").toString()) ++count;
+        QCOMPARE(count, 1);
+    }
+
     void pollCreateDialogErrorMapping_data()
     {
         QTest::addColumn<int>("status");

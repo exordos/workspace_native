@@ -90,7 +90,7 @@ Cloned from `AppDialog` + `create-poll-dialog.ui.tsx` + `app-dialog.ui.tsx`:
 The reference keeps a `pollAttemptRef`: while the submitted draft object is
 unchanged the attempt (canonical message uuid + question/option uuids) is
 reused; a changed draft rotates it. The native port mirrors this in the
-controller (`m_pollAttempts` keyed by conversation key):
+controller (`m_pollSendAttempts` keyed by owner and conversation):
 
 - `sendPoll` first validates (existing #214 guards), then serialises a draft
   signature (trimmed question/option texts + settings + closes_at). An existing
@@ -110,6 +110,34 @@ controller (`m_pollAttempts` keyed by conversation key):
   pressing Create resends the identical attempt (identical uuids).
 - Success or Cancel closes the dialog and resets all form state (draft cleared,
   `close(false)`/`reset()` semantics).
+
+## Interrupted creation lifecycle (issue #274)
+
+A form submission carries a local operation token, separate from the canonical
+message/question/option UUIDs. The dialog handles completion only for its current
+submission. Reopening the root-owned overlay creates a new form lifetime; an
+older success or error cannot close or unlock its pending submission.
+
+The controller settles pending create operations when the API generation changes,
+even though the retired transport callbacks are discarded. A same-owner token
+replacement keeps the submitted draft locked and shows the existing uncertain-send
+alert, with Create enabled for a retry using the identical canonical UUIDs. The
+server may already have committed the first POST; interruption never means that it
+is safe to generate a second identity for that attempt.
+
+The dialog captures its authenticated owner when opened and closes and resets its form
+when that owner disappears or changes. Logout also clears the controller's poll
+attempt cache; retry identities cannot migrate into another login or project.
+Owner/route keys and the existing API-generation callback fence keep old responses
+out of a successor session.
+
+`pollCreateDialogSettlesInvalidatedSend` uses the rendered application and held
+HTTP POST responses for token replacement, sign-out/relogin and an explicitly
+reopened form. It checks recovery controls, byte-equal retry bodies, the successor
+submission's lock and exactly one visible confirmed poll.
+`sendPollRetryIdentityDoesNotSurviveSignOut` independently exercises the controller's
+attempt-cache lifetime. Existing dialog error mapping, cancellation and unrelated
+message-completion tests remain part of the focused validation.
 
 ## i18n
 

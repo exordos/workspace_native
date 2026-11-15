@@ -15,6 +15,9 @@ Popup {
     property int sectionCount: 1
     property bool settingsOpen: false
     property bool pending: false
+    property string openedOwner: ""
+    property int operationSerial: 0 // Never reset when a form closes or is reopened.
+    property string operation: ""
     property bool sendFailed: false
     property bool validationFailed: false
     property bool creationUnavailable: false
@@ -79,6 +82,7 @@ Popup {
             : creationUnavailable ? qsTr("Poll creation is not enabled on this server.") : ""
     function openForCreate() {
         resetAll()
+        openedOwner = controller.pollCreationOwnerKey
         open()
     }
     function resetAll() {
@@ -88,6 +92,8 @@ Popup {
         sectionCount = 1
         settingsOpen = false
         pending = false
+        operation = ""
+        openedOwner = ""
         sendFailed = false
         validationFailed = false
         creationUnavailable = false
@@ -146,21 +152,28 @@ Popup {
         for (const section of sections) {
             rows.push({text: section.questionText.trim(), options: section.answerRows()})
         }
+        operation = String(++operationSerial)
         pending = true
         revision++
         controller.sendPoll(rows, multipleAnswers, anonymous, allowRevote,
             resultsIndex === 1 ? "always" : "after_vote", allowAddingOptions,
-            deadlineEnabled && deadlineFuture ? deadlineIso : "")
-    }
-    function reopenAfterSend() {
-        pending = false
-        close()
+            deadlineEnabled && deadlineFuture ? deadlineIso : "", operation)
     }
     Connections {
         target: dialog.controller
-        function onPollActionFailed(messageUuid, action, detail, questionUuid) {
-            if (!dialog.visible || action !== "create") return
+        function onStateChanged() {
+            if (dialog.visible && dialog.openedOwner !== dialog.controller.pollCreationOwnerKey) {
+                dialog.pending = false
+                dialog.close()
+            }
+        }
+        function onPollCreationFinished(operation, detail) {
+            if (!dialog.visible || !dialog.pending || operation !== dialog.operation) return
             dialog.pending = false
+            if (detail.length === 0) {
+                dialog.close()
+                return
+            }
             if (detail === "http-409")
                 dialog.creationUnavailable = true
             else if (detail === "http-400" || detail === "http-422")
@@ -169,13 +182,8 @@ Popup {
                 dialog.sendFailed = true
             dialog.revision++
         }
-        function onPollCreated(id, stream, topic) {
-            // Only the dialog's own create completion closes it; an unrelated
-            // messageSent (e.g. a previously started text send finishing)
-            // must leave a pending poll alone.
-            if (dialog.visible && dialog.pending) dialog.reopenAfterSend()
-        }
     }
+
     Timer {
         interval: 1000
         repeat: true
