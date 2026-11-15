@@ -239,8 +239,8 @@ Item {
     // Toolbar: absolute right-4 top-4 z-float gap-2 (media-viewer-toolbar.ui.tsx:52),
     // buttons 40x40 rounded-lg bg-bg-elevated/80 hover:bg-bg-elevated text-text-primary
     // glyph 20, disabled opacity 0.4 (media-viewer-toolbar.ui.tsx:7-8,79-95).
-    // "Open in new tab" is reference-browser-only (media-viewer-overlay.ui.tsx:56)
-    // and copy-image is issue #79, so the desktop viewer ships download + close.
+    // "Open in new tab" is reference-browser-only (media-viewer-overlay.ui.tsx:56),
+    // so the desktop viewer ships copy (issue #79) + download + close.
     Row {
         objectName: "mediaViewer-toolbar"
         anchors.right: parent.right
@@ -275,6 +275,18 @@ Item {
                     colorization: 1.0
                 }
             }
+        }
+        ViewerButton {
+            objectName: "mediaViewer-copy"
+            asset: "copy.svg"
+            // showCopy renders only for image slots (media-viewer-overlay.ui.tsx:118);
+            // visible actions stay unusable until the display URL exists
+            // (media-viewer-actions.lib.ts:71-79).
+            visible: viewerRoot.currentSlot.kind === "image"
+            enabled: visible && viewerRoot.currentSlot.state === "ready"
+                && String(viewerRoot.currentSlot.uuid || "").length > 0
+            Accessible.name: qsTr("Copy image")
+            onClicked: viewerRoot.viewer.copyCurrentImage()
         }
         ViewerButton {
             objectName: "mediaViewer-download"

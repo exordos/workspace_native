@@ -9019,6 +9019,18 @@ ApplicationWindow {
             visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation
         }
         MessageMenuAction {
+            objectName: "copyMessageImageAction"
+            // The reference adds the item only for an image context file
+            // (workspace-message-bubble-menu.ui.tsx:335), first in the
+            // secondary section, before copy-link (:350-368).
+            visible: root.menuMessageReadable
+                && String(root.controller.mediaPreviewReference(root.menuMessageContent).kind || "") === "image"
+            enabled: visible
+            asset: "copy.svg"
+            text: qsTr("Copy image")
+            onTriggered: root.controller.copyMessageImage(root.menuMessageId)
+        }
+        MessageMenuAction {
             objectName: "copyMessageLinkAction"
             visible: root.menuMessageReadable
             enabled: visible
