@@ -1613,6 +1613,10 @@
             <translation>Все слоты создания зашифрованных каналов заняты не уточнёнными попытками. Уточните одну из них и повторите попытку.</translation>
         </message>
         <message>
+            <source>The channel creation status check was interrupted by a session change. The attempt was kept; check status again.</source>
+            <translation>Проверка состояния создания канала прервана из-за смены сессии. Попытка сохранена; проверьте состояние ещё раз.</translation>
+        </message>
+        <message>
             <source>The channel creation attempt identity is invalid.</source>
             <translation>Идентификатор попытки создания канала некорректен.</translation>
         </message>
