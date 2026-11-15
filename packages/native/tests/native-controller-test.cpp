@@ -12712,6 +12712,104 @@ private slots:
         QCOMPARE(row.value("displayContent").toString(), QString("answer"));
     }
 
+    void fetchedEncryptedQuoteDoesNotResurfaceAfterConfirmedMutation_data()
+    {
+        QTest::addColumn<bool>("removeOrigin");
+        QTest::newRow("confirmed-edit") << false;
+        QTest::newRow("confirmed-delete") << true;
+    }
+
+    void fetchedEncryptedQuoteDoesNotResurfaceAfterConfirmedMutation()
+    {
+        QFETCH(bool, removeOrigin);
+        Fixture fixture;
+        fixture.extraTopic = true;
+        fixture.aggregateMessages = true;
+        LoopbackKeyTls tls(fixture.server.serverPort());
+        QTemporaryDir directory;
+        ControllerMemorySecrets secrets;
+        NativeChatKeyVault vault(directory.path(), &secrets);
+        auto key = NativeChatCrypto::createGroupKey(); QVERIFY(key);
+        const auto wipe = qScopeGuard([&] { key.bytes.fill(0); key.bytes.clear(); });
+        const QString originId = "6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f";
+        const QString keyId = "8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e";
+        const auto sealed = NativeChatCrypto::encryptMessage(key.bytes,
+            "Pre-edit encrypted origin", {streamId, keyId});
+        QVERIFY(sealed);
+        auto origin = message({}, originId, secondTopicId);
+        origin["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", keyId},
+            {"content", QString::fromLatin1(sealed.bytes.toBase64())}};
+        const auto reply = message(QStringLiteral("[Author](urn:quote:%1)\n\nanswer").arg(originId), returnedId);
+        bool deleted = false;
+        int lookups = 0, puts = 0, deletes = 0, confirmations = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "PUT") {
+                ++puts; origin["payload"] = request.body.value("payload");
+                return {QJsonObject{}};
+            }
+            if (request.method == "DELETE") {
+                ++deletes; deleted = true; return {QJsonObject{}};
+            }
+            if (path.endsWith("/" + originId)) {
+                ++confirmations; return {origin};
+            }
+            if (query.hasQueryItem("uuid")) {
+                ++lookups; return {deleted ? QJsonArray{} : QJsonArray{origin}};
+            }
+            if (query.queryItemValue("topic_uuid") == secondTopicId)
+                return {deleted ? QJsonArray{} : QJsonArray{origin}};
+            return {QJsonArray{reply}};
+        };
+        QVERIFY(fixture.start(tls.origin()));
+        bool opened = false;
+        vault.open(tls.origin(), projectId, userId, "Synthetic quote device",
+            [&](NativeChatKeyVault::Failure failure) { opened = failure == NativeChatKeyVault::Failure::None; });
+        QTRY_VERIFY(opened);
+        QCOMPARE(vault.put(vault.lease(), {streamId, keyId}, key.bytes, 0), NativeChatKeyVault::Failure::None);
+        fixture.controller.useChatKeys(&vault);
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteContent").toString(),
+            QString("Pre-edit encrypted origin"));
+        QCOMPARE(lookups, 1);
+        QVERIFY(modelMessage(fixture.controller, originId).isEmpty());
+
+        // The API permits payload-kind replacement in ordinary streams. Another
+        // client has replaced the encrypted payload before Native loads it;
+        // Native's own editor only accepts this now-markdown revision.
+        if (!removeOrigin) origin["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Latest origin"}};
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!fixture.controller.busy() && !modelMessage(fixture.controller, originId).isEmpty());
+        if (removeOrigin) {
+            fixture.controller.deleteMessage(originId);
+            QTRY_COMPARE(deletes, 1);
+            QTRY_VERIFY(modelMessage(fixture.controller, originId).isEmpty());
+        } else {
+            QVERIFY(fixture.controller.beginEditMessage(originId));
+            fixture.controller.setDraft("Confirmed edited origin");
+            fixture.controller.submitEditMessage();
+            QTRY_COMPARE(puts, 1);
+            QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+            QCOMPARE(confirmations, 1);
+            QCOMPARE(modelMessage(fixture.controller, originId).value("content").toString(),
+                QString("Confirmed edited origin"));
+        }
+
+        // Evict the source through real conversation navigation. Only the
+        // retained quote record can answer until a fresh UUID lookup returns.
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(!fixture.controller.busy() && !modelMessage(fixture.controller, returnedId).isEmpty());
+        QVERIFY(modelMessage(fixture.controller, originId).isEmpty());
+        QVERIFY2(modelMessage(fixture.controller, returnedId).value("quoteContent").toString()
+            != "Pre-edit encrypted origin", "confirmed mutation resurrected cached encrypted plaintext");
+        QTRY_COMPARE(lookups, 2);
+        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(),
+            removeOrigin ? QString("unavailable") : QString("ready"));
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteContent").toString(),
+            removeOrigin ? QString{} : QString("Confirmed edited origin"));
+    }
+
     void openMessageInChatAnchorsLoadedMessagesAndReportsUnknownOnes()
     {
         Fixture fixture; fixture.aggregateMessages = true;
