@@ -301,6 +301,22 @@ Item {
         QCOMPARE(first->installs, 1);
         QCOMPARE(first->restarts, 1);
     }
+    void installedUpdateCanRestartOnlyFromAnExplicitAction()
+    {
+        first->publish(QStringLiteral("ready"), QStringLiteral("0.1.1"));
+        first->reenterRestart = true;
+        QVERIFY2(createDrawer(first.get()), qPrintable(component->errorString()));
+        open(true);
+        QCOMPARE(first->restarts, 0);
+        QVERIFY(activateAction());
+        QCOMPARE(first->restarts, 1);
+        QCOMPARE(first->installs, 0);
+        QCOMPARE(first->downloads, 0);
+        QCOMPARE(first->checks, 0);
+        first->repeatChanged();
+        open(false); open(true);
+        QCOMPARE(first->restarts, 1);
+    }
 };
 
 int main(int argc, char **argv)

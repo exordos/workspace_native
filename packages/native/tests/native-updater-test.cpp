@@ -92,6 +92,17 @@ bool write(const QString &path, const QByteArray &bytes)
     QFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
 }
+bool installedFixture(const QTemporaryDir &directory)
+{
+    const auto root = directory.filePath(QStringLiteral("data/workspace-native-install"));
+    const auto target = root + QStringLiteral("/versions/1.2.4");
+    const auto binary = target + QStringLiteral("/bin/workspace-native");
+    return QDir().mkpath(target + QStringLiteral("/bin"))
+        && write(target + QStringLiteral("/VERSION"), "1.2.4\n")
+        && write(binary, "#!/bin/sh\nexit 0\n")
+        && QFile::setPermissions(binary, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)
+        && QFile::link(target, root + QStringLiteral("/current"));
+}
 struct Environment final {
     explicit Environment(QByteArray name, const QByteArray &value)
         : name(std::move(name)), value(qgetenv(this->name.constData())), existed(qEnvironmentVariableIsSet(this->name.constData()))
@@ -179,6 +190,10 @@ private slots:
     void outwardNotificationMayCancelOrDelete();
     void invalidEndpointDoesNotMakeARequest();
     void installAndRestartUseTheManagedContract();
+    void alreadyInstalledUpdate_data();
+    void alreadyInstalledUpdate();
+    void invalidExistingInstallation_data();
+    void invalidExistingInstallation();
     void rejectedInstall_data();
     void rejectedInstall();
     void cancellationTerminatesTheInstallerAndRemovesStaging();
@@ -528,6 +543,104 @@ void NativeUpdaterTest::installAndRestartUseTheManagedContract()
     QCOMPARE(restart.size(), 1);
     QCOMPARE(restart.first().first().toString(), sandbox.filePath(QStringLiteral("data/workspace-native-install/current/bin/workspace-native")));
     QCOMPARE(server.requests.size(), 2);
+}
+
+void NativeUpdaterTest::alreadyInstalledUpdate_data()
+{
+    QTest::addColumn<bool>("installedBeforeCheck");
+    QTest::newRow("retained-old-copy") << true;
+    QTest::newRow("installed-during-download") << false;
+}
+
+void NativeUpdaterTest::alreadyInstalledUpdate()
+{
+    QFETCH(bool, installedBeforeCheck);
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
+    Server server;
+    QVERIFY(server.listening);
+    // Any attempt to apply this archive fails; the already selected immutable
+    // installation must be reused without executing a second installer.
+    server.archive = package(QStringLiteral("installer-error"));
+    QVERIFY(!server.archive.isEmpty());
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        Server::reply(socket, request.startsWith("GET /latest ") ? json(server.release()) : server.archive);
+    };
+    if (installedBeforeCheck) QVERIFY(installedFixture(sandbox));
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), sandbox.filePath(QStringLiteral("cache")));
+    QSignalSpy restart(&updater, &NativeUpdater::restartRequested);
+    updater.check();
+    QTRY_VERIFY(updater.state() != QStringLiteral("checking"));
+    if (!installedBeforeCheck) {
+        QCOMPARE(updater.state(), QStringLiteral("available"));
+        updater.download(); QTRY_COMPARE(updater.state(), QStringLiteral("downloaded"));
+        QVERIFY(installedFixture(sandbox));
+        updater.install();
+        QTRY_VERIFY(updater.state() != QStringLiteral("installing"));
+    }
+    QCOMPARE(updater.state(), QStringLiteral("ready"));
+    QCOMPARE(updater.availableVersion(), QStringLiteral("1.2.4"));
+    QCOMPARE(restart.size(), 0);
+    QVERIFY(updater.downloadedPath().isEmpty());
+    QVERIFY(QDir(sandbox.filePath(QStringLiteral("cache"))).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    updater.check(); updater.download(); updater.install();
+    QCoreApplication::processEvents();
+    QCOMPARE(updater.state(), QStringLiteral("ready"));
+    QCOMPARE(server.requests.size(), installedBeforeCheck ? 1 : 2);
+    updater.restart();
+    QCOMPARE(restart.size(), 1);
+    QCOMPARE(restart.first().first().toString(), sandbox.filePath(QStringLiteral("data/workspace-native-install/current/bin/workspace-native")));
+    // Readiness is not a permanent lease: validate the selected target again
+    // at the explicit restart action, before the application starts shutdown.
+    QVERIFY(QFile::remove(sandbox.filePath(QStringLiteral("data/workspace-native-install/versions/1.2.4/bin/workspace-native"))));
+    updater.restart();
+    QCOMPARE(updater.state(), QStringLiteral("error"));
+    QCOMPARE(restart.size(), 1);
+}
+
+void NativeUpdaterTest::invalidExistingInstallation_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto *mode : {"wrong-version", "missing-version", "missing-binary", "non-executable", "wrong-current", "missing-current"})
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void NativeUpdaterTest::invalidExistingInstallation()
+{
+    QFETCH(QString, mode);
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
+    QVERIFY(installedFixture(sandbox));
+    const auto root = sandbox.filePath(QStringLiteral("data/workspace-native-install"));
+    const auto target = root + QStringLiteral("/versions/1.2.4");
+    if (mode == QStringLiteral("wrong-version")) QVERIFY(write(target + QStringLiteral("/VERSION"), "1.2.5\n"));
+    if (mode == QStringLiteral("missing-version")) QVERIFY(QFile::remove(target + QStringLiteral("/VERSION")));
+    if (mode == QStringLiteral("missing-binary")) QVERIFY(QFile::remove(target + QStringLiteral("/bin/workspace-native")));
+    if (mode == QStringLiteral("non-executable")) QVERIFY(QFile::setPermissions(target + QStringLiteral("/bin/workspace-native"), QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    if (mode == QStringLiteral("wrong-current") || mode == QStringLiteral("missing-current")) {
+        QVERIFY(QFile::remove(root + QStringLiteral("/current")));
+        if (mode == QStringLiteral("wrong-current")) {
+            QVERIFY(QDir().mkpath(root + QStringLiteral("/versions/1.2.5")));
+            QVERIFY(QFile::link(root + QStringLiteral("/versions/1.2.5"), root + QStringLiteral("/current")));
+        }
+    }
+    const auto originalVersion = read(target + QStringLiteral("/VERSION"));
+    const auto originalCurrent = QFileInfo(root + QStringLiteral("/current")).symLinkTarget();
+    Server server;
+    QVERIFY(server.listening);
+    server.handler = [&](QTcpSocket *socket, const QByteArray &) { Server::reply(socket, json(server.release())); };
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), sandbox.filePath(QStringLiteral("cache")));
+    QSignalSpy restart(&updater, &NativeUpdater::restartRequested);
+    updater.check(); QTRY_VERIFY(updater.state() != QStringLiteral("checking"));
+    QCOMPARE(updater.state(), QStringLiteral("error"));
+    QVERIFY(updater.error().contains(QStringLiteral("verified")));
+    updater.install(); updater.restart();
+    QCOMPARE(restart.size(), 0);
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(read(target + QStringLiteral("/VERSION")), originalVersion);
+    QCOMPARE(QFileInfo(root + QStringLiteral("/current")).symLinkTarget(), originalCurrent);
 }
 
 void NativeUpdaterTest::rejectedInstall_data()

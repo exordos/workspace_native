@@ -67,6 +67,7 @@ private:
     void processFinished(quint64 ticket, int exitCode, bool normalExit);
     bool validateListing() const;
     bool installedVersionMatches() const;
+    bool reuseInstalledVersion(quint64 ticket);
     void fail(quint64 ticket, const QString &message);
     void startRequest(quint64 ticket, const QUrl &url, bool metadata);
     void consume(quint64 ticket, QNetworkReply *reply, bool metadata);
