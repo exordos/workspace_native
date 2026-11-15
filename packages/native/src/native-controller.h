@@ -1135,6 +1135,9 @@ private:
     // Clock for the resume-reconnect floor (fix-round-1 finding 4): restarted
     // on every resume-triggered reconnectNow, resumes inside the floor ignored.
     QElapsedTimer m_resumeReconnectClock;
+    // Set on PrepareForSleep(true): the next resume is a genuine sleep
+    // cycle and bypasses the reconnect floor (fix-round-2, cid 4576829140).
+    bool m_sawSleepNotification = false;
     bool m_onBattery = false;
     QVector<Stream> m_streams;
     // Issue #132 channel info drawer state for the selected stream. The

@@ -2633,16 +2633,22 @@ constexpr int PresenceBatteryMultiplier = 2;        // WORKSPACE_PRESENCE_BATTER
 // each accepted resume drops the healthy socket and bypasses the reconnect
 // backoff, so repeated resumes inside this floor are ignored - the link the
 // first wake restored stays up, and RealtimeClient's own backoff still
-// recovers a later drop on its normal schedule.
+// recovers a later drop on its normal schedule. The floor only guards bare
+// resumes: a resume preceded by a PrepareForSleep(true) sleep notification
+// is a genuine sleep cycle (monotonic elapsed() excludes suspended time,
+// so a real second wake can land inside the floor) and always reconnects
+// (fix-round-2, cid 4576829140).
 constexpr qint64 ResumeReconnectFloorMs = 5000;
 } // namespace
 
 int NativeController::presenceHeartbeatIntervalMs() const
 {
     const auto factor = m_onBattery ? PresenceBatteryMultiplier : 1;
-    // Hidden outranks focus: a minimized window is neither active nor visible
-    // in the reference WindowActivityState ladder (visibility.ts:12-16).
-    if (!m_windowVisible)
+    // Hidden outranks focus (visibility.ts:12-16), and minimized counts as
+    // hidden: the reference ladder keys on document.hidden, which covers
+    // minimized windows in the Chromium-backed shell, while Qt keeps
+    // isVisible() true when minimized (fix-round-2, cid 4576526934).
+    if (!m_windowVisible || m_windowMinimized)
         return qMax(PresenceActiveMs, PresenceHiddenMs) * factor;
     if (m_windowFocused) return PresenceActiveMs * factor;
     return m_onBattery ? PresenceUnfocusedBatteryMs : PresenceUnfocusedMs;
@@ -2660,18 +2666,28 @@ void NativeController::setPowerWatcher(PowerWatcher *watcher)
     m_powerWatcher = watcher;
     if (!watcher) return;
     // The reference layout hook reconnects every manager with no delay on
-    // resume; suspend is informational here because the OS freezes the whole
-    // process anyway.
+    // resume; suspend arms the sleep-cycle mark: logind always sends
+    // PrepareForSleep(true) before a real sleep, so the resume that follows
+    // one is a real wake, not a spoofed bare signal.
+    connect(watcher, &PowerWatcher::sleepAboutToStart, this, [this] {
+        m_sawSleepNotification = true;
+    });
     connect(watcher, &PowerWatcher::resumed, this, [this] {
         if (!m_realtime) return;
         // Resume-triggered reconnects bypass the reconnect backoff, so bound
-        // them (fix-round-1 finding 4, cid 4576526936): the first resume in a
-        // floor window reconnects immediately like a real wake, repeated
-        // resumes inside the floor are ignored (the restored link stays up,
-        // and RealtimeClient's own backoff still covers any later drop).
-        if (m_resumeReconnectClock.isValid() && m_resumeReconnectClock.elapsed() < ResumeReconnectFloorMs)
+        // them (fix-round-1 finding 4, cid 4576526936): bare resumes inside a
+        // floor window are ignored (the restored link stays up, and
+        // RealtimeClient's own backoff still covers any later drop). A resume
+        // that was preceded by a sleep notification is a genuine cycle and
+        // bypasses the floor - the floor timer is monotonic and excludes
+        // suspended time, so an honest second wake must not pay for it
+        // (fix-round-2, cid 4576829140).
+        const bool genuineSleepCycle = m_sawSleepNotification;
+        m_sawSleepNotification = false;
+        if (!genuineSleepCycle && m_resumeReconnectClock.isValid()
+            && m_resumeReconnectClock.elapsed() < ResumeReconnectFloorMs)
             return;
-        m_resumeReconnectClock.start();
+        m_resumeReconnectClock.restart();
         m_realtime->reconnectNow("power_resume");
     });
     connect(watcher, &PowerWatcher::batteryChanged, this, &NativeController::setOnBattery);
