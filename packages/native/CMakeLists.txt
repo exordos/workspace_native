@@ -337,10 +337,14 @@ if(BUILD_TESTING)
             # 360s ceiling that made the group a deterministic timeout. The
             # poll-bubble (#216) and reply-selection (#218) cases took the solo
             # runtime to 487.3s at tip against the old 480s ceiling (issue
-            # #283); this host measured 463/463 passed in 503.4s solo. 600s =
+            # #283); this host measured 463/463 passed in 503.4s solo.
+            # Startup picker, profile-drawer, media-viewer, quote and
+            # quick-reaction window cases (0.25.x) then took the solo runtime
+            # to 644.4s (525 cases) against the 600s ceiling - the group timed
+            # out with no case failed at the kill point (issue #331). 750s =
             # worst measured runtime plus suite-load headroom (#16/#103: never
             # tune a ceiling to single-digit margins of one host's runtime).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 600)
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 750)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
