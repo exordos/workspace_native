@@ -44,6 +44,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
     Q_PROPERTY(QString loginStep READ loginStep NOTIFY stateChanged)
+    Q_PROPERTY(QString loginUsername READ loginUsername NOTIFY stateChanged)
     Q_PROPERTY(QString organizationRealm READ organizationRealm NOTIFY stateChanged)
     Q_PROPERTY(bool organizationLoading READ organizationLoading NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap organizationSettings READ organizationSettings NOTIFY stateChanged)
@@ -416,6 +417,7 @@ public:
                            const QString &password, const QString &otp);
     // Login wizard organization step (docs/NATIVE_DESKTOP_LOGIN.md).
     QString loginStep() const { return m_loginStep; }
+    QString loginUsername() const { return m_session->loginName(); }
     QString organizationRealm() const { return m_organizationRealm; }
     bool organizationLoading() const { return m_organizationLoading; }
     QVariantMap organizationSettings() const { return m_organizationSettings; }
@@ -428,6 +430,8 @@ public:
     Q_INVOKABLE void discoverOrganization(const QString &text);
     Q_INVOKABLE void continueFromOrganization(const QString &text);
     Q_INVOKABLE void backToOrganization();
+    Q_INVOKABLE void submitOtp(const QString &otp);
+    Q_INVOKABLE void backToCredentials();
     Q_INVOKABLE void selectDefaultOrganization();
     Q_INVOKABLE void openProject(const QString &id);
     Q_INVOKABLE void resumeSavedAccount(const QString &id);
@@ -725,6 +729,7 @@ public:
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);
 
 signals:
+    void otpCodeRejected();
     void downloadsChanged();
     void downloadDuplicateRequested();
     void chatKeyStoreOpenRequested();
@@ -1874,6 +1879,7 @@ private:
     quint64 m_nextConversationOpening = 0;
     QTimer m_anchorHighlight;
     QString m_error;
+    bool m_startingWizardLogin = false;
     QString m_loginStep = QStringLiteral("organization");
     QString m_organizationRealm;
     QString m_checkedOrganizationOrigin;

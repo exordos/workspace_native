@@ -61,6 +61,22 @@
         <message><source>Deselect</source><translation>Снять выделение</translation></message>
         <message><source>Selected: %1</source><translation>Выбрано: %1</translation></message>
         <message><source>Forward</source><translation>Переслать</translation></message>
+        <message>
+            <source>Logging in…</source>
+            <translation>Вход…</translation>
+        </message>
+        <message>
+            <source>Enter the six-digit code from your authenticator app.</source>
+            <translation>Введите шестизначный код из приложения-аутентификатора.</translation>
+        </message>
+        <message>
+            <source>Authentication code</source>
+            <translation>Код подтверждения</translation>
+        </message>
+        <message>
+            <source>Confirm code</source>
+            <translation>Подтвердить код</translation>
+        </message>
         <message><source>File</source><translation>Файл</translation></message>
         <message><source>Image</source><translation>Изображение</translation></message>
         <message><source>Video</source><translation>Видео</translation></message>
@@ -1540,6 +1556,10 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+    <message>
+        <source>The authentication code is invalid. Try again.</source>
+        <translation>Код подтверждения неверный. Попробуйте ещё раз.</translation>
+    </message>
         <message>
             <source>Link</source>
             <translation>Ссылка</translation>
@@ -2535,6 +2555,10 @@
     </context>
     <context>
         <name>workspace::Session</name>
+    <message>
+        <source>Login failed</source>
+        <translation>Ошибка входа</translation>
+    </message>
         <message>
             <source>Could not load organization settings. Check the server address and try again.</source>
             <translation>Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.</translation>

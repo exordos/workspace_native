@@ -1436,7 +1436,9 @@ ApplicationWindow {
                     text: root.controller.projects.length > 0 ? qsTr("Choose a project")
                         : root.controller.loginStep === "organization"
                             ? qsTr("Enter your organization address first.")
-                            : qsTr("Choose a sign-in method or enter your email/login and password.")
+                            : root.controller.loginStep === "otp"
+                                ? qsTr("Enter the six-digit code from your authenticator app.")
+                                : qsTr("Choose a sign-in method or enter your email/login and password.")
                     textFormat: Text.PlainText
                     color: root.colors["text-secondary"]
                     font.pixelSize: 14
@@ -1671,9 +1673,9 @@ ApplicationWindow {
                 }
                 Loader {
                     objectName: "credentialsFormLoader"
-                    visible: active
+                    visible: active && root.controller.loginStep === "credentials"
                     active: root.controller.projects.length === 0
-                        && root.controller.loginStep === "credentials"
+                        && (root.controller.loginStep === "credentials" || root.controller.loginStep === "otp")
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 12
@@ -1692,6 +1694,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             enabled: !root.controller.busy
                             placeholderText: qsTr("Username or email")
+                            Component.onCompleted: text = root.controller.loginUsername
                             Accessible.name: qsTr("Username or email")
                         }
                         NativeField {
@@ -1705,17 +1708,6 @@ ApplicationWindow {
                             inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
                             Accessible.name: qsTr("Password")
                         }
-                        NativeField {
-                            id: otpInput
-                            objectName: "otpInput"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            enabled: !root.controller.busy
-                            placeholderText: qsTr("One-time code, if required")
-                            inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                            Accessible.name: qsTr("One-time code")
-                            onAccepted: signInButton.clicked()
-                        }
                         NativeButton {
                             id: signInButton
                             objectName: "signInButton"
@@ -1728,11 +1720,128 @@ ApplicationWindow {
                             onClicked: {
                                 if (enabled) {
                                     root.controller.login(root.controller.organizationRealm,
-                                        userInput.text.trim(), passwordInput.text, otpInput.text.trim());
-                                    passwordInput.text = "";
-                                    otpInput.text = "";
+                                        userInput.text.trim(), passwordInput.text, "");
                                 }
                             }
+                        }
+                    }
+                }
+                Loader {
+                    objectName: "otpFormLoader"
+                    visible: active
+                    active: root.controller.projects.length === 0 && root.controller.loginStep === "otp"
+                    Layout.fillWidth: true
+                    sourceComponent: ColumnLayout {
+                        spacing: 16
+                        ColumnLayout {
+                            spacing: 6
+                            Layout.fillWidth: true
+                            Text {
+                                text: qsTr("Authentication code")
+                                color: root.colors["text-primary"]
+                                font.pixelSize: 14
+                                font.weight: Font.Medium
+                                Layout.fillWidth: true
+                            }
+                            NativeField {
+                                id: otpInput
+                                objectName: "otpInput"
+                                colors: root.colors
+                                Layout.fillWidth: true
+                                implicitHeight: 50
+                                padding: 12
+                                enabled: !root.controller.busy
+                                placeholderText: "000000"
+                                background: Rectangle {
+                                    radius: 8
+                                    color: root.colors["bg-elevated"]
+                                    border.width: otpInput.activeFocus ? 2 : 1
+                                    border.color: otpInput.activeFocus ? root.colors.accent : root.colors["border-subtle"]
+                                }
+                                horizontalAlignment: TextInput.AlignHCenter
+                                font.family: "monospace"
+                                font.pixelSize: 18
+                                font.letterSpacing: 6.3
+                                inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                Accessible.name: qsTr("Authentication code")
+                                onTextChanged: {
+                                    const digits = text.replace(/[^0-9]/g, "").slice(0, 6)
+                                    if (text !== digits) text = digits
+                                }
+                                onAccepted: otpConfirmButton.clicked()
+                                Connections {
+                                    target: root.controller
+                                    function onOtpCodeRejected() { otpInput.text = "" }
+                                }
+                                Component.onCompleted: forceActiveFocus()
+                            }
+                        }
+                        Rectangle {
+                            objectName: "otpErrorBanner"
+                            visible: root.controller.error.length > 0
+                            Layout.fillWidth: true
+                            implicitHeight: otpErrorText.implicitHeight + 16
+                            radius: 8
+                            readonly property color tone: root.colors["notice-base"]
+                            color: Qt.rgba(tone.r, tone.g, tone.b, 0.1)
+                            border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.2)
+                            Text {
+                                id: otpErrorText
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 8
+                                text: root.controller.error
+                                textFormat: Text.PlainText
+                                color: parent.tone
+                                wrapMode: Text.Wrap
+                                font.pixelSize: 14
+                                Accessible.role: Accessible.AlertMessage
+                            }
+                        }
+                        NativeButton {
+                            id: otpConfirmButton
+                            objectName: "otpConfirmButton"
+                            colors: root.colors
+                            primary: true
+                            Layout.fillWidth: true
+                            implicitHeight: 36
+                            text: root.controller.busy ? qsTr("Logging in…") : qsTr("Confirm code")
+                            background: Rectangle {
+                                radius: 8
+                                color: root.colors.accent
+                                opacity: otpConfirmButton.enabled ? (otpConfirmButton.down ? 0.8 : 1) : 0.5
+                                border.width: otpConfirmButton.visualFocus ? 2 : 0
+                                border.color: root.colors.accent
+                            }
+                            enabled: !root.controller.busy && otpInput.text.length === 6
+                            onClicked: {
+                                if (!enabled) return
+                                root.controller.submitOtp(otpInput.text)
+                            }
+                        }
+                        NativeButton {
+                            id: otpBackButton
+                            objectName: "otpBackButton"
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            implicitHeight: 36
+                            text: qsTr("Back")
+                            enabled: !root.controller.busy
+                            contentItem: Text {
+                                text: otpBackButton.text
+                                color: root.colors["text-muted"]
+                                font: otpBackButton.font
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                opacity: otpBackButton.enabled ? 1 : 0.5
+                            }
+                            background: Rectangle {
+                                radius: 8
+                                color: otpBackButton.hovered ? root.colors["bg-elevated"] : "transparent"
+                            }
+                            onClicked: root.controller.backToCredentials()
                         }
                     }
                 }
@@ -1768,7 +1877,7 @@ ApplicationWindow {
                     Accessible.role: Accessible.AlertMessage
                 }
                 Text {
-                    visible: root.controller.error.length > 0 && root.controller.loginStep !== "organization"
+                    visible: root.controller.error.length > 0 && root.controller.loginStep !== "organization" && root.controller.loginStep !== "otp"
                     text: root.controller.error
                     textFormat: Text.PlainText
                     color: root.colors.danger

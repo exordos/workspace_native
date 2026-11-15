@@ -519,6 +519,275 @@ private slots:
         QVERIFY(backend.values.contains(other.id));
     }
 
+    void otpChallengeRetriesTheOriginalCredentialsAfterRejection()
+    {
+        MockServer server;
+        int tokens = 0;
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/get_token/invoke")
+                && request.body.value("grant_type") == "login+password") {
+                ++tokens;
+                if (tokens < 3)
+                    return Response{QJsonObject{{"error", "invalid_grant"}}, 401, 0, {}};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy errors(&session, &Session::error);
+        QSignalSpy projects(&session, &Session::projectsAvailable);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(tokens, 1);
+        QTRY_VERIFY(!errors.isEmpty() || session.property("otpRequired").toBool());
+        QCOMPARE(errors.size(), 0);
+        QVERIFY(session.property("otpRequired").toBool());
+        QVERIFY(!server.requests.at(0).headers.contains("x-otp"));
+        QVERIFY(QMetaObject::invokeMethod(&session, "submitOtp", Q_ARG(QString, "111111")));
+        QTRY_COMPARE(tokens, 2);
+        QTRY_VERIFY(session.property("otpRejected").toBool());
+        QVERIFY(session.property("otpRequired").toBool());
+        QVERIFY(QMetaObject::invokeMethod(&session, "submitOtp", Q_ARG(QString, "123456")));
+        QTRY_COMPARE(projects.size(), 1);
+        QCOMPARE(server.requests.at(1).headers.value("x-otp"), "111111");
+        QCOMPARE(server.requests.at(2).headers.value("x-otp"), "123456");
+        QCOMPARE(server.requests.at(2).body, server.requests.at(0).body);
+        QVERIFY(!session.property("otpRequired").toBool());
+    }
+
+    void otpChallengeCancellationAndTransientFailure()
+    {
+        MockServer server;
+        int tokenCount = 0;
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/get_token/invoke")) {
+                ++tokenCount;
+                if (tokenCount == 2) return Response{QJsonObject{}, 503, 0, {}};
+                return Response{QJsonObject{}, 401, 0, {}};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy errors(&session, &Session::error);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_VERIFY(session.otpRequired());
+        session.submitOtp("12a456");
+        session.submitOtp("12345");
+        QTest::qWait(50);
+        QCOMPARE(tokenCount, 1);
+        session.submitOtp("123456");
+        session.submitOtp("654321"); // a held request cannot be duplicated
+        QTRY_COMPARE(errors.size(), 1);
+        QCOMPARE(errors.at(0).at(0).toString(), QString("Login failed"));
+        QCOMPARE(tokenCount, 2);
+        QVERIFY(session.otpRequired());
+        session.cancelOtp();
+        QVERIFY(!session.otpRequired());
+        session.submitOtp("123456");
+        QTest::qWait(50);
+        QCOMPARE(tokenCount, 2);
+    }
+
+    void lateOtpChallengeCannotReviveAfterSignOut()
+    {
+        MockServer server;
+        std::function<void()> release;
+        server.handler = [&](const Request &) {
+            Response response{QJsonObject{}, 401, 0, {}};
+            response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy changes(&session, &Session::otpChallengeChanged);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_VERIFY(bool(release));
+        session.logout();
+        release();
+        QTest::qWait(100);
+        QVERIFY(!session.otpRequired());
+        QCOMPARE(changes.size(), 0);
+        QVERIFY(!session.ready());
+    }
+
+    void otpChallengeDoesNotNotifyAfterReentrantNewLogin()
+    {
+        MockServer server;
+        int tokenCount = 0;
+        std::function<void()> releaseSecond;
+        server.handler = [&](const Request &) {
+            ++tokenCount;
+            Response response{QJsonObject{}, 401, 0, {}};
+            if (tokenCount == 2)
+                response.defer = [&](std::function<void()> send) { releaseSecond = std::move(send); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy changed(&session, &Session::otpChallengeChanged);
+        bool replaced = false;
+        connect(&session, &Session::busyChanged, &session, [&](bool busy) {
+            if (!busy && session.otpRequired() && !replaced) {
+                replaced = true;
+                session.login(server.origin(), "second-user", "second-password");
+            }
+        });
+        session.login(server.origin(), "first-user", "first-password");
+        QTRY_VERIFY(bool(releaseSecond));
+        QVERIFY(replaced);
+        QCOMPARE(changed.size(), 0); // no publication by the retired first attempt
+        releaseSecond();
+        QTRY_COMPARE(changed.size(), 1);
+        QVERIFY(session.otpRequired());
+        QCOMPARE(session.loginName(), QString("second-user"));
+    }
+
+    void changingOrganizationRetiresTheOldOtpChallenge()
+    {
+        MockServer original, replacement;
+        original.handler = [](const Request &) { return Response{QJsonObject{}, 401, 0, {}}; };
+        replacement.handler = [](const Request &) { return Response{QJsonObject{{"realm_name", "New"}}}; };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        session.login(original.origin(), "first-user", "first-password");
+        QTRY_VERIFY(session.otpRequired());
+        bool discovered = false;
+        session.fetchOrganizationSettings(replacement.origin(), [&](bool ok, QVariantMap, QString) { discovered = ok; });
+        QTRY_VERIFY(discovered);
+        session.submitOtp("123456");
+        QTest::qWait(200);
+        QCOMPARE(replacement.requests.size(), 1); // discovery only; no credentials reach the new origin
+        QVERIFY(!session.otpRequired());
+    }
+
+    void reentrantSignOutBeforeOtpDispatchSendsNothing()
+    {
+        MockServer server;
+        server.handler = [](const Request &) { return Response{QJsonObject{}, 401, 0, {}}; };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        session.login(server.origin(), "first-user", "first-password");
+        QTRY_VERIFY(session.otpRequired());
+        bool interrupted = false;
+        connect(&session, &Session::busyChanged, &session, [&](bool busy) {
+            if (busy && !interrupted) { interrupted = true; session.logout(); }
+        });
+        session.submitOtp("123456");
+        QTest::qWait(200);
+        QVERIFY(interrupted);
+        QCOMPARE(server.requests.size(), 1);
+        QVERIFY(!session.otpRequired());
+    }
+
+    void transportGenerationChangeRetiresChallengeBeforeSubmit()
+    {
+        MockServer server;
+        server.handler = [](const Request &) { return Response{QJsonObject{}, 401, 0, {}}; };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        session.login(server.origin(), "first-user", "first-password");
+        QTRY_VERIFY(session.otpRequired());
+        api.clearSession();
+        session.submitOtp("123456");
+        QTest::qWait(200);
+        QCOMPARE(server.requests.size(), 1);
+        QVERIFY(!session.otpRequired());
+    }
+
+    void otpCallbackFromRetiredTransportCannotReviveChallenge()
+    {
+        MockServer original, replacement;
+        std::function<void()> release;
+        original.handler = [&](const Request &request) {
+            Response response{QJsonObject{}, 401, 0, {}};
+            if (request.headers.contains("x-otp"))
+                response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy errors(&session, &Session::error);
+        session.login(original.origin(), "first-user", "first-password");
+        QTRY_VERIFY(session.otpRequired());
+        session.submitOtp("123456");
+        QTRY_VERIFY(bool(release));
+        QVERIFY(api.setServer(replacement.origin()));
+        release();
+        QTest::qWait(100);
+        QVERIFY(!session.otpRequired());
+        QVERIFY(errors.isEmpty());
+        QVERIFY(replacement.requests.isEmpty());
+    }
+
+    void otpProjectDiscoveryFailureKeepsChallengeForRetry()
+    {
+        MockServer server;
+        int projectRequests = 0;
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/get_token/invoke")
+                && !request.headers.contains("x-otp"))
+                return Response{QJsonObject{}, 401, 0, {}};
+            if (request.target.path().endsWith("/iam/projects/") && ++projectRequests == 1)
+                return Response{QJsonObject{}, 503, 0, {}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy errors(&session, &Session::error);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_VERIFY(session.otpRequired());
+        session.submitOtp("123456");
+        QTRY_COMPARE(errors.size(), 1);
+        QVERIFY(session.otpRequired());
+        QCOMPARE(errors.at(0).at(0).toString(), QString("Login failed"));
+        QVERIFY(session.projects().isEmpty());
+        bool probeFinished = false;
+        ApiResult probe;
+        api.request("GET", "/credential-probe", {}, {}, [&](const ApiResult &result) {
+            probe = result; probeFinished = true;
+        });
+        QTRY_VERIFY(probeFinished);
+        QCOMPARE(probe.error, QString("Sign in to continue."));
+        QCOMPARE(server.requests.size(), 3); // no authenticated request escaped after the failure
+        session.submitOtp("123456");
+        QTRY_COMPARE(session.projects().size(), 1);
+        QCOMPARE(projectRequests, 2);
+        QVERIFY(!session.otpRequired());
+    }
+
+    void reentrantGenerationChangeWhileInstallingOtpTokenRetiresChallenge()
+    {
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/get_token/invoke")
+                && !request.headers.contains("x-otp"))
+                return Response{QJsonObject{}, 401, 0, {}};
+            auto response = sessionResponse(request);
+            if (request.target.path().endsWith("/get_token/invoke")) {
+                auto token = response.data.toObject(); token.insert("expires_in", 1);
+                response.data = token;
+            }
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_VERIFY(session.otpRequired());
+        bool changed = false;
+        QSignalSpy invalidated(&session, &Session::otpChallengeInvalidated);
+        QSignalSpy errors(&session, &Session::error);
+        connect(&api, &ApiClient::sessionChanged, &session, [&](quint64) {
+            if (!changed) { changed = true; api.clearSession(); }
+        });
+        session.submitOtp("123456");
+        QTRY_VERIFY(changed);
+        QTest::qWait(1200); // an obsolete token must not leave a live expiry timer
+        QVERIFY(!session.otpRequired());
+        QCOMPARE(invalidated.size(), 1);
+        QVERIFY(errors.isEmpty());
+        QCOMPARE(server.requests.size(), 2);
+    }
+
     void authenticatesWithOtpAndSelectedProjectScope()
     {
         MockServer server;

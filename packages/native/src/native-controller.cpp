@@ -8281,6 +8281,29 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         finishDownloadRetries(false);
         if (guard) emit stateChanged();
     });
+    connect(session, &Session::otpChallengeChanged, this, [this] {
+        if (!m_session->otpRequired()) return;
+        const auto revision = m_session->otpRevision();
+        const bool rejected = m_session->otpRejected();
+        m_loginStep = QStringLiteral("otp");
+        m_error = rejected ? tr("The authentication code is invalid. Try again.") : QString{};
+        const QPointer<NativeController> guard(this);
+        emit stateChanged();
+        if (guard && rejected && m_session->otpRequired() && m_session->otpRevision() == revision)
+            emit otpCodeRejected();
+    });
+    connect(session, &Session::otpChallengeInvalidated, this, [this] {
+        if (m_loginStep != QLatin1String("otp") && m_loginStep != QLatin1String("credentials")) return;
+        ++m_organizationAttempt;
+        m_loginStep = QStringLiteral("organization");
+        m_organizationRealm.clear();
+        m_checkedOrganizationOrigin.clear();
+        m_pendingOrganizationOrigin.clear();
+        m_organizationLoading = false;
+        m_organizationSettings.clear();
+        m_error.clear();
+        emit stateChanged();
+    });
     connect(session, &Session::savedAccountsChanged, this, &NativeController::savedAccountsChanged);
     connect(this, &NativeController::savedAccountsChanged, this, &NativeController::sessionSwitcherChanged);
     connect(this, &NativeController::stateChanged, this, &NativeController::sessionSwitcherChanged);
@@ -8962,7 +8985,10 @@ void NativeController::login(const QString &server, const QString &user,
     m_error.clear();
     m_notice.clear();
     m_uploads = m_downloads = 0;
+    m_startingWizardLogin = m_loginStep == QLatin1String("credentials");
+    const QPointer<NativeController> guard(this);
     m_session->login(QUrl::fromUserInput(server), user, password, otp);
+    if (guard) guard->m_startingWizardLogin = false;
 }
 
 // Mirrors reference isValidRealmUrl (workspace_ui shared/lib/validation.ts):
@@ -9425,6 +9451,22 @@ void NativeController::continueFromOrganization(const QString &text)
         emit stateChanged();
 }
 
+void NativeController::submitOtp(const QString &otp)
+{
+    if (m_busy || m_loginStep != QLatin1String("otp")) return;
+    m_error.clear();
+    m_session->submitOtp(otp);
+}
+
+void NativeController::backToCredentials()
+{
+    if (m_busy || m_loginStep != QLatin1String("otp")) return;
+    m_session->cancelOtp();
+    m_error.clear();
+    m_loginStep = QStringLiteral("credentials");
+    emit stateChanged();
+}
+
 void NativeController::backToOrganization()
 {
     if (authenticated())
@@ -9561,13 +9603,15 @@ void NativeController::reset()
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
-    ++m_organizationAttempt;
-    m_loginStep = QStringLiteral("organization");
-    m_organizationRealm.clear();
-    m_checkedOrganizationOrigin.clear();
-    m_pendingOrganizationOrigin.clear();
-    m_organizationLoading = false;
-    m_organizationSettings.clear();
+    if (!m_startingWizardLogin) {
+        ++m_organizationAttempt;
+        m_loginStep = QStringLiteral("organization");
+        m_organizationRealm.clear();
+        m_checkedOrganizationOrigin.clear();
+        m_pendingOrganizationOrigin.clear();
+        m_organizationLoading = false;
+        m_organizationSettings.clear();
+    }
     retireConversationOpening();
     clearAnchor();
     m_draftsVisible = false; m_draftOpenId.clear();
