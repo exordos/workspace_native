@@ -14009,6 +14009,160 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(replyThumb->property("color").toString(), QString("#222328"));
     }
 
+    void quoteThumbnailScopeResetKeepsOneCurrentLease_data()
+    {
+        QTest::addColumn<bool>("duringAcquire");
+        QTest::newRow("scope-reset") << false;
+        QTest::newRow("scope-reset-during-acquire") << true;
+    }
+    void quoteThumbnailScopeResetKeepsOneCurrentLease()
+    {
+        QFETCH(bool, duringAcquire);
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"QML(import QtQuick
+            import "qrc:/workspace/qml"
+            Item {
+                function validLease() { return preview.lease !== null && manager.tokens[preview.lease.token] === true }
+                QtObject {
+                    id: manager
+                    objectName: "leaseManager"
+                    property int acquisitions: 0
+                    property int liveLeases: 0
+                    property var tokens: ({})
+                    property bool retireDuringAcquire: false
+                    signal revisionChanged()
+                    signal scopeChanged()
+                    function imageUrl(urn) { return "" }
+                    function failed(urn) { return false }
+                    function acquire(urn) {
+                        const token = ++acquisitions
+                        tokens[token] = true
+                        ++liveLeases
+                        if (retireDuringAcquire) {
+                            retireDuringAcquire = false
+                            renew()
+                        }
+                        return token
+                    }
+                    function release(token) {
+                        if (tokens[token]) { delete tokens[token]; --liveLeases }
+                    }
+                    function renew() {
+                        tokens = ({})
+                        liveLeases = 0
+                        revisionChanged()
+                        scopeChanged()
+                    }
+                }
+                NativeQuoteMediaThumbnail {
+                    id: preview
+                    objectName: "leaseThumbnail"
+                    images: manager
+                    urn: "urn:image:99999999-9999-4999-8999-999999999276"
+                    colors: ({"bg-elevated": "white"})
+                    height: 48
+                }
+            }
+        )QML", QUrl("inline:quote-scope-test.qml"));
+        QTRY_VERIFY2(component.status() != QQmlComponent::Loading, qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *manager = root->findChild<QObject *>("leaseManager"); QVERIFY(manager);
+        auto *preview = root->findChild<QObject *>("leaseThumbnail"); QVERIFY(preview);
+        QCOMPARE(manager->property("liveLeases").toInt(), 1);
+        const auto before = manager->property("acquisitions").toInt();
+        manager->setProperty("retireDuringAcquire", duringAcquire);
+        QVERIFY(QMetaObject::invokeMethod(manager, "renew"));
+        QCOMPARE(manager->property("acquisitions").toInt(), before + (duringAcquire ? 2 : 1));
+        QCOMPARE(manager->property("liveLeases").toInt(), 1);
+        QVariant valid;
+        QVERIFY(QMetaObject::invokeMethod(root.get(), "validLease", Q_RETURN_ARG(QVariant, valid)));
+        QVERIFY(valid.toBool());
+        preview->setProperty("active", false);
+        QCOMPARE(manager->property("liveLeases").toInt(), 0);
+    }
+
+    void quotedMediaPreviewsReacquireAfterTokenRenewal()
+    {
+        const QString fileId = "99999999-9999-4999-8999-999999999276";
+        const auto png = avatarProbePng(false);
+        const QString urn = "urn:image:" + fileId
+            + "?name=renew.png&content_type=image%2Fpng&w=96&h=64&size=230";
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        QJsonArray history;
+        auto origin = message("![renew.png](" + urn + ")", messageId);
+        origin["read"] = true; history.append(origin);
+        for (int i = 0; i < 40; ++i) {
+            auto filler = message(QString("Text row %1 keeps the original image outside the viewport.").arg(i),
+                QString("99000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')));
+            filler["created_at"] = QDateTime::fromString("2026-01-02T10:00:01Z", Qt::ISODate)
+                .addSecs(i).toString(Qt::ISODateWithMs);
+            filler["read"] = true; history.append(filler);
+        }
+        const QString quotingId = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4276";
+        auto quoting = message(QString("[Peer](urn:quote:%1)\n\nanswer").arg(messageId), quotingId);
+        quoting["created_at"] = "2026-01-02T10:02:00Z";
+        quoting["read"] = true; history.append(quoting);
+        auto metadata = avatarProbeMetadata(fileId, png);
+        metadata["stream_uuid"] = streamId; metadata["name"] = "renew.png";
+        int downloads = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const QString filePath = "/api/workspace/v1/messenger/files/" + fileId;
+            if (request.target.path() == filePath) return Response{metadata};
+            if (request.target.path() == filePath + "/actions/download") {
+                ++downloads; Response result; result.rawBody = png; result.rawContentType = "image/png";
+                return result;
+            }
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return Response{history};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("quote-renewal.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Quote renewal window teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId); QTRY_COMPARE(controller.messages().size(), 42);
+        QPointer<QQuickItem> bubble;
+        QTRY_VERIFY((bubble = item(window->contentItem(), "quoteMediaThumbnail-" + quotingId)));
+        QTRY_COMPARE(bubble->property("mediaStatus").toString(), QString("ready"));
+        QVERIFY(controller.beginReply(messageId));
+        QPointer<QQuickItem> composer;
+        QTRY_VERIFY((composer = item(window->contentItem(), "replyMediaThumbnail")));
+        QTRY_COMPARE(composer->property("mediaStatus").toString(), QString("ready"));
+        // Only the two quote frames may hold this URN: another image consumer
+        // could otherwise hide a missing acquisition by populating the cache.
+        QTRY_COMPARE(images.stats().leases, 2);
+        const auto previousDownloads = downloads;
+        const auto previousScope = images.scopeRevision();
+        const auto owner = controller.ownerKey();
+        api.setAccessToken("replacement-token");
+        QVERIFY(images.scopeRevision() > previousScope);
+        QCOMPARE(controller.ownerKey(), owner);
+        QTRY_COMPARE_WITH_TIMEOUT(images.stats().leases, 2, 2000);
+        QTRY_VERIFY(downloads > previousDownloads);
+        QVERIFY(bubble && composer);
+        QCOMPARE(item(window->contentItem(), "quoteMediaThumbnail-" + quotingId), bubble.data());
+        QCOMPARE(item(window->contentItem(), "replyMediaThumbnail"), composer.data());
+        QTRY_COMPARE(bubble->property("mediaStatus").toString(), QString("ready"));
+        QTRY_COMPARE(composer->property("mediaStatus").toString(), QString("ready"));
+    }
+
     // Exo-review round 1 finding (issue #217): a download that fails must
     // restore the text-only layout in both quote frames - no empty 48 px
     // box may remain, and the media label stays in the excerpt.
