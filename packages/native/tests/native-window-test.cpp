@@ -13863,17 +13863,20 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::addColumn<bool>("loading");
         QTest::addColumn<bool>("editing");
         QTest::addColumn<bool>("checkReads");
-        QTest::newRow("loading-draft") << true << false << false;
-        QTest::newRow("ready-draft") << false << false << false;
-        QTest::newRow("loading-edit") << true << true << false;
-        QTest::newRow("ready-edit") << false << true << false;
-        QTest::newRow("loading-visible-reads") << true << false << true;
-        QTest::newRow("ready-visible-reads") << false << false << true;
+        QTest::addColumn<bool>("checkCalls");
+        QTest::newRow("loading-draft") << true << false << false << false;
+        QTest::newRow("ready-draft") << false << false << false << false;
+        QTest::newRow("loading-edit") << true << true << false << false;
+        QTest::newRow("ready-edit") << false << true << false << false;
+        QTest::newRow("loading-visible-reads") << true << false << true << false;
+        QTest::newRow("ready-visible-reads") << false << false << true << false;
+        QTest::newRow("loading-incoming-call") << true << false << false << true;
+        QTest::newRow("ready-incoming-call") << false << false << false << true;
     }
 
     void mediaViewerIsolatesCoveredChat()
     {
-        QFETCH(bool, loading); QFETCH(bool, editing); QFETCH(bool, checkReads);
+        QFETCH(bool, loading); QFETCH(bool, editing); QFETCH(bool, checkReads); QFETCH(bool, checkCalls);
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
         const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
@@ -13970,6 +13973,28 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(viewer->items().first().toMap().value("state").toString(), QString("loading"));
         } else {
             QTRY_VERIFY(visibleItem(content, "mediaViewer-image"));
+        }
+        if (checkCalls) {
+            controller.incomingCall()->setAutoDeclineMs(600000);
+            controller.incomingCall()->setRingIntervalMs(600000);
+            controller.calls()->ingestIncomingInvite(windowInvite());
+            QTRY_VERIFY(controller.incomingCall()->visible());
+            auto *toggle = visibleItem(content, "incomingCallVideoToggle"); QVERIFY(toggle);
+            // Click the rendered control: finding the item alone would also
+            // succeed when the modal media popup obscures the incoming call.
+            click(window, toggle);
+            QVERIFY2(controller.incomingCall()->videoEnabled(windowInvite().value("messageId").toString()),
+                "The media viewer intercepted the incoming call's video toggle");
+            click(window, visibleItem(content, "incomingCallAcceptButton"));
+            QTRY_VERIFY(controller.calls()->hasActiveCall());
+            QTRY_COMPARE(controller.callWindow()->mode(), int(JitsiCallWindowController::Expanded));
+            QTRY_VERIFY(visibleItem(content, "callWindowCloseButton"));
+            click(window, visibleItem(content, "callWindowCloseButton"));
+            QTRY_VERIFY(!controller.calls()->hasActiveCall());
+            QVERIFY2(viewer->open(), "Answering and closing a call discarded the open media gallery");
+            QCOMPARE(controller.draft(), draft);
+            QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!viewer->open());
+            return;
         }
         if (checkReads) {
             QTest::qWait(400); readAnchors.clear();

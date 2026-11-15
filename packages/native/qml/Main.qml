@@ -9309,6 +9309,10 @@ ApplicationWindow {
     NativeMediaViewer {
         viewer: root.controller.mediaViewer
         colors: root.colors
+        // Calls keep precedence over media. Suspend only the popup surface,
+        // preserving the gallery and its composer/read guards until return.
+        visible: viewer.open && !root.controller.incomingCall.visible
+            && root.controller.callWindow.mode !== 1 // Expanded
         onRequestDownload: (uuid) => {
             root.downloadOwner = root.controller.ownerKey;
             root.downloadId = uuid;

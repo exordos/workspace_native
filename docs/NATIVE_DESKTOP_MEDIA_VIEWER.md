@@ -130,7 +130,11 @@ geometry. Qt owns modal pointer handling, Tab/Backtab containment and restoratio
 of the previously focused item. Keyboard `Shortcut` elements are enabled only while
 the viewer itself has active focus: Escape closes, Left/Right navigate only when
 `count > 1`. A save dialog opened above the viewer therefore owns its own keyboard
-input and Escape, then returns focus to the viewer.
+input and Escape, then returns focus to the viewer. Incoming invites and expanded
+calls keep precedence over media: `Main.qml` suspends the popup surface while
+either call surface is shown. The gallery model stays open, so its selected slot,
+composer guards and covered-read gate survive the interruption; closing the call
+returns to that gallery.
 
 While the viewer covers the conversation, the composer is read-only and its
 formatting/submit key handlers are gated. This also protects the edit buffer and
@@ -166,15 +170,21 @@ line it was measured from in the table above.
 ### Modal interaction regression (issue #185)
 
 `mediaViewerIsolatesCoveredChat` exercises the rendered application window with
-synthetic local HTTP data in six loading/ready draft, edit and incoming-read cases.
+synthetic local HTTP data in eight loading/ready draft, edit, incoming-read and
+incoming-call cases.
 It opens an inline image by mouse from a focused composer, sends real typing,
 Enter, Shift+Enter and formatting keys, checks both directions of the Tab loop and
 verifies the original text, edit mode and restored input focus after Escape. The
 ready draft case also types a filename in the nested save dialog and verifies that
 its Escape dismisses only that dialog. Incoming-message cases observe actual
 `read_up_to` requests, including the first request after the viewer closes.
+Incoming-call cases click the actual video toggle, accept the call and close its
+expanded window before returning to the same gallery. They caught the popup
+covering those controls in both loading and ready states; the same test passed
+with the original item-based viewer and passes with call precedence restored.
 
-Before the fix all six cases failed: typing changed both draft and edit buffers,
-and incoming messages were marked read under both loading and ready slots. These
+Before the input/read fix all six original cases failed: typing changed both
+draft and edit buffers, and incoming messages were marked read under both loading
+and ready slots. These
 checks use Qt's visible Linux window and fallback save dialog; production services,
 platform-native dialogs, Windows and macOS remain separate acceptance work.
