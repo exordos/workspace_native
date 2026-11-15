@@ -6635,7 +6635,9 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
         }
         m_inboxTopics.insert(streamUuid, topics);
         settle();
-        emit stateChanged();
+        const QPointer<NativeController> guard(this);
+        if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
+        if (guard) emit stateChanged();
         return true;
     }, false, settle);
 }
@@ -6696,11 +6698,11 @@ bool NativeController::inboxSlotTopicEvent(const QString &kind, const Topic &top
     if (dest == m_inboxTopics.end()) {
         // The destination slot is not hydrated: one DTO cannot stand in for
         // the complete snapshot the slot contract promises, so refetch the
-        // destination instead of fabricating a partial one. Only the open
-        // page consumes slots, so a closed inbox just leaves the row
-        // vacated; the showInbox sweep hydrates the missing destination.
+        // destination instead of fabricating a partial one. The open Inbox
+        // or active sidebar search consumes slots; otherwise the next sweep
+        // hydrates the missing destination.
         // A destination the catalog does not know leaves no row (invalidate).
-        if (m_inboxVisible)
+        if (m_inboxVisible || !m_sidebarSearchQuery.isEmpty())
             hydrateInboxStream(topic.stream);
         if (changed && m_inboxVisible) emit stateChanged();
         return changed;
@@ -7359,8 +7361,14 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #83: the folder-scoped sidebar projection follows the catalog too;
     // one notification path keeps QML bindings single-sourced.
-    connect(this, &NativeController::streamsChanged, this,
-        [this] { emit sidebarStreamsChanged(); });
+    connect(this, &NativeController::streamsChanged, this, [this] {
+        const QPointer<NativeController> guard(this);
+        emit sidebarStreamsChanged();
+        if (guard) hydrateSidebarSearchTopics();
+    });
+    connect(this, &NativeController::topicsChanged, this, [this] {
+        if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
+    });
     // #162: the call window shell follows the single-active-call store. An
     // active call opens the shell; closing the shell (close button or
     // readyToClose) ends the stored call exactly like the reference onClose.
@@ -9127,6 +9135,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             || (kind == QLatin1String("topic.updated")
                 && creationTopicDto(payload, m_session->project(), streamId, m_session->user()).has_value());
         inboxSlotTopicEvent(kind, *topic, inboxOwnsPlacement);
+        if (!openingGuard) return true;
+        if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
+        if (!openingGuard) return true;
         bool matchingOwn = false;
         if (const auto *intent = channelCreation(); intent && intent->uuid == streamId) {
             matchingOwn = kind == "topic.created" && topic->uuid == intent->defaultTopic && topic->isDefault
@@ -9447,6 +9458,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 confirmEncryptedSend(payload, it.key(), it->uuid, it->ticket, true);
             if (!guard) return true;
         }
+    }
+    // Search follows email-only directory updates and off-route topic deletion too.
+    if (!m_sidebarSearchQuery.isEmpty() && (kind == "user.updated" || kind == "topic.deleted")) {
+        const QPointer<NativeController> guard(this);
+        emit sidebarStreamsChanged();
+        if (!guard) return true;
     }
     // Unsupported domains can be deliberately skipped without blocking the common cursor.
     emit stateChanged();
@@ -10179,35 +10196,97 @@ void NativeController::requestAddFolder()
     emit folderAddRequested();
 }
 
+void NativeController::setSidebarSearchQuery(const QString &query)
+{
+    const auto normalized = query.trimmed().toLower();
+    if (normalized == m_sidebarSearchQuery) return;
+    m_sidebarSearchQuery = normalized;
+    const QPointer<NativeController> guard(this);
+    emit sidebarStreamsChanged();
+    if (guard) hydrateSidebarSearchTopics();
+}
+
+void NativeController::hydrateSidebarSearchTopics()
+{
+    if (m_sidebarSearchQuery.isEmpty() || !authenticated()) return;
+    QStringList streams;
+    for (const auto &stream : m_streams)
+        if (!stream.archived && !(stream.privateStream && isUuid(stream.directUser)))
+            streams.append(stream.uuid);
+    const QPointer<NativeController> guard(this);
+    const auto owner = creationOwnerKey();
+    const auto generation = m_api->generation();
+    for (const auto &stream : streams) {
+        hydrateInboxStream(stream);
+        if (!guard || owner != creationOwnerKey() || generation != m_api->generation()) return;
+    }
+}
+
 QVariantList NativeController::sidebarStreams() const
 {
     const auto all = streams();
+    auto scoped = all;
     const auto effective = selectedFolder();
-    for (const auto &row : m_folders)
-    {
+    for (const auto &row : m_folders) {
         if (row.uuid != effective) continue;
         // All and synthesized slots carry no server membership: no filter.
-        if (row.synthesized || row.systemType == QStringLiteral("all")) return all;
-        QVariantList scoped;
-        for (const auto &value : all)
-            if (row.streamIds.contains(value.toMap().value("id").toString())) scoped.append(value);
-        return scoped;
+        if (!row.synthesized && row.systemType != QStringLiteral("all")) {
+            scoped.clear();
+            for (const auto &value : all)
+                if (row.streamIds.contains(value.toMap().value("id").toString())) scoped.append(value);
+        }
+        break;
     }
-    return all;
+    if (m_sidebarSearchQuery.isEmpty()) return scoped;
+    const auto matches = [this](const QString &text) { return text.toLower().contains(m_sidebarSearchQuery); };
+    QVariantList result;
+    for (const auto &value : scoped) {
+        auto row = value.toMap();
+        const auto id = row.value("id").toString();
+        bool matched = matches(row.value("name").toString()) || matches(row.value("displayName").toString());
+        QVariantList matchingTopics;
+        if (row.value("isDirect").toBool()) {
+            // The verified catalog defines the pair; directory data only supplies
+            // presentation fields and never grants access to another conversation.
+            if (m_channelDirectoryOwner == creationOwnerKey())
+                for (const auto &user : {row.value("peerId").toString(), m_session->user()}) {
+                    const auto presentation = m_names.value(user);
+                    matched |= matches(presentation.name) || matches(presentation.email);
+                }
+        } else {
+            const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+                [&id](const Stream &entry) { return entry.uuid == id; });
+            const auto topics = id == m_stream && m_topicsVerified ? m_topics : m_inboxTopics.value(id);
+            for (const auto &topic : topicRows(topics, stream == m_streams.cend() ? nullptr : &*stream)) {
+                const auto name = topic.toMap().value("name").toString();
+                if (matches(name.startsWith('#') ? name : "#" + name)) matchingTopics.append(topic);
+            }
+            matched |= !matchingTopics.isEmpty();
+        }
+        if (matched) {
+            row.insert("searchTopics", matchingTopics);
+            result.append(row);
+        }
+    }
+    return result;
 }
 
 QVariantList NativeController::topics() const
 {
+    return topicRows(m_topics, currentStream());
+}
+
+QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream) const
+{
     QHash<QString, qint64> timestamps;
     for (const auto &message : m_messages) timestamps.insert(message.uuid, message.createdMicros);
-    const auto *stream = currentStream();
     const auto rank = [stream](const Topic *topic) {
         if (topic->done) return 2;
         return topic->notificationMode == "mute" || (topic->notificationMode == "default"
             && stream && stream->notificationMode == "muted") ? 1 : 0;
     };
     QVector<const Topic *> sorted;
-    for (const auto &topic : m_topics) sorted.append(&topic);
+    for (const auto &topic : topics) sorted.append(&topic);
     std::stable_sort(sorted.begin(), sorted.end(), [&](const Topic *a, const Topic *b) {
         if (rank(a) != rank(b)) return rank(a) < rank(b);
         return timestamps.value(a->lastMessage, a->updatedMicros) > timestamps.value(b->lastMessage, b->updatedMicros);
@@ -11428,6 +11507,7 @@ void NativeController::reloadSnapshot()
         const auto current = [&] { return guard && catalog == m_catalog
             && owner == creationOwnerKey() && generation == m_api->generation(); };
         if (labelsChanged) emit streamsChanged();
+        else if (!m_sidebarSearchQuery.isEmpty()) emit sidebarStreamsChanged();
         if (!current()) return false;
         emit messagesChanged();
         if (!current()) return false;

@@ -5492,6 +5492,101 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
+    void sidebarSearchMatchesTopicsAndParticipants_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("scenario");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                for (const auto &scenario : {QString("topic"), QString("hash"), QString("email"),
+                        QString("trimmed"), QString("name"), QString("order")})
+                    QTest::newRow(qPrintable(locale + "-" + mode + "-" + scenario)) << locale << mode << scenario;
+    }
+
+    void sidebarSearchMatchesTopicsAndParticipants()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(QString, scenario);
+        WindowChannelFixture fixture;
+        const QString otherStream = "91000000-0000-4000-8000-000000000001";
+        const QString otherTopic = "91000000-0000-4000-8000-000000000002";
+        auto first = windowChannel(streamId, "Engineering");
+        auto second = windowChannel(otherStream, "Support");
+        auto direct = windowChannel(windowDirectId(), "Private conversation");
+        direct["private"] = true; direct["direct_user_uuid"] = channelPeer;
+        auto planning = windowChannelTopic(topicId, streamId, "Planning alpha");
+        auto unrelated = windowChannelTopic(secondTopicId, streamId, "Unrelated"); unrelated["is_default"] = false;
+        auto planB = windowChannelTopic(otherTopic, otherStream, "Planning beta");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) return {QJsonArray{first, second, direct}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == streamId) return {QJsonArray{planning, unrelated}};
+                if (stream == otherStream) return {QJsonArray{planB}};
+                return {QJsonArray{windowChannelTopic(channelDefault, windowDirectId(), "General")}};
+            }
+            if (request.method == "GET" && path.endsWith("/stream_topics/" + topicId)) return {planning};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-search.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Sidebar search teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-search", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 3);
+        controller.setRealtimeMode(true); controller.selectStream(otherStream);
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        QPointer<QQuickItem> search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        const auto type = [&](const QByteArray &text) {
+            for (const auto key : text) QTest::keyClick(window, key);
+        };
+        const auto streamVisible = [&](const QString &id) { return visibleItem(window->contentItem(), "stream-" + id); };
+        const auto topicVisible = [&](const QString &id) { return visibleItem(window->contentItem(), "topic-" + id); };
+        if (scenario == "topic" || scenario == "hash" || scenario == "order") {
+            type(scenario == "hash" ? "#PLANNING" : scenario == "order" ? "plan" : "planning alpha");
+            QTRY_VERIFY_WITH_TIMEOUT(streamVisible(streamId), 2000);
+            QTRY_VERIFY_WITH_TIMEOUT(topicVisible(topicId), 2000);
+            QVERIFY(!topicVisible(secondTopicId)); QVERIFY(!streamVisible(windowDirectId()));
+            QCOMPARE(controller.selectedStream(), otherStream); QVERIFY(controller.selectedTopic().isEmpty());
+            if (scenario == "order") {
+                QTRY_VERIFY(streamVisible(otherStream) && topicVisible(otherTopic));
+                const bool before = streamVisible(streamId)->mapToScene({}).y() < streamVisible(otherStream)->mapToScene({}).y();
+                type("ning");
+                QTRY_VERIFY(streamVisible(streamId) && streamVisible(otherStream));
+                QCOMPARE(streamVisible(streamId)->mapToScene({}).y() < streamVisible(otherStream)->mapToScene({}).y(), before);
+            }
+            click(window, topicVisible(topicId));
+            QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
+        } else {
+            type(scenario == "email" ? "ALICE@EXAMPLE.INVALID" : scenario == "trimmed" ? "  ENGINEERING  " : "ALICE");
+            const auto expected = scenario == "trimmed" ? streamId : windowDirectId();
+            QTRY_VERIFY_WITH_TIMEOUT(streamVisible(expected), 2000);
+            QVERIFY(!streamVisible(otherStream));
+            QVERIFY(!streamVisible(scenario == "trimmed" ? windowDirectId() : streamId));
+        }
+        click(window, item(window->contentItem(), "clearSidebarSearch"));
+        QTRY_COMPARE(search->property("text").toString(), QString{});
+        QTRY_VERIFY(streamVisible(streamId) && streamVisible(otherStream) && streamVisible(windowDirectId()));
+        click(window, search); type("no such chat");
+        QTRY_VERIFY(!streamVisible(streamId) && !streamVisible(otherStream) && !streamVisible(windowDirectId()));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        for (const auto &request : fixture.server.requests)
+            if (request.target.path().startsWith("/api/workspace/")) QCOMPARE(request.method, QByteArray("GET"));
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
     void composerFormattingDefaultsRespectCompositionRepeatAndOtherTargets()
     {
         WindowChannelFixture fixture; fixture.sourceScene = true;

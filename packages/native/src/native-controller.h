@@ -342,6 +342,7 @@ public:
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
+    Q_INVOKABLE void setSidebarSearchQuery(const QString &query);
     QString selectedFolder() const;
     QVariantList topics() const;
     bool topicResolving() const { return m_topicOpening.active; }
@@ -1631,6 +1632,9 @@ private:
     // carries the active/passive counters; the inbox keeps its own per-stream
     // topic snapshots so the reference topic rows exist for streams whose
     // topic lists the sidebar has not hydrated (design doc hydration note).
+    QString m_sidebarSearchQuery;
+    void hydrateSidebarSearchTopics();
+    QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream) const;
     bool m_inboxVisible = false;
     QHash<QString, QVector<Topic>> m_inboxTopics;
     QHash<QString, quint64> m_inboxHydrating; // stream -> hydration token (#64)

@@ -523,6 +523,8 @@ ApplicationWindow {
     readonly property bool aggregateConversation: root.controller.conversationKind === "stream"
     readonly property var aggregateTopics: root.controller.topics.filter(topic => String(topic.name || "").trim().length > 0)
     property string sidebarQuery: ""
+    readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
+    onNormalizedSidebarQueryChanged: root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
     property date calendarDate: new Date()
     property string menuMessageId: ""
     // Snapshot of the body selection at the moment the bubble menu opened
@@ -2849,7 +2851,7 @@ ApplicationWindow {
                 x: 8
                 y: 64
                 width: parent.width - 16
-                height: root.sidebarQuery.length ? 0 : 32
+                height: root.normalizedSidebarQuery.length ? 0 : 32
                 visible: height > 0
                 spacing: 8
                 Repeater {
@@ -2909,7 +2911,7 @@ ApplicationWindow {
                 id: streamList
                 objectName: "streamList"
                 anchors.top: parent.top
-                anchors.topMargin: root.sidebarQuery.length ? 60 : 104
+                anchors.topMargin: root.normalizedSidebarQuery.length ? 60 : 104
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -2936,7 +2938,6 @@ ApplicationWindow {
                 delegate: Column {
                     id: streamDelegate
                     required property var modelData
-                    readonly property bool matches: root.sidebarQuery.length === 0 || root.streamDisplayName(modelData).toLocaleLowerCase().indexOf(root.sidebarQuery.toLocaleLowerCase()) >= 0
                     // workspace_ui 61dacef sidebar-message-preview.ui.tsx: sender in the
                     // sidebar-sender token + ": " + body in text-secondary, one 20 px line.
                     readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
@@ -2945,8 +2946,6 @@ ApplicationWindow {
                         return sender.length && previewBody.length ? sender + ": " : ""
                     }
                     width: streamList.width
-                    height: matches ? implicitHeight : 0
-                    visible: matches
                     spacing: 2
                     NativeButton {
                         id: streamButton
@@ -3104,7 +3103,9 @@ ApplicationWindow {
                         }
                     }
                     Repeater {
-                        model: root.controller.selectedStream === streamDelegate.modelData.id ? root.controller.topics : []
+                        model: root.normalizedSidebarQuery.length
+                            ? (streamDelegate.modelData.searchTopics || [])
+                            : root.controller.selectedStream === streamDelegate.modelData.id ? root.controller.topics : []
                         delegate: NativeButton {
                             id: topicButton
                             required property var modelData
@@ -3120,7 +3121,13 @@ ApplicationWindow {
                             padding: 0
                             horizontalPadding: 0
                             verticalPadding: 0
-                            onClicked: { root.controller.closeDrafts(); root.controller.selectTopic(modelData.id); }
+                            onClicked: {
+                                root.controller.closeDrafts();
+                                if (root.normalizedSidebarQuery.length)
+                                    root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
+                                else
+                                    root.controller.selectTopic(modelData.id);
+                            }
                             background: Rectangle {
                                 radius: 6
                                 color: root.controller.selectedTopic === topicButton.modelData.id ? root.colors["card-bg-active"] : topicButton.hovered ? root.colors["sidebar-item-hover"] : root.colors["card-bg"]
