@@ -613,28 +613,38 @@ void NativeController::refreshChatLocalKeys()
     const auto announcements = earliestKeyAnnouncements(m_messages);
     const auto listed = m_chatKeys->listKeys(m_chatVaultLease, m_stream);
     if (listed.failure != NativeChatKeyVault::Failure::None) { loadFailure(); return; }
+    // Issue #244 review 4576750798: the stream's current key equals the staged
+    // generation only after the announcement landed and the stream update
+    // verified - the most direct echo, so that pin resolves right here. Every
+    // reveal also re-arms the announcement GET recheck for unresolved pins.
+    // Review 4577108887: the surviving pins decorate their rows (pending and
+    // dormant flags) so the key screens can offer the recovery affordances.
+    const auto pinned = m_chatKeys->rotationStages(m_chatVaultLease, m_stream);
+    if (pinned.failure == NativeChatKeyVault::Failure::None && isUuid(current))
+        for (const auto &stage : pinned.values)
+            if (stage.key == current) m_chatKeys->clearRotationStage(m_chatVaultLease, {m_stream, stage.key});
+    QHash<QString, NativeChatKeyVault::RotationStage> pins;
+    if (pinned.failure == NativeChatKeyVault::Failure::None)
+        for (const auto &stage : pinned.values)
+            if (stage.key != current) pins.insert(stage.key, stage);
     QVariantList rows;
     for (const auto &entry : listed.values) {
         const auto key = entry.key.toLower();
+        const auto pin = pins.constFind(key);
         rows.append(QVariantMap{{"keyUuid", key},
             {"isCurrent", isUuid(current) && key == current},
             {"addedAt", entry.receivedAt > 0
                 ? QDateTime::fromMSecsSinceEpoch(entry.receivedAt).toString(Qt::ISODateWithMs) : QString{}},
-            {"announcedAt", announcements.value(key)}});
+            {"announcedAt", announcements.value(key)},
+            {"rotationPending", pin != pins.constEnd()},
+            {"rotationDormant", pin != pins.constEnd() && pin->dispatched
+                && pin->missingEvidence >= maximumRotationStageMissingObservations}});
     }
     // The reference sorts current-first, stable within the group; the vault
     // enumerates newest received first, so the projection owns the order.
     std::stable_sort(rows.begin(), rows.end(), [](const QVariant &left, const QVariant &right) {
         return left.toMap().value("isCurrent").toBool() && !right.toMap().value("isCurrent").toBool();
     });
-    // Issue #244 review 4576750798: the stream's current key equals the staged
-    // generation only after the announcement landed and the stream update
-    // verified - the most direct echo, so that pin resolves right here. Every
-    // reveal also re-arms the announcement GET recheck for unresolved pins.
-    const auto pinned = m_chatKeys->rotationStages(m_chatVaultLease, m_stream);
-    if (pinned.failure == NativeChatKeyVault::Failure::None && isUuid(current))
-        for (const auto &stage : pinned.values)
-            if (stage.key == current) m_chatKeys->clearRotationStage(m_chatVaultLease, {m_stream, stage.key});
     m_chatLocalKeysInventory = {{"state", QStringLiteral("ready")}, {"error", QString{}}, {"keys", rows}};
     emit stateChanged();
     maybeResolveRotationStages();
@@ -657,6 +667,7 @@ void NativeController::reissueChatKey()
         if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
         const auto failReissue = [this] {
             m_chatReissueBusy = false;
+            m_chatReissueKey.clear();
             m_chatKeyActionError = tr("Could not reissue the encryption key. Please try again.");
             emit stateChanged();
         };
@@ -680,12 +691,36 @@ void NativeController::reissueChatKey()
         const auto announcement = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
         const NativeChatKeyVault::RotationStage stage{announcement, m_stream, newKey, false,
             QDateTime::currentMSecsSinceEpoch()};
-        if (m_chatKeys->putRotationStage(m_chatVaultLease, stage) != NativeChatKeyVault::Failure::None)
-        { failReissue(); return; }
+        const auto stagedStage = m_chatKeys->putRotationStage(m_chatVaultLease, stage);
+        if (stagedStage != NativeChatKeyVault::Failure::None)
+        {
+            // A full rotation-stage budget is its own case (review 4577108887):
+            // every durable slot is held by an unresolved announcement, and
+            // the way out is the user-facing recovery flow (unresolved
+            // inventory + check/discard), not a silent generic failure.
+            m_chatReissueBusy = false;
+            m_chatKeyActionError = stagedStage == NativeChatKeyVault::Failure::Capacity
+                ? tr("All rotation announcement slots are held by unresolved rotations. "
+                     "Resolve one of them and try again.")
+                : tr("Could not reissue the encryption key. Please try again.");
+            emit stateChanged(); return;
+        }
         const QJsonObject payload{{"kind", "key_announced"}, {"key_uuid", newKey}};
         const QJsonObject body{{"uuid", announcement},
             {"stream_uuid", m_stream}, {"topic_uuid", m_chatAuthority.defaultTopic}, {"payload", payload}};
-        m_chatKeys->markRotationStageDispatched(m_chatVaultLease, address);
+        // Review 4577108882: the marker write is the gate in front of the POST.
+        // If it fails we have not dispatched and will not dispatch, so the
+        // stage is provably never-dispatched right here and is retired with
+        // the local failure - posting anyway would leave an undispatched pin
+        // that a GET-404 recheck may clear while this POST is in flight,
+        // exposing its key to deletion mid-announcement.
+        if (m_chatKeys->markRotationStageDispatched(m_chatVaultLease, address)
+            != NativeChatKeyVault::Failure::None)
+        {
+            m_chatKeys->clearRotationStage(m_chatVaultLease, address);
+            failReissue(); return;
+        }
+        m_chatReissueKey = newKey;
         request("POST", messenger + "/messages/", body, {}, [this, address, epoch, selection](const ApiResult &result) {
             // Resolve the durable mark from the outcome (review 4576750798): an
             // accepted announcement or a definite 4xx refusal clears the pin; any
@@ -696,8 +731,9 @@ void NativeController::reissueChatKey()
                     || (result.status >= 400 && result.status < 500 && result.status != 408 && result.status != 429);
                 if (definitive) m_chatKeys->clearRotationStage(m_chatVaultLease, address);
             }
-            if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
+            if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; m_chatReissueKey.clear(); return; }
             m_chatReissueBusy = false;
+            m_chatReissueKey.clear();
             if (!result.ok()) {
                 m_chatKeyActionError = tr("Could not reissue the encryption key. Please try again.");
                 emit stateChanged();
@@ -769,14 +805,197 @@ void NativeController::resolveRotationStagePass(const NativeChatKeyVault::Lease 
         const bool echoed = parsed && parsed->kind == QLatin1String("key_announced") && parsed->crypto
             && parsed->crypto->keyUuid.compare(stage.key, Qt::CaseInsensitive) == 0
             && parsed->stream.compare(stage.stream, Qt::CaseInsensitive) == 0;
-        // Absence after dispatch is NOT terminal: the pin stays until a later
-        // recheck resolves or the user resolves it. Only a stage that never
-        // dispatched (crash before the POST left the process) is safe to clear.
-        if (m_chatKeys && m_chatKeys->available() && sameChatLease(m_chatKeys->lease(), lease)
-            && (echoed || (result.status == 404 && !stage.dispatched)))
+        const bool vaultLive = m_chatKeys && m_chatKeys->available()
+            && sameChatLease(m_chatKeys->lease(), lease);
+        // Review 4577108882: a scan snapshot is not proof. Absence may only
+        // clear a pin whose DURABLE record still says dispatch was never
+        // attempted (crash before the POST left any process, or the marker
+        // write failed and we provably did not dispatch) - so re-read the
+        // record when the answer lands: a marker that landed while this GET
+        // was in flight means the POST is live and the pin must stand.
+        bool provablyUndispatched = false;
+        bool durablyDispatched = stage.dispatched;
+        int durableEvidence = stage.missingEvidence;
+        if (vaultLive && result.status == 404 && !stage.dispatched) {
+            const auto fresh = m_chatKeys->readRotationStage(lease, {stage.stream, stage.key});
+            provablyUndispatched = fresh.failure == NativeChatKeyVault::Failure::None
+                && fresh.value && !fresh.value->dispatched;
+            durablyDispatched = fresh.failure == NativeChatKeyVault::Failure::None
+                && fresh.value && fresh.value->dispatched;
+            if (durablyDispatched) durableEvidence = fresh.value->missingEvidence;
+        }
+        if (vaultLive && (echoed || provablyUndispatched))
             m_chatKeys->clearRotationStage(lease, {stage.stream, stage.key});
+        else if (vaultLive && result.status == 404 && durablyDispatched) {
+            // Review 4577108887: absence after dispatch is NOT terminal - the
+            // announcement may still land arbitrarily late and the pinned key
+            // may be the only copy - so the pin stands and the conclusive
+            // absence is only accumulated as durable evidence. At saturation
+            // the stage is DORMANT: quarantined inside the bounded stage
+            // budget (key never destroyed), still re-checked on later scans,
+            // and user-resolvable through checkRotationStage()/
+            // discardRotationStage() - which hold the terminal authority
+            // automatic recovery may never claim from absence alone.
+            const auto evidence = qMin(durableEvidence + 1, maximumRotationStageMissingObservations);
+            if (evidence != durableEvidence)
+                m_chatKeys->setRotationStageMissingEvidence(lease, {stage.stream, stage.key}, evidence);
+        } else if (vaultLive && result.ok() && !echoed && stage.missingEvidence > 0) {
+            // The announcement message answers under its uuid (2xx) but for
+            // another generation: the stored absence is void, exactly as a
+            // serving stream voids it in the accepted create-stage protocol.
+            m_chatKeys->setRotationStageMissingEvidence(lease, {stage.stream, stage.key}, 0);
+        }
+        // Any other answer (transport error, 5xx) proves neither presence
+        // nor absence: the durable record is left untouched.
         resolveRotationStagePass(lease, std::move(stages));
     });
+}
+
+// Issue #244 review 4577108887: recovery protocol for rotation stages whose
+// announcement never lands (see native-controller.h). The user holds the
+// terminal authority that automatic recovery may never claim from absence:
+// the inventory below is identity and bookkeeping only - announcement uuid,
+// stream, staged key uuid, timestamps, dispatch phase, absence evidence and
+// the dormant flag - never key material. Stages with a live reissue POST are
+// not listed: that POST's own response resolves them.
+QJsonArray NativeController::unresolvedRotationStages() const
+{
+    QJsonArray rows;
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available()) return rows;
+    const auto stages = m_chatKeys->rotationStages(m_chatKeys->lease());
+    if (stages.failure != NativeChatKeyVault::Failure::None) return rows;
+    for (const auto &stage : stages.values) {
+        if (m_chatReissueBusy && stage.stream == m_stream.toLower() && stage.key == m_chatReissueKey)
+            continue;
+        rows.append(QJsonObject{{"announcement", stage.announcement}, {"stream", stage.stream},
+            {"keyUuid", stage.key}, {"createdAt", static_cast<double>(stage.createdAt)},
+            {"dispatchAttempted", stage.dispatched}, {"missingEvidence", stage.missingEvidence},
+            {"dormant", stage.dispatched
+                && stage.missingEvidence >= maximumRotationStageMissingObservations}});
+    }
+    return rows;
+}
+
+void NativeController::checkRotationStage(const QString &streamUuid, const QString &keyUuid)
+{
+    const auto stream = streamUuid.toLower();
+    const auto key = keyUuid.toLower();
+    const auto settle = [this, stream, key](const QString &outcome, const QString &message) {
+        m_rotationStageResolving.remove(stream + QLatin1Char('|') + key);
+        emit rotationStageResolved(stream, key, outcome, message);
+        emit stateChanged();
+    };
+    const auto kept = QStringLiteral("unresolved");
+    if (!isUuid(stream) || !isUuid(key)) { settle(kept, tr("The rotation stage identity is invalid.")); return; }
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available()) {
+        settle(kept, tr("Encrypted chat keys are not available right now.")); return; }
+    if (m_rotationStageResolving.contains(stream + QLatin1Char('|') + key)) return; // one check per stage; the running one reports
+    if (m_chatReissueBusy && stream == m_stream.toLower() && key == m_chatReissueKey) {
+        settle(kept, tr("This rotation announcement is still in progress. Check its status later.")); return; }
+    const auto lease = m_chatKeys->lease();
+    const auto pin = m_chatKeys->readRotationStage(lease, {stream, key});
+    if (pin.failure != NativeChatKeyVault::Failure::None || !pin.value) {
+        settle(kept, tr("This rotation stage is no longer unresolved.")); return; }
+    if (!pin.value->dispatched) {
+        // Two-phase dispatch contract: a durably-undispatched record proves
+        // no POST ever left this process (the marker gates the dispatch and
+        // a failed marker retires the stage), so this stage can be released
+        // without any GET - the same rule the absence recheck applies.
+        const auto retired = m_chatKeys->clearRotationStage(lease, {stream, key})
+            == NativeChatKeyVault::Failure::None;
+        settle(retired ? QStringLiteral("released") : kept, retired
+            ? tr("The rotation announcement never reached the server and was retired.")
+            : tr("The rotation stage could not be resolved right now."));
+        return;
+    }
+    const auto announcement = pin.value->announcement;
+    m_rotationStageResolving.insert(stream + QLatin1Char('|') + key);
+    request("GET", messenger + "/messages/" + announcement, {}, {},
+        [this, lease, stream, key, kept, settle](const ApiResult &result) {
+        if (!authenticated() || !m_chatKeys || !m_chatKeys->available()
+            || !sameChatLease(m_chatKeys->lease(), lease)) {
+            settle(kept, tr("Encrypted chat keys are not available right now.")); return; }
+        const auto parsed = result.ok()
+            ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
+        const bool echoed = parsed && parsed->kind == QLatin1String("key_announced") && parsed->crypto
+            && parsed->crypto->keyUuid.compare(key, Qt::CaseInsensitive) == 0
+            && parsed->stream.compare(stream, Qt::CaseInsensitive) == 0;
+        if (echoed) {
+            // Positive proof: the announcement landed after all, so the pin
+            // frees and the staged key returns to the regular rules (it is
+            // kept - a check can only re-adopt, never discard).
+            const auto cleared = m_chatKeys->clearRotationStage(lease, {stream, key})
+                == NativeChatKeyVault::Failure::None;
+            settle(cleared ? QStringLiteral("resolved") : kept, cleared
+                ? tr("The rotation announcement landed. The staged key is no longer pending.")
+                : tr("The rotation stage could not be resolved right now."));
+            return;
+        }
+        if (result.status == 404) {
+            // Absence proves nothing terminal - the POST may still land late
+            // and the pinned key may be the only copy. Evidence accumulates
+            // (dormant saturation), stage and key stay byte-for-byte intact.
+            const auto fresh = m_chatKeys->readRotationStage(lease, {stream, key});
+            const int evidence = fresh.failure == NativeChatKeyVault::Failure::None && fresh.value
+                ? fresh.value->missingEvidence : 0;
+            const auto saturated = qMin(evidence + 1, maximumRotationStageMissingObservations);
+            if (saturated != evidence)
+                m_chatKeys->setRotationStageMissingEvidence(lease, {stream, key}, saturated);
+            settle(kept, tr("The rotation announcement was not found yet. The staged key was kept.")); return;
+        }
+        if (result.ok()) {
+            // The announcement message exists but confirms another generation:
+            // not terminal for this stage, but the stored absence is void -
+            // the message is being served, exactly as in the create protocol.
+            m_chatKeys->setRotationStageMissingEvidence(lease, {stream, key}, 0);
+            settle(kept, tr("The rotation announcement exists but did not confirm this key. The stage was kept."));
+            return;
+        }
+        settle(kept, tr("The server did not answer conclusively. The staged key was kept."));
+    });
+}
+
+void NativeController::discardRotationStage(const QString &streamUuid, const QString &keyUuid, bool confirmed)
+{
+    // Review 4577108887: the only way to stop awaiting an unresolved rotation
+    // without proof is the INFORMED EXPLICIT decision: a check can never
+    // prove a terminal negative (absence is never proof that the POST cannot
+    // still land), so the caller carries confirmed == true from a dialog that
+    // names the consequence. An unconfirmed call is refused and changes
+    // nothing. A discard frees the stage pin only - the staged key itself is
+    // never destroyed here; it returns to the regular deletion rules, and
+    // only a separate key deletion can lose the copy the warning names.
+    const auto stream = streamUuid.toLower();
+    const auto key = keyUuid.toLower();
+    const auto settle = [this, stream, key](const QString &outcome, const QString &message) {
+        m_rotationStageResolving.remove(stream + QLatin1Char('|') + key);
+        emit rotationStageResolved(stream, key, outcome, message);
+        emit stateChanged();
+    };
+    const auto kept = QStringLiteral("unresolved");
+    if (!isUuid(stream) || !isUuid(key)) { settle(kept, tr("The rotation stage identity is invalid.")); return; }
+    if (!confirmed) {
+        settle(kept, tr("The rotation stage was kept: discarding requires an explicit confirmation, "
+            "because an announcement that lands later could leave that rotation permanently unreadable."));
+        return;
+    }
+    if (!authenticated() || !m_chatKeys || !m_chatKeys->available()) {
+        settle(kept, tr("Encrypted chat keys are not available right now.")); return; }
+    if (m_rotationStageResolving.contains(stream + QLatin1Char('|') + key)) {
+        // A check is in flight: let it settle first so a re-adopting verify
+        // can never race a user discard into a lost pin.
+        settle(kept, tr("A check for this rotation is already running. Try again when it finishes.")); return; }
+    if (m_chatReissueBusy && stream == m_stream.toLower() && key == m_chatReissueKey) {
+        settle(kept, tr("This rotation announcement is still in progress. Check its status later.")); return; }
+    const auto lease = m_chatKeys->lease();
+    const auto pin = m_chatKeys->readRotationStage(lease, {stream, key});
+    if (pin.failure != NativeChatKeyVault::Failure::None || !pin.value) {
+        settle(kept, tr("This rotation stage is no longer unresolved.")); return; }
+    const auto cleared = m_chatKeys->clearRotationStage(lease, {stream, key})
+        == NativeChatKeyVault::Failure::None;
+    settle(cleared ? QStringLiteral("discarded") : kept, cleared
+        ? tr("The rotation stage was discarded. If its announcement lands later, this device may never read that rotation.")
+        : tr("The rotation stage could not be resolved right now."));
 }
 
 void NativeController::startChatRequest(const QString &keyUuid, bool checking, bool retrying)

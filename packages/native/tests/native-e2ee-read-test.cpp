@@ -10564,6 +10564,118 @@ private slots:
         QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, historicalKey}).value.bytes.size(), 0);
     }
 
+    // R3 review 4577108888: the debug probes that rode the delete-confirmation
+    // handlers must never ship - the compiled screen carries no probe logging.
+    void uiEncryptedChatDeleteConfirmationLeavesNoDebugProbes() {
+        QFile qml(QStringLiteral(":/workspace/qml/NativeEncryptedChatInfo.qml"));
+        QVERIFY2(qml.open(QIODevice::ReadOnly),
+            "the key screen must be reachable through the packaged QML resources");
+        const auto text = QString::fromUtf8(qml.readAll());
+        QVERIFY2(!text.contains(QLatin1String("PROBE-DELETE-CLICK"))
+            && !text.contains(QLatin1String("PROBE-DIALOG-VISIBLE")),
+            "the delete-confirmation click and visibility handlers must not log debug probes");
+    }
+
+    // R3 review 4577108887: a dormant rotation pin is user-resolvable on the
+    // key screens. The saved-keys row marks the pinned key, the details
+    // screen shows the rotation block with its recovery affordances, and the
+    // informed discard routes through the confirmation naming the
+    // irreversibility: Cancel keeps the pin, Discard frees the pin only (the
+    // staged key itself survives and returns to the regular rules).
+    void uiEncryptedChatKeyScreenRotationStageDiscard() {
+        ProtectedChatInfoScene scene("en", "dark", true, 2, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat rotation-stage window did not close", __FILE__, __LINE__);
+        });
+        const QString pendingKey = QStringLiteral("b0b0b0b0-0000-4000-8000-0000000000b0");
+        const QString announcement = QStringLiteral("a4a4a4a4-4444-4444-8444-4444444444a4");
+        QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, pendingKey}, QByteArray(32, 'k'), 0),
+            NativeChatKeyVault::Failure::None);
+        QCOMPARE(scene.f.vault.putRotationStage(scene.f.vault.lease(), {announcement, streamId,
+            pendingKey, false, QDateTime::currentMSecsSinceEpoch()}), NativeChatKeyVault::Failure::None);
+        QCOMPARE(scene.f.vault.markRotationStageDispatched(scene.f.vault.lease(), {streamId, pendingKey}),
+            NativeChatKeyVault::Failure::None);
+        QCOMPARE(scene.f.vault.setRotationStageMissingEvidence(scene.f.vault.lease(),
+            {streamId, pendingKey}, 5), NativeChatKeyVault::Failure::None);
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeysToggle"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeysList"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyRowRotation-" + pendingKey),
+            QString("Announcement unresolved"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + pendingKey));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        QVERIFY(scene.require("encryptedChatRotationStageBlock")->isVisible());
+        QCOMPARE(scene.text("encryptedChatRotationStageStatus"), QString("Announcement unresolved"));
+        QVERIFY(scene.require("encryptedChatRotationCheckButton")->isVisible());
+        QVERIFY(scene.require("encryptedChatRotationDiscardButton")->isVisible());
+        const auto dialog = [&] {
+            return scene.window->findChild<QObject *>("encryptedChatRotationDiscardConfirm");
+        };
+        const auto dialogOpen = [&] {
+            auto *popup = dialog();
+            return popup && popup->property("visible").toBool();
+        };
+        const auto dialogText = [&](const QString &name) {
+            auto *popup = dialog();
+            auto *label = popup ? popup->findChild<QObject *>(name) : nullptr;
+            return label ? label->property("text").toString() : QString();
+        };
+        const auto dialogButton = [&](const QString &name) -> QQuickItem * {
+            auto *popup = dialog();
+            return popup ? popup->findChild<QQuickItem *>(name) : nullptr;
+        };
+        // The discard button opens the informed confirmation - nothing has
+        // been touched yet, the pin is fully intact. The details screen
+        // settles onto its slot with a slide animation; the mapped hit point
+        // can still be stale or uncovered for a beat after the screen opens
+        // (same-window popup dispatch is timing-sensitive in offscreen-ci),
+        // so re-assert the click until the confirmation surfaces.
+        auto *discardButton = scene.require("encryptedChatRotationDiscardButton");
+        QVERIFY(QTest::qWaitFor([&] {
+            for (int attempt = 0; attempt < 3 && !dialogOpen(); ++attempt) {
+                if (attempt)
+                    QTest::qWait(150);
+                encryptedUiClick(discardButton);
+            }
+            return dialogOpen();
+        }, 8000));
+        QTRY_VERIFY(dialogOpen());
+        QCOMPARE(dialogText("encryptedChatRotationDiscardConfirmTitle"),
+            QString("Discard the pending rotation?"));
+        QVERIFY2(dialogText("encryptedChatRotationDiscardConfirmDescription")
+            .contains("cannot be undone"),
+            "the confirmation must name the irreversibility the user accepts");
+        QCOMPARE(scene.f.vault.readRotationStage(scene.f.vault.lease(), {streamId, pendingKey}).failure,
+            NativeChatKeyVault::Failure::None);
+        // Cancel keeps the pin.
+        encryptedUiClick(dialogButton("encryptedChatRotationDiscardConfirmCancel"));
+        QTRY_VERIFY(!dialogOpen());
+        QCOMPARE(scene.f.vault.readRotationStage(scene.f.vault.lease(), {streamId, pendingKey}).failure,
+            NativeChatKeyVault::Failure::None);
+        // The confirmed discard frees the pin and only the pin: the staged
+        // key stays byte-for-byte on the device and the rotation block
+        // retires with the pin.
+        encryptedUiClick(scene.require("encryptedChatRotationDiscardButton"));
+        QTRY_VERIFY(dialogOpen());
+        encryptedUiClick(dialogButton("encryptedChatRotationDiscardConfirmDiscard"));
+        QVERIFY(QTest::qWaitFor([&] {
+            return scene.f.vault.readRotationStage(scene.f.vault.lease(), {streamId, pendingKey}).failure
+                == NativeChatKeyVault::Failure::MissingKey;
+        }, 5000));
+        QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, pendingKey}).value.bytes.size(), 32);
+        // The rotation block retires with the pin (the item lookup only
+        // surfaces visible items), and the screen stays on the key details.
+        QTRY_VERIFY(!scene.item("encryptedChatRotationStageBlock"));
+        QVERIFY(scene.item("encryptedChatLocalKeyScreen"));
+    }
+
     void uiEncryptedChatKeyScreenSourceGeometry_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
     void uiEncryptedChatKeyScreenSourceGeometry() {
         QFETCH(QString, locale); QFETCH(QString, mode);

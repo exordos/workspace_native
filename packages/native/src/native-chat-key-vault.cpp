@@ -933,7 +933,8 @@ namespace {
 QByteArray encodeRotationStage(const NativeChatKeyVault::RotationStage &stage)
 {
     return encode({{"announcement", stage.announcement}, {"stream", stage.stream}, {"key", stage.key},
-        {"dispatched", stage.dispatched ? 1 : 0}, {"createdAt", stage.createdAt}});
+        {"dispatched", stage.dispatched ? 1 : 0}, {"createdAt", stage.createdAt},
+        {"missingEvidence", stage.missingEvidence}});
 }
 
 std::optional<NativeChatKeyVault::RotationStage> decodeRotationStage(const QByteArray &bytes)
@@ -941,10 +942,14 @@ std::optional<NativeChatKeyVault::RotationStage> decodeRotationStage(const QByte
     const auto object = QJsonDocument::fromJson(bytes).object();
     const auto created = object.value("createdAt").toDouble(-1);
     const auto dispatched = object.value("dispatched").toDouble(-1);
-    if (created < 0 || created != std::floor(created) || (dispatched != 0 && dispatched != 1)) return {};
+    // Records written before review 4577108887 carry no absence counter; the
+    // absent field decodes to zero evidence, which is exactly their state.
+    const auto evidence = object.value("missingEvidence").toDouble(0);
+    if (created < 0 || created != std::floor(created) || (dispatched != 0 && dispatched != 1)
+        || evidence < 0 || evidence != std::floor(evidence) || evidence > 1'000'000) return {};
     NativeChatKeyVault::RotationStage stage{object.value("announcement").toString().toLower(),
         object.value("stream").toString().toLower(), object.value("key").toString().toLower(),
-        dispatched == 1, qint64(created)};
+        dispatched == 1, qint64(created), int(evidence)};
     if (!isUuid(stage.announcement) || !isUuid(stage.stream) || !isUuid(stage.key)) return {};
     return stage;
 }
@@ -1060,6 +1065,24 @@ Failure NativeChatKeyVault::markRotationStageDispatched(const Lease &value, cons
     if (result == Failure::None && !stage) result = Failure::MissingKey;
     if (result == Failure::None && !stage->dispatched) {
         stage->dispatched = true;
+        result = writeRecord(record, encodeRotationStage(*stage));
+    }
+    return finishTransaction(result);
+}
+
+Failure NativeChatKeyVault::setRotationStageMissingEvidence(const Lease &value, const Address &address,
+    int evidence)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    if (evidence < 0) return Failure::InvalidKey;
+    const auto record = rotationStageAddress(address);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    Failure result = Failure::None;
+    auto stage = readRotationStageRecord(address, result);
+    if (result == Failure::None && !stage) result = Failure::MissingKey;
+    if (result == Failure::None && stage->missingEvidence != evidence) {
+        stage->missingEvidence = evidence;
         result = writeRecord(record, encodeRotationStage(*stage));
     }
     return finishTransaction(result);

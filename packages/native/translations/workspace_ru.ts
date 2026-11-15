@@ -2160,6 +2160,62 @@
             <source>This key is still being announced. It cannot be deleted yet.</source>
             <translation>Ключ ещё объявляется в чате. Пока его удалить нельзя.</translation>
         </message>
+        <message>
+            <source>All rotation announcement slots are held by unresolved rotations. Resolve one of them and try again.</source>
+            <translation>Все слоты объявлений о ротации заняты неразрешёнными ротациями. Разрешите одну из них и повторите попытку.</translation>
+        </message>
+        <message>
+            <source>The rotation stage identity is invalid.</source>
+            <translation>Недопустимый идентификатор этапа ротации.</translation>
+        </message>
+        <message>
+            <source>Encrypted chat keys are not available right now.</source>
+            <translation>Ключи шифрования чата сейчас недоступны.</translation>
+        </message>
+        <message>
+            <source>This rotation announcement is still in progress. Check its status later.</source>
+            <translation>Объявление этой ротации ещё выполняется. Проверьте статус позже.</translation>
+        </message>
+        <message>
+            <source>This rotation stage is no longer unresolved.</source>
+            <translation>Этот этап ротации больше не является неразрешённым.</translation>
+        </message>
+        <message>
+            <source>The rotation announcement never reached the server and was retired.</source>
+            <translation>Объявление о ротации так и не было отправлено на сервер и снято.</translation>
+        </message>
+        <message>
+            <source>The rotation stage could not be resolved right now.</source>
+            <translation>Не удалось разрешить этап ротации сейчас.</translation>
+        </message>
+        <message>
+            <source>The rotation announcement landed. The staged key is no longer pending.</source>
+            <translation>Объявление о ротации доставлено. Сохранённый ключ больше не ожидает.</translation>
+        </message>
+        <message>
+            <source>The rotation announcement was not found yet. The staged key was kept.</source>
+            <translation>Объявление о ротации пока не найдено. Сохранённый ключ оставлен на устройстве.</translation>
+        </message>
+        <message>
+            <source>The rotation announcement exists but did not confirm this key. The stage was kept.</source>
+            <translation>Объявление о ротации существует, но не подтверждает этот ключ. Этап сохранён.</translation>
+        </message>
+        <message>
+            <source>The server did not answer conclusively. The staged key was kept.</source>
+            <translation>Сервер ответил неоднозначно. Сохранённый ключ оставлен на устройстве.</translation>
+        </message>
+        <message>
+            <source>The rotation stage was kept: discarding requires an explicit confirmation, because an announcement that lands later could leave that rotation permanently unreadable.</source>
+            <translation>Этап ротации сохранён: отмена требует явного подтверждения, потому что доставленное позже объявление может сделать эту ротацию навсегда нечитаемой.</translation>
+        </message>
+        <message>
+            <source>A check for this rotation is already running. Try again when it finishes.</source>
+            <translation>Проверка этой ротации уже выполняется. Повторите попытку, когда она завершится.</translation>
+        </message>
+        <message>
+            <source>The rotation stage was discarded. If its announcement lands later, this device may never read that rotation.</source>
+            <translation>Этап ротации отменён. Если его объявление будет доставлено позже, это устройство может никогда не прочитать ту ротацию.</translation>
+        </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
@@ -3801,6 +3857,34 @@
         <message>
             <source>No saved keys for this chat on this device.</source>
             <translation>На этом устройстве нет сохранённых ключей этого чата.</translation>
+        </message>
+        <message>
+            <source>Announcement in flight</source>
+            <translation>Объявление отправлено</translation>
+        </message>
+        <message>
+            <source>Announcement unresolved</source>
+            <translation>Объявление не разрешено</translation>
+        </message>
+        <message>
+            <source>Announcing…</source>
+            <translation>Объявляется…</translation>
+        </message>
+        <message>
+            <source>Check announcement</source>
+            <translation>Проверить объявление</translation>
+        </message>
+        <message>
+            <source>Discard rotation</source>
+            <translation>Отменить ротацию</translation>
+        </message>
+        <message>
+            <source>Discard the pending rotation?</source>
+            <translation>Отменить ожидающую ротацию?</translation>
+        </message>
+        <message>
+            <source>The rotation announcement may still land later. If it does, this device may never be able to read that rotation. This discard cannot be undone.</source>
+            <translation>Объявление о ротации ещё может быть доставлено. Если это произойдёт, это устройство, возможно, никогда не сможет прочитать эту ротацию. Отмену нельзя отменить.</translation>
         </message>
         <message>
             <source>Not found in loaded history</source>

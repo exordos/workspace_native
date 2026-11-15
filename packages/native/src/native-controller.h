@@ -19,6 +19,7 @@
 #include <QHash>
 #include <QLocale>
 #include <QIODevice>
+#include <QJsonArray>
 #include <QSet>
 #include <QStringList>
 #include <QQueue>
@@ -230,6 +231,22 @@ public:
     Q_INVOKABLE void refreshChatLocalKeys();
     Q_INVOKABLE void reissueChatKey();
     Q_INVOKABLE void deleteChatLocalKey(const QString &keyUuid);
+    // Issue #244 review 4577108887: recovery protocol for rotation stages
+    // whose announcement never lands. A dispatch-attempted stage whose GET
+    // rechecks keep answering "absent" saturates its durable absence
+    // counter and becomes DORMANT: the staged key stays quarantined (never
+    // destroyed) and keeps its stage-budget slot, because absence alone is
+    // never proof that a dispatched POST can no longer land. What automatic
+    // recovery may never decide, the user may: unresolvedRotationStages()
+    // lists the device's pending stages (identity and bookkeeping only,
+    // never key material); checkRotationStage() re-checks one and re-adopts
+    // it when the announcement proves to exist (positive proof frees the
+    // pin); discardRotationStage() is the informed explicit decision that
+    // frees the pin without any proof, and requires confirmed == true.
+    Q_INVOKABLE QJsonArray unresolvedRotationStages() const;
+    Q_INVOKABLE void checkRotationStage(const QString &streamUuid, const QString &keyUuid);
+    Q_INVOKABLE void discardRotationStage(const QString &streamUuid, const QString &keyUuid,
+        bool confirmed);
     // Joined-style date label shared by the key screens (profileDetails'
     // joined rule: "MMM d, yyyy" en / "d MMM yyyy г." ru == formatDateJoined).
     Q_INVOKABLE static QString formatChatKeyDate(const QString &isoDate, const QString &localeName);
@@ -640,6 +657,11 @@ public:
 
 signals:
     void chatKeyStoreOpenRequested();
+    // Issue #244 review 4577108887: settles a user-invoked rotation-stage
+    // check/discard with the outcome ("resolved", "released", "discarded"
+    // or "unresolved") and a user-facing message naming what happened.
+    void rotationStageResolved(const QString &streamUuid, const QString &keyUuid,
+        const QString &outcome, const QString &message);
     void decryptRetryStateChanged();
     void archivedChatsChanged();
     void stateChanged();
@@ -783,6 +805,16 @@ private:
     bool m_chatReissueBusy = false;
     bool m_rotationResolveActive = false;
     QString m_chatKeyActionError;
+    // Issue #244 review 4577108887: the key whose rotation POST is currently
+    // in flight (excluded from the unresolved inventory, guarded against
+    // user resolve/discard races) and the set of "stream|key" stage ids with
+    // a user check in flight (one check per stage at a time).
+    QString m_chatReissueKey;
+    QSet<QString> m_rotationStageResolving;
+    // Definitive-absence observations that saturate a dispatched rotation
+    // stage into the dormant quarantine (mirrors the accepted create-stage
+    // protocol of #234: bounded, never key-destroying).
+    static constexpr int maximumRotationStageMissingObservations = 5;
     quint64 m_chatEpoch = 0, m_chatApiGeneration = 0, m_chatCatalog = 0;
     quint64 m_chatOperation = 0, m_chatAccessRevision = 0;
     QSet<QString> m_chatReadableStreams;

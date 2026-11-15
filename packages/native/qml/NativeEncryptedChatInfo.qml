@@ -25,6 +25,11 @@ Item {
     property string keyUuid: ""
     // The reference collapsible starts collapsed (LocalKeys useState(false)).
     property bool localKeysExpanded: false
+    // Issue #244 review 4577108887: the settled outcome message of the last
+    // rotation-stage check/discard, shown under the rotation block of the
+    // key it belongs to.
+    property string rotationStageMessage: ""
+    property string rotationStageMessageKey: ""
     signal screenChange(string screen)
     signal localKeyOpen(string keyUuid)
     // The member add affordance routes to the shared add-members dialog through
@@ -71,6 +76,15 @@ Item {
             page.watchedStream = id
             if (id.length > 0 && page.visible)
                 page.refresh()
+        }
+        // Issue #244 review 4577108887: report how a rotation-stage check or
+        // discard settled, and re-read the inventory when the decision was
+        // terminal (the freed pin repaints the row).
+        function onRotationStageResolved(streamUuid, keyUuid, outcome, message) {
+            page.rotationStageMessage = String(message)
+            page.rotationStageMessageKey = String(keyUuid)
+            if (String(outcome) !== "unresolved")
+                page.controller.refreshChatLocalKeys()
         }
     }
 
@@ -1121,7 +1135,7 @@ Item {
                             required property var modelData
                             objectName: "encryptedChatLocalKeyRow-" + String(modelData.keyUuid)
                             width: parent.width
-                            height: 50
+                            height: modelData.rotationPending === true ? 68 : 50
                             padding: 0
                             hoverEnabled: true
                             Accessible.name: qsTr("Saved key") + ": " + String(modelData.keyUuid)
@@ -1172,6 +1186,25 @@ Item {
                                         lineHeightMode: Text.FixedHeight; lineHeight: 16
                                         elide: Text.ElideRight
                                         color: page.colors["text-muted"]
+                                    }
+                                    // Issue #244 review 4577108887: a row whose
+                                    // rotation announcement is still pinned is
+                                    // marked; a dormant (saturated-absence) pin
+                                    // says so and offers its recovery on the
+                                    // key details screen.
+                                    Text {
+                                        objectName: "encryptedChatLocalKeyRowRotation-" + String(localKeyRowButton.modelData.keyUuid)
+                                        visible: localKeyRowButton.modelData.rotationPending === true
+                                        width: parent.width
+                                        height: visible ? 16 : 0
+                                        text: localKeyRowButton.modelData.rotationDormant === true
+                                            ? qsTr("Announcement unresolved") : qsTr("Announcing…")
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight; lineHeight: 16
+                                        elide: Text.ElideRight
+                                        color: localKeyRowButton.modelData.rotationDormant === true
+                                            ? page.colors["notice-base"] : page.colors["text-muted"]
                                     }
                                 }
                                 NativeIconButton {
@@ -1407,6 +1440,86 @@ Item {
                     wrapMode: Text.Wrap
                     color: page.colors["text-muted"]
                 }
+                // Issue #244 review 4577108887: rotation-stage recovery for a
+                // saved key whose key_announced announcement is still pinned.
+                // Check re-reads the announcement and frees the pin only on
+                // positive proof (the announcement exists and confirms this
+                // key); absence is never terminal. Discard is the informed
+                // explicit decision that frees the pin without proof, gated
+                // by a confirmation naming the unreadability it can cause.
+                Column {
+                    objectName: "encryptedChatRotationStageBlock"
+                    visible: page.localKeyRow && page.localKeyRow.rotationPending === true
+                    width: parent.width
+                    spacing: 8
+                    Text {
+                        objectName: "encryptedChatRotationStageStatus"
+                        width: parent.width
+                        text: page.localKeyRow && page.localKeyRow.rotationDormant === true
+                            ? qsTr("Announcement unresolved") : qsTr("Announcement in flight")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        color: page.colors["text-muted"]
+                    }
+                    Text {
+                        objectName: "encryptedChatRotationStageMessage"
+                        visible: page.rotationStageMessageKey === page.keyUuid
+                            && page.rotationStageMessage.length > 0
+                        width: parent.width
+                        text: page.rotationStageMessage
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                        color: page.colors["text-primary"]
+                    }
+                    Button {
+                        objectName: "encryptedChatRotationCheckButton"
+                        width: parent.width
+                        height: 36
+                        padding: 0
+                        hoverEnabled: true
+                        Accessible.name: qsTr("Check announcement")
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Check announcement")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: page.colors["accent"]
+                        }
+                        background: Rectangle {
+                            radius: 8
+                            color: "transparent"
+                            border.width: 1
+                            border.color: page.colors["accent"]
+                        }
+                        onClicked: page.controller.checkRotationStage(page.currentStreamId(), page.keyUuid)
+                    }
+                    Button {
+                        objectName: "encryptedChatRotationDiscardButton"
+                        visible: page.localKeyRow && page.localKeyRow.rotationDormant === true
+                        width: parent.width
+                        height: 36
+                        padding: 0
+                        hoverEnabled: true
+                        Accessible.name: qsTr("Discard rotation")
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Discard rotation")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: page.colors["notice-base"]
+                        }
+                        background: Rectangle {
+                            radius: 8
+                            color: parent.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                            border.width: 1
+                            border.color: page.colors["notice-base"]
+                        }
+                        onClicked: rotationDiscardConfirm.open()
+                    }
+                }
                 Button {
                     id: deleteLocalKeyButton
                     objectName: "encryptedChatDeleteLocalKeyButton"
@@ -1431,12 +1544,11 @@ Item {
                     // button through the shared confirmation dialog; deleting a
                     // local key may drop the only copy of a historical key, so
                     // the dialog naming that consequence gates the action.
-                    onClicked: { console.log("PROBE-DELETE-CLICK"); deleteLocalKeyConfirm.open() }
+                    onClicked: deleteLocalKeyConfirm.open()
                 }
                 Dialog {
                     id: deleteLocalKeyConfirm
                     objectName: "encryptedChatDeleteLocalKeyConfirm"
-                    onVisibleChanged: console.log("PROBE-DIALOG-VISIBLE", visible)
                     parent: Overlay.overlay
                     anchors.centerIn: parent
                     width: Math.min(360, page.width - 48)
@@ -1515,6 +1627,95 @@ Item {
                                 }
                                 background: Rectangle { radius: 8; color: page.colors["card-bg-active"] }
                                 onClicked: deleteLocalKeyConfirm.close()
+                            }
+                        }
+                    }
+                }
+                // Issue #244 review 4577108887: the informed explicit discard.
+                // Absence of the announcement proves nothing terminal, so only
+                // this confirmed decision may free a dormant pin without
+                // proof; the text names the irreversibility the user accepts.
+                Dialog {
+                    id: rotationDiscardConfirm
+                    objectName: "encryptedChatRotationDiscardConfirm"
+                    parent: Overlay.overlay
+                    anchors.centerIn: parent
+                    width: Math.min(360, page.width - 48)
+                    modal: true
+                    dim: true
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    Overlay.modal: Rectangle { color: "#80000000" }
+                    background: Rectangle {
+                        radius: 10
+                        color: page.colors["bg-elevated"]
+                        border.color: page.colors["border-subtle"]
+                    }
+                    contentItem: Column {
+                        spacing: 12
+                        Text {
+                            objectName: "encryptedChatRotationDiscardConfirmTitle"
+                            width: parent.width
+                            text: qsTr("Discard the pending rotation?")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-primary"]
+                        }
+                        Text {
+                            objectName: "encryptedChatRotationDiscardConfirmDescription"
+                            width: parent.width
+                            text: qsTr("The rotation announcement may still land later. If it does, this device may never be able to read that rotation. This discard cannot be undone.")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            color: page.colors["text-muted"]
+                        }
+                        Row {
+                            spacing: 8
+                            layoutDirection: Qt.RightToLeft
+                            Button {
+                                objectName: "encryptedChatRotationDiscardConfirmDiscard"
+                                height: 36
+                                padding: 0
+                                leftPadding: 14; rightPadding: 14
+                                Accessible.name: qsTr("Discard rotation")
+                                contentItem: Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Discard rotation")
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    font.weight: Font.Medium
+                                    color: page.colors["notice-base"]
+                                }
+                                background: Rectangle {
+                                    radius: 8
+                                    color: parent.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                                    border.width: 1
+                                    border.color: page.colors["notice-base"]
+                                }
+                                onClicked: {
+                                    rotationDiscardConfirm.close()
+                                    page.controller.discardRotationStage(page.currentStreamId(), page.keyUuid, true)
+                                }
+                            }
+                            Button {
+                                objectName: "encryptedChatRotationDiscardConfirmCancel"
+                                height: 36
+                                padding: 0
+                                leftPadding: 14; rightPadding: 14
+                                Accessible.name: qsTr("Cancel")
+                                contentItem: Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Cancel")
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 14
+                                    font.weight: Font.Medium
+                                    color: page.colors["text-primary"]
+                                }
+                                background: Rectangle { radius: 8; color: page.colors["card-bg-active"] }
+                                onClicked: rotationDiscardConfirm.close()
                             }
                         }
                     }

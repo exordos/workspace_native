@@ -13,7 +13,7 @@ namespace workspace {
 
 // Dedicated durable secrets, separate from the evictable messenger cache.
 // Device/generation keys, pending requests and atomic completion receipts.
-class NativeChatKeyVault final : public QObject {
+class NativeChatKeyVault : public QObject {
     Q_OBJECT
 public:
     enum class Failure {
@@ -153,6 +153,13 @@ public:
         QString key;          // the staged new generation
         bool dispatched = false; // set once the POST has left the process
         qint64 createdAt = 0;
+        // Issue #244 review 4577108887: durable count of conclusive absences
+        // (definitive 404s) observed for a dispatch-attempted stage across
+        // recheck scans. Absence alone is never terminal - the announcement
+        // may still land - so the counter only saturates into a dormant
+        // quarantine the user can see, check or discard; it never destroys
+        // the staged key.
+        int missingEvidence = 0;
     };
     struct RotationStageResult { Failure failure = Failure::Unavailable; std::optional<RotationStage> value; };
     struct RotationStageListResult { Failure failure = Failure::Unavailable; QVector<RotationStage> values; };
@@ -160,7 +167,15 @@ public:
     RotationStageResult readRotationStage(const Lease &lease, const Address &address);
     // Enumerate the pinned stages; an empty stream lists the whole device.
     RotationStageListResult rotationStages(const Lease &lease, const QString &stream = {});
-    Failure markRotationStageDispatched(const Lease &lease, const Address &address);
+    // markRotationStageDispatched is virtual so regression tests (issue #244
+    // review 4577108882) can force a marker-write failure and prove the
+    // reissue aborts before dispatch. Override-only: production code calls
+    // through the base class.
+    virtual Failure markRotationStageDispatched(const Lease &lease, const Address &address);
+    // Durable accumulation of conclusive-absence observations for a stage
+    // (review 4577108887); the value is bookkeeping only and never key
+    // material. Returns MissingKey when the stage record is gone.
+    Failure setRotationStageMissingEvidence(const Lease &lease, const Address &address, int evidence);
     Failure clearRotationStage(const Lease &lease, const Address &address);
 
     static constexpr qsizetype MaximumRecordBytes = 2048;
