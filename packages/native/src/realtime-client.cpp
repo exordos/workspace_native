@@ -217,6 +217,18 @@ void RealtimeClient::resynchronize()
     resume();
 }
 
+void RealtimeClient::reconnectNow(const QString &reason)
+{
+    Q_UNUSED(reason);
+    if (!m_wanted)
+        return;
+    // Resume path: re-establish the link with no backoff delay, keeping the
+    // saved cursors so catch-up resumes where it left off. This is the native
+    // counterpart of the reference manager.reconnectAll("power_resume").
+    suspend();
+    resume();
+}
+
 void RealtimeClient::cursorExpired() { resynchronize(); }
 
 void RealtimeClient::nudge()

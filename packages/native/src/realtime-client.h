@@ -24,6 +24,7 @@ public:
     void acknowledgeSnapshot();
     void retrySnapshot();
     void resynchronize();
+    void reconnectNow(const QString &reason);
     void nudge();
     quint64 acknowledgedEpoch() const { return m_epoch; }
     QString epochGeneration() const { return m_epochGeneration; }

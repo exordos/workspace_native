@@ -13,6 +13,7 @@
 #include "native-updater.h"
 #include "native-preferences.h"
 #include "realtime-client.h"
+#include "power-watcher.h"
 #include "session.h"
 #include "session-vault.h"
 
@@ -119,6 +120,12 @@ int main(int argc, char **argv)
     controller.useFiles(&files);
     workspace::RealtimeClient realtime(&api, &session);
     controller.useRealtime(&realtime);
+    // Session-bus power observer: resume reconnects realtime at once, and a
+    // battery source widens the presence heartbeat (issue #78). With no
+    // logind/UPower on the bus both paths silently stay at mains behaviour.
+    workspace::PowerWatcher powerWatcher;
+    controller.setPowerWatcher(&powerWatcher);
+    powerWatcher.start();
     QQmlApplicationEngine engine;
     workspace::NativeUpdater updater;
     workspace::loadNativeUi(engine, &controller, &preferences, &avatars, &updater, &messageImages);

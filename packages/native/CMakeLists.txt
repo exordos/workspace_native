@@ -48,6 +48,7 @@ add_library(workspace-native-core STATIC
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
+    src/power-watcher.cpp src/power-watcher.h
     src/native-controller.cpp src/native-controller.h)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
@@ -58,8 +59,8 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
     "Incoming call invite UI variant: large | compact (invalid falls back to large)")
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
-target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql)
-target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto Qt6::DBus)
+target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
+target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 # The notification attention adapter asks the window manager for attention
 # over raw xcb on Linux; without the headers it degrades to a silent no-op.
 include(CheckIncludeFileCXX)
