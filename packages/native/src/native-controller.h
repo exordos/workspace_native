@@ -1002,6 +1002,7 @@ private:
         qint64 createdAt = 0; int missingEvidence = 0; };
     void maybeResolveChannelCreateStages();
     void resolveChannelCreateStages(const QString &token);
+    void interruptChannelStageOperations();
     void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token,
                                        bool unresolved = false);
     void scheduleChannelStageRecoveryRetry(const QString &token);
@@ -1012,6 +1013,14 @@ private:
     // check is currently in flight — at most one resolve per attempt at a
     // time; a second call for the same attempt is ignored while one runs.
     QSet<QString> m_channelStageResolving;
+    // Issue #293: operation tickets for the user-invokable checks. A completion
+    // of an interrupted (generation-retired) check must never settle away a
+    // newer check's marker; only the ticket-owning operation may clear it.
+    QHash<QString, quint64> m_channelStageTickets;
+    quint64 m_channelStageTicketCounter = 0;
+    // Issue #293: true while the automatic recovery pass waits on a stage GET;
+    // an API-generation bump that retires that GET re-arms the abandoned pass.
+    bool m_channelStageRecoveryPassInFlight = false;
     static constexpr int maximumChannelStageRecoveryRetries = 5;
     static constexpr int channelStageRecoveryRetryIntervalMs = 1000;
     // Review finding 4575117269: after the fast window is exhausted recovery
