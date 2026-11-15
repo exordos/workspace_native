@@ -982,6 +982,62 @@ private slots:
         QTRY_VERIFY(switched); QCOMPARE(vault.read(old, Address).failure, Failure::Superseded);
         QVERIFY(vault.read(vault.lease(), Address).value.bytes.isEmpty());
     }
+
+    // Issue #298: an informed discard is the terminal authority and completes
+    // synchronously, while the automatic recovery scan may hold a stage
+    // snapshot across its GET. When a definitive absence answer lands after
+    // the discard, the durable record is already gone and the late bookkeeping
+    // must honor the documented contract (missing stage: MissingKey) as a
+    // pure no-op: never dereference a missing record, never resurrect or
+    // mis-account a discarded stage. A write that finds a record still works
+    // exactly as before.
+    void discardFencesLateCreateStageEvidenceWrites()
+    {
+        QTemporaryDir directory; Secrets backend; Vault vault(directory.path(), &backend); open(vault);
+        const auto attempt = uuid().toLower();
+        Vault::CreateStage stage{attempt, uuid().toLower(), QByteArray(32, 'c'), 1000, true};
+        QCOMPARE(vault.putCreateStage(vault.lease(), stage), Failure::None);
+        stage.clearSecrets();
+        QCOMPARE(vault.clearCreateStage(vault.lease(), attempt), Failure::None); // the informed discard
+        // A definitive absence answered after the discard: MissingKey no-op.
+        QCOMPARE(vault.setCreateStageMissingEvidence(vault.lease(), attempt, 1), Failure::MissingKey);
+        QCOMPARE(vault.readCreateStage(vault.lease(), attempt).failure, Failure::MissingKey);
+        auto listed = vault.createStages(vault.lease());
+        QCOMPARE(listed.failure, Failure::None); QVERIFY(listed.values.isEmpty()); // never resurrected
+        // The two-phase marker write is fenced the same way.
+        QCOMPARE(vault.markCreateStageDispatchAttempted(vault.lease(), attempt), Failure::MissingKey);
+        listed = vault.createStages(vault.lease());
+        QCOMPARE(listed.failure, Failure::None); QVERIFY(listed.values.isEmpty());
+        // The budget and later evidence bookkeeping stay intact: a live stage
+        // still takes updates exactly as before.
+        const auto liveAttempt = uuid().toLower();
+        Vault::CreateStage live{liveAttempt, uuid().toLower(), QByteArray(32, 'd'), 2000, true};
+        QCOMPARE(vault.putCreateStage(vault.lease(), live), Failure::None);
+        live.clearSecrets();
+        QCOMPARE(vault.setCreateStageMissingEvidence(vault.lease(), liveAttempt, 2), Failure::None);
+        auto stored = vault.readCreateStage(vault.lease(), liveAttempt);
+        QCOMPARE(stored.failure, Failure::None); QCOMPARE(stored.value->missingEvidence, 2);
+        stored.value->clearSecrets();
+    }
+
+    // Issue #298 audit: the rotation-stage twin (#244) must keep the same
+    // fence - a discard that removed the pin makes late evidence
+    // bookkeeping a MissingKey no-op instead of touching a missing record.
+    void discardFencesLateRotationStageEvidenceWrites()
+    {
+        QTemporaryDir directory; Secrets backend; Vault vault(directory.path(), &backend); open(vault);
+        const auto stream = uuid().toLower(), key = uuid().toLower();
+        Vault::RotationStage stage{uuid().toLower(), stream, key, true, 1000, 2};
+        QCOMPARE(vault.putRotationStage(vault.lease(), stage), Failure::None);
+        QCOMPARE(vault.clearRotationStage(vault.lease(), {stream, key}), Failure::None); // the informed discard
+        QCOMPARE(vault.setRotationStageMissingEvidence(vault.lease(), {stream, key}, 3), Failure::MissingKey);
+        QCOMPARE(vault.readRotationStage(vault.lease(), {stream, key}).failure, Failure::MissingKey);
+        auto listed = vault.rotationStages(vault.lease(), QString{});
+        QCOMPARE(listed.failure, Failure::None); QVERIFY(listed.values.isEmpty()); // never resurrected
+        QCOMPARE(vault.markRotationStageDispatched(vault.lease(), {stream, key}), Failure::MissingKey);
+        listed = vault.rotationStages(vault.lease(), QString{});
+        QCOMPARE(listed.failure, Failure::None); QVERIFY(listed.values.isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(NativeChatKeyVaultTest)
