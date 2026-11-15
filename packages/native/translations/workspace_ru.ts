@@ -1368,6 +1368,10 @@
             <translation>Не удалось прочитать выбранный файл.</translation>
         </message>
         <message>
+            <source>The image file type does not match its contents.</source>
+            <translation>Тип файла изображения не соответствует его содержимому.</translation>
+        </message>
+        <message>
             <source>Cannot read the complete selected file.</source>
             <translation>Не удалось прочитать выбранный файл целиком.</translation>
         </message>

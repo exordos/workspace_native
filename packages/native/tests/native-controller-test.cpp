@@ -10422,6 +10422,24 @@ private slots:
         QVERIFY(!fixture.controller.messages().first().toMap().value("read").toBool());
     }
 
+    void mislabeledImageNeverUploadsOrChangesTheDraft()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile input(directory.filePath("wrong.png"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("not a PNG image"); input.close();
+        int uploads = 0;
+        fixture.files = [&](const Request &) { ++uploads; return Response{QJsonObject{}, 503}; };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Keep this draft");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(uploads, 0);
+        QVERIFY(fixture.controller.error().contains("image file type does not match"));
+        QCOMPARE(fixture.controller.draft(), QString("Keep this draft"));
+        QVERIFY(fixture.controller.canSend());
+    }
+
     void uploadNoticeDoesNotHideDownloadProgressOrSavedDestination()
     {
         Fixture fixture;

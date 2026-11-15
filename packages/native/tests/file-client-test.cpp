@@ -7,8 +7,10 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QHttpMultiPart>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMimeDatabase>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -90,6 +92,14 @@ class FileClientTest : public QObject {
     Q_OBJECT
 private slots:
     void multipartUpload();
+    void imageUploadSignatureValidation_data();
+    void imageUploadSignatureValidation();
+    void imageUploadNameValidation_data();
+    void imageUploadNameValidation();
+    void imageUploadKeepsValidatedBytes_data();
+    void imageUploadKeepsValidatedBytes();
+    void imageUploadLifetime_data();
+    void imageUploadLifetime();
     void downloadAclAndAtomicCommit();
 #ifdef Q_OS_UNIX
     void privateStagingPublicationRetainsDirectoryIdentity();
@@ -148,6 +158,160 @@ void FileClientTest::multipartUpload()
     QVERIFY(request.contains("name=\"name\"\r\n\r\nattachment.bin"));
     QVERIFY(request.contains(Bytes));
     QVERIFY(!request.contains(source.toUtf8()));
+}
+
+void FileClientTest::imageUploadSignatureValidation_data()
+{
+    QTest::addColumn<QString>("name"); QTest::addColumn<QByteArray>("bytes");
+    QTest::addColumn<bool>("accepted");
+    for (const auto *extension : {"png", "jpg", "jpeg", "gif", "webp"})
+        QTest::newRow(extension) << QString("bad.%1").arg(extension) << QByteArray("plain text, not an image") << false;
+    const auto png = QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=");
+    QTest::newRow("png-as-jpeg") << QString("wrong.jpg") << png << false;
+    QTest::newRow("valid-png") << QString("valid.PNG") << png << true;
+    QTest::newRow("jpeg-signature") << QString("photo.jpg") << QByteArray::fromHex("ffd8ffe000104a464946000101") << true;
+    QTest::newRow("gif87-signature") << QString("photo.gif") << QByteArray("GIF87a1234567") << true;
+    QTest::newRow("gif89-signature") << QString("photo.gif") << QByteArray("GIF89a1234567") << true;
+    QTest::newRow("webp-signature") << QString("photo.webp") << QByteArray("RIFF1234WEBP") << true;
+    QTest::newRow("riff-wave-is-not-webp") << QString("audio.webp") << QByteArray("RIFF1234WAVE") << false;
+    QTest::newRow("short-png-signature") << QString("short.png") << QByteArray::fromHex("89504e47") << false;
+    QTest::newRow("ordinary-text") << QString("note.txt") << QByteArray("ordinary attachment") << true;
+}
+
+void FileClientTest::imageUploadSignatureValidation()
+{
+    QFETCH(QString, name); QFETCH(QByteArray, bytes); QFETCH(bool, accepted);
+    Server server;
+    const auto contentType = QMimeDatabase().mimeTypeForData(bytes).name();
+    server.handler = [&](QTcpSocket *socket, const QByteArray &) {
+        auto object = QJsonDocument::fromJson(metadata(bytes)).object();
+        object["name"] = name; object["content_type"] = contentType;
+        Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 201);
+    };
+    ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
+    QTemporaryDir directory;
+    const auto path = directory.filePath(name); write(path, bytes);
+    FileResult result; bool done = false;
+    client.upload(path, StreamUuid, name, [&](const FileResult &value) { result = value; done = true; });
+    QTRY_VERIFY(done);
+    QCOMPARE(result.ok(), accepted);
+    QCOMPARE(server.requests.size(), accepted ? 1 : 0);
+    if (accepted) QVERIFY(result.checksumVerified);
+    else QVERIFY(result.error.contains("image file type does not match"));
+}
+
+void FileClientTest::imageUploadNameValidation_data()
+{
+    QTest::addColumn<QString>("localName"); QTest::addColumn<QString>("uploadName");
+    QTest::addColumn<QByteArray>("bytes"); QTest::addColumn<bool>("accepted");
+    const auto png = QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=");
+    QTest::newRow("binary-renamed-png") << QString("source.bin") << QString("attachment.png") << Bytes << false;
+    QTest::newRow("text-renamed-png") << QString("source.txt") << QString("attachment.png") << QByteArray("plain text") << false;
+    QTest::newRow("png-renamed-jpeg") << QString("source.png") << QString("attachment.jpg") << png << false;
+    QTest::newRow("png-renamed-from-binary") << QString("source.bin") << QString("attachment.png") << png << true;
+    QTest::newRow("local-image-still-validated") << QString("source.png") << QString("attachment.txt") << QByteArray("plain text") << false;
+}
+
+void FileClientTest::imageUploadNameValidation()
+{
+    QFETCH(QString, localName); QFETCH(QString, uploadName);
+    QFETCH(QByteArray, bytes); QFETCH(bool, accepted);
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &) {
+        auto object = QJsonDocument::fromJson(metadata(bytes)).object();
+        object["name"] = uploadName;
+        object["content_type"] = QMimeDatabase().mimeTypeForData(bytes).name();
+        Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 201);
+    };
+    ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
+    QTemporaryDir directory;
+    const auto path = directory.filePath(localName); write(path, bytes);
+    FileResult result; bool done = false;
+    client.upload(path, StreamUuid, uploadName, [&](const FileResult &value) { result = value; done = true; });
+    QTRY_VERIFY(done);
+    QCOMPARE(result.ok(), accepted);
+    QCOMPARE(server.requests.size(), accepted ? 1 : 0);
+    if (accepted) QVERIFY(result.checksumVerified);
+    else QVERIFY(result.error.contains("image file type does not match"));
+}
+
+void FileClientTest::imageUploadKeepsValidatedBytes_data()
+{
+    QTest::addColumn<int>("size");
+    QTest::newRow("multiple-chunks") << 128 * 1024;
+    QTest::newRow("exact-25-MiB") << 25 * 1024 * 1024;
+}
+
+void FileClientTest::imageUploadKeepsValidatedBytes()
+{
+    QFETCH(int, size);
+    QByteArray original(size, 'x');
+    original.replace(0, 8, QByteArray::fromHex("89504e470d0a1a0a"));
+    const auto changed = QByteArray(original.size(), 'y');
+    Server server;
+    QByteArray uploaded;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        const auto multipartStart = request.indexOf("\r\n\r\n") + 4;
+        const auto binaryStart = request.indexOf("\r\n\r\n", multipartStart) + 4;
+        const auto binaryEnd = request.indexOf("\r\n--", binaryStart);
+        uploaded = request.mid(binaryStart, binaryEnd - binaryStart);
+        auto object = QJsonDocument::fromJson(metadata(uploaded)).object();
+        object["name"] = "attachment.png";
+        object["content_type"] = QMimeDatabase().mimeTypeForData(uploaded).name();
+        Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 201);
+    };
+    ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
+    QTemporaryDir directory;
+    const auto path = directory.filePath("source.png"); write(path, original);
+    FileResult result; bool done = false;
+    QElapsedTimer captureTimer; captureTimer.start();
+    client.upload(path, StreamUuid, "attachment.png", [&](const FileResult &value) { result = value; done = true; });
+    qInfo() << "Image capture and upload preparation:" << size << "bytes in" << captureTimer.elapsed() << "ms";
+    // Change the same file after synchronous validation/hash, before the event loop
+    // lets the multipart request read it. No production hook or timing race is needed.
+    write(path, changed);
+    QTRY_VERIFY(done);
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(read(path), changed);
+    QCOMPARE(uploaded, original);
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    QVERIFY(result.checksumVerified);
+}
+
+void FileClientTest::imageUploadLifetime_data()
+{
+    QTest::addColumn<QString>("scenario");
+    for (const auto *scenario : {"cancel", "session", "destroy-client", "destroy-api", "deadline"})
+        QTest::newRow(scenario) << QString::fromLatin1(scenario);
+}
+
+void FileClientTest::imageUploadLifetime()
+{
+    QFETCH(QString, scenario);
+    Server server;
+    QPointer<QTcpSocket> held;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &) { held = socket; };
+    auto api = std::make_unique<ApiClient>(nullptr, true); authorize(*api, server);
+    FileTransferLimits limits; limits.timeoutMs = scenario == "deadline" ? 250 : 5000;
+    auto client = std::make_unique<FileClient>(api.get(), nullptr, limits);
+    QTemporaryDir directory;
+    const auto path = directory.filePath("source.png");
+    write(path, QByteArray::fromHex("89504e470d0a1a0a") + QByteArray(128 * 1024, 'x'));
+    int completions = 0;
+    const auto id = client->upload(path, StreamUuid, "attachment.png", [&](const FileResult &result) {
+        QVERIFY(!result.ok()); ++completions;
+    });
+    QPointer<QHttpMultiPart> multipart = api->findChild<QHttpMultiPart *>();
+    QVERIFY(multipart);
+    QTRY_VERIFY(held);
+    if (scenario == "cancel") client->cancel(id);
+    else if (scenario == "session") api->clearSession();
+    else if (scenario == "destroy-client") client.reset();
+    else if (scenario == "destroy-api") api.reset();
+    QTRY_VERIFY(multipart.isNull()); // Its owned upload snapshot is released too.
+    QTRY_VERIFY(!held || held->state() == QAbstractSocket::UnconnectedState);
+    QCOMPARE(completions, scenario == "destroy-client" ? 0 : 1);
+    QCOMPARE(server.requests.size(), 1);
 }
 
 void FileClientTest::downloadAclAndAtomicCommit()

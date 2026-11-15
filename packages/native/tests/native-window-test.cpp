@@ -13481,6 +13481,58 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!panel->property("visible").toBool());
     }
 
+    void mislabeledImageShowsALocalizedAttachmentError_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void mislabeledImageShowsALocalizedAttachmentError()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        int uploads = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) {
+                ++uploads; return Response{QJsonObject{}, 503};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        const auto path = directory.filePath("wrong.png");
+        QFile input(path); QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write("This is not a PNG image"); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("image-validation.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Image validation window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Preserved draft");
+        controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!controller.fileBusy());
+        QCOMPARE(uploads, 0);
+        const auto detail = locale == "ru"
+            ? QString::fromUtf8("Тип файла изображения не соответствует его содержимому.")
+            : QString("The image file type does not match its contents.");
+        QVERIFY2(controller.error().contains(detail), qPrintable(controller.error()));
+        QTRY_VERIFY(hasVisibleText(window->contentItem(), controller.error()));
+        QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(controller.canSend());
+    }
+
     void quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()
     {
         QTemporaryDir directory;
