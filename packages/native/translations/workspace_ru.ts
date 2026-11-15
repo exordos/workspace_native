@@ -82,6 +82,7 @@
         <message><source>Hide extra topics</source><translation>Скрыть лишние темы</translation></message>
         <message><source>Show completed topics (%1)</source><translation>Показать завершённые темы (%1)</translation></message>
         <message><source>Show more topics (%1)</source><translation>Показать ещё темы (%1)</translation></message>
+        <message><source>Could not open this profile. It may be unavailable or you may not have access.</source><translation>Не удалось открыть профиль. Возможно, он недоступен или у вас нет доступа.</translation></message>
         <message><source>File</source><translation>Файл</translation></message>
         <message><source>Image</source><translation>Изображение</translation></message>
         <message><source>Video</source><translation>Видео</translation></message>

@@ -15872,6 +15872,327 @@ private slots:
         QCOMPARE(modelMessage(c, row.value("uuid").toString()).value("content").toString(), QString("Newer live body"));
     }
 
+    void profileShareRejectsInvalidServerUser_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const auto *field : {"valid", "uuid", "project", "avatar", "status_text", "date"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+
+    void profileShareRejectsInvalidServerUser()
+    {
+        QFETCH(QString, field);
+        Fixture f;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        QJsonObject row{{"uuid", target}, {"username", "link-user"}, {"first_name", "Link"},
+            {"source", "iam"}, {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        if (field == "uuid") row["uuid"] = channelMemberA;
+        else if (field == "project") row["project_id"] = secondTopicId;
+        else if (field == "avatar") row["avatar"] = 123;
+        else if (field == "status_text") row["status_text"] = QJsonObject{};
+        else if (field == "date") row["last_ping_at"] = "not-a-date";
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests; return {row};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE(requests, 1);
+        if (field == "valid") {
+            QTRY_COMPARE(opened.size(), 1);
+            QCOMPARE(opened.at(0).at(0).toString(), target);
+            QVERIFY(!f.controller.profileLinkFailed());
+        } else {
+            QTRY_VERIFY(f.controller.profileLinkFailed());
+            QCOMPARE(opened.size(), 0);
+        }
+    }
+
+    void profileShareFailureDisappearsOnNavigation()
+    {
+        Fixture f; f.extraTopic = true;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000124");
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/users/" + target)
+                return {QJsonObject{}, 404};
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_VERIFY(f.controller.profileLinkFailed());
+        f.controller.selectTopic(secondTopicId);
+        QTRY_COMPARE(f.controller.selectedTopic(), secondTopicId);
+        QVERIFY(!f.controller.profileLinkFailed());
+    }
+
+    void profileShareRejectsForeignOrganizationRoute()
+    {
+        Fixture f;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) ++requests;
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/org/foreign/settings#user/" + target);
+        QTest::qWait(500);
+        QCOMPARE(requests, 0);
+        QCOMPARE(opened.size(), 0);
+        QVERIFY(!f.controller.profileLinkFailed());
+    }
+
+    void profileShareCacheHitOpensOfflineAndRefreshesOnce()
+    {
+        Fixture f; QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
+        f.controller.useCache(&cache);
+        QVERIFY(f.start()); QTRY_VERIFY(cache.available()); QVERIFY(flushCache(cache));
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        QVERIFY(cache.put(cache.lease(), {NativeCache::Kind::Users, {}, {}, {}},
+            {QJsonObject{{"uuid", target}, {"username", "cached"}, {"first_name", "Cached"}}}));
+        QVERIFY(flushCache(cache));
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests; return {QJsonObject{}, 503};
+            }
+            return fallback(request);
+        };
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE(opened.size(), 1);
+        QCOMPARE(opened.at(0).at(0).toString(), target);
+        QCOMPARE(f.controller.profileSnapshot(target).value("title").toString(), QString("Cached"));
+        QTRY_COMPARE(requests, 1);
+        QVERIFY(!f.controller.profileLinkFailed());
+    }
+
+    void profileShareCacheDestructionDoesNotLoseNetworkLookup()
+    {
+        Fixture f; QTemporaryDir directory;
+        QSemaphore release; std::atomic<bool> entered = false, block = false;
+        auto cache = std::make_unique<NativeCacheService>(directory.path(), NativeCache::Policy{}, true, [&] {
+            if (block.exchange(false)) { entered = true; release.acquire(); }
+            return QDateTime::currentMSecsSinceEpoch();
+        });
+        f.controller.useCache(cache.get());
+        QVERIFY(f.start()); QTRY_VERIFY(cache->available()); QVERIFY(flushCache(*cache));
+        auto unblock = qScopeGuard([&] { release.release(); });
+        block = true;
+        QVERIFY(cache->put(cache->lease(), {NativeCache::Kind::Users, {}, {}, {}},
+            {QJsonObject{{"uuid", userId}, {"username", "self"}}}));
+        QTRY_VERIFY(entered.load());
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests;
+                return {QJsonObject{{"uuid", target}, {"username", "link-user"}, {"source", "iam"},
+                    {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}};
+            }
+            return fallback(request);
+        };
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QCOMPARE(requests, 0);
+        QTimer::singleShot(100, &f.controller, [&] { release.release(); });
+        cache.reset(); unblock.dismiss();
+        QTRY_COMPARE_WITH_TIMEOUT(requests, 1, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(opened.size(), 1, 3000);
+    }
+
+    void profileShareLateResponseCannotCrossRouteOrSession_data()
+    {
+        QTest::addColumn<QString>("replacement");
+        for (const auto *value : {"link", "selection", "refresh-selection", "logout"}) QTest::newRow(value) << QString::fromLatin1(value);
+    }
+
+    void profileShareLateResponseCannotCrossRouteOrSession()
+    {
+        QFETCH(QString, replacement);
+        Fixture f; f.extraTopic = true;
+        const QString first = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        const QString second = QStringLiteral("aa000000-0000-0000-0000-000000000124");
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/users/" + first || path == "/api/workspace/v1/messenger/users/" + second) {
+                ++requests;
+                const auto id = path.endsWith(first) ? first : second;
+                return {QJsonObject{{"uuid", id}, {"username", "link-user"}, {"source", "iam"},
+                    {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}, 200, id == first ? 700 : 0};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + first);
+        QTRY_COMPARE(requests, 1);
+        if (replacement == "link") {
+            f.controller.openMessageLink("ew://open/#user/" + second);
+            QTRY_COMPARE(requests, 2);
+            QTRY_COMPARE(opened.size(), 1);
+            QCOMPARE(opened.at(0).at(0).toString(), second);
+        } else if (replacement == "selection" || replacement == "refresh-selection") {
+            if (replacement == "refresh-selection") f.controller.refresh();
+            f.controller.selectTopic(secondTopicId);
+        } else f.controller.logout();
+        QTest::qWait(900);
+        QCOMPARE(opened.size(), replacement == "link" ? 1 : 0);
+        QVERIFY(!f.controller.profileLinkFailed());
+    }
+
+    void profileShareBeforeLoginIsConsumedOnce()
+    {
+        Fixture f;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests;
+                return {QJsonObject{{"uuid", target}, {"username", "link-user"}, {"source", "iam"},
+                    {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}};
+            }
+            return fallback(request);
+        };
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QCOMPARE(requests, 0);
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(opened.size(), 1, 5000);
+        QCOMPARE(opened.at(0).at(0).toString(), target);
+        QCOMPARE(requests, 1);
+        f.controller.refresh();
+        QTest::qWait(1000);
+        QCOMPARE(opened.size(), 1);
+        QCOMPARE(requests, 1);
+    }
+
+    void profileShareNeverUsesAnotherOwnersCache()
+    {
+        Fixture f; QTemporaryDir directory;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        {
+            NativeCache seed(directory.path(), {}, true);
+            QVERIFY(seed.open(f.server.origin(), secondTopicId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}},
+                {QJsonObject{{"uuid", target}, {"username", "foreign"}}}));
+        }
+        NativeCacheService cache(directory.path(), {}, true);
+        f.controller.useCache(&cache);
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests; return {QJsonObject{}, 404};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start()); QTRY_VERIFY(cache.available());
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE(requests, 1);
+        QTRY_VERIFY(f.controller.profileLinkFailed());
+        QCOMPARE(opened.size(), 0);
+    }
+
+    void profileShareSurvivesRefreshWithoutNavigation()
+    {
+        Fixture f;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests;
+                return {QJsonObject{{"uuid", target}, {"username", "link-user"}, {"source", "iam"},
+                    {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}, 200, 600};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        QSignalSpy opened(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE(requests, 1);
+        f.controller.refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(opened.size(), 1, 3000);
+        QCOMPARE(opened.at(0).at(0).toString(), target);
+        QCOMPARE(requests, 1);
+    }
+
+    void profileShareFailureSurvivesRefreshOnSameRoute()
+    {
+        Fixture f;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target)
+                return {QJsonObject{}, 404};
+            return fallback(request);
+        };
+        QVERIFY(f.start());
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_VERIFY(f.controller.profileLinkFailed());
+        f.controller.refresh();
+        QTest::qWait(1000);
+        QVERIFY(f.controller.profileLinkFailed());
+    }
+
+    void profileShareFetchedUserRemainsAvailableOfflineAfterRestart()
+    {
+        Fixture f; QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
+        f.controller.useCache(&cache);
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        bool offline = false; int requests = 0;
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/users/" + target) {
+                ++requests;
+                if (offline) return {QJsonObject{}, 503};
+                return {QJsonObject{{"uuid", target}, {"username", "link-user"}, {"first_name", "Cached link"},
+                    {"source", "iam"}, {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start()); QTRY_VERIFY(cache.available());
+        QSignalSpy first(&f.controller, &NativeController::profileLinkOpened);
+        f.controller.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE(first.size(), 1);
+        QVERIFY(flushCache(cache));
+        f.controller.useCache(nullptr);
+        offline = true;
+        NativeController restarted(&f.api, &f.session);
+        restarted.useCache(&cache);
+        QTRY_VERIFY(cache.available());
+        QSignalSpy second(&restarted, &NativeController::profileLinkOpened);
+        restarted.openMessageLink("ew://open/#user/" + target);
+        QTRY_COMPARE_WITH_TIMEOUT(second.size(), 1, 3000);
+        QCOMPARE(restarted.profileSnapshot(target).value("title").toString(), QString("Cached link"));
+        QCOMPARE(restarted.profileSnapshot(target).value("createdAt").toString(), QString("2026-01-02T10:00:00Z"));
+        QTRY_COMPARE(requests, 2);
+        QVERIFY(!restarted.profileLinkFailed());
+    }
+
     static QString streamDeepLink(const Fixture &fixture, const QString &tail)
     {
         return "ew://open/org/127.0.0.1-" + QString::number(fixture.server.origin().port())

@@ -69,6 +69,9 @@ std::optional<QString> parseExternalDeepLink(const QString &value)
     if (message.hasMatch() && !uuid.match(message.captured(1)).hasMatch())
         return std::nullopt;
     if (route == "/") return route;
+    if (parseProfileShareRoute(route)
+        && (url.path().isEmpty() || url.path() == QLatin1String("/")
+            || QRegularExpression("^/org/[^/?#]+/?$").match(url.path(QUrl::FullyEncoded)).hasMatch())) return route;
     if (QRegularExpression("^/org/[^/?#]+/?$").match(route).hasMatch()) return route;
     if (QRegularExpression("^/(?:calendar|mail|calls|licenses|settings|logs)/?(?:[?#].*)?$")
             .match(route).hasMatch())
@@ -78,6 +81,16 @@ std::optional<QString> parseExternalDeepLink(const QString &value)
         return route;
     if (projectRoutePattern().match(route).hasMatch()) return route;
     return std::nullopt;
+}
+
+std::optional<QString> parseProfileShareRoute(const QString &route)
+{
+    static const QRegularExpression hash(
+        "#user/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+        QRegularExpression::CaseInsensitiveOption);
+    const auto match = hash.match(route);
+    if (!match.hasMatch()) return std::nullopt;
+    return match.captured(1).toLower();
 }
 
 std::optional<MessageRoute> parseMessageRoute(const QString &route)

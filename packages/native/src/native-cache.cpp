@@ -331,6 +331,11 @@ std::optional<QJsonArray> NativeCache::sanitize(const Key &key, const QJsonArray
             for (const auto *field : {"first_name", "last_name", "email"})
                 if (input.contains(field) && !input.value(field).isNull() && !input.value(field).isString()) return {};
             row = select(input, {"uuid", "project_id", "username", "name", "first_name", "last_name", "display_name", "email"});
+            for (const auto *field : {"created_at", "updated_at"}) {
+                const auto value = input.value(field);
+                if (value.isString() && QDateTime::fromString(value.toString(), Qt::ISODateWithMs).isValid())
+                    row.insert(field, value);
+            }
             if (const auto avatar = imageAvatarReference(input.value("avatar")); !avatar.isEmpty()) row.insert("avatar", avatar);
             break;
         case Kind::Topics:

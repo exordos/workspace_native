@@ -12,6 +12,7 @@ namespace workspace {
 // Accepted external deep link returns its internal route ("/..." with query
 // and fragment). Anything outside the pinned contract returns std::nullopt.
 std::optional<QString> parseExternalDeepLink(const QString &value);
+std::optional<QString> parseProfileShareRoute(const QString &route);
 
 struct MessageRoute {
     QString org;

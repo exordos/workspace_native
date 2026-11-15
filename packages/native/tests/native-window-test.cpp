@@ -19648,6 +19648,74 @@ private:
     // name text-xl and presence label "online" (presence-status-text.lib.ts),
     // the self chip row Favorites/Edit/Share and detail rows with the
     // temporarily-unavailable placeholder.
+    void windowProfileShareLinkOpensCachedPeer()
+    {
+        ProfileWindowScene scene;
+        QVERIFY(!visibleItem("profileLayer"));
+        scene.controller.openMessageLink(QStringLiteral("ew://open/#user/") + channelPeer);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+        QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+        scene.evaluate("rightDrawer.back()");
+        QTRY_VERIFY(!visibleItem("profileLayer"));
+        QTest::qWait(250);
+        QVERIFY(!visibleItem("profileLayer"));
+    }
+
+    void windowProfileShareLinkFetchesAndReportsFailure()
+    {
+        ProfileWindowScene scene;
+        const QString target = QStringLiteral("aa000000-0000-0000-0000-000000000123");
+        const QString missing = QStringLiteral("aa000000-0000-0000-0000-000000000124");
+        int requests = 0;
+        const auto fallback = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().startsWith("/api/workspace/v1/messenger/users/aa000000")) {
+                ++requests;
+                if (request.target.path().endsWith(missing)) return {QJsonObject{}, 404};
+                return {QJsonObject{{"uuid", target}, {"username", "link-user"}, {"first_name", "Link"},
+                    {"source", "iam"}, {"status", "active"}, {"last_ping_at", "2026-01-02T10:00:00Z"},
+                    {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}}};
+            }
+            return fallback(request);
+        };
+        scene.controller.openMessageLink(QStringLiteral("ew://open/#user/") + target.toUpper());
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+        QCOMPARE(scene.layer()->property("userUuid").toString(), target);
+        QTRY_COMPARE(requests, 1);
+        QCOMPARE(scene.text("profileTitle"), QStringLiteral("Link"));
+        scene.controller.openMessageLink(QStringLiteral("ew://open/#user/") + missing);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLinkFailure"), 3000);
+        QVERIFY(!visibleItem("profileLayer"));
+        QCOMPARE(visibleItem("profileLinkFailure")->height(), 45.0);
+        QCOMPARE(scene.text("profileLinkFailureText"), QStringLiteral("Could not open this profile. It may be unavailable or you may not have access."));
+        click(scene.window, visibleItem("profileLinkFailureClose"));
+        QTRY_VERIFY(!visibleItem("profileLinkFailure"));
+        scene.controller.openMessageLink(QStringLiteral("ew://open/#user/") + missing);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLinkFailure"), 3000);
+        QCOMPARE(requests, 3);
+        click(scene.window, visibleItem("profileLinkFailureClose"));
+        scene.controller.openMessageLink(QStringLiteral("ew://open/#user/not-a-uuid"));
+        QTest::qWait(250);
+        QVERIFY(!visibleItem("profileLinkFailure"));
+        QCOMPARE(requests, 3);
+    }
+
+    void windowProfileShareFailureIsScopedToRoute()
+    {
+        ProfileWindowScene scene;
+        const QString missing = QStringLiteral("aa000000-0000-0000-0000-000000000124");
+        const auto fallback = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/users/" + missing)
+                return {QJsonObject{}, 404};
+            return fallback(request);
+        };
+        scene.controller.openMessageLink("ew://open/#user/" + missing);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLinkFailure"), 3000);
+        scene.controller.showInbox();
+        QTRY_VERIFY(!visibleItem("profileLinkFailure"));
+    }
+
     void windowProfileOwnScreenHeaderChipsAndDetails()
     {
         ProfileWindowScene scene;

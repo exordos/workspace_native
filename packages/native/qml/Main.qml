@@ -208,6 +208,8 @@ ApplicationWindow {
     onRightDrawerRuntimeGenerationChanged: root.resetRightDrawerChatScreens()
     Connections {
         target: root.controller
+        function onProfileLinkStarted() { rightDrawer.clearAll() }
+        function onProfileLinkOpened(userUuid) { rightDrawer.openWorkspaceUserProfile(userUuid) }
         function onStateChanged() {
             const authenticated = root.controller.authenticated
             if (authenticated !== root.rightDrawerAuthenticated) {
@@ -1905,10 +1907,49 @@ ApplicationWindow {
     }
 
     Rectangle {
+        id: profileLinkFailure
+        objectName: "profileLinkFailure"
+        visible: root.controller.authenticated && root.controller.profileLinkFailed
+        anchors.top: parent.top
+        width: parent.width
+        height: visible ? 45 : 0
+        readonly property color tone: root.colors["notice-base"]
+        color: Qt.rgba(tone.r, tone.g, tone.b, 0.2)
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: profileLinkFailureText.text
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width; height: 1
+            color: Qt.rgba(profileLinkFailure.tone.r, profileLinkFailure.tone.g, profileLinkFailure.tone.b, 0.6)
+        }
+        Text {
+            id: profileLinkFailureText
+            objectName: "profileLinkFailureText"
+            anchors.left: parent.left; anchors.leftMargin: 16
+            anchors.right: profileLinkFailureClose.left; anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Could not open this profile. It may be unavailable or you may not have access.")
+            textFormat: Text.PlainText
+            font.pixelSize: 14
+            color: profileLinkFailure.tone
+            elide: Text.ElideRight
+        }
+        NativeButton {
+            id: profileLinkFailureClose
+            objectName: "profileLinkFailureClose"
+            anchors.right: parent.right; anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            colors: root.colors
+            text: qsTr("Close")
+            onClicked: root.controller.dismissProfileLinkFailure()
+        }
+    }
+
+    Rectangle {
         id: topBar
         objectName: "topBar"
         visible: root.controller.authenticated
-        anchors.top: parent.top
+        anchors.top: profileLinkFailure.bottom
         width: parent.width
         readonly property real titleStripHeight: Qt.platform.os === "osx" ? 28 : 0
         readonly property real toolbarHeight: Math.max(48, profileControl.height) + 16

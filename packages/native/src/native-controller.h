@@ -25,6 +25,7 @@
 #include <QQueue>
 #include <QTimer>
 #include <QVariantList>
+#include <memory>
 
 namespace workspace {
 
@@ -40,6 +41,7 @@ struct FileResult;
 class NativeController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
+    Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
@@ -611,6 +613,12 @@ public:
     static QByteArray readClipboardBounded(QIODevice &source);
     Q_INVOKABLE bool copyMessageImage(const QString &id);
     Q_INVOKABLE void openMessageLink(const QString &url);
+    bool profileLinkFailed() const {
+        return m_profileLinkFailed && m_profileLinkFailureSelection == m_selection
+            && m_profileLinkFailureInbox == m_inboxVisible && m_profileLinkFailureMentions == m_mentionsVisible
+            && m_profileLinkFailureDrafts == m_draftsVisible;
+    }
+    Q_INVOKABLE void dismissProfileLinkFailure();
     Q_INVOKABLE void starMessage(const QString &id);
     Q_INVOKABLE void deleteMessage(const QString &id);
     Q_INVOKABLE void editMessage(const QString &id, const QString &text);
@@ -739,6 +747,8 @@ signals:
     void sidebarExpansionChanged();
     // Empty stream means a placement change may have affected several streams.
     void sidebarTopicsChanged(const QString &stream);
+    void profileLinkStarted();
+    void profileLinkOpened(const QString &userUuid);
     void downloadsChanged();
     void downloadDuplicateRequested();
     void chatKeyStoreOpenRequested();
@@ -813,6 +823,7 @@ signals:
 
 private:
     void applyDeepLink(const QString &url);
+    void openProfileShareLink(const QString &user);
     void applyStreamRoute(const QString &org, const QString &project,
                           const QString &stream, const std::optional<QString> &topic);
     void resolveDeepLinkTopic();
@@ -1878,6 +1889,11 @@ private:
     QString m_topic;
     QString m_anchorMessage;
     QString m_pendingDeepLink;
+    QMetaObject::Connection m_profileLinkCacheDestroyed;
+    std::weak_ptr<quint64> m_profileLinkSelection;
+    bool m_profileLinkFailed = false;
+    quint64 m_profileLinkFailureSelection = 0;
+    bool m_profileLinkFailureInbox = false, m_profileLinkFailureMentions = false, m_profileLinkFailureDrafts = false;
     struct DeepLinkTopic {
         QString stream, name, owner;
         quint64 selection = 0, generation = 0;
