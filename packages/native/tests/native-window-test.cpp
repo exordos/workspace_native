@@ -11951,9 +11951,17 @@ mv -Tf "$root/.current-new" "$root/current"
             auto *all = item(content, "folder-all");
             auto *personal = item(content, "folder-personal");
             QVERIFY(rail && all && personal);
-            // Source72px item/p4, selected64px inner scaled1.1, icon top10.
-            QVERIFY(qAbs(all->mapToItem(rail, QPointF()).y() - 19.8) < 0.1);
-            QCOMPARE(personal->mapToItem(rail, QPointF()).y(), qreal(98));
+            // Issue #83 rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md): py-2 pins
+            // the All cell at y=8, uniform 72px cells, 2px scroll-group gap;
+            // the selected card scales 1.1 (All is the effective selection)
+            // while the other cells stay 1.0.
+            QVERIFY(qAbs(all->mapToItem(rail, QPointF()).y() - 8) < 0.1);
+            QVERIFY(qAbs(personal->mapToItem(rail, QPointF()).y() - 82) < 0.1);
+            auto *allCard = item(content, "folderCard-all");
+            auto *personalCard = item(content, "folderCard-personal");
+            QVERIFY(allCard && personalCard);
+            QTRY_COMPARE(allCard->property("scale").toReal(), qreal(1.1));
+            QTRY_COMPARE(personalCard->property("scale").toReal(), qreal(1.0));
         } else if (check == "header-actions") {
             auto *header = item(content, "conversationHeader");
             QVERIFY(header);
