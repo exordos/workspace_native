@@ -150,6 +150,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString selectedTopic READ selectedTopic NOTIFY stateChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
+    Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
     Q_PROPERTY(QString replyMessageId READ replyMessageId NOTIFY replySessionChanged)
     Q_PROPERTY(QVariantList replyTabs READ replyTabs NOTIFY replySessionChanged)
@@ -576,6 +577,7 @@ public:
     Q_INVOKABLE void submitEditMessage();
     Q_INVOKABLE void editLastMessage();
     QString editingMessageId() const { return m_editingMessage; }
+    QString editSessionKey() const { return m_editingMessage.isEmpty() ? QString{} : QString::number(m_editSession); }
     bool canSaveEdit() const;
     // Reply session (docs/NATIVE_DESKTOP_REPLIES.md + docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md):
     // a tab session of concurrent quote tabs; beginReply keeps the reference
@@ -1169,15 +1171,19 @@ private:
         QString stream;
         QString conversation;
         NativeDrafts::Token draftResidency{};
+        quint64 editSession = 0; // zero belongs to the ordinary conversation draft
+        QString editReplyTab;
     };
     struct FileOperation {
         QPointer<FileClient> service;
         quint64 operation = 0;
+        quint64 editSession = 0;
     };
     void cancelFileTransfers(const QString &reason = {});
+    void cancelEditUploads();
     void drainUploads();
-    void finishUpload(quint64 intent, quint64 generation, quint64 epoch,
-                      const QString &conversation, const FileResult &result);
+    void finishUpload(const UploadTask &task, quint64 generation, quint64 epoch,
+                      const FileResult &result);
     void resetReadState();
     void sendReadRequest(bool confirmation);
     void finishReadRequest(bool success);

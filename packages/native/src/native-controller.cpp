@@ -7590,6 +7590,7 @@ NativeController::~NativeController()
 
 void NativeController::cancelFileTransfers(const QString &reason)
 {
+    const bool editWasWaiting = !m_editingMessage.isEmpty() && m_pendingUploads.value(m_editRoute) > 0;
     ++m_fileEpoch;
     const auto operations = m_fileOperations;
     m_fileOperations.clear();
@@ -7607,6 +7608,7 @@ void NativeController::cancelFileTransfers(const QString &reason)
     for (const auto &operation : operations)
         if (operation.service && operation.operation != 0)
             operation.service->cancel(operation.operation);
+    if (editWasWaiting) emit editSessionChanged();
 }
 
 void NativeController::useFiles(FileClient *client)
@@ -7634,12 +7636,43 @@ void NativeController::useFiles(FileClient *client)
     emit stateChanged();
 }
 
+void NativeController::cancelEditUploads()
+{
+    if (m_editingMessage.isEmpty()) return;
+    int removed = 0;
+    m_uploadQueue.removeIf([&](const UploadTask &task) {
+        if (task.editSession != m_editSession) return false;
+        ++removed;
+        return true;
+    });
+    QList<FileOperation> operations;
+    for (auto it = m_fileOperations.begin(); it != m_fileOperations.end();) {
+        if (it->editSession != m_editSession) { ++it; continue; }
+        operations.append(it.value());
+        it = m_fileOperations.erase(it);
+        --m_activeUploads;
+        ++removed;
+    }
+    m_uploads -= removed;
+    if (removed > 0) {
+        const auto remaining = m_pendingUploads.value(m_editRoute) - removed;
+        if (remaining > 0) m_pendingUploads[m_editRoute] = remaining;
+        else m_pendingUploads.remove(m_editRoute);
+    }
+    if (!m_pendingUploads.contains(m_editRoute)) m_attachmentNotices.remove(m_editRoute);
+    // Remove admission records before FileClient's synchronous cancellation callback.
+    // Downloads and uploads accepted by the ordinary draft keep their own lifetimes.
+    for (const auto &operation : operations)
+        if (operation.service && operation.operation != 0)
+            operation.service->cancel(operation.operation);
+}
+
 bool NativeController::canAttach() const
 {
     const auto *stream = currentStream();
     return m_files && authoritativeRoute() && stream && !stream->encrypted && !m_topic.isEmpty()
         && (!durableDraftRoute() || m_draftStore->ready(m_stream, m_topic))
-        && !topicClosed() && !m_sending;
+        && !topicClosed() && !m_sending && !m_editSaveInFlight.contains(m_editingMessage);
 }
 
 void NativeController::attachFiles(const QVariantList &localUrls)
@@ -7654,13 +7687,17 @@ void NativeController::attachFiles(const QVariantList &localUrls)
             m_error = tr("Choose a local file to attach.");
             continue;
         }
+        const bool editing = !m_editingMessage.isEmpty();
         m_uploadQueue.enqueue({++m_nextFileOperation, url.toLocalFile(), m_stream, conversation,
-            durableDraftRoute() ? m_draftStore->capture(m_stream, m_topic) : NativeDrafts::Token{}});
+            !editing && durableDraftRoute() ? m_draftStore->capture(m_stream, m_topic) : NativeDrafts::Token{},
+            editing ? m_editSession : 0, m_editRestoresReply ? m_replyActiveTab : QString{}});
         ++m_uploads;
         ++m_pendingUploads[conversation];
         m_attachmentNotices[conversation] = tr("Uploading attachment…");
     }
     const QPointer<NativeController> guard(this);
+    if (!m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (!guard) return;
     emit stateChanged();
     if (guard)
         drainUploads();
@@ -7677,14 +7714,12 @@ void NativeController::drainUploads()
         const auto generation = m_api->generation();
         const auto epoch = m_fileEpoch;
         const QPointer<FileClient> service = m_files;
-        m_fileOperations.insert(task.intent, {service, 0});
+        m_fileOperations.insert(task.intent, {service, 0, task.editSession});
         ++m_activeUploads;
         const auto operation = service->upload(task.path, task.stream, {},
-            [self, generation, epoch, intent = task.intent, conversation = task.conversation,
-             residency = task.draftResidency](const FileResult &result) {
-                Q_UNUSED(residency);
+            [self, generation, epoch, task](const FileResult &result) {
                 if (self)
-                    self->finishUpload(intent, generation, epoch, conversation, result);
+                    self->finishUpload(task, generation, epoch, result);
             });
         if (!self)
             return;
@@ -7696,17 +7731,24 @@ void NativeController::drainUploads()
     m_drainingUploads = false;
 }
 
-void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 epoch,
-                                    const QString &conversation, const FileResult &result)
+void NativeController::finishUpload(const UploadTask &task, quint64 generation, quint64 epoch,
+                                    const FileResult &result)
 {
-    if (m_api->generation() != generation || m_fileEpoch != epoch || !m_fileOperations.remove(intent))
+    if (m_api->generation() != generation || m_fileEpoch != epoch || !m_fileOperations.remove(task.intent))
         return;
+    const auto &conversation = task.conversation;
     --m_activeUploads;
     --m_uploads;
     if (--m_pendingUploads[conversation] <= 0)
         m_pendingUploads.remove(conversation);
     const QPointer<NativeController> guard(this);
-    if (!result.ok()) {
+    const bool abandonedEdit = task.editSession != 0
+        && (m_editingMessage.isEmpty() || task.editSession != m_editSession || conversation != m_editRoute
+            || (!task.editReplyTab.isEmpty() && std::none_of(m_replyTabs.cbegin(), m_replyTabs.cend(),
+                [&](const ReplyTab &tab) { return tab.id == task.editReplyTab; })));
+    if (abandonedEdit) {
+        if (!m_pendingUploads.contains(conversation)) m_attachmentNotices.remove(conversation);
+    } else if (!result.ok()) {
         const auto error = tr("The attachment could not be uploaded. %1").arg(result.error);
         m_attachmentNotices[conversation] = error;
         if (conversation == conversationKey())
@@ -7720,34 +7762,50 @@ void NativeController::finishUpload(quint64 intent, quint64 generation, quint64 
         label.replace('\n', ' ');
         const auto prefix = result.metadata.kind() == FileKind::File ? QString{} : QStringLiteral("!");
         const auto attachment = prefix + '[' + label + "](<" + result.metadata.urn() + ">)";
-        const auto stream = conversation.section('/', 0, 0), topic = conversation.section('/', 1, 1);
-        const auto capturedStream = std::find_if(m_streams.cbegin(), m_streams.cend(),
-            [&stream](const Stream &row) { return row.uuid == stream; });
-        const bool persistent = m_draftStore && m_draftStore->owner() == creationOwnerKey()
-            && capturedStream != m_streams.cend() && !capturedStream->encrypted
-            && m_draftRoutes.contains(conversation);
-        auto draft = persistent ? m_draftStore->text(stream, topic) : m_drafts.value(conversation);
-        const bool imageParagraph = result.metadata.kind() == FileKind::Image;
-        if (!draft.isEmpty()) {
-            if (!draft.endsWith('\n'))
-                draft += '\n';
-            if (imageParagraph && !draft.endsWith("\n\n"))
-                draft += '\n';
-        }
-        const auto text = draft + attachment + (imageParagraph ? "\n\n" : "\n");
-        if (persistent) {
-            m_draftStore->edit(stream, topic, text);
+        if (task.editSession != 0) {
+            if (task.editReplyTab.isEmpty() || task.editReplyTab == m_replyActiveTab) {
+                setDraft(attachment + "\n\n" + m_editBuffer);
+            } else {
+                for (auto &tab : m_replyTabs) {
+                    if (tab.id != task.editReplyTab) continue;
+                    tab.answer = attachment + "\n\n" + tab.answer;
+                    ++m_editRevision;
+                    break;
+                }
+                emit replySessionChanged();
+            }
         } else {
-            m_drafts.insert(conversation, text); ++m_draftRevisions[conversation];
+            const auto stream = conversation.section('/', 0, 0), topic = conversation.section('/', 1, 1);
+            const auto capturedStream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+                [&stream](const Stream &row) { return row.uuid == stream; });
+            const bool persistent = m_draftStore && m_draftStore->owner() == creationOwnerKey()
+                && capturedStream != m_streams.cend() && !capturedStream->encrypted
+                && m_draftRoutes.contains(conversation);
+            auto draft = persistent ? m_draftStore->text(stream, topic) : m_drafts.value(conversation);
+            const bool imageParagraph = result.metadata.kind() == FileKind::Image;
+            if (!draft.isEmpty()) {
+                if (!draft.endsWith('\n'))
+                    draft += '\n';
+                if (imageParagraph && !draft.endsWith("\n\n"))
+                    draft += '\n';
+            }
+            const auto text = draft + attachment + (imageParagraph ? "\n\n" : "\n");
+            if (persistent) {
+                m_draftStore->edit(stream, topic, text);
+            } else {
+                m_drafts.insert(conversation, text); ++m_draftRevisions[conversation];
+            }
         }
         if (!guard) return;
-        m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
-            ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
-        if (conversation == conversationKey())
-            emit draftChanged();
+        if (task.editSession == 0 || (!m_editingMessage.isEmpty() && task.editSession == m_editSession)) {
+            m_attachmentNotices[conversation] = m_pendingUploads.value(conversation) > 0
+                ? tr("Uploading attachments…") : tr("Attachment is ready to send.");
+            if (task.editSession == 0 && conversation == conversationKey()) emit draftChanged();
+        }
     }
-    if (!guard)
-        return;
+    if (!guard) return;
+    if (!m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (!guard) return;
     emit stateChanged();
     if (guard)
         drainUploads();
@@ -13637,6 +13695,7 @@ bool NativeController::beginEditMessage(const QString &id)
         report(tr("This message can no longer be edited"));
         return false;
     }
+    cancelEditUploads();
     // Reply and edit sessions are mutually exclusive (one composer, one mode).
     // A reopened session replaces the previous buffer; closeReplySession also
     // drops any restored tabs from an earlier edit session.
@@ -13678,6 +13737,7 @@ bool NativeController::beginEditMessage(const QString &id)
     emit draftChanged();
     emit stateChanged();
     if (m_editRestoresReply) emit replySessionChanged();
+    drainUploads();
     return true;
 }
 
@@ -13748,6 +13808,11 @@ bool NativeController::canSaveEdit() const
     // While a save for this message is in flight a second save would race the first PUT
     // (issue #115); the save control waits for the pending completion.
     if (m_editSaveInFlight.contains(m_editingMessage)) return false;
+    // Ordinary draft uploads on the same route have a separate destination.
+    for (const auto &task : m_uploadQueue)
+        if (task.editSession == m_editSession) return false;
+    for (const auto &operation : m_fileOperations)
+        if (operation.editSession == m_editSession) return false;
     const auto *stream = currentStream();
     if (!stream || stream->encrypted) return false;
     return !m_editBuffer.trimmed().isEmpty() && m_editBuffer.size() <= 40000;
@@ -13756,6 +13821,7 @@ bool NativeController::canSaveEdit() const
 void NativeController::closeEditSession()
 {
     if (m_editingMessage.isEmpty()) return;
+    cancelEditUploads();
     const bool restoredReply = m_editRestoresReply;
     m_editRestoresReply = false;
     m_editingMessage.clear();
@@ -13767,6 +13833,7 @@ void NativeController::closeEditSession()
     // The tabs an edit restore opened are session-local: the edit ends, they go
     // (docs/NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md); cancel then reveals the stored draft.
     if (restoredReply) closeReplySession();
+    drainUploads();
 }
 
 void NativeController::settleEditRouteChange()
@@ -13814,9 +13881,11 @@ void NativeController::submitMessageEdit(const QString &id, const QString &text,
     if (m_editSaveInFlight.contains(id)) { if (settled) settled(false); return; }
     m_editSaveInFlight.insert(id);
     emit editSessionChanged();
+    emit stateChanged();
     const auto done = [this, id, settled](bool confirmed) {
         m_editSaveInFlight.remove(id);
         emit editSessionChanged();
+        emit stateChanged();
         if (settled) settled(confirmed);
     };
     ++m_messageFields[id].pending;

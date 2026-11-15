@@ -13152,6 +13152,116 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "userInput"));
         window->close();
     }
+    void inlineEditPickerUploadAppearsInTheEditAndPreservesTheDraft()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        QTemporaryDir directory;
+        QFile input(directory.filePath("edit-attachment.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("fixture"); input.close();
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        const auto fallback = fixture.server.handler;
+        auto note = message("Original message");
+        QString saved; int uploads = 0, puts = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/files/" && request.method == "POST") {
+                ++uploads;
+                Response response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId},
+                    {"name", "edit-attachment.txt"}, {"content_type", "text/plain"}, {"size_bytes", 7},
+                    {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}, 201};
+                response.defer = [&](auto send) { complete = std::move(send); }; return response;
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") return {QJsonArray{note}};
+            if (path.endsWith("/messages/" + messageId)) {
+                if (request.method == "PUT") {
+                    ++puts; saved = request.body.value("payload").toObject().value("content").toString();
+                    note["payload"] = request.body.value("payload");
+                }
+                return {note};
+            }
+            return fallback(request);
+        };
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useDrafts(&drafts); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Edit attachment teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-edit-attachment", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QTRY_VERIFY(drafts.ready(streamId, topicId));
+        controller.setDraft("Unrelated draft\n  keep whitespace  ");
+        const auto originalDraft = controller.draft();
+        QVERIFY(controller.beginEditMessage(messageId));
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        QTRY_COMPARE(composer->property("text").toString(), QString("Original message"));
+        auto *picker = window->findChild<QObject *>("attachmentPicker"); QVERIFY(picker);
+        QVERIFY(picker->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
+        click(window, item(content, "attachButton"));
+        QTRY_VERIFY(picker->property("visible").toBool());
+        const auto fileUrl = QUrl::fromLocalFile(input.fileName());
+        QTRY_VERIFY(fileEntry(fileUrl));
+        auto *entry = fileEntry(fileUrl); QVERIFY(entry && entry->window());
+        QTest::mouseDClick(entry->window(), Qt::LeftButton, {},
+            entry->mapToScene(QPointF(entry->width() / 2, entry->height() / 2)).toPoint());
+        QTRY_VERIFY(bool(complete));
+        QTRY_VERIFY(!picker->property("visible").toBool());
+        auto *save = item(content, "saveEditButton"); QVERIFY(save);
+        QTRY_VERIFY(!save->isEnabled());
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QTest::keyClick(window, Qt::Key_Return);
+        QCOMPARE(puts, 0);
+        QCOMPARE(controller.editingMessageId(), messageId);
+        const auto textWhileUploading = composer->property("text").toString();
+        QCOMPARE(controller.draft(), textWhileUploading);
+        // Finishing this transfer must not dismiss a second file chooser in
+        // the same edit session (canSaveEdit also uses editSessionChanged).
+        click(window, item(content, "attachButton"));
+        QTRY_VERIFY(picker->property("visible").toBool());
+        complete(); complete = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        QVERIFY(picker->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(picker, "reject"));
+        QTRY_VERIFY(!picker->property("visible").toBool());
+        const auto expected = "[edit-attachment.txt](<urn:file:" + returnedId + "?name=edit-attachment.txt&content_type=text%2Fplain&size=7>)\n\n" + textWhileUploading;
+        QTRY_COMPARE(composer->property("text").toString(), expected);
+        QCOMPARE(drafts.text(streamId, topicId), originalDraft);
+        QTRY_VERIFY(save->isEnabled());
+        click(window, save);
+        QTRY_COMPARE(puts, 1); QCOMPARE(saved, expected);
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
+        QTRY_COMPARE(composer->property("text").toString(), originalDraft);
+        QCOMPARE(drafts.text(streamId, topicId), originalDraft);
+        QCOMPARE(uploads, 1);
+        // Reopening the same UUID creates a different edit. Even a late picker
+        // acceptance with the previous selection cannot enqueue another upload.
+        QVERIFY(controller.beginEditMessage(messageId));
+        click(window, item(content, "attachButton"));
+        QTRY_VERIFY(picker->property("visible").toBool());
+        const auto pickerSession = window->property("pickerEditSession").toString();
+        QCOMPARE(pickerSession, controller.property("editSessionKey").toString());
+        QVERIFY(controller.beginEditMessage(messageId));
+        QVERIFY(pickerSession != controller.property("editSessionKey").toString());
+        QTRY_VERIFY(!picker->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(picker, "accepted"));
+        QVERIFY(!controller.fileBusy());
+        QCOMPARE(uploads, 1);
+        controller.cancelEditMessage();
+        QCOMPARE(controller.draft(), originalDraft);
+    }
+
     void upToEditLastAndSaveUseTheComposerEditMode()
     {
         QTest::failOnWarning();

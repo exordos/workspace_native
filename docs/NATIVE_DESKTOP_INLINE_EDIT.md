@@ -184,9 +184,30 @@ and the palette hex of `text-primary`/`text-muted` in `blue-cold`.
    entry stays hidden for encrypted conversations, and `editLastMessage` skips e2ee bodies.
 2. No "edited" marker on saved messages. The reference catalog carries no label for one (no
    `message.edited` key exists at the measured sha), so there is nothing to port.
-3. No attachment or reply-context preservation inside an edit session. Composer attachments
-   and the restored-reply tab strip are separate features (#6 and the attachments slice);
-   the native composer has no per-message attachment set to carry.
+3. Existing attachments remain Markdown in the edit body; removable attachment chips
+   are tracked separately in #189. Restored reply context is covered by
+   [edit reply restoration](NATIVE_DESKTOP_EDIT_REPLY_RESTORE.md).
+
+### Uploads during an edit (issue #188)
+
+An upload belongs to the composer mode that accepted it. Uploads accepted during an
+edit capture that edit session and, for a restored reply, its active answer tab.
+Successful uploads prepend their escaped attachment Markdown to that buffer, keeping
+text entered while the transfer was pending. They never write the conversation draft.
+The existing FileClient, five-transfer queue, credential fences and file limits apply.
+
+Save waits only for pending attachments accepted by this edit; uploads cannot start during
+an in-flight save. Failed uploads leave the edit text and stored draft intact and use
+the existing attachment error notice. Cancelling, replacing or leaving an edit cancels
+only that session's queued/active uploads. Late completions cannot enter a reopened
+editor or an ordinary draft. An open file picker is invalidated when the edit changes.
+An upload started before editing retains its ordinary conversation-draft destination.
+
+Regression coverage must exercise real multipart transfers and deferred completions:
+memory/durable draft preservation, submitted edit payload, save blocking, cancellation
+and reopening, route changes, restored reply tabs, failures and credential replacement.
+The rendered window case must select a file through the Qt picker, observe it in the
+editor, save it, and verify that the original draft returns unchanged.
 
 ## Tests
 
