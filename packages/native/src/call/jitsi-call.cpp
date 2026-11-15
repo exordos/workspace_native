@@ -8,6 +8,13 @@ using namespace workspace;
 
 constexpr auto kPublicHost = "meet.jit.si";
 
+QString authorityHost(const QString &host)
+{
+    // QUrl::host() strips IPv6 brackets; URL text requires them.
+    return host.contains(QLatin1Char(':'))
+        ? QLatin1Char('[') + host + QLatin1Char(']') : host;
+}
+
 struct EffectiveBase {
     QString baseUrl;
     QString domain;
@@ -93,12 +100,7 @@ QString normalizeMeetOrigin(const QString &value)
     const auto scheme = parsed.scheme().toLower();
     if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
         return QString();
-    // QUrl::host() reports an IPv6 address without its required brackets;
-    // put them back so the serialized origin stays a valid authority.
-    QString host = parsed.host().toLower();
-    if (host.contains(QLatin1Char(':')))
-        host = QLatin1Char('[') + host + QLatin1Char(']');
-    QString origin = scheme + QLatin1String("://") + host;
+    QString origin = scheme + QLatin1String("://") + authorityHost(parsed.host().toLower());
     if (parsed.port() != -1)
         origin += QLatin1Char(':') + QString::number(parsed.port());
     return origin;
@@ -160,15 +162,22 @@ QString getJitsiMeetingUrl(const QString &content, const QString &meetUrl)
         if (trimmed == eff.baseUrl)
             return QString();
     }
-    // An embedded link on the configured host may carry the configured port;
-    // a different port is a different origin and must not match.
-    auto hostPattern = QRegularExpression::escape(eff.domain);
-    if (eff.port != -1)
-        hostPattern += QStringLiteral("(:%1)?").arg(eff.port);
-    const QRegularExpression pattern(QStringLiteral("https?://(%1|meet\\.jit\\.si)/[^\\s<>\"']+").arg(hostPattern),
+    // Compare parsed hosts so equivalent IPv6 spellings agree. The configured
+    // port is required: omitting it must not select a different server.
+    const QRegularExpression pattern(QStringLiteral("https?://[^\\s/<>\"']+/[^\\s<>\"']+"),
         QRegularExpression::CaseInsensitiveOption);
-    const auto match = pattern.match(trimmed);
-    return match.hasMatch() ? match.captured(0) : QString();
+    auto matches = pattern.globalMatch(trimmed);
+    while (matches.hasNext()) {
+        const auto candidate = matches.next().captured(0);
+        const QUrl parsed(candidate, QUrl::StrictMode);
+        if (!parsed.isValid() || !parsed.userInfo().isEmpty())
+            continue;
+        const auto host = parsed.host().toLower();
+        if ((host == eff.domain && parsed.port() == eff.port)
+            || (host == QLatin1String(kPublicHost) && parsed.port() == -1))
+            return candidate;
+    }
+    return QString();
 }
 
 QString createJitsiCallKey(const QString &ownerKey, const QString &meetingUrl)

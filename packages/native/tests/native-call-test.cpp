@@ -208,6 +208,62 @@ private slots:
             QStringLiteral("room-1"));
     }
 
+    void embeddedIpv6MeetingUrl_data()
+    {
+        QTest::addColumn<QString>("meet");
+        QTest::addColumn<QString>("content");
+        QTest::addColumn<QString>("expected");
+        const QString host = "https://[2001:db8::1]";
+        QTest::newRow("embedded") << host << "Join " + host + "/Room-1234 now"
+            << host + "/Room-1234";
+        QTest::newRow("port") << host + ":8443" << "Join " + host + ":8443/Room-1234 now"
+            << host + ":8443/Room-1234";
+        QTest::newRow("query-fragment-termination") << host
+            << "Join <" + host + "/Room-1234?x=1#f> now" << host + "/Room-1234?x=1#f";
+        QTest::newRow("case-insensitive") << QString("https://[2001:db8:abcd::1]")
+            << QString("Join HTTPS://[2001:DB8:ABCD::1]/Room-1234 now")
+            << QString("HTTPS://[2001:DB8:ABCD::1]/Room-1234");
+        QTest::newRow("unconfigured-host") << host
+            << QString("Join https://[2001:db8::2]/Room-1234 now") << QString{};
+        QTest::newRow("wrong-port") << host + ":8443"
+            << "Join " + host + ":9999/Room-1234 now" << QString{};
+        QTest::newRow("configured-port-omitted") << host + ":8443"
+            << "Join " + host + "/Room-1234 now" << QString{};
+        QTest::newRow("dns-configured-port-omitted") << QString("https://meet.example.com:8443")
+            << QString("Join https://meet.example.com/Room-1234 now") << QString{};
+        QTest::newRow("equivalent-expanded-address") << host
+            << QString("Join https://[2001:0db8:0000:0000:0000:0000:0000:0001]/Room-1234 now")
+            << QString("https://[2001:0db8:0000:0000:0000:0000:0000:0001]/Room-1234");
+        QTest::newRow("different-expanded-address") << host
+            << QString("Join https://[2001:0db8:0000:0000:0000:0000:0000:0002]/Room-1234 now") << QString{};
+        QTest::newRow("skip-unconfigured-link") << host
+            << "Join https://other.example/skip then " + host + "/Room-1234 now"
+            << host + "/Room-1234";
+        QTest::newRow("userinfo") << host
+            << QString("Join https://user@[2001:db8::1]/Room-1234 now") << QString{};
+        QTest::newRow("public-wrong-port") << host
+            << QString("Join https://meet.jit.si:8443/Room-1234 now") << QString{};
+        QTest::newRow("malformed-unbracketed") << host
+            << QString("Join https://2001:db8::1/Room-1234 now") << QString{};
+        QTest::newRow("leading-prefix") << host << host + "/Room-1234\nJoin now"
+            << host + "/Room-1234";
+        QTest::newRow("public-host") << host
+            << QString("Join https://meet.jit.si/Room-1234 now")
+            << QString("https://meet.jit.si/Room-1234");
+    }
+    void embeddedIpv6MeetingUrl()
+    {
+        QFETCH(QString, meet);
+        QFETCH(QString, content);
+        QFETCH(QString, expected);
+        const auto url = getJitsiMeetingUrl(content, meet);
+        QCOMPARE(url, expected);
+        if (!url.isEmpty()) {
+            QVERIFY(QUrl(url).isValid());
+            QCOMPARE(parseJitsiUrl(url, meet).value("roomName").toString(), QString("Room-1234"));
+        }
+    }
+
     void callKeyNormalizesUrlAndKeepsOwnerSeparation_data()
     {
         QTest::addColumn<QString>("ownerKey");

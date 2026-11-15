@@ -61,6 +61,14 @@ All reference line numbers are from `workspace_ui` at
 
 ## Native module
 
+The inline meeting-link scan compares parsed hosts so bracketed IPv6 addresses
+and their equivalent expanded spellings match the configured host (#238).
+Embedded links must carry the configured port; an omitted or different port
+does not match. The scan preserves URL token termination and skips other hosts
+and credential-bearing URLs. Regression rows cover prose, ports, case,
+query/fragment boundaries, unknown hosts, malformed unbracketed addresses, and
+the existing leading-link/public-host paths.
+
 New module `packages/native/src/call` (compiled into `workspace-native-core`):
 
 - `call/jitsi-call.h/.cpp` — the pure URL model, a direct port of the
