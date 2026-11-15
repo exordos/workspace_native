@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace workspace {
 namespace {
@@ -772,7 +773,7 @@ QByteArray encodeCreateStage(const NativeChatKeyVault::CreateStage &value)
 {
     return encode({{"attempt", value.attempt}, {"key", value.key},
         {"groupKey", QString::fromLatin1(value.groupKey.toBase64())}, {"createdAt", value.createdAt},
-        {"dispatchAttempted", value.dispatchAttempted}});
+        {"dispatchAttempted", value.dispatchAttempted}, {"missingEvidence", value.missingEvidence}});
 }
 
 std::optional<NativeChatKeyVault::CreateStage> decodeCreateStage(const QByteArray &bytes)
@@ -787,6 +788,12 @@ std::optional<NativeChatKeyVault::CreateStage> decodeCreateStage(const QByteArra
     // have gone out. Default to dispatch-attempted — the safe, never-lossy
     // side — so recovery can only ever retain such a stage, never retire it.
     stage.dispatchAttempted = object.value("dispatchAttempted").toBool(true);
+    // Absence evidence: records from before the evidence contract carry no
+    // field and decode as zero observations (nothing has been re-checked
+    // yet, so no reclamation may be based on them).
+    const auto evidence = object.value("missingEvidence").toDouble(0);
+    if (!validInteger(evidence) || evidence < 0 || evidence > std::numeric_limits<int>::max()) return {};
+    stage.missingEvidence = int(evidence);
     if (!isUuid(stage.attempt) || !isUuid(stage.key) || stage.groupKey.size() != 32) return {};
     return std::move(stage);
 }
@@ -844,6 +851,28 @@ Failure NativeChatKeyVault::markCreateStageDispatchAttempted(const Lease &value,
         return finishTransaction(Failure::None);
     }
     old->dispatchAttempted = true;
+    auto encoded = encodeCreateStage(*old);
+    cleanse(old->groupKey);
+    result = writeRecord(record, encoded);
+    cleanse(encoded);
+    return finishTransaction(result);
+}
+
+Failure NativeChatKeyVault::setCreateStageMissingEvidence(const Lease &value, const QString &attempt, int evidence)
+{
+    if (!accepts(value)) return Failure::Superseded;
+    if (evidence < 0) return Failure::InvalidKey;
+    const auto record = createStageAddress(attempt);
+    if (record.isEmpty()) return Failure::InvalidAddress;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    Failure result = Failure::None;
+    auto old = readCreateStageRecord(attempt.toLower(), result);
+    if (result != Failure::None) return finishTransaction(result); // MissingKey / Corrupt
+    if (old->missingEvidence == evidence) { // idempotent: evidence-only bookkeeping
+        cleanse(old->groupKey);
+        return finishTransaction(Failure::None);
+    }
+    old->missingEvidence = evidence;
     auto encoded = encodeCreateStage(*old);
     cleanse(old->groupKey);
     result = writeRecord(record, encoded);

@@ -65,12 +65,27 @@ public:
     // stage may still land server-side and is retained on inconclusive
     // answers. Records written before this contract existed (no field) decode
     // as dispatch-attempted: the safe, never-lossy default.
+    //
+    // Conclusive-absence evidence (review findings 4575672241/4575672242):
+    // a dispatch-attempted stage is retained on non-committal answers, but a
+    // stage whose stream 404s forever could then never be removed and would
+    // permanently hold one of the MaximumCreateStages budget slots. Each
+    // recovery scan cycle that observes a DEFINITIVE 404 for the stream dur-
+    // ably bumps missingEvidence; a 2xx answer (the stream exists) resets it
+    // to 0; transport errors and 5xx leave it untouched (they prove neither).
+    // The controller retires the stage only once the durable counter plus the
+    // stage's age establish that creation is impossible (see the controller's
+    // minimumChannelStageMissingObservations / minimumChannelStageReclaimAge).
+    // This never re-classifies an in-flight or still-committing POST: the
+    // counter can only grow across SEPARATE scan cycles, each one a fresh
+    // definitive 404, and only after the stage aged past any late commit.
     struct CreateStage {
         QString attempt;
         QString key;
         QByteArray groupKey;
         qint64 createdAt = 0;
         bool dispatchAttempted = false;
+        int missingEvidence = 0;
         void clearSecrets();
     };
     struct CreateStageResult { Failure failure = Failure::Unavailable; std::optional<CreateStage> value; };
@@ -109,6 +124,11 @@ public:
     // recovery may retire it without risking a channel whose key is only in
     // the vault. Missing stage: MissingKey; lease mismatch: Superseded.
     Failure markCreateStageDispatchAttempted(const Lease &lease, const QString &attempt);
+    // Durably store the controller's conclusive-absence evidence for a stage
+    // (see CreateStage::missingEvidence). Negative counts are rejected; the
+    // write is idempotent for an unchanged value. Missing stage: MissingKey;
+    // lease mismatch: Superseded.
+    Failure setCreateStageMissingEvidence(const Lease &lease, const QString &attempt, int evidence);
     CreateStageResult readCreateStage(const Lease &lease, const QString &attempt);
     CreateStageListResult createStages(const Lease &lease);
     Failure clearCreateStage(const Lease &lease, const QString &attempt);
