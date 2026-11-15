@@ -149,6 +149,13 @@ locale's short-month joined style (reference `formatDateJoined`,
 `{year: numeric, month: short, day: numeric}`). Values come from the
 verified user-directory row exactly like `createWorkspaceRightPanelUserDetails`.
 
+A nonempty own-profile description follows the detail rows in view mode, using
+only the loaded IAM profile for the current owner, like the reference
+`editor.profile.description`. The About me row preserves line breaks, wraps long
+words, displays literal plain text and has no copy button. Its height follows the
+content. An empty description hides the row; opening another user's profile does
+not reuse the current owner's description or fetch that user's IAM profile.
+
 ## Edit mode (self only, `right-panel-user-profile.ui.tsx:602-731`)
 
 - Avatar becomes a button with a 20x20 round badge (`bg-icon-base`, `stylus`
@@ -184,7 +191,9 @@ verified user-directory row exactly like `createWorkspaceRightPanelUserDetails`.
   response re-validates `uuid == session user`. After the update the client
   re-reads `GET {messenger}/users/{uuid}`; a mismatch or failure leaves the
   profile saved but shows `settings.profileRefreshPending` (the reference
-  `refreshPending` state) without rolling back.
+  `refreshPending` state) without rolling back. The directory read captures the
+  existing avatar-operation ticket; a later upload or reset prevents that older
+  read from replacing the avatar, while the saved identity fields still refresh.
 - Cancel resets the draft, the pending avatar change and the dialog.
 - A profile refresh status line `settings.profileRefreshPending` renders under
   the header while pending. Switching profile or session aborts in-flight
@@ -232,8 +241,11 @@ failure reopens the dialog with `settings.avatarUpdateError` /
   default topic; DM stream missing -> create the direct stream and open the
   default topic (native reuses the verified `startDirectChat` lookup/create
   machinery from #110, which enforces the same default-topic validation);
-  existing stream without a valid default topic logs an error and does
-  nothing. The chip is disabled while a create is pending.
+  an existing stream whose DTO omits `default_topic_uuid` loads its topic list
+  and opens the single verified `is_default` topic. Until verification it stays
+  in the stream view. No default or multiple defaults leave the topic unselected;
+  a later user navigation or failed topic request retires the pending route.
+  The chip is disabled while the route or a create is pending.
 - Call: same navigation target with a pending call handoff; the Jitsi DM call
   itself is gated on epic #33, so native renders the Call chip disabled.
 - Own-profile detection: `userUuid == verified session user`.
@@ -374,3 +386,14 @@ The page xl avatar carries objectName `profileHeaderAvatar`: `profileAvatar`
 already names the 36 px account-menu avatar in `Main.qml` and window tests
 resolve objectNames globally, so the reference xl avatar keeps a unique name
 (the hidden page instance must not shadow the header lookup).
+
+## Regression coverage
+
+The controller fixtures hold real HTTP responses to cover the omitted default
+UUID, absent or ambiguous defaults, failed requests, stale topic cache data, navigation while the
+list is in flight, and an old profile read arriving after avatar upload or reset.
+The visible Qt Quick profile checks exercise the Message chip with and without
+the optional catalog field and the About me load/edit/save/view lifecycle,
+including wrapping, plain text, empty values and switching to a peer profile.
+These synthetic Linux checks do not establish live-server or other-platform
+acceptance.

@@ -4296,8 +4296,9 @@ void NativeController::loadOwnProfile()
 void NativeController::refreshOwnProfileProjection(const QString &user, quint64 ticket,
     const QVariantMap &savedProfile)
 {
+    const auto avatarTicket = m_ownAvatarTicket;
     request("GET", messenger + "/users/" + user, {}, {},
-        [this, user, ticket, savedProfile](const ApiResult &result) {
+        [this, user, ticket, savedProfile, avatarTicket](const ApiResult &result) {
         if (!profileContext(user, ticket, m_ownProfileTicket)) return;
         const auto raw = result.ok() ? result.data.toObject() : QJsonObject{};
         const auto trimmed = [](QString value) { return value.trimmed(); };
@@ -4313,7 +4314,10 @@ void NativeController::refreshOwnProfileProjection(const QString &user, quint64 
             presentation.name = directoryViewerName(raw);
             presentation.email = raw.value("email").toString();
             presentation.username = username;
-            if (raw.contains("avatar")) presentation.avatar = imageAvatarReference(raw.value("avatar"));
+            // This read may predate an upload/reset. Preserve the newer
+            // avatar action while still admitting the saved profile fields.
+            if (avatarTicket == m_ownAvatarTicket && raw.contains("avatar"))
+                presentation.avatar = imageAvatarReference(raw.value("avatar"));
             m_names.insert(user, presentation);
             m_ownProfileRefresh = false;
         } else {
@@ -4534,8 +4538,9 @@ void NativeController::openDirectChatFromProfile(const QString &userUuid)
         navigateProfileDirect(navigation);
         return;
     case ProfileDirectNavigation::Status::MissingDefaultTopic:
-        // Reference contract: a stream without a default topic logs an error
-        // and does nothing.
+        // The catalog's optional default_topic_uuid is not proof that the
+        // stream lacks a default. Resolve the existing stream's topic page.
+        navigateProfileDirect(navigation);
         return;
     case ProfileDirectNavigation::Status::StreamMissing:
         if (canStartDirectChatWith(peer)) startDirectChat(peer);
@@ -11526,7 +11531,7 @@ void NativeController::loadTopics()
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified
         // page only (the selection/topicRequest guards above apply).
-        if (m_profileDirectActive && m_stream == m_profileDirectStream) {
+        if (authoritative && m_profileDirectActive && m_stream == m_profileDirectStream) {
             auto target = m_profileDirectTopic;
             const bool present = ids.contains(target);
             if (!present && target.isEmpty()) {
@@ -11541,7 +11546,12 @@ void NativeController::loadTopics()
         }
         notifyTrustChanged();
         return true;
-    }, m_topicSeedUnverified);
+    }, m_topicSeedUnverified, [this, selection, topicRequest] {
+        if (selection != m_selection || topicRequest != m_topicRequest
+            || !m_profileDirectActive || m_stream != m_profileDirectStream) return;
+        m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
+        emit stateChanged();
+    });
 }
 
 void NativeController::interruptTopicOpening()

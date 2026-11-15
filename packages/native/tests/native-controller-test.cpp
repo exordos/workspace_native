@@ -19420,6 +19420,58 @@ private slots:
         QCOMPARE(controller.profileSnapshot(userId).value("avatar").toString(), test.avatarRef);
     }
 
+    void ownProfileDelayedRefreshPreservesNewerAvatar_data()
+    {
+        QTest::addColumn<bool>("remove");
+        QTest::newRow("upload") << false;
+        QTest::newRow("remove") << true;
+    }
+    void ownProfileDelayedRefreshPreservesNewerAvatar()
+    {
+        QFETCH(bool, remove);
+        ProfileFixture test;
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.loadOwnProfile();
+        QTRY_VERIFY(controller.ownProfileLoaded());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("avatar.png");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray::fromHex("89504e470d0a1a0a") + "PNGBYTES");
+        file.close();
+        if (remove) {
+            controller.uploadOwnProfileAvatar(path);
+            QTRY_COMPARE(controller.userAvatar(userId), test.avatarRef);
+        }
+        test.iamResponse["first_name"] = QStringLiteral("Updated");
+        test.directoryRow = test.iamResponse;
+        test.directoryRow["avatar"] = remove ? QJsonValue(test.avatarRef) : QJsonValue(QJsonValue::Null);
+        std::function<void()> releaseRefresh;
+        const auto fallback = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/users/" + userId) {
+                ++test.directoryGets;
+                Response response{test.directoryRow};
+                response.defer = [&](auto send) { releaseRefresh = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        controller.saveOwnProfile({{"firstName", "Updated"}}, remove ? "remove" : "upload", path);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseRefresh), 2000);
+        QTRY_VERIFY(!controller.ownAvatarBusy());
+        const auto expected = remove ? QString{} : test.avatarRef;
+        QCOMPARE(controller.userAvatar(userId), expected);
+        releaseRefresh();
+        QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(controller.profileSnapshot(userId).value("title").toString(), QStringLiteral("Updated Volkova"));
+        QCOMPARE(controller.profileSnapshot(userId).value("avatar").toString(), expected);
+        QVERIFY(!controller.ownProfileRefreshPending());
+    }
+
     void ownProfileAvatarValidationRejectsWrongKindsAndEmptyFiles()
     {
         ProfileFixture test; QVERIFY(test.start()); auto &controller = test.fixture.controller;
@@ -19500,6 +19552,106 @@ private slots:
         QCOMPARE(controller.selectedStream(), directId);
         QCOMPARE(controller.selectedTopic(), channelDefault);
         QCOMPARE(controller.profileDirectPending(), false);
+    }
+
+    void profileMessageResolvesOmittedDefaultFromVerifiedTopics_data()
+    {
+        QTest::addColumn<int>("defaultCount");
+        QTest::addColumn<bool>("staleCache");
+        QTest::newRow("one-default") << 1 << false;
+        QTest::newRow("no-default") << 0 << false;
+        QTest::newRow("failed-list") << -1 << false;
+        QTest::newRow("ambiguous-default") << 2 << false;
+        QTest::newRow("stale-default-awaits-verification") << 1 << true;
+    }
+    void profileMessageResolvesOmittedDefaultFromVerifiedTopics()
+    {
+        QFETCH(int, defaultCount);
+        QFETCH(bool, staleCache);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), NativeCache::Policy{}, true);
+        DirectChatFixture test;
+        if (staleCache) test.fixture.controller.useCache(&cache);
+        test.seed();
+        test.created.remove("default_topic_uuid");
+        test.gets = 1; // Include the existing DM in the initial stream catalog.
+        std::function<void()> releaseTopics;
+        const auto fallback = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == directId) {
+                ++test.topicGets;
+                QJsonArray rows;
+                for (int i = 0; i < defaultCount; ++i) {
+                    auto row = test.defaultTopic;
+                    if (i) row["uuid"] = QStringLiteral("88000000-0000-4000-8000-000000000011");
+                    rows.append(row);
+                }
+                Response response{rows, defaultCount < 0 ? 503 : 200};
+                response.defer = [&](auto send) { releaseTopics = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 2);
+        QTRY_VERIFY(!controller.busy());
+        if (staleCache) {
+            QTRY_VERIFY(cache.available());
+            QVERIFY(flushCache(cache));
+            QVERIFY(cache.put(cache.lease(), {NativeCache::Kind::Topics, directId, {}, {}},
+                QJsonArray{test.defaultTopic}, {}, nullptr, {}, true));
+            QVERIFY(flushCache(cache));
+            const auto saved = cacheEntry(cache, cache.lease(), {NativeCache::Kind::Topics, directId, {}, {}});
+            QVERIFY(saved && !saved->fresh);
+        }
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseTopics), 2000);
+        QCOMPARE(test.posts, 0);
+        QCOMPARE(controller.selectedStream(), directId);
+        QCOMPARE(controller.selectedTopic(), QString{});
+        QVERIFY(controller.profileDirectPending());
+        releaseTopics();
+        QTRY_VERIFY(!controller.profileDirectPending());
+        QCOMPARE(controller.selectedTopic(), defaultCount == 1 ? channelDefault : QString{});
+    }
+
+    void profileMessageLateDefaultCannotReplaceNewerNavigation()
+    {
+        DirectChatFixture test;
+        test.seed();
+        test.created.remove("default_topic_uuid");
+        test.gets = 1;
+        std::function<void()> releaseTopics;
+        const auto fallback = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == directId) {
+                Response response{QJsonArray{test.defaultTopic}};
+                response.defer = [&](auto send) { releaseTopics = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 2);
+        QTRY_VERIFY(!controller.busy());
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseTopics), 2000);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!controller.profileDirectPending());
+        releaseTopics();
+        QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(controller.selectedStream(), streamId);
+        QCOMPARE(controller.selectedTopic(), QString{});
     }
 
     void openDirectChatFromProfileCreatesMissingStreamAndIgnoresBrokenDefaults()
