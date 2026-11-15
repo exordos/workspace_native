@@ -119,13 +119,22 @@ active `bg-accent/20`, selected `bg-accent/10`, else hover.
   and the UUID for created folders; it is the stable QML objectName key.
 - Load path: `reloadSnapshot()` fires `loadFolders()` - a `GET
   /api/workspace/v1/messenger/folders/` through the existing API client with
-  the same catalog-epoch guard as the other bootstrap collections. It is *not*
+  the same catalog-epoch guard as the other bootstrap collections. The loader
+  walks **every** page before publishing: it follows the `X-Pagination-Marker`
+  cursor (re-issuing with `page_marker`) until the server stops handing one
+  out, then parses the combined rows in one pass; a repeated cursor or a
+  > 100 000-row accumulation ends the walk with what was collected. It is *not*
   part of the snapshot part counter: the rail must render from a degraded
   backend exactly like the stream catalog does (system slots always exist).
 - Parsing accepts the snake_case DTO fields (`background_color_value`,
   `unread_count`, `system_type`, `folder_items[].stream_uuid`) and also the
-  camelCase aliases. System type resolution mirrors the reference: the three
-  fixed UUIDs force their type; reported `all` on another UUID is `created`.
+  camelCase aliases (`backgroundColorValue`, `unreadCount`, `systemType`,
+  `folderItems[].streamUuid`). System type resolution mirrors the reference:
+  the three fixed UUIDs force their type; reported `all` on another UUID is
+  `created`. The positional "first row without a type is All" rule applies
+  only while the payload carries no fixed All UUID - with a fixed All row
+  present, an untyped foreign UUID resolves to `created` so both rows never
+  take the All key.
 - System folder synthesis: missing All / Personal / Channels rows are
   synthesized with the fixed UUIDs and localized titles. Synthesized rows are
   marked `synthesized: true` and scope the sidebar to all streams (they carry
@@ -162,8 +171,10 @@ active `bg-accent/20`, selected `bg-accent/10`, else hover.
   visual rules above with existing theme tokens: system hover uses
   `sidebar-item-hover` + `border-subtle`; custom hover uses the folder color
   at 0.10/0.22 alpha; selection uses scale 1.1 + colored icon/label, no fill.
-- objectNames: `folder-<key>` (clickable cell), `folderBadge-<key>`,
-  `folderAddButton`.
+- objectNames: `folder-<key>` (clickable cell), `folderIcon-<key>` (icon
+  button inside the card), `folderBadge-<key>`, `folderAddButton`. The cell
+  and the icon behave identically: both `closeDrafts()` first, then select the
+  folder (selecting any destination closes the drafts page).
 - Unread badge: same `badge-bg`/`badge-text` pill treatment as the sidebar row
   badge, placed at card `right-1 top-0`, visible only when `unreadCount > 0`.
 
