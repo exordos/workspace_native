@@ -386,12 +386,8 @@
             <translation>Каналы</translation>
         </message>
         <message>
-            <source>This filter is not implemented yet</source>
-            <translation>Этот фильтр ещё не реализован</translation>
-        </message>
-        <message>
-            <source>Folder creation is not implemented yet</source>
-            <translation>Создание папок ещё не реализовано</translation>
+            <source>Add folder</source>
+            <translation>Добавить папку</translation>
         </message>
         <message>
             <source>Choose a conversation</source>

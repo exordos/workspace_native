@@ -115,7 +115,7 @@ foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
-set(native_icons chat_bubble calendar mail folders profile channels add attach smile
+set(native_icons chat_bubble calendar mail folders folder folder_open profile channels add attach smile
     composer-send composer-bottom-panel-open composer-bottom-panel-close
     composer-add-link composer-format-bold composer-format-italic composer-strikethrough
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
