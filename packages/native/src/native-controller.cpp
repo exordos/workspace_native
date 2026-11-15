@@ -4590,6 +4590,16 @@ void NativeController::scheduleChannelStageRecoveryRetry(const QString &token)
     QTimer::singleShot(int(backoff), this, [this, token] { resolveChannelCreateStages(token); });
 }
 
+QJsonArray NativeController::unresolvedChannelCreateStages() const
+{
+    return {}; // RED repro stub: the inventory and resolve land in the fix commit.
+}
+
+void NativeController::resolveChannelCreateStage(const QString &attempt)
+{
+    Q_UNUSED(attempt); // RED repro stub: the fix commit implements the terminal resolution.
+}
+
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,
     const QString &path, QUrlQuery query, std::function<void(const QJsonArray &)> done,
     QJsonArray rows, QSet<QByteArray> markers)
