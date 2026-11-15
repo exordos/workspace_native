@@ -34,6 +34,7 @@ public:
     using Done = std::function<void(bool)>;
     explicit NativeDrafts(NativeDraftService *storage, QObject *parent = nullptr);
     ~NativeDrafts() override;
+    NativeDraftService *storage() const;
     void setOwner(const QString &owner);
     QString owner() const;
     void select(const QString &stream, const QString &topic);

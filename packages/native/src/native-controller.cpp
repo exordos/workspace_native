@@ -6948,8 +6948,8 @@ void NativeController::useDrafts(NativeDrafts *drafts)
             }
             if (guard) emit stateChanged();
         });
-        m_draftStates = connect(drafts, &NativeDrafts::stateChanged, this, [this] { emit stateChanged(); });
-        m_draftSelection = connect(this, &NativeController::stateChanged, this, &NativeController::synchronizeDrafts);
+        m_draftStates = connect(drafts, &NativeDrafts::stateChanged, this, [this] { synchronizeOutgoing(); emit stateChanged(); });
+        m_draftSelection = connect(this, &NativeController::stateChanged, this, [this] { synchronizeDrafts(); synchronizeOutgoing(); });
         m_draftDestroyed = connect(drafts, &QObject::destroyed, this, [this] {
             m_draftStore.clear(); m_draftRoutes.clear(); m_draftOwner.clear();
             emit stateChanged();
@@ -8769,7 +8769,7 @@ void NativeController::forgetSavedAccount(const QString &id)
     forgetSavedAccountWithFollowUp(id, {});
 }
 
-void NativeController::forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done)
+void NativeController::finishForgetSavedAccount(const QString &id, std::function<void()> done)
 {
     if (busy()) return;
     m_error.clear();
@@ -8936,6 +8936,7 @@ void NativeController::reset()
     m_draftRevisions.clear();
     m_draftFallbackOwner.clear(); m_draftFallbackRoute.clear(); m_draftFallback.clear();
     m_pendingSends.clear();
+    m_outgoingOwner.clear(); m_outgoingLoaded = m_outgoingLoading = false; m_outgoingError.clear();
     m_pendingUploads.clear();
     m_attachmentNotices.clear();
     m_downloadEntries.clear();
@@ -11363,7 +11364,7 @@ void NativeController::captureEncryptedSend(SendIntent &intent)
 void NativeController::interruptEncryptedSends()
 {
     for (auto it = m_pendingSends.begin(); it != m_pendingSends.end(); ++it) {
-        if (!it->encrypted || !it->busy || encryptedSendContext(it.key(), it->uuid, it->ticket)) continue;
+        if (!it->encrypted || !it->busy || it->phase == "discarding" || encryptedSendContext(it.key(), it->uuid, it->ticket)) continue;
         const auto active = it.key() + '/' + it->uuid + '/' + QString::number(it->ticket);
         if (m_activeEncryptedSend == active) { m_activeEncryptedSend.clear(); m_sending = false; }
         it->busy = false; it->phase = "uncertain";
@@ -11396,7 +11397,8 @@ void NativeController::sendEncryptedText()
     const auto wire = QString::fromLatin1(encoded.bytes.toBase64());
     if (wire.size() > 213336) { report(tr("The encrypted message exceeds the server size limit. Your text is preserved.")); return; }
     intent.payload = {{"kind", "e2ee"}, {"key_uuid", intent.key}, {"content", wire}};
-    intent.phase = "sending";
+    intent.phase = "sending"; intent.createdAt = QDateTime::currentMSecsSinceEpoch();
+    intent.durable = outgoingStorage() != nullptr;
     const auto conversation = conversationKey();
     m_pendingSends.insert(conversation, intent);
     ++m_messageFields[intent.publicId].pending;
@@ -11404,7 +11406,9 @@ void NativeController::sendEncryptedText()
     const QPointer<NativeController> guard(this);
     emit stateChanged();
     if (guard && encryptedSendContext(conversation, intent.uuid, intent.ticket))
-        postEncryptedSend(conversation, intent.uuid, intent.ticket);
+        admitOutgoing(conversation, [this, conversation, id = intent.uuid, ticket = intent.ticket] {
+            if (encryptedSendContext(conversation, id, ticket)) postEncryptedSend(conversation, id, ticket);
+        });
 }
 
 void NativeController::finishEncryptedSend(const QString &conversation, const QString &id, quint64 ticket, const QString &error)
@@ -11425,6 +11429,10 @@ void NativeController::postEncryptedSend(const QString &conversation, const QStr
     auto intent = m_pendingSends.value(conversation);
     if (!encryptedSendOwned(intent, true)) {
         finishEncryptedSend(conversation, id, ticket, tr("Sending is unavailable. Check the saved message status.")); return;
+    }
+    if (intent.durable && !intent.admitted) {
+        admitOutgoing(conversation, [this, conversation, id, ticket] { postEncryptedSend(conversation, id, ticket); });
+        return;
     }
     m_pendingSends[conversation].dispatched = true;
     const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", intent.stream}, {"topic_uuid", intent.topic}, {"payload", intent.payload}};
@@ -11478,6 +11486,16 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     const auto field = m_messageFields.value(intent.publicId);
     if (field.initialized && field.payloadHash != QCryptographicHash::hash(
         QJsonDocument(intent.payload).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)) return false;
+    if (intent.durable && !intent.retired) {
+        if (intent.phase == "saving") return true;
+        m_pendingSends[conversation].phase = "saving";
+        retireOutgoing(intent, [this, raw, conversation, id, ticket, realtime] {
+            if (!encryptedSendContext(conversation, id, ticket)) return;
+            m_pendingSends[conversation].retired = true;
+            confirmEncryptedSend(raw, conversation, id, ticket, realtime);
+        });
+        return true;
+    }
     m_pendingSends.remove(conversation);
     if (m_activeEncryptedSend == conversation + '/' + id + '/' + QString::number(ticket)) {
         m_activeEncryptedSend.clear(); m_sending = false;
@@ -11519,12 +11537,29 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     return true;
 }
 
-void NativeController::checkPendingSend() { recoverEncryptedSend(false); }
-void NativeController::retryPendingSend() { recoverEncryptedSend(true); }
+void NativeController::checkPendingSend() {
+    if (!m_outgoingError.isEmpty()) { m_outgoingError.clear(); m_outgoingLoaded = false; synchronizeOutgoing(); return; }
+    if (m_pendingSends.value(conversationKey()).encrypted) recoverEncryptedSend(false); else recoverOrdinarySend(false);
+}
+void NativeController::retryPendingSend() {
+    if (m_pendingSends.value(conversationKey()).encrypted) recoverEncryptedSend(true); else recoverOrdinarySend(true);
+}
 void NativeController::recoverEncryptedSend(bool retry)
 {
     const auto conversation = conversationKey();
     auto found = m_pendingSends.find(conversation);
+    if (found != m_pendingSends.end() && found->restored && retry && chatVaultMatches()) {
+        const auto lease = m_chatKeys->lease();
+        auto key = m_chatKeys->read(lease, {found->stream, found->key});
+        const bool usable = key.failure == NativeChatKeyVault::Failure::None && key.value.bytes.size() == 32
+            && key.value.deletionRevision == found->deletion;
+        wipeChatBytes(key.value.bytes);
+        if (usable) { found->vault = m_chatKeys; found->vaultLease = lease; }
+        else {
+            found->error = tr("The original encryption key is unavailable. This pending message cannot be retried.");
+            emit stateChanged(); return;
+        }
+    }
     if (found == m_pendingSends.end() || found->busy || m_sending || !encryptedSendOwned(*found, retry)) return;
     found->statusOnly = !retry;
     captureEncryptedSend(*found); found->phase = "checking";
@@ -11537,7 +11572,8 @@ void NativeController::recoverEncryptedSend(bool retry)
 bool NativeController::canSend() const
 {
     // While an edit session is open the save control, not send, owns submission.
-    if (!m_editingMessage.isEmpty()) return false;
+    if (!m_editingMessage.isEmpty() || !outgoingReady()) return false;
+    if (m_pendingSends.value(conversationKey()).durable) return false;
     // A reply session sends when any tab holds a sendable answer: the blank
     // active draft must not block answers saved in the other tabs
     // (docs/NATIVE_DESKTOP_MULTI_REPLY_TABS.md composition covers every tab).
@@ -12784,6 +12820,7 @@ void NativeController::send()
 {
     if (!m_editingMessage.isEmpty()) return;
     if (currentStream() && currentStream()->encrypted) { sendEncryptedText(); return; }
+    if (m_pendingSends.value(conversationKey()).durable) { recoverOrdinarySend(true); return; }
     if (!canSend())
         return;
     const auto text = draft();
@@ -12835,108 +12872,158 @@ void NativeController::send()
         }
         m_pendingSends.insert(conversation, intent);
     }
-    ++m_messageFields[intent.uuid].pending;
-    const auto context = projectionContext();
-    const auto stream = m_stream;
-    const auto topic = m_topic;
-    staleConversation(stream, topic);
-    m_sending = true;
-    emit stateChanged();
-    const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", stream}, {"topic_uuid", topic},
-        {"payload", QJsonObject{{"kind", "markdown"}, {"content", intent.wire}}}};
-    request("POST", messenger + "/messages/", body, {},
-        [this, stream, topic, text, conversation, intent, context, replyActive, replySnapshot](const ApiResult &result) {
-        staleConversation(stream, topic);
-        const auto sent = parseMessage(result.data.toObject(), m_session->project());
-        if (!result.ok() || !sent || sent->stream != stream || sent->topic != topic
-            || sent->kind != "markdown" || sent->content != intent.wire) {
-            finishMessageIntent(intent.uuid);
-            m_sending = false;
-            report(tr("Sending was not confirmed. Your text is preserved. %1").arg(result.error));
-            return;
+    intent.owner = creationOwnerKey(); intent.project = m_session->project(); intent.user = m_session->user();
+    intent.stream = m_stream; intent.topic = m_topic; intent.routeTopic = m_topic;
+    intent.publicId = QUuid::createUuidV5(QUuid(m_topic), intent.uuid.toUtf8()).toString(QUuid::WithoutBraces);
+    intent.createdAt = QDateTime::currentMSecsSinceEpoch(); intent.durable = outgoingStorage() != nullptr;
+    intent.payload = {{"kind", "markdown"}, {"content", intent.wire}};
+    intent.replyActive = replyActive; intent.replySnapshot = replySnapshot;
+    intent.projection = projectionContext(); intent.catalog = m_catalog; intent.ticket = ++m_nextOutgoing;
+    intent.busy = true; intent.phase = "saving";
+    m_pendingSends[conversation] = intent;
+    ++m_messageFields[intent.publicId].pending; m_sending = true;
+    staleConversation(intent.stream, intent.topic);
+    const QPointer<NativeController> guard(this); emit stateChanged();
+    if (guard) admitOutgoing(conversation, [this, conversation, id = intent.uuid, ticket = intent.ticket] {
+        if (outgoingContext(conversation, id, ticket)) postOrdinarySend(conversation, id, ticket);
+    });
+}
+
+void NativeController::postOrdinarySend(const QString &conversation, const QString &id, quint64 ticket)
+{
+    if (!outgoingContext(conversation, id, ticket)) return;
+    const auto intent = m_pendingSends.value(conversation);
+    if (!outgoingOwned(intent, true)) { failOutgoing(conversation, id, ticket, tr("Sending is unavailable. Your text is preserved.")); return; }
+    m_pendingSends[conversation].phase = "sending";
+    const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", intent.stream}, {"topic_uuid", intent.topic}, {"payload", intent.payload}};
+    request("POST", messenger + "/messages/", body, {}, [this, conversation, id, ticket](const ApiResult &result) {
+        if (!outgoingContext(conversation, id, ticket)) return;
+        const auto intent = m_pendingSends.value(conversation);
+        const auto sent = parseMessage(result.data.toObject(), intent.project);
+        if (!result.ok() || !sent || sent->stream != intent.stream || sent->topic != intent.topic
+            || sent->kind != "markdown" || sent->content != intent.wire || !sent->own || sent->author != intent.user
+            || result.data.toObject().value("user_uuid").toString() != intent.user) {
+            failOutgoing(conversation, id, ticket, tr("Sending was not confirmed. Your text is preserved. %1").arg(result.error)); return;
         }
-        const auto canonicalId = sent->uuid;
-        if (canonicalId != intent.uuid) {
-            ++m_messageFields[canonicalId].pending;
-            finishMessageIntent(intent.uuid);
+        if (sent->uuid != intent.publicId) {
+            ++m_messageFields[sent->uuid].pending;
+            finishMessageIntent(intent.publicId);
         }
-        request("GET", messenger + "/messages/" + canonicalId, {}, {},
-            [this, stream, topic, text, conversation, intent, context, canonicalId, replyActive, replySnapshot](const ApiResult &confirmation) {
-            staleConversation(stream, topic);
-            m_sending = false;
-            const bool deleted = m_messageFields.value(canonicalId).deleted;
-            const auto saved = parseMessage(confirmation.data.toObject(), m_session->project());
-            if (!confirmation.ok() || !saved || saved->uuid != canonicalId || saved->stream != stream || saved->topic != topic
-                || saved->kind != "markdown" || saved->content != intent.wire || !saved->own) {
-                finishMessageIntent(canonicalId);
-                report(tr("Message verification failed. Your text is preserved."));
-                return;
-            }
-            if (deleted) { finishMessageIntent(canonicalId); emit stateChanged(); return; }
-            projectCanonical(confirmation.data.toObject(), NativeCache::Projection::Insert, context);
-            if (m_pendingSends.value(conversation).uuid == intent.uuid)
-                m_pendingSends.remove(conversation);
-            // Check before consuming the sent draft. Content equality alone
-            // misses edits that return to the original text (issue #248).
-            bool replyDraftUnchanged = false;
-            if (!replySnapshot.isEmpty()) {
-                replyDraftUnchanged = m_drafts.value(conversation) == text
-                    && m_draftRevisions.value(conversation) == intent.draftRevision;
-                if (intent.draftCaptured) {
-                    const auto current = m_draftStore ? m_draftStore->capture(stream, topic) : NativeDrafts::Token{};
-                    const auto &captured = intent.draftToken;
-                    replyDraftUnchanged = current.owner == captured.owner && current.uuid == captured.uuid
-                        && current.snapshot == captured.snapshot && current.text == captured.text;
+        m_pendingSends[conversation].publicId = sent->uuid;
+        const auto readBack = [this, conversation, id, ticket] { readOrdinarySend(conversation, id, ticket, false); };
+        // Old servers may return a different public identity. Commit the
+        // authenticated POST result before a restart can lose that address.
+        if (intent.durable && sent->uuid != intent.publicId) {
+            auto *storage = outgoingStorage(); if (!storage) return;
+            storage->putOutgoing(m_outgoingLease, outgoingRecord(m_pendingSends.value(conversation)), this,
+                [this, conversation, id, ticket, readBack](NativeDraftService::Failure failure) {
+                if (!outgoingContext(conversation, id, ticket)) return;
+                if (failure != NativeDraftService::Failure::None) {
+                    failOutgoing(conversation, id, ticket, tr("The pending message could not be saved. Your text is preserved.")); return;
                 }
-            }
-            const QPointer<NativeController> draftGuard(this);
+                readBack();
+            });
+        } else readBack();
+    });
+}
+
+void NativeController::readOrdinarySend(const QString &conversation, const QString &id, quint64 ticket, bool retry)
+{
+    if (!outgoingContext(conversation, id, ticket)) return;
+    const auto intent = m_pendingSends.value(conversation);
+    request("GET", messenger + "/messages/" + intent.publicId, {}, {}, [this, conversation, id, ticket, retry](const ApiResult &result) {
+        if (!outgoingContext(conversation, id, ticket)) return;
+        const auto intent = m_pendingSends.value(conversation);
+        const auto saved = parseMessage(result.data.toObject(), intent.project);
+        if (result.ok() && saved && saved->uuid == intent.publicId && saved->stream == intent.stream && saved->topic == intent.topic
+            && saved->kind == "markdown" && saved->content == intent.wire && saved->own && saved->author == intent.user
+            && result.data.toObject().value("user_uuid").toString() == intent.user) {
+            confirmOrdinarySend(result.data.toObject(), conversation, id, ticket); return;
+        }
+        if (retry && result.status == 404 && outgoingOwned(intent, true)) { postOrdinarySend(conversation, id, ticket); return; }
+        failOutgoing(conversation, id, ticket, tr("Message verification failed. Your text is preserved."));
+    });
+}
+
+void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString &conversation, const QString &id, quint64 ticket)
+{
+    if (!outgoingContext(conversation, id, ticket)) return;
+    const auto intent = m_pendingSends.value(conversation);
+    if (m_messageFields.value(intent.publicId).deleted) {
+        failOutgoing(conversation, id, ticket, tr("The saved message was deleted. Your text is preserved.")); return;
+    }
+    retireOutgoing(intent, [this, raw, conversation, id, ticket, intent] {
+        if (!outgoingContext(conversation, id, ticket)) return;
+        const auto stream = intent.stream, topic = intent.topic, text = intent.text, canonicalId = intent.publicId;
+        const auto replyActive = intent.replyActive; const auto replySnapshot = intent.replySnapshot;
+        const auto context = intent.projection;
+        const auto saved = parseMessage(raw, intent.project); if (!saved) return;
+        const bool deleted = m_messageFields.value(canonicalId).deleted;
+        m_sending = false;
+        if (deleted) { failOutgoing(conversation, id, ticket, tr("The saved message was deleted. Your text is preserved.")); return; }
+        projectCanonical(raw, NativeCache::Projection::Insert, context);
+        if (m_pendingSends.value(conversation).uuid == intent.uuid)
+            m_pendingSends.remove(conversation);
+        // Check before consuming the sent draft. Content equality alone
+        // misses edits that return to the original text (issue #248).
+        bool replyDraftUnchanged = false;
+        if (!replySnapshot.isEmpty()) {
+            replyDraftUnchanged = m_drafts.value(conversation) == text
+                && m_draftRevisions.value(conversation) == intent.draftRevision;
             if (intent.draftCaptured) {
-                if (m_draftStore) m_draftStore->consume(intent.draftToken);
-            } else if (m_drafts.value(conversation) == text
-                       && m_draftRevisions.value(conversation) == intent.draftRevision) m_drafts.remove(conversation);
-            if (!draftGuard) return;
-            m_attachmentNotices.remove(conversation);
-            if (conversation == conversationKey()) {
-                ++m_messageRevision;
-                if (!findMessage(saved->uuid)) {
-                    observeMessage(confirmation.data.toObject());
-                    m_messages = mergeMessages(m_messages, {*saved});
-                }
+                const auto current = m_draftStore ? m_draftStore->capture(stream, topic) : NativeDrafts::Token{};
+                const auto &captured = intent.draftToken;
+                replyDraftUnchanged = current.owner == captured.owner && current.uuid == captured.uuid
+                    && current.snapshot == captured.snapshot && current.text == captured.text;
             }
-            finishMessageIntent(canonicalId);
-            m_error.clear();
-            // Close the session only if its tabs, quotes and answers still match
-            // and the sending draft has not been edited while in flight. The
-            // cleanup targets the sending conversation's session specifically
-            // (reference WorkspaceComposerSendCleanup carries its own conversationId),
-            // whether it still lives in the composer or was parked by navigation.
-            QJsonArray replyNow;
-            QString replyActiveNow;
-            if (conversation == m_replyRoute) {
-                replyActiveNow = m_replyActiveTab;
-                for (const auto &tab : std::as_const(m_replyTabs))
+        }
+        const QPointer<NativeController> draftGuard(this);
+        if (intent.draftCaptured) {
+            if (m_draftStore) m_draftStore->consume(intent.draftToken);
+        } else if (m_drafts.value(conversation) == text
+                   && m_draftRevisions.value(conversation) == intent.draftRevision) m_drafts.remove(conversation);
+        if (!draftGuard) return;
+        m_attachmentNotices.remove(conversation);
+        if (conversation == conversationKey()) {
+            ++m_messageRevision;
+            if (!findMessage(saved->uuid)) {
+                observeMessage(raw);
+                m_messages = mergeMessages(m_messages, {*saved});
+            }
+        }
+        finishMessageIntent(intent.publicId);
+        m_error.clear();
+        // Close the session only if its tabs, quotes and answers still match
+        // and the sending draft has not been edited while in flight. The
+        // cleanup targets the sending conversation's session specifically
+        // (reference WorkspaceComposerSendCleanup carries its own conversationId),
+        // whether it still lives in the composer or was parked by navigation.
+        QJsonArray replyNow;
+        QString replyActiveNow;
+        if (conversation == m_replyRoute) {
+            replyActiveNow = m_replyActiveTab;
+            for (const auto &tab : std::as_const(m_replyTabs))
+                replyNow.append(QJsonArray{tab.id, tab.message, tab.answer});
+        } else {
+            const auto parked = m_replySessions.constFind(conversation);
+            if (parked != m_replySessions.constEnd()) {
+                replyActiveNow = parked->activeTab;
+                for (const auto &tab : parked->tabs)
                     replyNow.append(QJsonArray{tab.id, tab.message, tab.answer});
-            } else {
-                const auto parked = m_replySessions.constFind(conversation);
-                if (parked != m_replySessions.constEnd()) {
-                    replyActiveNow = parked->activeTab;
-                    for (const auto &tab : parked->tabs)
-                        replyNow.append(QJsonArray{tab.id, tab.message, tab.answer});
-                }
             }
-            if (!replySnapshot.isEmpty() && replyDraftUnchanged && replyActiveNow == replyActive && replyNow == replySnapshot) {
-                if (conversation == m_replyRoute) closeReplySession();
-                else m_replySessions.remove(conversation);
-            }
-            const QPointer<NativeController> guard(this);
-            emit draftChanged();
-            if (!guard) return;
-            emit messagesChanged();
-            if (!guard) return;
-            emit stateChanged();
-            if (guard && conversation == conversationKey())
-                emit messageSent(saved->uuid, stream, topic);
-        });
+        }
+        if (!replySnapshot.isEmpty() && replyDraftUnchanged && replyActiveNow == replyActive && replyNow == replySnapshot) {
+            if (conversation == m_replyRoute) closeReplySession();
+            else m_replySessions.remove(conversation);
+        }
+        const QPointer<NativeController> guard(this);
+        emit draftChanged();
+        if (!guard) return;
+        emit messagesChanged();
+        if (!guard) return;
+        emit stateChanged();
+        if (guard && conversation == conversationKey())
+            emit messageSent(saved->uuid, stream, topic);
     });
 }
 

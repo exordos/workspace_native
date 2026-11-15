@@ -47,6 +47,103 @@ class NativeDraftStoreTest final : public QObject {
 private slots:
     void init() { QTest::failOnWarning(); }
 
+    void outgoingRecordSurvivesReopenAndRejectsMutableRetry()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        OutgoingRecord outgoing; outgoing.uuid = returnedId; outgoing.stream = streamId; outgoing.topic = topicId;
+        outgoing.routeTopic = topicId; outgoing.publicId = messageId; outgoing.createdAt = 1760000000123;
+        outgoing.payload = {{"kind", "markdown"}, {"content", "immutable body"}}; outgoing.draftText = "original input";
+        QCOMPARE(store.putOutgoing(outgoing), Failure::None); store.close(); QCOMPARE(store.open(ownerA), Failure::None);
+        const auto page = store.outgoing(); QCOMPARE(page.failure, Failure::None); QCOMPARE(page.rows.size(), 1);
+        QCOMPARE(page.rows[0].payload, outgoing.payload); QCOMPARE(page.rows[0].uuid, outgoing.uuid);
+        auto changed = outgoing; changed.payload.insert("content", "changed retry");
+        QCOMPARE(store.putOutgoing(changed), Failure::InvalidRecord);
+        changed = outgoing; changed.uuid = secondTopicId; QCOMPARE(store.putOutgoing(changed), Failure::InvalidRecord);
+        QCOMPARE(store.outgoing().rows[0].payload, outgoing.payload);
+        // Only a canonical POST-confirmed public identity can be rebound.
+        outgoing.publicId = secondTopicId; QCOMPARE(store.putOutgoing(outgoing), Failure::None);
+        QCOMPARE(store.outgoing().rows[0].publicId, secondTopicId);
+    }
+
+    void outgoingCapacityIsBoundedAndDiscardFreesASlot()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        OutgoingRecord row; row.stream = streamId; row.publicId = messageId; row.createdAt = 1760000000123;
+        row.payload = {{"kind", "markdown"}, {"content", "body"}}; row.draftText = "input";
+        QString first;
+        for (int i = 0; i <= NativeDraftStore::MaximumOutgoingRecords; ++i) {
+            row.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            row.topic = row.routeTopic = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            if (i == 0) first = row.uuid;
+            QCOMPARE(store.putOutgoing(row), i == NativeDraftStore::MaximumOutgoingRecords ? Failure::Capacity : Failure::None);
+        }
+        QCOMPARE(store.outgoing().rows.size(), NativeDraftStore::MaximumOutgoingRecords);
+        QCOMPARE(store.finishOutgoing(first, false), Failure::None); QCOMPARE(store.putOutgoing(row), Failure::None);
+        QCOMPARE(store.outgoing().rows.size(), NativeDraftStore::MaximumOutgoingRecords);
+    }
+
+    void outgoingCompletionAtomicallyConsumesOnlyTheCapturedDraft_data()
+    {
+        QTest::addColumn<bool>("edited"); QTest::addColumn<bool>("failCommit");
+        QTest::newRow("exact") << false << false;
+        QTest::newRow("newer-same-text") << true << false;
+        QTest::newRow("failed-retirement") << false << true;
+    }
+    void outgoingCompletionAtomicallyConsumesOnlyTheCapturedDraft()
+    {
+        QFETCH(bool, edited); QFETCH(bool, failCommit);
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto draft = record(); QCOMPARE(store.put(draft), Failure::None);
+        OutgoingRecord outgoing; outgoing.uuid = messageId; outgoing.stream = draft.stream; outgoing.topic = draft.topic;
+        outgoing.routeTopic = draft.topic; outgoing.publicId = secondTopicId; outgoing.createdAt = draft.updatedAt;
+        outgoing.payload = {{"kind", "markdown"}, {"content", draft.text}};
+        outgoing.draftUuid = draft.uuid; outgoing.draftSnapshot = draft.snapshot; outgoing.draftText = draft.text;
+        QCOMPARE(store.putOutgoing(outgoing), Failure::None);
+        if (edited) { draft.snapshot = secondTopicId; QCOMPARE(store.put(draft), Failure::None); }
+        if (failCommit) QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"),
+            "CREATE TRIGGER block_retirement BEFORE DELETE ON outgoing_messages BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END"));
+        QCOMPARE(store.finishOutgoing(outgoing.uuid, true), failCommit ? Failure::Unavailable : Failure::None);
+        store.close(); QCOMPARE(store.open(ownerA), Failure::None);
+        QCOMPARE(store.outgoing().rows.size(), failCommit ? 1 : 0);
+        QVERIFY(store.read(draft.uuid).record);
+        QCOMPARE(store.read(draft.uuid).record->consumed, !edited && !failCommit);
+        QCOMPARE(store.read(draft.uuid).record->text, draft.text);
+    }
+
+    void outgoingEncryptedRecordsContainOnlyCiphertext()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        OutgoingRecord outgoing; outgoing.uuid = returnedId; outgoing.stream = streamId; outgoing.topic = topicId;
+        outgoing.publicId = messageId; outgoing.createdAt = 1760000000123; outgoing.deletionRevision = 3;
+        outgoing.payload = {{"kind", "e2ee"}, {"key_uuid", secondTopicId}, {"content", QString::fromLatin1(QByteArray(80, 'x').toBase64())}};
+        QCOMPARE(store.putOutgoing(outgoing), Failure::None);
+        for (int i = 0; i < 5; ++i) {
+            auto invalid = outgoing;
+            if (i == 0) invalid.draftText = "private text";
+            if (i == 1) invalid.draftUuid = messageId;
+            if (i == 2) invalid.replyActive = "private reply";
+            if (i == 3) invalid.payload.insert("secret", "key bytes");
+            if (i == 4) invalid.payload.insert("content", "plaintext!");
+            QCOMPARE(store.putOutgoing(invalid), Failure::InvalidRecord);
+        }
+        store.close(); QCOMPARE(store.open(ownerA), Failure::None);
+        QCOMPARE(store.outgoing().rows.size(), 1); QVERIFY(store.outgoing().rows[0].draftText.isEmpty());
+        QCOMPARE(store.open(ownerB), Failure::None); QVERIFY(store.outgoing().rows.isEmpty());
+        QCOMPARE(store.clearOutgoing(), Failure::None);
+        QCOMPARE(store.open(ownerA), Failure::None); QCOMPARE(store.outgoing().rows.size(), 1);
+        QCOMPARE(store.finishOutgoing(returnedId, false), Failure::None); QVERIFY(store.outgoing().rows.isEmpty());
+    }
+
+    void versionOneMigrationPreservesDraftsAndCreatesEmptyOutgoingTable()
+    {
+        QTemporaryDir directory; NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None);
+        auto draft = record(); QCOMPARE(store.put(draft), Failure::None); store.close();
+        QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "DROP TABLE outgoing_messages"));
+        QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "PRAGMA user_version=1"));
+        QCOMPARE(store.open(ownerA), Failure::None); QCOMPARE(store.read(draft.uuid).record->text, draft.text);
+        QCOMPARE(store.outgoing().failure, Failure::None); QVERIFY(store.outgoing().rows.isEmpty());
+    }
+
     void exactTextReplyAndSyncIntentSurviveCloseAndReopen()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -334,7 +431,7 @@ private slots:
         QCOMPARE(store.put(record()), Failure::None);
         QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "UPDATE draft_records SET payload = X'6e6f742d6a736f6e'"));
         QCOMPARE(store.read(returnedId).failure, Failure::Corrupt); store.close();
-        QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "PRAGMA user_version=2"));
+        QVERIFY(sql(directory.filePath(ownerA + ".sqlite3"), "PRAGMA user_version=999"));
         QCOMPARE(store.open(ownerA), Failure::Schema); QVERIFY(!store.available());
     }
 

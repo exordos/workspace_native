@@ -23783,6 +23783,70 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(add->property("enabled").toBool());
     }
 
+    void durableOutgoingActualMainRetriesAndDiscards_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"}) for (const auto *mode : {"light", "dark"})
+            QTest::addRow("%s-%s", locale, mode) << QString(locale) << QString(mode);
+    }
+    void durableOutgoingActualMainRetriesAndDiscards()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory; WindowDraftFixture fixture;
+        QVector<QJsonObject> posts; QStringList requests; QJsonObject saved; bool complete = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.contains("/messenger/messages/")) {
+                if (request.method == "POST") {
+                    posts.append(request.body); requests.append("POST");
+                    const auto placement = QUuid::createUuidV5(QUuid(topicId), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                    saved = message(request.body.value("payload").toObject().value("content").toString(), placement);
+                    return complete ? Response{saved} : Response{QJsonObject{}, 503};
+                }
+                if (!path.endsWith('/')) {
+                    requests.append("GET"); return complete && posts.size() == 2 ? Response{saved} : Response{QJsonObject{}, 404};
+                }
+                return {QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session); controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("preferences.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] { if (guard) closeIncubatedTestWindow(engine, guard.data()); });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session)); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.setDraft("Durable outgoing original"); QTRY_VERIFY(controller.canSend()); click(window, view("sendButton"));
+        QTRY_COMPARE(posts.size(), 1); QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(view("pendingOutgoingStatus"));
+        QVERIFY(!view("sendButton")->isEnabled()); QVERIFY(view("retryPendingOutgoingButton")->isEnabled());
+        QCOMPARE(view("retryPendingOutgoingButton")->property("text").toString(), locale == "ru" ? QString("Повторить") : QString("Retry"));
+        auto *composer = view("messageComposer"); QVERIFY(composer); composer->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent edited; edited.setCommitString("Newer draft survives retry"); QCoreApplication::sendEvent(composer, &edited);
+        QTRY_COMPARE(controller.draft(), "Newer draft survives retry");
+        const auto captures = qEnvironmentVariable("CASSI_OUTGOING_SCREENSHOTS");
+        if (!captures.isEmpty()) QVERIFY(window->grabWindow().save(QDir(captures).filePath(locale + "-" + mode + "-pending.png")));
+        complete = true; click(window, view("retryPendingOutgoingButton")); QTRY_COMPARE(posts.size(), 2);
+        QTRY_VERIFY(controller.outgoingSend().isEmpty()); QCOMPARE(posts[0], posts[1]);
+        QCOMPARE(requests, QStringList({"POST", "GET", "POST", "GET"})); QCOMPARE(controller.draft(), "Newer draft survives retry");
+        complete = false; QTRY_VERIFY(controller.canSend()); click(window, view("sendButton"));
+        QTRY_COMPARE(posts.size(), 3); QTRY_VERIFY(!controller.busy());
+        click(window, view("discardPendingOutgoingButton"));
+        auto *dialog = window->findChild<QObject *>("discardPendingOutgoingDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool()); QVERIFY(!controller.outgoingSend().isEmpty());
+        click(window, view("discardPendingOutgoingButton")); QTRY_VERIFY(dialog->property("visible").toBool());
+        QQmlExpression discardButton(qmlContext(dialog), dialog, "standardButton(8388608)"); // Dialog.Discard
+        auto *discard = qobject_cast<QQuickItem *>(discardButton.evaluate().value<QObject *>());
+        QVERIFY(!discardButton.hasError()); QVERIFY(discard); click(window, discard);
+        QTRY_VERIFY(controller.outgoingSend().isEmpty());
+        QCOMPARE(controller.draft(), "Newer draft survives retry"); QCOMPARE(posts.size(), 3);
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+    }
+
     // Review finding (cid 4577604523): the folder icon button must close the
     // drafts view like the surrounding cell does - selecting a folder while
     // drafts are open swaps the page out in the reference too.
