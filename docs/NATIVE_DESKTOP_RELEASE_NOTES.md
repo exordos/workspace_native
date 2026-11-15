@@ -1,3 +1,45 @@
+# Workspace Native 0.25.1 - Linux development preview
+
+Bug-fix release on top of 0.25.0:
+
+- A poll whose creation response arrives after you navigated away now lands
+  only in its original topic and channel aggregate - it no longer inserts
+  itself into whichever conversation is open when the answer arrives.
+- The media viewer now owns the keyboard while it is open: typing and Enter
+  stay inside the viewer, the covered draft or edit can no longer be changed
+  or submitted, and the previous focus and text come back when it closes.
+  Read receipts pause while media covers the conversation and resume after.
+- Attachments added while editing a message belong to that edit session:
+  they appear in the edited body only, never in the conversation draft, and
+  cancelling or replacing the edit cancels only its own uploads.
+- Startup no longer eagerly rebuilds the user directory for hidden direct
+  chat, channel-creation and add-members pickers; each picker reads the
+  current directory when it actually opens. This removes one measured
+  startup cost on the way to the broader responsiveness work.
+- Encrypted quote previews became resilient: retry now works for a quoted message
+  fetched outside the loaded history, a confirmed edit of the source message
+  invalidates the stale encrypted preview so old plaintext is never shown
+  again, and pending quote lookups retire with their session instead of
+  retrying under another account.
+- User profile drawer: the Message action opens the right direct chat even
+  when the directory has no default-topic pointer, an older directory
+  refresh can no longer overwrite a freshly uploaded or removed avatar, and
+  a saved About-me description stays visible after load and save.
+- Quick reactions no longer hide behind neighbouring bubbles: the reaction
+  capsule is raised above the neighbours so overlapping emoji stay visible
+  and clickable, and the mouse wheel belongs to the capsule while its
+  overflowing list scrolls - a list that already fits never moves the
+  conversation behind it.
+- Access-token renewal no longer strands encrypted-channel creation work:
+  an interrupted status check settles honestly as unresolved (the staged
+  channel key survives), a confirmed Discard is no longer blocked by the
+  stale in-flight marker, and automatic recovery re-arms right after the
+  renewal or a re-login - no restart needed.
+- Fixed a crash where a late definitive answer from a recovery check could
+  reach a creation attempt the user had already discarded.
+
+---
+
 # Workspace Native 0.25.0 - Linux development preview
 
 The protected-chat cluster and two chat surfaces landed from the reference desktop:
