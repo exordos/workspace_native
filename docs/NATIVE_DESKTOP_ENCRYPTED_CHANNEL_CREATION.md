@@ -212,11 +212,13 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   records are ordinary stage records, never a separate quota and never
   evicted — and the bounded backoff rescans keep re-checking them. When a
   later cycle's GET finally serves the stream, the verified echo commits
-  the key and frees the slot (re-adoption). The residual starvation bound
+  the verified echo commits the key and frees the slot (re-adoption). The residual starvation bound
   this design accepts: 32 dispatched-but-unresolved attempts hold the whole
   budget and a later encrypted create is rejected locally until one of the
-  dormant streams lands — the only alternative, evicting dormant keys,
-  would restore exactly the key loss this finding reported. The mechanism
+  dormant streams lands OR the user explicitly closes an attempt through the
+  user-invokable terminal resolution (next bullet) — the only alternative,
+  automatically evicting dormant keys, would restore exactly the key loss this
+  finding reported. The mechanism
   keeps the R2 retention contract closed: a POST still in flight or still
   committing is never reclassified — in-session the live intent is skipped
   by the scan and only the POST's own definite rejection (400/401/403/404)
@@ -225,6 +227,49 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   the key and clears the stage. Stage records written before this contract existed
   carry no phase and decode as `dispatch-attempted` with zero evidence (the
   same never-lossy default).
+- User-invokable terminal resolution (review finding 4576823403, R7): dormant
+  quarantine removed the key-loss bug but left a permanent dead end — a full
+  32-record budget of dormant attempts rejects every later encrypted create
+  across restarts, and no automatic mechanism may ever free a slot because
+  absence evidence never proves a terminal outcome. The budget must therefore
+  never be permanently starved, and the safe terminal authority a client
+  cannot be is a HUMAN. The shape chosen: (1) an unresolved-attempt inventory
+  on the controller, `unresolvedChannelCreateStages()` — one row per durable
+  stage not owned by a live in-memory intent, carrying the attempt identity
+  (the uuid-attempt and the staged key uuid), the created timestamp, the
+  dispatch phase, the absence evidence count and the DORMANT flag — and never
+  the group key; (2) an explicit user-invokable operation
+  `resolveChannelCreateStage(attemptUuid)` (both `Q_INVOKABLE`, so any UI can
+  drive them without new plumbing; the full settings page that presents them
+  is out of scope for this slice and deliberately not built here), which
+  re-checks the attempt's stream identity NOW and only ever acts on the
+  combination of the human's explicit request plus a DEFINITIVE live answer,
+  reporting the terminal result through the `channelCreateStageResolved
+  (attempt, outcome, message)` signal:
+  - `released` — the canonical GET answers a definitive `404`: the stream does
+    not exist and the human, not an absence heuristic, decides the attempt is
+    not worth waiting for any longer. The stage record is cleared and its
+    budget slot is free again; the key discard is the explicit consequence of
+    that human order, never inferred by the software. A never-dispatched
+    `prepared` stage is also released without a GET (its POST provably never
+    left any process — the same reclaim the recovery scan performs).
+  - `committed` — the stream now exists and the encrypted echo verifies under
+    the staged attempt/key uuid: the key is COMMITTED to the vault (the same
+    re-adoption commit recovery performs) and the stage closed. A resolve can
+    therefore never discard the key of a channel that turned out to exist.
+  - `unresolved` — anything inconclusive (transport error, `5xx`, a `2xx` echo
+    that does not verify, an unknown attempt, a live in-flight intent for the
+    attempt, a failed vault write, or the session/vault lease changing
+    mid-check): the stage record and its key stay byte-for-byte intact (a
+    non-verifying `2xx` only voids the stored absence evidence, exactly like
+    the recovery scan).
+  An encrypted create rejected because the budget is full (`Capacity` from the
+  vault at staging time) now names the condition and points at this path
+  ("All encrypted channel creation slots are held by unresolved attempts...")
+  instead of the generic unavailability line; dormants stay bounded inside the
+  same 32-record budget as in R6 — no automatic aging was reintroduced.
+  R4-style starvation now breaks via explicit user resolve, not automatic
+  eviction.
 - Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
   a `404` from the recovery GET is NOT proof the original POST cannot land —
   a delayed or in-flight creation can still commit server-side moments after
@@ -311,6 +356,14 @@ backoff after the fast retry window ends
 while the failure is still in effect, so an outage longer than the window
 still commits the stage in-session
 (`encryptedChannelCreationRecoveryReArmsAfterFastRetryWindowEnds`).
+The R7 user-invokable terminal resolution (finding 4576823403) adds
+`encryptedChannelCreationDormantBudgetIsUserResolvable`: a dormant-full budget
+still rejects a 33rd encrypted create locally, the unresolved-attempt
+inventory lists every dormant attempt with its identity, created timestamp and
+dormant flag (never its key), resolving a definitively-404 attempt releases
+the record and frees the slot so the next encrypted create completes, and
+resolving an attempt whose stream has landed commits (re-adopts) the key
+instead of discarding it; resolving an unknown attempt changes nothing.
 
 `native-window-test.cpp` (group `native-native-window`) covers: the switch is
 present, enabled and interactive; turning it on clears and disables
