@@ -12083,11 +12083,11 @@ void NativeController::send()
     // every reply tab serializes as "[Name](urn:quote:uuid)" + blank line + answer,
     // blocks joined by blank lines in tab order with trailing whitespace trimmed.
     const auto replyActive = m_replyActiveTab;
-    // Quote identity is part of the snapshot: beginReply can re-point a tab's
-    // quoted message without touching the tab ids or the active pointer.
-    QStringList replySnapshot;
+    // Every answer is part of the snapshot, including inactive tabs. Quote
+    // identity can also change without touching the tab ids or active pointer.
+    QJsonArray replySnapshot;
     for (const auto &tab : std::as_const(m_replyTabs))
-        replySnapshot << tab.id + QLatin1Char(':') + tab.message;
+        replySnapshot.append(QJsonArray{tab.id, tab.message, tab.answer});
     // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
     // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
     // mention serialization happens before the reply quote prefix join) and
@@ -12168,6 +12168,19 @@ void NativeController::send()
             projectCanonical(confirmation.data.toObject(), NativeCache::Projection::Insert, context);
             if (m_pendingSends.value(conversation).uuid == intent.uuid)
                 m_pendingSends.remove(conversation);
+            // Check before consuming the sent draft. Content equality alone
+            // misses edits that return to the original text (issue #248).
+            bool replyDraftUnchanged = false;
+            if (!replySnapshot.isEmpty()) {
+                replyDraftUnchanged = m_drafts.value(conversation) == text
+                    && m_draftRevisions.value(conversation) == intent.draftRevision;
+                if (intent.draftCaptured) {
+                    const auto current = m_draftStore ? m_draftStore->capture(stream, topic) : NativeDrafts::Token{};
+                    const auto &captured = intent.draftToken;
+                    replyDraftUnchanged = current.owner == captured.owner && current.uuid == captured.uuid
+                        && current.snapshot == captured.snapshot && current.text == captured.text;
+                }
+            }
             const QPointer<NativeController> draftGuard(this);
             if (intent.draftCaptured) {
                 if (m_draftStore) m_draftStore->consume(intent.draftToken);
@@ -12184,27 +12197,26 @@ void NativeController::send()
             }
             finishMessageIntent(canonicalId);
             m_error.clear();
-            // Close the session only if no tab was added, removed, switched or
-            // re-pointed at another quote while the send was in flight (single-slot
-            // precedent generalized to the tab set, quote identity included). The
+            // Close the session only if its tabs, quotes and answers still match
+            // and the sending draft has not been edited while in flight. The
             // cleanup targets the sending conversation's session specifically
             // (reference WorkspaceComposerSendCleanup carries its own conversationId),
             // whether it still lives in the composer or was parked by navigation.
-            QStringList replyNow;
+            QJsonArray replyNow;
             QString replyActiveNow;
             if (conversation == m_replyRoute) {
                 replyActiveNow = m_replyActiveTab;
                 for (const auto &tab : std::as_const(m_replyTabs))
-                    replyNow << tab.id + QLatin1Char(':') + tab.message;
+                    replyNow.append(QJsonArray{tab.id, tab.message, tab.answer});
             } else {
                 const auto parked = m_replySessions.constFind(conversation);
                 if (parked != m_replySessions.constEnd()) {
                     replyActiveNow = parked->activeTab;
                     for (const auto &tab : parked->tabs)
-                        replyNow << tab.id + QLatin1Char(':') + tab.message;
+                        replyNow.append(QJsonArray{tab.id, tab.message, tab.answer});
                 }
             }
-            if (!replySnapshot.isEmpty() && replyActiveNow == replyActive && replyNow == replySnapshot) {
+            if (!replySnapshot.isEmpty() && replyDraftUnchanged && replyActiveNow == replyActive && replyNow == replySnapshot) {
                 if (conversation == m_replyRoute) closeReplySession();
                 else m_replySessions.remove(conversation);
             }

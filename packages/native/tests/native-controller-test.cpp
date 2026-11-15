@@ -12015,6 +12015,125 @@ private slots:
         QCOMPARE(fixture.controller.replyMessageId(), thirdId);
     }
 
+    void sendConfirmationPreservesInFlightReplyAnswers_data()
+    {
+        QTest::addColumn<bool>("durable");
+        QTest::addColumn<QString>("change");
+        QTest::addColumn<bool>("parked");
+        QTest::addColumn<bool>("holdReadBack");
+        for (const bool durable : {false, true}) {
+            const auto prefix = durable ? QByteArray("durable-") : QByteArray("memory-");
+            for (const auto *change : {"unchanged", "active", "inactive", "reverted", "cleared",
+                                      "plain-unchanged", "plain-active", "plain-reverted"})
+                QTest::newRow((prefix + change).constData()) << durable << QString(change) << false << false;
+            QTest::newRow((prefix + "inactive-parked").constData()) << durable << QString("inactive") << true << false;
+            QTest::newRow((prefix + "unchanged-parked").constData()) << durable << QString("unchanged") << true << false;
+            QTest::newRow((prefix + "active-readback").constData()) << durable << QString("active") << false << true;
+        }
+    }
+
+    void sendConfirmationPreservesInFlightReplyAnswers()
+    {
+        QFETCH(bool, durable); QFETCH(QString, change); QFETCH(bool, parked); QFETCH(bool, holdReadBack);
+        QTemporaryDir directory; NativeDraftService storage(directory.path()); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.extraTopic = true;
+        if (durable) fixture.controller.useDrafts(&drafts);
+        const QString otherId = "23232323-2323-4323-8323-232323232323";
+        auto first = message("First origin", messageId);
+        auto second = message("Second origin", secondTopicId);
+        auto other = message("Other conversation", otherId, secondTopicId);
+        QJsonObject saved; int posts = 0;
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                ++posts;
+                saved = message(request.body.value("payload").toObject().value("content").toString(), returnedId);
+                Response response{saved, 201};
+                if (!holdReadBack) response.defer = [&](auto send) { complete = std::move(send); };
+                return response;
+            }
+            if (request.target.path().endsWith(returnedId)) {
+                Response response{saved};
+                if (holdReadBack) response.defer = [&](auto send) { complete = std::move(send); };
+                return response;
+            }
+            return {QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId
+                ? QJsonArray{other} : QJsonArray{first, second}};
+        };
+        QVERIFY(fixture.start());
+        if (durable) QTRY_VERIFY(drafts.ready(streamId, topicId));
+        const bool reply = !change.startsWith("plain-");
+        if (reply) {
+            QVERIFY(fixture.controller.beginReply(messageId));
+            fixture.controller.setDraft("first");
+            QVERIFY(fixture.controller.addReplyTab(secondTopicId));
+        }
+        fixture.controller.setDraft("second");
+        const auto originalTabs = fixture.controller.replyTabs();
+        fixture.controller.send();
+        QTRY_VERIFY(bool(complete)); QCOMPARE(posts, 1);
+        const auto wire = saved.value("payload").toObject().value("content").toString();
+        if (reply) {
+            QVERIFY(wire.contains("urn:quote:" + messageId));
+            QVERIFY(wire.contains("\n\nfirst\n\n"));
+            QVERIFY(wire.endsWith("\n\nsecond"));
+        } else QCOMPARE(wire, QString("second"));
+
+        QString expectedText = "second";
+        if (change == "active" || change == "plain-active") {
+            expectedText = "second edited"; fixture.controller.setDraft(expectedText);
+        } else if (change == "inactive") {
+            QVERIFY(fixture.controller.selectReplyTab(originalTabs[0].toMap().value("id").toString()));
+            fixture.controller.setDraft("first edited");
+            QVERIFY(fixture.controller.selectReplyTab(originalTabs[1].toMap().value("id").toString()));
+        } else if (change.endsWith("reverted")) {
+            fixture.controller.setDraft("second edited"); fixture.controller.setDraft("second");
+        } else if (change == "cleared") {
+            expectedText.clear(); fixture.controller.setDraft(expectedText);
+        }
+        const auto expectedTabs = fixture.controller.replyTabs();
+        const bool changed = !change.endsWith("unchanged");
+        if (parked) {
+            fixture.controller.selectTopic(secondTopicId);
+            QTRY_COMPARE(fixture.controller.messages().size(), 1);
+            if (durable) QTRY_VERIFY(drafts.ready(streamId, secondTopicId));
+            QVERIFY(fixture.controller.beginReply(otherId));
+            fixture.controller.setDraft("unrelated answer");
+        }
+        complete(); complete = {};
+        QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(posts, 1); QVERIFY(fixture.controller.error().isEmpty());
+        if (parked) {
+            QCOMPARE(fixture.controller.replyMessageId(), otherId);
+            QCOMPARE(fixture.controller.draft(), QString("unrelated answer"));
+            fixture.controller.selectTopic(topicId);
+            QTRY_VERIFY(!fixture.controller.busy());
+            if (durable) QTRY_VERIFY(drafts.ready(streamId, topicId));
+        }
+        // The durable store's token comparison already protects newer composer
+        // text. The reply close guard must preserve every answer alongside it.
+        QCOMPARE(fixture.controller.draft(), changed ? expectedText : QString());
+        QCOMPARE(fixture.controller.replyTabs().size(), reply && changed ? 2 : 0);
+        if (reply && changed) {
+            const auto tabs = fixture.controller.replyTabs();
+            for (int index = 0; index < tabs.size(); ++index) {
+                for (const auto *field : {"id", "message", "answer", "active"})
+                    QCOMPARE(tabs[index].toMap().value(field), expectedTabs[index].toMap().value(field));
+            }
+        }
+        if (durable) {
+            const auto owner = drafts.owner();
+            bool flushed = false; drafts.flush(this, [&](bool okay) { flushed = okay; }); QTRY_VERIFY(flushed);
+            storage.shutdown(); QTRY_VERIFY(storage.stopped());
+            NativeDraftStore store(directory.path()); QCOMPARE(store.open(owner), NativeDraftService::Failure::None);
+            const auto latest = store.latest(streamId, topicId);
+            if (changed && !expectedText.isEmpty()) {
+                QVERIFY(latest.record); QCOMPARE(latest.record->text, expectedText);
+            } else QVERIFY(!latest.record);
+        }
+    }
+
     // ---- per-conversation reply session store (issue #201) ----
 
     // One stream, two topics: conversation A is `topicId`, conversation B is

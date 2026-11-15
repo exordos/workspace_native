@@ -13757,6 +13757,74 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "message-quote-" + quoteOnlyId)->isVisible());
     }
 
+    void replyAnswerTypedDuringSendRemainsInTheComposer_data()
+    {
+        QTest::addColumn<bool>("durable");
+        QTest::newRow("memory") << false;
+        QTest::newRow("durable") << true;
+    }
+
+    void replyAnswerTypedDuringSendRemainsInTheComposer()
+    {
+        QFETCH(bool, durable);
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        QJsonObject saved; int posts = 0;
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++posts; saved = message(request.body.value("payload").toObject().value("content").toString(), returnedId);
+                Response response{saved, 201};
+                response.defer = [&](auto send) { complete = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{message("Original message", messageId)}};
+            if (request.method == "GET" && path.endsWith("/messages/" + returnedId)) return {saved};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        if (durable) controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply send teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-reply-send", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        if (durable) QTRY_VERIFY(drafts.ready(streamId, topicId));
+        QVERIFY(controller.beginReply(messageId));
+        auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        for (const char key : QByteArray("first")) QTest::keyClick(window, key);
+        QTRY_COMPARE(controller.draft(), QString("first"));
+        auto *send = qobject_cast<QQuickItem *>(window->findChild<QObject *>("sendButton")); QVERIFY(send);
+        QTRY_VERIFY(send->isEnabled()); click(window, send);
+        QTRY_VERIFY(bool(complete)); QCOMPARE(posts, 1);
+        QVERIFY(saved.value("payload").toObject().value("content").toString().endsWith("\n\nfirst"));
+        click(window, composer); QTest::keyClick(window, Qt::Key_End);
+        for (const char key : QByteArray(" second")) QTest::keyClick(window, key);
+        QTRY_COMPARE(controller.draft(), QString("first second"));
+        complete(); complete = {};
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.replyMessageId(), messageId);
+        QCOMPARE(controller.replyTabs().first().toMap().value("answer").toString(), QString("first second"));
+        QCOMPARE(composer->property("text").toString(), QString("first second"));
+        QVERIFY(item(window->contentItem(), "replyNotice")->isVisible());
+        QVERIFY(controller.canSend()); QCOMPARE(posts, 1);
+    }
+
     // Issue #217 (docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md): a quoted message
     // that carries a media preview shows a 48 px thumbnail as the leading element
     // of both quote frames - the composer reply preface and the received bubble -
