@@ -1082,21 +1082,21 @@ private:
                              const QString &error, bool uncertain = true);
     struct TopicOpening {
         QString requested, owner, routeStream, routeTopic, routeSecurity, targetSecurity;
-        quint64 ticket = 0, generation = 0, selection = 0, catalog = 0;
+        quint64 ticket = 0, generation = 0, selection = 0, catalog = 0, restoreTicket = 0;
         QPointer<ApiClient> api;
         QPointer<NativeCacheService> cache;
         NativeCache::Lease lease;
         ApiClient::RequestId request;
         std::optional<Topic> canonical;
         bool active = false, catalogVerified = false, snapshotActive = false;
-        bool syncBlocked = false, forgetting = false;
+        bool syncBlocked = false, forgetting = false, automaticRestore = false;
     };
     void interruptTopicOpening();
     bool topicOpeningContext(quint64 ticket) const;
-    void beginTopicOpening(const QString &requested, std::optional<Topic> canonical = {});
+    void beginTopicOpening(const QString &requested, std::optional<Topic> canonical = {}, bool automaticRestore = false);
     void resolveTopicOpeningStream(quint64 ticket);
     void publishTopicOpening(quint64 ticket);
-    void finishTopicOpening(quint64 ticket, const QString &error = {});
+    void finishTopicOpening(quint64 ticket, const QString &error = {}, bool unavailable = false);
     void noteTopicOpeningStream(const Stream &stream);
     void activateStream(const QString &id, const QVector<Topic> *topics = nullptr,
                         const QString &directPublishingAttempt = {},

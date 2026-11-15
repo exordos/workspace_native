@@ -12133,6 +12133,49 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void missingSavedConversationShowsTheInboxWithoutAnError_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void missingSavedConversationShowsTheInboxWithoutAnError()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory; WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler; int lookups = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/messenger/stream_topics/" + secondTopicId) {
+                ++lookups; return {QJsonObject{}, 404};
+            }
+            return fallback(request);
+        };
+        const auto owner = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
+            fixture.server.origin().toString(QUrl::FullyEncoded), projectId, userId}).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        preferences.recordLastConversation(owner, streamId, secondTopicId);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Last conversation fallback teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_COMPARE(lookups, 1); QTRY_VERIFY(!controller.topicResolving());
+        QVERIFY(controller.error().isEmpty());
+        QTRY_VERIFY(controller.inboxVisible());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "nativeInboxPage"));
+        QVERIFY(controller.selectedStream().isEmpty()); QVERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(preferences.loadLastConversation(owner), (QStringList{QString{}, QString{}}));
+    }
+
     void lastConversationRestoresInANewActualMainAfterSettingsReopen()
     {
         QTemporaryDir directory;

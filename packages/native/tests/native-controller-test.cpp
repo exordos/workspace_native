@@ -1709,23 +1709,103 @@ private slots:
         QCOMPARE(test.mutations, 0);
     }
 
-    void unavailableSavedStreamDoesNotChooseAnotherChat()
+    void unavailableSavedConversationFallsBackQuietly_data()
     {
+        QTest::addColumn<QString>("missing");
+        for (const auto *kind : {"stream", "topic-403", "topic-404", "destination-403", "destination-404"})
+            QTest::newRow(kind) << QString(kind);
+    }
+
+    void unavailableSavedConversationFallsBackQuietly()
+    {
+        QFETCH(QString, missing);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         TopicOpeningFixture test;
-        preferences.recordLastConversation(conversationPreferenceOwner(test.fixture.server.origin()), openingStreamId, {});
+        const auto owner = conversationPreferenceOwner(test.fixture.server.origin());
+        preferences.recordLastConversation(owner, openingStreamId,
+            missing == "stream" ? QString{} : openingRequestedId);
+        if (missing.startsWith("topic")) test.lookupStatus = missing.endsWith("403") ? 403 : 404;
+        if (missing.startsWith("destination")) test.detailStatus = missing.endsWith("403") ? 403 : 404;
         auto &controller = test.fixture.controller;
         controller.usePreferences(&preferences);
         controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
         QTRY_COMPARE(controller.projects().size(), 1);
         controller.openProject(projectId);
-        QTRY_VERIFY(!controller.error().isEmpty());
+        QTRY_COMPARE(controller.streams().size(), 1);
+        if (missing != "stream") QTRY_COMPARE(test.lookups, 1);
+        if (missing.startsWith("destination")) QTRY_COMPARE(test.details, 1);
+        QTRY_VERIFY(!controller.busy() && !controller.topicResolving());
+        // Flush the queued one-shot restoration after catalog publication.
+        QTest::qWait(50);
+        QVERIFY2(controller.error().isEmpty(), qPrintable(controller.error()));
         QVERIFY(controller.selectedStream().isEmpty());
         QVERIFY(controller.selectedTopic().isEmpty());
-        QCOMPARE(test.lookups, 0);
+        QCOMPARE(preferences.loadLastConversation(owner), (QStringList{QString{}, QString{}}));
+        QVERIFY(controller.inboxVisible());
         QCOMPARE(test.mutations, 0);
     }
+
+    void automaticConversationRestorePreservesTransientErrorsAndExplicitOpenErrors_data()
+    {
+        QTest::addColumn<bool>("automatic"); QTest::addColumn<int>("status");
+        QTest::newRow("automatic-offline") << true << 503;
+        QTest::newRow("explicit-missing") << false << 404;
+        QTest::newRow("explicit-denied") << false << 403;
+    }
+
+    void automaticConversationRestorePreservesTransientErrorsAndExplicitOpenErrors()
+    {
+        QFETCH(bool, automatic); QFETCH(int, status);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test; test.lookupStatus = status;
+        const auto owner = conversationPreferenceOwner(test.fixture.server.origin());
+        auto &controller = test.fixture.controller;
+        if (automatic) preferences.recordLastConversation(owner, streamId, openingRequestedId);
+        controller.usePreferences(&preferences);
+        if (automatic) {
+            controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+            QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        } else {
+            QVERIFY(test.start()); controller.openTopic(openingRequestedId, streamId);
+        }
+        QTRY_COMPARE(test.lookups, 1);
+        QTRY_VERIFY(!controller.topicResolving());
+        QVERIFY(!controller.error().isEmpty());
+        if (automatic) QCOMPARE(preferences.loadLastConversation(owner), (QStringList{streamId, openingRequestedId}));
+        else QCOMPARE(controller.selectedTopic(), topicId);
+    }
+
+    void automaticConversationRestoreCannotReopenAnInboxTheUserLeft()
+    {
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test; test.lookupStatus = 404; test.lookupDelay = 150;
+        auto &controller = test.fixture.controller;
+        preferences.recordLastConversation(conversationPreferenceOwner(test.fixture.server.origin()), streamId, openingRequestedId);
+        controller.usePreferences(&preferences);
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_COMPARE(test.lookups, 1); QVERIFY(controller.topicResolving());
+        controller.showInbox(); controller.closeInbox();
+        QTRY_VERIFY(!controller.topicResolving()); QTest::qWait(200);
+        QVERIFY(!controller.inboxVisible()); QVERIFY(controller.error().isEmpty());
+    }
+
+    void lastConversationReturnsAfterSameAccountSignsInAgain()
+    {
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test; auto &controller = test.fixture.controller;
+        test.resolved = creationTopic(secondTopicId, streamId, "Other known topic");
+        test.additionalLookups.insert("/api/workspace/v1/messenger/stream_topics/" + secondTopicId, Response{test.resolved});
+        controller.usePreferences(&preferences); QVERIFY(test.start()); controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!controller.busy()); controller.logout(); QVERIFY(!controller.authenticated());
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId); QCOMPARE(controller.selectedStream(), streamId);
+        QTRY_VERIFY(!controller.busy() && !controller.topicResolving()); QVERIFY(controller.error().isEmpty());
+    }
+
     void usersHttpNamesMatchSourceAndPreserveLegacyAbsentFields_data()
     {
         QTest::addColumn<QString>("scenario");
