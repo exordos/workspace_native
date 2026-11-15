@@ -123,3 +123,20 @@ numberedList/bulletedList` and `expandToolbar` "Show formatting tools" /
 
 Ctrl+B/Ctrl+I/Ctrl+E/Ctrl+Shift+X keep wrapping via the shared mutation path.
 The reference binds no hotkeys to the other insert actions, so none are added.
+
+When the toolbar is expanded, Tab from the composer reaches Link, followed by
+the other formatting actions in their displayed order. Shift+Tab from Link
+returns to the composer. Keyboard focus uses the existing button focus ring,
+and the text selection stays visible while an action has focus. Return, keypad
+Enter and Space use the same formatting path as clicking, then return focus to
+the composer with the action's selection/caret result.
+
+`composerToolbarKeyboardNavigationPreservesSelection` exercises real keyboard
+selection, forward/reverse focus navigation and all ten actions for each
+activation key in English/Russian and light/dark themes. It checks the retained
+draft, final caret/URL selection and absence of message sending. Existing mouse
+action and shortcut tests cover the same mutation helpers.
+The keyboard case covers both short and three-line drafts and requires each
+action to be inside the window, including the layout repair from #314. It also
+checks traversal beyond the last action and skips formatting actions when the
+toolbar is collapsed.

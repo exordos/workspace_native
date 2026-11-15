@@ -15338,6 +15338,119 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerToolbarKeyboardNavigationPreservesSelection_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<int>("activationKey");
+        QTest::addColumn<QString>("suffix");
+        for (const QString &locale : {QString("en"), QString("ru")})
+            for (const QString &mode : {QString("light"), QString("dark")})
+                for (const auto key : {Qt::Key_Return, Qt::Key_Enter, Qt::Key_Space})
+                    for (const auto &suffix : {QString{}, QString("\nsecond line\nthird line")})
+                        QTest::newRow(qPrintable(locale + '-' + mode + '-' + QString::number(key)
+                            + (suffix.isEmpty() ? "-short" : "-multiline")))
+                            << locale << mode << int(key) << suffix;
+    }
+
+    void composerToolbarKeyboardNavigationPreservesSelection()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(int, activationKey);
+        QFETCH(QString, suffix);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("toolbar-keyboard.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        preferences.setComposerToolbarExpanded(true);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *composer = view("messageComposer"); QVERIFY(composer && composer->isEnabled());
+        const QStringList actions{"composerFormatLink", "composerFormatBold",
+            "composerFormatItalic", "composerFormatStrikethrough", "composerFormatNumbered",
+            "composerFormatBulleted", "composerFormatQuote", "composerFormatCodeBlock",
+            "composerFormatCode", "composerFormatSpoiler"};
+        const QStringList formatted{"[word](https://)", "**word**", "*word*", "~~word~~",
+            "1. word", "- word", "> word", "```\nword\n```", "`word`", "||word||"};
+        const QString draft = "before word after" + suffix;
+        QSignalSpy sent(&controller, &NativeController::messageSent);
+        for (int actionIndex = 0; actionIndex < actions.size(); ++actionIndex) {
+            click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            for (const auto character : draft.toLatin1()) {
+                if (character == '\n') QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+                else QTest::keyClick(window, character);
+            }
+            QTRY_COMPARE(controller.draft(), draft);
+            QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+            for (int i = 0; i < 7; ++i) QTest::keyClick(window, Qt::Key_Right);
+            for (int i = 0; i < 4; ++i) QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+            QCOMPARE(composer->property("selectedText").toString(), QString("word"));
+            // Only real Tab events move from the input through the visible actions.
+            // No forceActiveFocus or direct clicked invocation can mask a broken chain.
+            for (int i = 0; i <= actionIndex; ++i) {
+                auto *action = view(actions.at(i)); QVERIFY(action && action->isEnabled());
+                QTRY_VERIFY(QRectF(0, 0, window->width(), window->height()).contains(
+                    action->mapRectToScene(QRectF(0, 0, action->width(), action->height()))));
+                QTest::keyClick(window, Qt::Key_Tab);
+                QCOMPARE(window->activeFocusItem(), action);
+                QVERIFY(action->property("visualFocus").toBool());
+                QCOMPARE(composer->property("selectedText").toString(), QString("word"));
+                QCOMPARE(controller.draft(), draft);
+            }
+            if (actionIndex == 0) {
+                QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+                QCOMPARE(window->activeFocusItem(), composer);
+                QCOMPARE(composer->property("selectedText").toString(), QString("word"));
+                QTest::keyClick(window, Qt::Key_Tab);
+                QCOMPARE(window->activeFocusItem(), view(actions.first()));
+            }
+            if (actionIndex == 1 && activationKey == Qt::Key_Return) {
+                const auto captures = qEnvironmentVariable("CASSI_NATIVE_TEST_TOOLBAR_CAPTURES");
+                if (!captures.isEmpty()) {
+                    const auto pixels = window->grabWindow(); QVERIFY(!pixels.isNull());
+                    QVERIFY(pixels.save(QDir(captures).filePath("toolbar-focus-" + locale + '-' + mode + ".png")));
+                }
+            }
+            QTest::keyClick(window, Qt::Key(activationKey));
+            const auto expected = "before " + formatted.at(actionIndex) + " after" + suffix;
+            QTRY_COMPARE(controller.draft(), expected);
+            QCOMPARE(composer->property("text").toString(), expected);
+            QVERIFY(composer->hasActiveFocus());
+            QCOMPARE(composer->property("selectionStart").toInt(),
+                actionIndex == 0 ? 14 : 7 + formatted.at(actionIndex).size());
+            QCOMPARE(composer->property("selectionEnd").toInt(),
+                actionIndex == 0 ? 22 : 7 + formatted.at(actionIndex).size());
+            QCOMPARE(sent.size(), 0);
+        }
+        if (activationKey == Qt::Key_Return) {
+            // Traversal must also leave the last action and skip hidden tools.
+            for (int i = 0; i < actions.size(); ++i) QTest::keyClick(window, Qt::Key_Tab);
+            QCOMPARE(window->activeFocusItem(), view(actions.last()));
+            QTest::keyClick(window, Qt::Key_Tab);
+            auto *next = window->activeFocusItem();
+            QVERIFY(next && next != view(actions.last()) && next->isVisible() && next->isEnabled());
+            QVERIFY(QRectF(0, 0, window->width(), window->height()).contains(
+                next->mapRectToScene(QRectF(0, 0, next->width(), next->height()))));
+            preferences.setComposerToolbarExpanded(false);
+            QTRY_VERIFY(!view("composerToolbarRow"));
+            click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY(window->activeFocusItem());
+            QVERIFY(!actions.contains(window->activeFocusItem()->objectName()));
+            QCOMPARE(sent.size(), 0);
+        }
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
+    }
+
     // Insert text per message-composer-toolbar.ui.tsx actions with the
     // wrap/selection-restore semantics of message-composer-selection.lib.ts.
     void composerToolbarInsertActionsProduceExactReferenceMarkers_data()

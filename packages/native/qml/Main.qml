@@ -6478,6 +6478,10 @@ ApplicationWindow {
                                     wrapMode: TextEdit.Wrap
                                     textFormat: TextEdit.PlainText
                                     selectByMouse: true
+                                    persistentSelection: true
+                                    KeyNavigation.priority: KeyNavigation.BeforeItem
+                                    KeyNavigation.tab: root.preferences.composerToolbarExpanded
+                                        ? composerFormatLinkButton : null
                                     topPadding: 8
                                     bottomPadding: 8
                                     leftPadding: 0
@@ -6854,11 +6858,12 @@ ApplicationWindow {
                             RowLayout {
                                 spacing: 0
                                 NativeIconButton {
+                                    id: composerFormatLinkButton
                                     objectName: "composerFormatLink"
                                     colors: root.colors
                                     asset: "composer-add-link.svg"
                                     help: qsTr("Link")
-                                    focusPolicy: Qt.NoFocus
+                                    focusPolicy: Qt.StrongFocus
                                     enabled: composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
@@ -6871,7 +6876,7 @@ ApplicationWindow {
                                     colors: root.colors
                                     asset: "composer-format-bold.svg"
                                     help: qsTr("Bold")
-                                    focusPolicy: Qt.NoFocus
+                                    focusPolicy: Qt.StrongFocus
                                     enabled: composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
@@ -6884,7 +6889,7 @@ ApplicationWindow {
                                     colors: root.colors
                                     asset: "composer-format-italic.svg"
                                     help: qsTr("Italic")
-                                    focusPolicy: Qt.NoFocus
+                                    focusPolicy: Qt.StrongFocus
                                     enabled: composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
@@ -6897,7 +6902,7 @@ ApplicationWindow {
                                     colors: root.colors
                                     asset: "composer-strikethrough.svg"
                                     help: qsTr("Strikethrough")
-                                    focusPolicy: Qt.NoFocus
+                                    focusPolicy: Qt.StrongFocus
                                     enabled: composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
@@ -6918,7 +6923,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-list-numbered.svg"
                                 help: qsTr("Numbered list")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -6931,7 +6936,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-list-bulleted.svg"
                                 help: qsTr("Bulleted list")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -6951,7 +6956,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-chat-dashed.svg"
                                 help: qsTr("Quote")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -6964,7 +6969,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-frame-source.svg"
                                 help: qsTr("Code block")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -6977,7 +6982,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-inline-code.svg"
                                 help: qsTr("Code")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -6991,7 +6996,7 @@ ApplicationWindow {
                                 colors: root.colors
                                 asset: "composer-visibility.svg"
                                 help: qsTr("Spoiler")
-                                focusPolicy: Qt.NoFocus
+                                focusPolicy: Qt.StrongFocus
                                 enabled: composerText.enabled
                                 implicitWidth: 32
                                 implicitHeight: 32
