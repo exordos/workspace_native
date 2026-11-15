@@ -6830,7 +6830,14 @@ private slots:
         keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
             [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
         QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
-        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        auto nextAttempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        // The recovery scan lists stages in vault address order, and the
+        // create-stage address sorts by the attempt uuid string: keep the
+        // surviving stage the smaller one so the scan provably processes the
+        // survivor's 404 first - the worst case for asserting against the
+        // discarded stage's still-pending answer.
+        if (attempt < nextAttempt) std::swap(attempt, nextAttempt);
         const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
         NativeChatKeyVault::CreateStage seed{attempt, keyUuid, QByteArray(32, char('u')),
             QDateTime::currentMSecsSinceEpoch() - 3600000};
@@ -6840,7 +6847,6 @@ private slots:
         // A second dispatch-attempted stage survives: its own 404 must still
         // advance evidence normally, proving the scan and the bookkeeping are
         // unaffected around the fenced one.
-        const auto nextAttempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
         const auto nextKey = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
         NativeChatKeyVault::CreateStage next{nextAttempt, nextKey, QByteArray(32, char('v')),
             QDateTime::currentMSecsSinceEpoch() - 3600000};
@@ -6850,13 +6856,15 @@ private slots:
         auto hold = std::make_shared<std::atomic<bool>>(true);
         auto releases = std::make_shared<std::vector<std::function<void()>>>();
         int scanGets = 0;
+        int survivorGets = 0;
         EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
         test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &nextAttempt,
-            &scanGets, hold, releases](const Request &request) -> Response {
+            &scanGets, &survivorGets, hold, releases](const Request &request) -> Response {
             const auto path = request.target.path();
             const auto base = QStringLiteral("/api/workspace/v1/messenger/streams/");
             if (request.method == "GET" && (path == base + attempt || path == base + nextAttempt)) {
                 ++scanGets;
+                if (path == base + nextAttempt) ++survivorGets;
                 Response response{QJsonObject{}, 404}; // definitive absence
                 if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
                 return response;
@@ -6867,24 +6875,35 @@ private slots:
         controller.useChatKeys(&keys);
         QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
             "the automatic recovery pass never scanned the seeded stages");
-        // The informed discard runs while a stage GET is still in flight and
-        // settles immediately: the scan holds no user-facing resolve marker.
+        // The scan chains its GETs one at a time and, with the forced uuid
+        // order above, lists the surviving stage first. Let its 404 through so
+        // the pass advances to the to-be-discarded stage: the informed discard
+        // must run while that stage's OWN GET is in flight - the race this
+        // case pins - and not earlier.
+        (*releases)[0]();
+        QVERIFY2(QTest::qWaitFor([&] { return scanGets >= 2 && releases->size() >= 2; }, 5000),
+            "the recovery pass never reached the to-be-discarded stage's GET");
+        // The discard settles immediately: the scan holds no user-facing
+        // resolve marker that could block it.
         QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
         controller.discardChannelCreateStage(attempt, true);
         QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
             "the confirmed discard during the in-flight recovery scan never settled");
         QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("discarded"));
         QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
-        // Now let the captured answers arrive: whichever stage's 404 lands
-        // after the discard, its evidence update must be a no-op. The scan
-        // chains its GETs one at a time, so releasing in arrival order drives
-        // the whole pass without sleeping.
-        (*releases)[0]();
-        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 2 || scanGets >= 2; }, 5000),
-            "the recovery pass never continued to the surviving stage");
-        if (releases->size() >= 2) (*releases)[1]();
-        // The surviving stage's absence evidence still advances exactly as
-        // before (this also flushes both 404 callbacks).
+        // Release the discarded stage's late 404: its evidence update must be
+        // a pure no-op against the record that no longer exists.
+        (*releases)[1]();
+        // Deterministic proof that the late callback actually ran before the
+        // assertions below: its callback completes the pass with the surviving
+        // stage unresolved, so the bounded 1 s recovery retry re-arms a fresh
+        // pass whose re-GET of the surviving stage can only be observed after
+        // EVERY first-pass callback - the discarded stage's included - has
+        // been processed. The re-GET is the marker; nothing sleeps.
+        QVERIFY2(QTest::qWaitFor([&] { return survivorGets >= 2; }, 5000),
+            "the recovery pass never completed after the discarded stage's late answer");
+        // The surviving stage's absence evidence still advanced exactly as
+        // before.
         QVERIFY2(QTest::qWaitFor([&] {
             const auto stored = keys.readCreateStage(keys.lease(), nextAttempt);
             return stored.failure == NativeChatKeyVault::Failure::None && stored.value->missingEvidence >= 1;
