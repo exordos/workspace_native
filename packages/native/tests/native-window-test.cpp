@@ -15116,6 +15116,137 @@ mv -Tf "$root/.current-new" "$root/current"
     // and keeps 32px hit areas, h-7 w-px bg-border-subtle separators,
     // mr-[52px] send clearance and the pl-2 leading inset
     // (message-composer-toolbar.ui.tsx, message-composer-styles.lib.ts).
+    void expandedComposerToolbarStaysInsideTheWindow_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("initialDraft");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                for (const auto &draft : {QString(), QString("word")})
+                    QTest::newRow(qPrintable(locale + '-' + mode + (draft.isEmpty() ? "-empty" : "-short")))
+                        << locale << mode << draft;
+    }
+
+    void expandedComposerToolbarStaysInsideTheWindow()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(QString, initialDraft);
+        QTest::failOnWarning();
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        int sends = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) ++sends;
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("toolbar-visibility.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Toolbar visibility teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        auto *shell = item(content, "messageComposerShell"); QVERIFY(shell);
+        auto *toolbar = item(content, "composerToolbarRow"); QVERIFY(toolbar);
+        auto *editorViewport = composer->parentItem();
+        while (editorViewport && editorViewport->metaObject()->indexOfProperty("contentY") < 0)
+            editorViewport = editorViewport->parentItem();
+        QVERIFY(editorViewport);
+        const auto sceneRect = [](QQuickItem *target) {
+            return target->mapRectToScene(QRectF(QPointF{}, target->size()));
+        };
+        const auto insideWindow = [&](QQuickItem *target) {
+            return target && target->isVisible() && target->width() > 0 && target->height() > 0
+                && QRectF(0, 0, window->width(), window->height()).contains(sceneRect(target));
+        };
+        const auto replaceDraft = [&](const QString &text) {
+            QVERIFY(insideWindow(editorViewport));
+            click(window, editorViewport);
+            QTRY_VERIFY(composer->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            if (text.isEmpty()) QTest::keyClick(window, Qt::Key_Backspace);
+            else {
+                QInputMethodEvent input; input.setCommitString(text);
+                QCoreApplication::sendEvent(composer, &input);
+            }
+            QTRY_COMPARE(controller.draft(), text);
+        };
+        const QStringList actions{"composerToolbarCollapse", "composerFormatLink", "composerFormatBold",
+            "composerFormatItalic", "composerFormatStrikethrough", "composerFormatNumbered",
+            "composerFormatBulleted", "composerFormatQuote", "composerFormatCodeBlock",
+            "composerFormatCode", "composerFormatSpoiler"};
+        const auto verifyToolbar = [&] {
+            QTRY_VERIFY(toolbar->isVisible());
+            // Wait for the rendered scene, not just the visibility notification.
+            QTest::qWait(50);
+            const auto frame = window->grabWindow(); QVERIFY(!frame.isNull());
+            QVERIFY(insideWindow(shell));
+            for (const auto &name : actions) {
+                auto *action = visibleItem(content, name); QVERIFY2(action, qPrintable(name));
+                const auto rect = sceneRect(action);
+                const auto details = QString("%1: action (%2,%3 %4x%5), shell (%6,%7 %8x%9), window %10x%11")
+                    .arg(name).arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height())
+                    .arg(sceneRect(shell).x()).arg(sceneRect(shell).y())
+                    .arg(shell->width()).arg(shell->height()).arg(window->width()).arg(window->height());
+                QVERIFY2(insideWindow(action) && sceneRect(shell).contains(rect), qPrintable(details));
+                QCOMPARE(action->size(), QSizeF(32, 32));
+            }
+            QVERIFY(sceneRect(editorViewport).bottom() <= sceneRect(toolbar).top());
+        };
+        QVERIFY(!toolbar->isVisible());
+        QTRY_COMPARE(shell->height(), 57.0); // Keep the existing compact input geometry.
+        replaceDraft(initialDraft);
+        auto *expand = visibleItem(content, "composerToolbarExpand"); QVERIFY(insideWindow(expand));
+        click(window, expand);
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        const auto captures = qEnvironmentVariable("CASSI_NATIVE_TOOLBAR_VISIBILITY_CAPTURE_DIR");
+        if (!captures.isEmpty())
+            QVERIFY(window->grabWindow().save(QDir(captures).filePath(
+                locale + '-' + mode + (initialDraft.isEmpty() ? "-empty.png" : "-short.png"))));
+
+        // An actual in-window pointer click formats the draft and restores its caret.
+        replaceDraft("word");
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        auto *bold = visibleItem(content, "composerFormatBold"); QVERIFY(insideWindow(bold));
+        click(window, bold);
+        QTRY_COMPARE(controller.draft(), QString("**word**"));
+        QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("cursorPosition").toInt(), 8);
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+
+        // Growing and shrinking the input cannot push the toolbar out of its shell.
+        replaceDraft(QString("line\n").repeated(12) + "last");
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        replaceDraft("word");
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        window->resize(1100, 680);
+        QTRY_COMPARE(window->size(), QSize(1100, 680));
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        replaceDraft("");
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        auto *collapse = visibleItem(content, "composerToolbarCollapse"); QVERIFY(insideWindow(collapse));
+        click(window, collapse);
+        QTRY_VERIFY(!toolbar->isVisible());
+        QTRY_COMPARE(shell->height(), 57.0);
+        expand = visibleItem(content, "composerToolbarExpand"); QVERIFY(insideWindow(expand));
+        click(window, expand);
+        verifyToolbar(); if (QTest::currentTestFailed()) return;
+        window->resize(1440, 900);
+        QTRY_COMPARE(window->size(), QSize(1440, 900));
+        verifyToolbar();
+        QCOMPARE(controller.draft(), QString());
+        QCOMPARE(sends, 0);
+    }
+
     void composerFormattingToolbarExpansionPersistsAcrossRecreation()
     {
         WindowChannelFixture fixture; fixture.sourceScene = true;

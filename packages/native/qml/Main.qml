@@ -6085,6 +6085,7 @@ ApplicationWindow {
                 // Source measured geometry: the composer box plus the 33 px edit notice
                 // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
                 Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
+                    + (composerToolbarRow.visible ? composerToolbarRow.Layout.preferredHeight + composerInputColumn.spacing : 0)
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
                     + replyTabStrip.height
                     + (replyNotice.visible ? replyNotice.height : 0)
@@ -6400,6 +6401,7 @@ ApplicationWindow {
                     }
                 }
                 ColumnLayout {
+                    id: composerInputColumn
                     // Padded composer column: message-composer.ui.tsx:2040
                     // (workspace_ui 61dacef) `relative flex min-h-0 flex-1 flex-col p-2`;
                     // the shell's border-box plus the top rule makes the region 57 px.
@@ -6806,6 +6808,7 @@ ApplicationWindow {
                     // COMPOSER_TOOLBAR_SEND_CLEARANCE mr-[52px] from the composer's right edge
                     // (40px send control + 12px row gap) and the pl-2 leading inset.
                     Item {
+                        id: composerToolbarRow
                         objectName: "composerToolbarRow"
                         Layout.fillWidth: true
                         Layout.preferredHeight: 32
