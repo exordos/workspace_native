@@ -12,6 +12,8 @@ namespace workspace {
 
 class Session final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool otpRequired READ otpRequired NOTIFY otpChallengeChanged)
+    Q_PROPERTY(bool otpRejected READ otpRejected NOTIFY otpChallengeChanged)
 public:
     using RequestExecutor = std::function<void(const QByteArray &, const QString &,
         const QJsonValue &, const QUrlQuery &, ApiClient::Callback, bool,
@@ -37,6 +39,11 @@ public:
     void forgetSavedAccount(const QString &id, std::function<void(QString error)> done = {});
     void login(const QUrl &server, const QString &login, const QString &password,
                const QString &otp = {});
+    bool otpRequired() const { return !m_otpBody.isEmpty(); }
+    bool otpRejected() const { return m_otpRejected; }
+    quint64 otpRevision() const { return m_attempt; }
+    Q_INVOKABLE void submitOtp(const QString &otp);
+    void cancelOtp();
     // Public organization discovery for the login wizard (no bearer auth). The
     // callback receives the parsed realm fields or a user-facing failure note.
     void fetchOrganizationSettings(const QUrl &origin,
@@ -54,6 +61,8 @@ public:
     QVariantMap publicProfile() const { return m_ready ? m_publicProfile : QVariantMap{}; }
 
 signals:
+    void otpChallengeChanged();
+    void otpChallengeInvalidated();
     void projectsAvailable();
     void authenticated();
     void signedOut();
@@ -62,8 +71,11 @@ signals:
     void savedAccountsChanged();
 
 private:
+    void invalidateOtpContext();
+    void requestLoginToken(const QJsonObject &body, const QString &otp);
     bool acceptToken(const ApiResult &result, qint64 requestStarted);
     void discoverProjects();
+    void failProjectDiscovery(const QString &message);
     void refreshProject();
     void fail(const QString &message);
     void clearMemory();
@@ -83,6 +95,11 @@ private:
     QElapsedTimer m_clock;
     QTimer m_refreshTimer;
     QTimer m_expiryTimer;
+    QJsonObject m_otpBody; // transient, only while a login challenge is active
+    QUrl m_otpServer;
+    quint64 m_otpGeneration = 0;
+    bool m_otpRejected = false;
+    bool m_otpInFlight = false;
     QByteArray m_refreshToken;
     QVector<Project> m_projects;
     QString m_project;

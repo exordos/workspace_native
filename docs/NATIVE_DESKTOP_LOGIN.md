@@ -17,12 +17,9 @@ step**: the server-address field with persisted organization history, the public
 shortcut, and the credential gate (credentials and the sign-in action stay hidden
 until discovery for the current address succeeded).
 
-Out of scope, owned by sibling issues: the one-time-code step as its own wizard
-step (#59), registration entry (#61), the project-step dropdown restyle (#60).
-Until #59 lands, the native credentials step keeps the existing inline
-"one-time code, if required" field so OTP logins do not regress; the reference
-only asks for the code after IAM rejects the password attempt, which is exactly
-what #59 will reproduce.
+Sibling work covers the [one-time-code challenge](NATIVE_DESKTOP_OTP_LOGIN.md)
+(#59), registration entry (#61), and the project-step dropdown restyle (#60).
+The challenge appears only after IAM rejects the password-only token request.
 
 ## Reference contract (measured)
 
@@ -138,7 +135,7 @@ pre-auth entry, the auto-advance belongs there.
 - `NativeController` owns the wizard state machine (mirrors the React states
   `realm`, `checkedRealm`, `serverSettings`, `settingsLoading`, `fetchIdRef`,
   `pendingAuthRealmRef`):
-  - properties: `loginStep` ("organization"/"credentials"),
+  - properties: `loginStep` ("organization"/"credentials"/"otp"),
     `organizationRealm`, `organizationLoading`, `organizationSettings`
     (map with `organizationOrigin`, `realmName`, `realmIconUrl`,
     `registrationUrl`), `defaultOrganizationUrl`, `defaultOrganizationName`,

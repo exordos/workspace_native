@@ -41,6 +41,11 @@ Session::Session(ApiClient *api, QObject *parent, RequestExecutor executor)
         };
     }
     m_clock.start();
+    connect(api, &ApiClient::sessionChanged, this, [this](quint64 generation) {
+        if ((!m_otpBody.isEmpty() || m_otpInFlight)
+            && (generation != m_otpGeneration || m_api->server() != m_otpServer))
+            invalidateOtpContext();
+    });
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setTimerType(Qt::PreciseTimer);
     m_expiryTimer.setSingleShot(true);
@@ -147,6 +152,9 @@ void Session::request(const QByteArray &method, const QString &path, const QJson
 void Session::clearMemory()
 {
     ++m_attempt;
+    m_otpBody = {};
+    m_otpServer = QUrl{};
+    m_otpRejected = m_otpInFlight = false;
     m_refreshTimer.stop();
     m_expiryTimer.stop();
     m_accessExpiresAt = 0;
@@ -247,26 +255,122 @@ void Session::login(const QUrl &server, const QString &login, const QString &pas
         emit error(tr("Enter your username, password and, if required, a six-digit code."));
         return;
     }
-    emit busyChanged(true);
-    const auto attempt = m_attempt;
-    const auto requestStarted = m_clock.elapsed();
     const QJsonObject body{{"grant_type", "login+password"}, {"login", login.trimmed()},
         {"password", password}, {"scope", "openid email profile"},
         {"ttl", 3600}, {"refresh_ttl", 172800}};
+    requestLoginToken(body, otp);
+}
+
+void Session::submitOtp(const QString &otp)
+{
+    if (m_otpBody.isEmpty() || m_otpInFlight || otp.size() != 6
+        || !std::all_of(otp.begin(), otp.end(), [](QChar c) { return c >= u'0' && c <= u'9'; }))
+        return;
+    if (m_api->generation() != m_otpGeneration || m_api->server() != m_otpServer) {
+        invalidateOtpContext();
+        return;
+    }
+    ++m_attempt;
+    requestLoginToken(m_otpBody, otp);
+}
+
+void Session::cancelOtp()
+{
+    if (m_otpInFlight || m_otpBody.isEmpty()) return;
+    ++m_attempt;
+    m_otpBody = {};
+    m_otpServer = QUrl{};
+    m_otpRejected = false;
+    emit otpChallengeChanged();
+}
+
+void Session::invalidateOtpContext()
+{
+    if (m_otpBody.isEmpty() && !m_otpInFlight) return;
+    const auto attempt = ++m_attempt;
+    m_otpBody = {};
+    m_otpServer = QUrl{};
+    m_otpRejected = m_otpInFlight = false;
+    const QPointer<Session> guard(this);
+    emit busyChanged(false);
+    if (!guard || m_attempt != attempt) return;
+    emit otpChallengeInvalidated();
+}
+
+void Session::requestLoginToken(const QJsonObject &body, const QString &otp)
+{
+    // Copy before emitting signals: a reentrant logout can clear m_otpBody.
+    const QJsonObject requestBody = body;
+    const auto attempt = m_attempt;
+    const auto generation = m_api->generation();
+    const auto server = m_api->server();
+    m_otpGeneration = generation;
+    m_otpServer = server;
+    m_otpInFlight = true;
+    const QPointer<Session> guard(this);
+    emit busyChanged(true);
+    if (!guard || attempt != m_attempt || generation != m_api->generation() || server != m_api->server())
+        return;
+    const auto requestStarted = m_clock.elapsed();
     QMap<QByteArray, QByteArray> headers;
     if (!otp.isEmpty())
         headers.insert("X-OTP", otp.toUtf8());
-    request("POST", tokenPath, body, {}, [this, attempt, requestStarted](const ApiResult &result) {
+    request("POST", tokenPath, requestBody, {}, [this, attempt, generation, server, requestStarted, requestBody, otp](const ApiResult &result) {
         if (attempt != m_attempt)
             return;
-        if (!result.ok()) {
-            fail(result.status == 401
-                ? tr("Sign-in was rejected. Check your credentials and one-time code.")
-                : tr("Sign-in failed. %1").arg(result.error));
+        if (generation != m_api->generation() || server != m_api->server()) {
+            invalidateOtpContext();
             return;
         }
-        if (acceptToken(result, requestStarted))
+        m_otpInFlight = false;
+        const QPointer<Session> guard(this);
+        if (!result.ok()) {
+            if (result.status == 401) {
+                m_otpBody = requestBody;
+                m_otpRejected = !otp.isEmpty();
+                emit busyChanged(false);
+                if (!guard || attempt != m_attempt || generation != m_api->generation() || server != m_api->server()) return;
+                emit otpChallengeChanged();
+            } else if (!otp.isEmpty() && !m_otpBody.isEmpty()) {
+                emit busyChanged(false);
+                if (!guard || attempt != m_attempt || generation != m_api->generation() || server != m_api->server()) return;
+                emit error(tr("Login failed"));
+            } else {
+                fail(tr("Sign-in failed. %1").arg(result.error));
+            }
+            return;
+        }
+        // Keep the challenge only through project discovery. Installing the
+        // token advances the transport generation, so remove it temporarily
+        // and rebind it after the token was accepted for the same attempt.
+        const QJsonObject challenge = m_otpBody;
+        m_otpBody = {};
+        m_otpServer = QUrl{};
+        m_otpRejected = false;
+        if (acceptToken(result, requestStarted)) {
+            if (!guard || attempt != m_attempt) return;
+            // Installing this token advances the generation exactly once. A
+            // reentrant transport change must not adopt the old challenge.
+            if (server != m_api->server() || m_api->generation() != generation + 1) {
+                m_refreshTimer.stop();
+                m_expiryTimer.stop();
+                m_accessExpiresAt = 0;
+                m_refreshToken.fill('\0');
+                m_refreshToken.clear();
+                const auto currentGeneration = m_api->generation();
+                emit busyChanged(false);
+                if (guard && attempt == m_attempt && currentGeneration == m_api->generation())
+                    emit otpChallengeInvalidated();
+                return;
+            }
+            if (!challenge.isEmpty()) {
+                m_otpBody = challenge;
+                m_otpServer = server;
+                m_otpGeneration = m_api->generation();
+                m_otpInFlight = true;
+            }
             discoverProjects();
+        }
     }, true, headers);
 }
 
@@ -324,6 +428,32 @@ bool Session::acceptToken(const ApiResult &result, qint64 requestStarted)
     return true;
 }
 
+void Session::failProjectDiscovery(const QString &message)
+{
+    if (m_otpBody.isEmpty()) {
+        fail(message);
+        return;
+    }
+    // Discard the temporary token, but keep the owned OTP attempt so the
+    // original form and code can be retried as in the reference client.
+    const auto attempt = m_attempt;
+    const auto server = m_otpServer;
+    const auto generation = m_api->generation() + 1;
+    m_otpGeneration = generation;
+    m_otpInFlight = false;
+    m_refreshTimer.stop();
+    m_expiryTimer.stop();
+    m_accessExpiresAt = 0;
+    m_refreshToken.fill('\0');
+    m_refreshToken.clear();
+    const QPointer<Session> guard(this);
+    m_api->clearSession();
+    if (!guard || attempt != m_attempt || generation != m_api->generation() || server != m_api->server()) return;
+    emit busyChanged(false);
+    if (!guard || attempt != m_attempt || generation != m_api->generation() || server != m_api->server()) return;
+    emit error(tr("Login failed"));
+}
+
 void Session::discoverProjects()
 {
     const auto attempt = m_attempt;
@@ -332,7 +462,7 @@ void Session::discoverProjects()
         if (attempt != m_attempt)
             return;
         if (!result.ok()) {
-            fail(tr("Could not load your projects. %1").arg(result.error));
+            failProjectDiscovery(tr("Could not load your projects. %1").arg(result.error));
             return;
         }
         auto collection = result.data;
@@ -345,7 +475,7 @@ void Session::discoverProjects()
             }
         }
         if (!collection.isArray()) {
-            fail(tr("The server returned an invalid project list."));
+            failProjectDiscovery(tr("The server returned an invalid project list."));
             return;
         }
         QSet<QString> seen;
@@ -359,10 +489,18 @@ void Session::discoverProjects()
             }
         }
         if (m_projects.isEmpty()) {
-            fail(tr("No accessible Workspace projects were returned."));
+            failProjectDiscovery(tr("No accessible Workspace projects were returned."));
             return;
         }
+        const bool hadChallenge = !m_otpBody.isEmpty();
+        m_otpBody = {};
+        m_otpServer = QUrl{};
+        m_otpInFlight = false;
+        const QPointer<Session> guard(this);
+        if (hadChallenge) emit otpChallengeChanged();
+        if (!guard || attempt != m_attempt) return;
         emit busyChanged(false);
+        if (!guard || attempt != m_attempt) return;
         emit projectsAvailable();
     });
 }

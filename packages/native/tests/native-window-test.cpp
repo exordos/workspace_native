@@ -14815,6 +14815,193 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void loginOtpAppearsOnlyAfterChallenge_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void loginOtpAppearsOnlyAfterChallenge()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        MockServer server;
+        std::function<void()> releaseNetworkError;
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Test"}}};
+            if (request.target.path().endsWith("/get_token/invoke")
+                && request.body.value("grant_type") == "login+password") {
+                if (request.headers.value("x-otp") == "654321") {
+                    Response response{QJsonObject{}, 503, 0, {}};
+                    response.defer = [&](std::function<void()> send) { releaseNetworkError = std::move(send); };
+                    return response;
+                }
+                if (request.headers.value("x-otp") != "123456")
+                    return Response{QJsonObject{{"error", "invalid_grant"}}, 401, 0, {}};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        QVERIFY(!item(content, "otpInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "otpInput"));
+        QVERIFY(item(content, "passwordInput"));
+        QVERIFY(!item(content, "passwordInput")->isVisible());
+        QTRY_VERIFY(item(content, "otpInput")->hasActiveFocus());
+        QVERIFY(!item(content, "otpConfirmButton")->isEnabled());
+        QCOMPARE(item(content, "otpInput")->height(), qreal(50));
+        QCOMPARE(item(content, "otpConfirmButton")->height(), qreal(36));
+        QCOMPARE(item(content, "otpBackButton")->height(), qreal(36));
+        QVERIFY(item(content, "otpBackButton")->mapToScene(QPointF()).y()
+            > item(content, "otpConfirmButton")->mapToScene(QPointF()).y());
+        click(window, item(content, "otpInput"));
+        for (const auto key : {Qt::Key_1, Qt::Key_2, Qt::Key_A, Qt::Key_3, Qt::Key_4,
+                               Qt::Key_5, Qt::Key_6, Qt::Key_7, Qt::Key_8})
+            QTest::keyClick(window, key);
+        QCOMPARE(item(content, "otpInput")->property("text").toString(), QString("123456"));
+        QVERIFY(item(content, "otpConfirmButton")->isEnabled());
+        QCOMPARE(item(content, "loginDescription")->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("Введите шестизначный код из приложения-аутентификатора.")
+            : QString("Enter the six-digit code from your authenticator app."));
+        QCOMPARE(item(content, "otpConfirmButton")->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("Подтвердить код") : QString("Confirm code"));
+        item(content, "otpInput")->setProperty("text", "654321");
+        click(window, item(content, "otpConfirmButton"));
+        QTRY_VERIFY(bool(releaseNetworkError));
+        QCOMPARE(item(content, "otpConfirmButton")->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("Вход…") : QString::fromUtf8("Logging in…"));
+        QVERIFY(!item(content, "otpConfirmButton")->isEnabled());
+        QVERIFY(!item(content, "otpBackButton")->isEnabled());
+        QVERIFY(!item(content, "otpInput")->isEnabled());
+        releaseNetworkError();
+        QTRY_COMPARE(controller.error(), locale == "ru" ? QString::fromUtf8("Ошибка входа") : QString("Login failed"));
+        QCOMPARE(item(content, "otpInput")->property("text").toString(), QString("654321"));
+        item(content, "otpInput")->setProperty("text", "111111");
+        click(window, item(content, "otpConfirmButton"));
+        QTRY_COMPARE(item(content, "otpInput")->property("text").toString(), QString());
+        QTRY_COMPARE(controller.error(), locale == "ru"
+            ? QString::fromUtf8("Код подтверждения неверный. Попробуйте ещё раз.")
+            : QString("The authentication code is invalid. Try again."));
+        QVERIFY(item(content, "otpErrorBanner")->isVisible());
+        click(window, item(content, "otpBackButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        QVERIFY(!item(content, "otpInput"));
+        QCOMPARE(item(content, "userInput")->property("text").toString(), QString("synthetic-user"));
+        QCOMPARE(item(content, "passwordInput")->property("text").toString(), QString("synthetic-password"));
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "otpInput"));
+        item(content, "otpInput")->setProperty("text", "123456");
+        click(window, item(content, "otpConfirmButton"));
+        QTRY_COMPARE(session.projects().size(), 1);
+        QTRY_VERIFY(!item(content, "otpInput"));
+        QTRY_VERIFY(!item(content, "passwordInput"));
+        window->close();
+    }
+
+    void loginOtpPasswordIsDestroyedWhenOrganizationChanges()
+    {
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        MockServer first, second;
+        first.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "First"}}};
+            return Response{QJsonObject{}, 401, 0, {}};
+        };
+        second.handler = [](const Request &) { return Response{QJsonObject{{"realm_name", "Second"}}}; };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", first.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "otpInput"));
+        click(window, item(content, "otpBackButton"));
+        QTRY_VERIFY(item(content, "loginBackButton"));
+        QCOMPARE(item(content, "passwordInput")->property("text").toString(), QString("synthetic-password"));
+        click(window, item(content, "loginBackButton"));
+        QTRY_VERIFY(item(content, "serverInput"));
+        QTRY_VERIFY(!item(content, "passwordInput"));
+        item(content, "serverInput")->setProperty("text", second.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "passwordInput"));
+        QVERIFY(item(content, "passwordInput")->property("text").toString().isEmpty());
+        QVERIFY(!session.otpRequired());
+        window->close();
+    }
+
+    void loginOtpProjectFailureKeepsCodeAndRetries()
+    {
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        int projectRequests = 0;
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Test"}}};
+            if (request.target.path().endsWith("/get_token/invoke")
+                && !request.headers.contains("x-otp"))
+                return Response{QJsonObject{}, 401, 0, {}};
+            if (request.target.path().endsWith("/iam/projects/") && ++projectRequests == 1)
+                return Response{QJsonObject{}, 503, 0, {}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "otpInput"));
+        item(content, "otpInput")->setProperty("text", "123456");
+        click(window, item(content, "otpConfirmButton"));
+        QTRY_VERIFY(!controller.error().isEmpty());
+        QCOMPARE(controller.loginStep(), QString("otp"));
+        QCOMPARE(controller.error(), QString("Login failed"));
+        QCOMPARE(item(content, "otpInput")->property("text").toString(), QString("123456"));
+        click(window, item(content, "otpConfirmButton"));
+        QTRY_COMPARE(session.projects().size(), 1);
+        QCOMPARE(projectRequests, 2);
+        window->close();
+    }
+
     void loginCardRealmBlurStartsDiscovery()
     {
         QTemporaryDir preferencesDirectory;

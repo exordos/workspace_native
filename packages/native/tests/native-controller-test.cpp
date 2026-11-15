@@ -18737,6 +18737,43 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    void staleOtpRejectionDoesNotClearNewAttempt()
+    {
+        QVector<ApiClient::Callback> replies;
+        Session::RequestExecutor executor = [&](const QByteArray &, const QString &, const QJsonValue &,
+                                               const QUrlQuery &, ApiClient::Callback callback, bool,
+                                               const QMap<QByteArray, QByteArray> &) {
+            replies.append(std::move(callback));
+        };
+        ApiClient api;
+        Session session(&api, nullptr, executor);
+        NativeController controller(&api, &session);
+        QSignalSpy rejected(&controller, &NativeController::otpCodeRejected);
+        ApiResult unauthorized; unauthorized.status = 401;
+        controller.login("https://first.example", "first", "password", "");
+        QCOMPARE(replies.size(), 1);
+        auto initial = replies.takeFirst(); initial(unauthorized);
+        QCOMPARE(controller.loginStep(), QString("otp"));
+        controller.submitOtp("111111");
+        QCOMPARE(replies.size(), 1);
+        auto oldReply = replies.takeFirst();
+        bool replaced = false;
+        connect(&controller, &NativeController::stateChanged, &controller, [&] {
+            if (!replaced && controller.error() == "The authentication code is invalid. Try again.") {
+                replaced = true;
+                controller.backToCredentials();
+                controller.login("https://second.example", "second", "password", "");
+                auto second = replies.takeFirst(); second(unauthorized);
+                controller.submitOtp("222222");
+                auto newReply = replies.takeFirst(); newReply(unauthorized);
+            }
+        });
+        oldReply(unauthorized);
+        QVERIFY(replaced);
+        QCOMPARE(rejected.size(), 1); // only the new rejection belongs to the current form
+        QCOMPARE(controller.loginUsername(), QString("second"));
+    }
+
     void loginWizardStartsOnOrganizationStep()
     {
         Fixture fixture;
