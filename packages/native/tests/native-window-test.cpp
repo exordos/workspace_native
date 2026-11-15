@@ -23835,9 +23835,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(requests, QStringList({"POST", "GET", "POST", "GET"})); QCOMPARE(controller.draft(), "Newer draft survives retry");
         complete = false; QTRY_VERIFY(controller.canSend()); click(window, view("sendButton"));
         QTRY_COMPARE(posts.size(), 3); QTRY_VERIFY(!controller.busy());
+        auto *list = view("messageList"); QVERIFY(list);
+        QTRY_VERIFY(list->property("readActive").toBool());
         click(window, view("discardPendingOutgoingButton"));
         auto *dialog = window->findChild<QObject *>("discardPendingOutgoingDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(!list->property("readActive").toBool());
         QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool()); QVERIFY(!controller.outgoingSend().isEmpty());
+        QTRY_VERIFY(list->property("readActive").toBool());
         click(window, view("discardPendingOutgoingButton")); QTRY_VERIFY(dialog->property("visible").toBool());
         QQmlExpression discardButton(qmlContext(dialog), dialog, "standardButton(8388608)"); // Dialog.Discard
         auto *discard = qobject_cast<QQuickItem *>(discardButton.evaluate().value<QObject *>());

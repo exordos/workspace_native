@@ -64,7 +64,8 @@ explicitly forgetting a saved account discards that owner's queued sends before
 removing its credentials. Access loss prevents both replay and body publication.
 Discard stays busy until its owner-scoped deletion commits, including during
 cache replacement or key deletion; a failed delete keeps the entry available for
-an explicit retry.
+an explicit retry. The modal discard confirmation pauses visible-message read
+acknowledgements until it closes; cancelling it preserves the pending send.
 
 Schema migration is additive and transactional. Older versions must fail closed
 on the newer schema rather than replaying or rewriting queue records. Returning
