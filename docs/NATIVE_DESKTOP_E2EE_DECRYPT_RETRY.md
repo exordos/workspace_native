@@ -106,3 +106,25 @@ icon plus "Could not decrypt message". All retries are key-level
   and assert the item is disabled and exactly one cycle is reported, the row
   stays an error with a working Retry, and after the key is repaired the row
   body is replaced by the decrypted plaintext.
+
+## Fetched quote origins (issue #287)
+
+The quote frame uses the same Retry action when its encrypted origin was fetched
+by UUID and is absent from the loaded message window. Retry now resolves the
+presentation's retained origin and error entry, runs the existing single-message
+decrypt cycle, and publishes back to the retained quote record. It does not need
+to load the original message into the conversation or fetch its ciphertext again.
+
+The loaded origin still takes precedence. Pending-repeat suppression, error-only
+admission, vault/owner/selection checks and payload-hash revalidation also apply
+to fetched origins. The origin is resolved again after synchronous notifications,
+so a removed record cannot receive a late result.
+
+The fetched-origin controller case and both English/Russian visible Retry clicks
+failed before the fix; loaded-origin controls passed. The same tests now verify
+retry with unchanged bad material and recovery using repaired key material while
+automatic key-change refresh is suppressed. Additional controller cases close
+the vault before decryption, switch topics after decryption, and sign out before
+publication, verifying that plaintext is not published after retirement. These
+are local crypto, temporary vault and synthetic HTTPS checks; live-server and
+other-platform acceptance are not claimed.

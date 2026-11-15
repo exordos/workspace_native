@@ -2441,10 +2441,25 @@ void NativeController::retryMessageDecrypt(const QString &messageUuid)
     if (!lookupGuard) return;
     if (!chatReadAllowed() || !currentStream() || !currentStream()->encrypted) return;
     if (m_chatDecryptRetries.contains(messageUuid)) return;
-    const auto *message = findMessage(messageUuid);
+    // Quote frames may retain an origin that is outside the loaded window.
+    // Resolve the same source the presentation uses, including after callbacks.
+    const auto retryOrigin = [this, messageUuid]() -> const Message * {
+        if (const auto *loaded = findMessage(messageUuid)) return loaded;
+        const auto quote = m_quotes.constFind(messageUuid);
+        return quote != m_quotes.cend() && quote->decrypt && !quote->missing && quote->origin
+            ? &*quote->origin : nullptr;
+    };
+    const auto *message = retryOrigin();
     if (!message || message->kind != "e2ee" || !message->crypto) return;
-    const auto prepared = m_chatPrepared.constFind(message->uuid);
-    if (prepared == m_chatPrepared.cend() || prepared->hash != chatPayloadHash(*message)
+    const PreparedChatMessage *prepared = nullptr;
+    if (findMessage(messageUuid)) {
+        const auto entry = m_chatPrepared.constFind(messageUuid);
+        if (entry != m_chatPrepared.cend()) prepared = &*entry;
+    } else {
+        const auto quote = m_quotes.constFind(messageUuid);
+        if (quote != m_quotes.cend() && quote->hasPrepared) prepared = &quote->prepared;
+    }
+    if (!prepared || prepared->hash != chatPayloadHash(*message)
         || prepared->state == ChatKeyAvailability::Present || prepared->state == ChatKeyAvailability::Missing) return;
     const auto epoch = m_chatEpoch, selection = m_selection;
     m_chatDecryptRetries.insert(messageUuid);
@@ -2452,12 +2467,12 @@ void NativeController::retryMessageDecrypt(const QString &messageUuid)
     // The in-flight notification is synchronous: an observer may destroy the controller
     // inside it, and the deferred re-decrypt must never be scheduled onto a dead object.
     if (!lookupGuard) return;
-    QTimer::singleShot(0, this, [this, messageUuid, epoch, selection] {
+    QTimer::singleShot(0, this, [this, messageUuid, epoch, selection, retryOrigin] {
         const QPointer<NativeController> guard(this);
         if (!guard) return;
         const bool stale = m_chatEpoch != epoch || m_selection != selection || !chatReadAllowed()
             || !m_chatKeys || !sameChatLease(m_chatKeys->lease(), m_chatVaultLease);
-        const auto *message = stale ? nullptr : findMessage(messageUuid);
+        const auto *message = stale ? nullptr : retryOrigin();
         const bool reprepare = !stale && message != nullptr && message->kind == "e2ee" && message->crypto;
         PreparedChatMessage entry;
         if (reprepare) entry = decryptChatMessageRow(*message);
@@ -2474,9 +2489,17 @@ void NativeController::retryMessageDecrypt(const QString &messageUuid)
         if (!guard || !reprepare) return;
         if (m_chatEpoch != epoch || m_selection != selection || !chatReadAllowed()
             || !m_chatKeys || !sameChatLease(m_chatKeys->lease(), m_chatVaultLease)) return;
-        const auto *published = findMessage(messageUuid);
+        const auto *published = retryOrigin();
         if (!published || published->kind != "e2ee" || !published->crypto
             || chatPayloadHash(*published) != entry.hash) return;
+        if (!findMessage(messageUuid)) {
+            auto quote = m_quotes.find(messageUuid);
+            if (quote == m_quotes.end()) return;
+            quote->prepared = entry;
+            quote->hasPrepared = true;
+            emit messagesChanged();
+            return;
+        }
         const auto previous = m_chatPrepared.find(published->uuid);
         if (previous != m_chatPrepared.end()) {
             m_chatPreparedUnits -= previous.key().size() + previous->content.size(); m_chatPrepared.erase(previous);
