@@ -117,6 +117,9 @@
         <message><source>Remove %1</source><translation>Удалить %1</translation></message>
         <message><source>Remove image from text</source><translation>Удалить изображение из текста</translation></message>
         <message><source>Drag image into message</source><translation>Перетащить изображение в сообщение</translation></message>
+        <message><source>Upload files from clipboard?</source><translation>Загрузить файлы из буфера обмена?</translation></message>
+        <message><source>Check the file paths before uploading.</source><translation>Проверьте пути к файлам перед загрузкой.</translation></message>
+        <message><source>Upload</source><translation>Загрузить</translation></message>
         <message>
             <source>Unread messages</source>
             <translation>Непрочитанные сообщения</translation>
@@ -2015,6 +2018,10 @@
         <message>
             <source>The attachment could not be uploaded. %1</source>
             <translation>Не удалось отправить вложение. %1</translation>
+        </message>
+        <message>
+            <source>Message is too long (maximum 40,000 characters).</source>
+            <translation>Сообщение слишком длинное (не более 40 000 символов).</translation>
         </message>
         <message>
             <source>Uploading attachments…</source>
