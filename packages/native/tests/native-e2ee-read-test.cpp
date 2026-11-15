@@ -1085,9 +1085,14 @@ struct ProtectedChatInfoScene {
     {
         return QStringLiteral("Scroll Member %1").arg(index, 2, 10, QChar('0'));
     }
-    ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted, int memberRows = 2)
+    // viewerOwner keeps the viewer's binding role in agreement with
+    // stream.role="owner" (ensureChatAuthority cross-checks the two); the
+    // key request cases need a consistent owner stream.
+    const bool viewerOwner;
+    ProtectedChatInfoScene(const QString &locale, const QString &mode, bool encrypted, int memberRows = 2,
+        bool viewerOwnerRows = false)
         : f(), preferences(f.directory.filePath(QStringLiteral("chat-info-%1-%2.ini").arg(locale, mode))),
-          language(locale), palette(mode), memberRowCount(memberRows)
+          language(locale), palette(mode), memberRowCount(memberRows), viewerOwner(viewerOwnerRows)
     {
         f.stream = fullEncryptedStream();
         f.stream["current_encryption_key_uuid"] = OtherGeneration;
@@ -1112,8 +1117,12 @@ struct ProtectedChatInfoScene {
             const auto path = request.target.path();
             if (request.method == "GET" && path == "/api/workspace/v1/messenger/stream_bindings/") {
                 QJsonArray rows{
-                    chatInfoBindingRow(memberBindingUuid, userId, "member"),
-                    chatInfoBindingRow(ownerBindingUuid, Issuer, "owner")};
+                    viewerOwner
+                        ? chatInfoBindingRow(memberBindingUuid, userId, "owner")
+                        : chatInfoBindingRow(memberBindingUuid, userId, "member"),
+                    viewerOwner
+                        ? chatInfoBindingRow(ownerBindingUuid, Issuer, "member")
+                        : chatInfoBindingRow(ownerBindingUuid, Issuer, "owner")};
                 for (int index = 3; index <= memberRowCount; ++index)
                     rows.append(chatInfoBindingRow(scrollMemberBindingUuid(index),
                         scrollMemberUserUuid(index), "member"));
@@ -10389,7 +10398,7 @@ private slots:
     // summary, the saved-keys inventory and the saved-key details screen, driven
     // through the same drawer stack as the #243 info screens.
     void uiEncryptedChatKeyScreenInventoryAndDetails() {
-        ProtectedChatInfoScene scene("en", "dark", true);
+        ProtectedChatInfoScene scene("en", "dark", true, 2, true);
         QVERIFY(scene.open());
         const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
             if (!closeEncryptedVisualWindow(window.data()))
@@ -10436,8 +10445,21 @@ private slots:
         QCOMPARE(scene.text("encryptedChatLocalKeyState"), QString("Historical"));
         QCOMPARE(scene.text("encryptedChatLocalKeyAnnouncedValue"), QString("Not found in loaded history"));
         QVERIFY(!scene.text("encryptedChatLocalKeyAddedValue").isEmpty());
+        // The request buttons are rights-gated; the catalog snapshot that
+        // follows stream load keeps canRequest false until it settles (same
+        // gate the reference holds behind getRights()).
+        QTRY_COMPARE(scene.evaluate("controller.encryption.canRequest"), QVariant(true));
+        // "Request this key again" mirrors the reference button and gate, but
+        // the native request primitive short-circuits generations the vault
+        // already holds (staging would drop the local copy, which the
+        // reference "saved key remains available" contract forbids - docs
+        // deviation 7). Pressing it must therefore be a safe no-op, and the
+        // key_request POST + sent-status projection are proven by the
+        // current-key-missing recovery below plus the controller request cases.
+        QVERIFY(scene.require("encryptedChatRequestLocalKeyButton")->isEnabled());
         encryptedUiClick(scene.require("encryptedChatRequestLocalKeyButton"));
-        QTRY_VERIFY(scene.item("encryptedChatLocalKeyRequested"));
+        QVERIFY(scene.require("encryptedChatLocalKeyScreen"));
+        QCOMPARE(scene.text("encryptedChatLocalKeyUuid"), historicalKey);
         encryptedUiClick(scene.require("nativeRightDrawerBack"));
         QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
         // The current generation's details allow self-deletion; deleting it
@@ -10453,6 +10475,7 @@ private slots:
         QTRY_COMPARE(scene.text("encryptedChatCurrentKeyMissingHint"),
             QString("The current key is missing from this device."));
         QVERIFY(scene.require("encryptedChatRequestCurrentKeyButton")->isVisible());
+        QTRY_COMPARE(scene.evaluate("controller.encryption.canRequest"), QVariant(true));
         encryptedUiClick(scene.require("encryptedChatRequestCurrentKeyButton"));
         QTRY_VERIFY(scene.item("encryptedChatCurrentKeyRequested"));
     }
@@ -10467,9 +10490,13 @@ private slots:
                 QTest::qFail("Protected chat key geometry window did not close", __FILE__, __LINE__);
         });
         const auto muted = QColor(mode == "dark" ? "#707070" : "#989898");
-        const auto cardBg = QColor(mode == "dark" ? "#373737" : "#f5f5f5");
+        // card-bg is the NativeTheme token the chip binds (docs/
+        // NATIVE_DESKTOP_E2EE_CHAT_INFO.md token table), not the web hex values.
+        const auto cardBg = QColor(mode == "dark" ? "#282a32" : "#eef5fb");
         const auto primary = QColor(mode == "dark" ? "#ffffff" : "#1b1b1d");
-        const auto accent = QColor("#ff8438");
+        // accent binds NativeTheme's token (#7087ff in both palettes), like
+        // the accepted #243 window cases assert.
+        const auto accent = QColor("#7087ff");
         const QString historicalKey = QStringLiteral("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d");
         for (const auto &key : {OtherGeneration, historicalKey})
             QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, key}, QByteArray(32, 'k'), 0),
@@ -10477,8 +10504,12 @@ private slots:
         scene.openChatInfo();
         QTRY_VERIFY(scene.item("protectedChatIdentity"));
         encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
         encryptedUiClick(scene.require("protectedChatKeysRow"));
         QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        // The present-key block mounts once the verified stream projection
+        // lands; geometry asserts must wait for it, not for a moment later.
+        QTRY_VERIFY(scene.item("encryptedChatKeyUuidLabel"));
         // encrypted-chat-info.ui.tsx: label row text-sm text-text-muted with the
         // 24 px ghost copy button; the chip is rounded-lg bg-card-bg px-2 py-1.5
         // around a 20 px leading line: height 16 + 12 py + 4 = 32.
