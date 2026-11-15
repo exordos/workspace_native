@@ -1247,6 +1247,80 @@ public:
     bool start() { return fixture.start(); }
 };
 
+// Issue #83: the reference fixed system folder UUIDs
+// (workspace_ui 61dacef7 messenger-folder-system-type.lib.ts).
+static const QString allChatsFolder = QStringLiteral("00000000-0000-0000-0000-000000000000");
+static const QString personalFolder = QStringLiteral("00000000-0000-0000-0000-000000000001");
+static const QString channelsFolder = QStringLiteral("00000000-0000-0000-0000-000000000002");
+
+// ---- Issue #83: folders rail model (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md) ----
+static QJsonObject folderRailStream(const QString &id, const QString &name)
+{
+    return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"name", name}, {"encryption", false}};
+}
+static QJsonObject folderRailFolder(const QString &uuid, const QString &title, const QString &systemType,
+    int unread, int color, const QJsonArray &items = {}, bool camelCase = false)
+{
+    if (camelCase)
+        return QJsonObject{{"uuid", uuid}, {"title", title}, {"systemType", systemType},
+            {"unreadCount", unread}, {"backgroundColorValue", color}, {"folderItems", items}};
+    return QJsonObject{{"uuid", uuid}, {"title", title}, {"system_type", systemType},
+        {"unread_count", unread}, {"background_color_value", color},
+        {"folder_items", items}};
+}
+static QJsonObject folderRailItem(const QString &stream)
+{
+    return QJsonObject{{"uuid", "fi-" + stream}, {"folder", allChatsFolder}, {"stream_uuid", stream},
+        {"chat_type", "channel"}};
+}
+static QStringList folderKeys(const QVariantList &folders)
+{
+    QStringList keys;
+    for (const auto &folder : folders) keys.append(folder.toMap().value("key").toString());
+    return keys;
+}
+static QStringList sidebarRowIds(const QVariantList &rows)
+{
+    QStringList ids;
+    for (const auto &row : rows) ids.append(row.toMap().value("id").toString());
+    return ids;
+}
+// Boots a controller whose mock serves two streams and a swappable /folders/ answer.
+struct FolderRailFixture
+{
+    MockServer server;
+    ApiClient api{nullptr, true};
+    Session session{&api};
+    NativeController controller{&api, &session};
+    Response folders{QJsonArray{}};
+    QString customUuid = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+    QString streamB = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+    FolderRailFixture()
+    {
+        server.handler = [this](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/")) return folders;
+            if (path.endsWith("/messenger/streams/"))
+                return Response{QJsonArray{folderRailStream(streamId, "Alpha"), folderRailStream(streamB, "Beta")}};
+            if (path.endsWith("/messenger/streams/" + streamId)) return Response{folderRailStream(streamId, "Alpha")};
+            if (path.endsWith("/messenger/streams/" + streamB)) return Response{folderRailStream(streamB, "Beta")};
+            if (path.endsWith("/messenger/stream_topics/")) return Response{QJsonArray{}};
+            if (path.endsWith("/server_settings")) return Response{organizationSettingsDto()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.contains("/messages/")) return Response{QJsonArray{}};
+            return sessionResponse(request);
+        };
+    }
+    bool start()
+    {
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([this] { return controller.streams().size() == 2; }, 2000)) return false;
+        return true;
+    }
+};
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -20745,6 +20819,112 @@ private slots:
         QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
     }
 #endif // Q_OS_UNIX
+
+
+    void folderRailModelPinsAllFirstAndCarriesServerFolderState()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(f.customUuid, "Focus", "created", 7, 0x2563eb, {folderRailItem(f.streamB)}),
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(channelsFolder, "Channels", "channels", 0, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto folders = f.controller.folders();
+        QCOMPARE(folderKeys(folders), (QStringList{"all", "personal", "channels", f.customUuid}));
+        QCOMPARE(folders.first().toMap().value("id").toString(), allChatsFolder);
+        const auto custom = folders.last().toMap();
+        QCOMPARE(custom.value("title").toString(), QStringLiteral("Focus"));
+        QCOMPARE(custom.value("systemType").toString(), QStringLiteral("created"));
+        QCOMPARE(custom.value("unreadCount").toInt(), 7);
+        QCOMPARE(custom.value("color").toUInt(), 0x2563ebu);
+        QCOMPARE(custom.value("streamIds").toStringList(), (QStringList{f.streamB}));
+        QCOMPARE(custom.value("synthesized").toBool(), false);
+        QCOMPARE(folders.at(1).toMap().value("synthesized").toBool(), true);
+    }
+
+    void folderRailForcesSystemTypesFromFixedUuidsAndAcceptsCamelCase()
+    {
+        FolderRailFixture f;
+        // The Personal UUID reported as "all" must still be personal; a custom
+        // UUID reporting "all" degrades to created (reference forcing rule).
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", QString(), 0, 0, {}, true),
+            folderRailFolder(personalFolder, "Personal", "all", 3, 0, {}, true),
+            folderRailFolder(f.customUuid, "Ghost", "all", 0, 0, {}, true)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto folders = f.controller.folders();
+        QCOMPARE(folderKeys(folders).first(), QStringLiteral("all"));
+        for (const auto &value : folders)
+        {
+            const auto folder = value.toMap();
+            if (folder.value("id").toString() == personalFolder)
+            {
+                QCOMPARE(folder.value("systemType").toString(), QStringLiteral("personal"));
+                QCOMPARE(folder.value("unreadCount").toInt(), 3);
+            }
+            if (folder.value("id").toString() == f.customUuid)
+                QCOMPARE(folder.value("systemType").toString(), QStringLiteral("created"));
+        }
+    }
+
+    void folderRailSynthesizesSystemSlotsAndStaysQuietWhenFoldersUnavailable()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonObject{{"detail", "no"}} , 500};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        QCOMPARE(folderKeys(f.controller.folders()), (QStringList{"all", "personal", "channels"}));
+        QVERIFY2(f.controller.error().isEmpty(), qPrintable(f.controller.error()));
+        // Synthesized slots carry no server membership: the sidebar stays unfiltered.
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+        f.controller.selectFolder("personal");
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+    }
+
+    void folderSelectionScopesSidebarStreamsAndSignalsOnlyOnChange()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb,
+                {folderRailItem(f.streamB)})}};
+        QVERIFY(f.start());
+        // all + custom from the server, synthesized personal + channels pair.
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        QCOMPARE(f.controller.selectedFolder(), allChatsFolder);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+        QSignalSpy selected(&f.controller, &NativeController::folderSelected);
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(f.controller.selectedFolder(), f.customUuid);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{f.streamB}));
+        f.controller.selectFolder(f.customUuid); // re-selecting the effective folder: no signal
+        QCOMPARE(selected.size(), 1);
+        f.controller.selectFolder("all");
+        QCOMPARE(selected.size(), 2);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+    }
+
+    void folderRailFallsBackToAllWhenTheSelectedFolderDisappears()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb,
+                {folderRailItem(f.streamB)})}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000); // all + custom + synthesized pair
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{f.streamB}));
+        // The folder vanishes on refresh: the effective folder must fall back to All.
+        f.folders = Response{QJsonArray{folderRailFolder(allChatsFolder, "All chats", "all", 0, 0)}};
+        f.controller.refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000); // all + synthesized pair
+        QCOMPARE(f.controller.selectedFolder(), allChatsFolder);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

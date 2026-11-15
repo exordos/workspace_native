@@ -21011,6 +21011,89 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QStringLiteral("FREEZEPROBE phase=repeat-switch settled=1 settleMs=6900 unstable=6 lateMoves=0 ticks=178 maxRssKib=262144"),
             good}.join(QLatin1Char('\n'))).isEmpty());
     }
+
+    // ---- Issue #83: real folder rail scopes the sidebar (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md) ----
+    void folderRailRendersServerFoldersAndScopesTheSidebar()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderStreamB = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",7},{"background_color_value",0x2563eb},
+                        {"folder_items",QJsonArray{QJsonObject{{"uuid","fi-b"},{"stream_uuid",folderStreamB},
+                            {"chat_type","channel"}}}}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha"), windowChannel(folderStreamB,"Beta")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path == "/api/workspace/v1/messenger/streams/"+folderStreamB) return {windowChannel(folderStreamB,"Beta")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folders rail teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(),2,2000);
+        // All four rail cells render; the static disabled placeholders are gone.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-all") && visibleItem("folder-personal")
+            && visibleItem("folder-channels") && visibleItem("folder-"+folderFocus), 5000);
+        auto *all=visibleItem("folder-all"); QVERIFY(all);
+        auto *personal=visibleItem("folder-personal"); QVERIFY(personal);
+        auto *channels=visibleItem("folder-channels"); QVERIFY(channels);
+        auto *focus=visibleItem("folder-"+folderFocus); QVERIFY(focus);
+        QVERIFY(personal->property("enabled").toBool());
+        QVERIFY(channels->property("enabled").toBool());
+        for(auto *object:window->findChildren<QObject *>())
+            QVERIFY(object->property("help").toString()!="This filter is not implemented yet");
+        // The All slot is pinned above the scrollable group (async delegate
+        // incubation: give the layout one settle window).
+        const auto sceneY=[&](QQuickItem *entry){return entry->mapToScene(QPointF(0,0)).y();};
+        QTRY_VERIFY_WITH_TIMEOUT(sceneY(all)<sceneY(personal) && sceneY(personal)<sceneY(channels)
+            && sceneY(channels)<sceneY(focus), 5000);
+        // The custom folder carries the unread badge (7) and its folder color.
+        auto *badge=visibleItem("folderBadge-"+folderFocus); QVERIFY(badge);
+        QCOMPARE(badge->property("text").toString(),QStringLiteral("7"));
+        // An active sidebar search hides Beta until the folder scopes it away.
+        window->setProperty("sidebarQuery","alph");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId) && !visibleItem("stream-"+folderStreamB), 2000);
+        // Selecting the custom folder clears the search and scopes the list.
+        click(window,focus);
+        QTRY_COMPARE(window->property("sidebarQuery").toString(),QString());
+        QTRY_COMPARE(controller.selectedFolder(),folderFocus);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("stream-"+streamId) && visibleItem("stream-"+folderStreamB), 2000);
+        // The selected card scales 1.1; All goes back to 1.0.
+        auto *focusCard=item(window->contentItem(),"folderCard-"+folderFocus); QVERIFY(focusCard);
+        QTRY_COMPARE(focusCard->property("scale").toReal(),qreal(1.1));
+        auto *allCard=item(window->contentItem(),"folderCard-all"); QVERIFY(allCard);
+        QTRY_COMPARE(allCard->property("scale").toReal(),qreal(1.0));
+        // Selecting All again restores the full list.
+        click(window,visibleItem("folder-all"));
+        QTRY_COMPARE(controller.selectedFolder(),QStringLiteral("00000000-0000-0000-0000-000000000000"));
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        QTRY_VERIFY(visibleItem("stream-"+folderStreamB));
+        // The add-folder button is enabled chrome (the creation flow is issue #84).
+        auto *add=visibleItem("folderAddButton"); QVERIFY(add);
+        QVERIFY(add->property("enabled").toBool());
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {
