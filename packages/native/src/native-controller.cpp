@@ -4455,6 +4455,7 @@ void NativeController::maybeResolveChannelCreateStages()
     if (m_channelStageToken == token) return;
     m_channelStageToken = token;
     m_channelStageRecoveryRetries = 0;
+    m_channelStageRecoveryBackoffStep = 0;
     QTimer::singleShot(0, this, [this, token] { resolveChannelCreateStages(token); });
 }
 
@@ -4470,7 +4471,8 @@ void NativeController::resolveChannelCreateStages(const QString &token)
         bool live = false;
         for (auto it = m_channelCreations.begin(); it != m_channelCreations.end(); ++it)
             if (it->encrypted && it->uuid == stage.attempt) live = true;
-        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey, stage.dispatchAttempted});
+        if (!live) pending.append(PendingCreateStage{stage.attempt, stage.key, stage.groupKey,
+            stage.dispatchAttempted, stage.createdAt, stage.missingEvidence});
         stage.clearSecrets();
     }
     resolveNextChannelCreateStage(std::move(pending), token);
@@ -4526,7 +4528,32 @@ void NativeController::resolveNextChannelCreateStage(QVector<PendingCreateStage>
                 m_chatKeys->clearCreateStage(lease, stage.attempt);
                 resolved = true;
             }
+        } else if (result.status == 404) {
+            // Review findings 4575672241/4575672242 residual hole: a stage
+            // whose POST vanished between the durable dispatch marker and
+            // the socket write answers 404 forever and could never be
+            // removed by retention alone. Record the definitive absence on
+            // the stage durably; retire only once K consecutive definitive
+            // 404s observed across SEPARATE scan cycles are on record AND
+            // the stage aged past minimumChannelStageReclaimAgeMs. The age
+            // and cross-cycle requirements are what keep the R2 race closed:
+            // a stream whose creation is still committing lands long before
+            // the age floor, and its first 2xx both re-verifies the echo
+            // and resets the evidence. A failed retire counts unresolved.
+            const auto evidence = stage.missingEvidence + 1;
+            const auto age = QDateTime::currentMSecsSinceEpoch() - stage.createdAt;
+            if (evidence >= minimumChannelStageMissingObservations && age >= minimumChannelStageReclaimAgeMs)
+                resolved = m_chatKeys->clearCreateStage(lease, stage.attempt) == NativeChatKeyVault::Failure::None;
+            else
+                m_chatKeys->setCreateStageMissingEvidence(lease, stage.attempt, evidence);
+        } else if (result.ok() && stage.missingEvidence > 0) {
+            // The stream answered under the attempt uuid (2xx): absence
+            // evidence is void, reset it so a later gap starts over. The
+            // stage itself stays (non-verifying echo contract above).
+            m_chatKeys->setCreateStageMissingEvidence(lease, stage.attempt, 0);
         }
+        // Any other answer (transport error, 5xx) proves neither presence
+        // nor absence: the durable record is left untouched.
         resolveNextChannelCreateStage(stages, token, unresolved || !resolved);
     });
 }
@@ -4535,14 +4562,28 @@ void NativeController::scheduleChannelStageRecoveryRetry(const QString &token)
 {
     // Review finding 4575117269: a scan pass that ended with stages still
     // unresolved (transient vault error, failed or non-committal stream GET)
-    // is retried a bounded number of times inside the current vault session
-    // instead of waiting for a controller restart. The cap keeps a stream
-    // that genuinely never lands from polling forever.
+    // is retried a bounded number of times inside the current vault session.
+    // Review finding 4575117269 follow-up: once that fast window is spent,
+    // recovery must NOT go permanently silent for the lease — a vault or
+    // server that heals later would strand its pending stages until the next
+    // restart. The scan instead re-arms with exponential backoff capped at
+    // channelStageRecoveryBackoffCapMs: still bounded work per unit time,
+    // and every re-arm is a fresh scan cycle (which also separates the
+    // conclusive-absence observations behind the 4575672241/4575672242
+    // reclaim rule). A pass with nothing unresolved stops arming, so an
+    // idle vault never polls.
     if (m_channelStageToken != token) return;
-    if (m_channelStageRecoveryRetries >= maximumChannelStageRecoveryRetries) return;
-    ++m_channelStageRecoveryRetries;
-    QTimer::singleShot(channelStageRecoveryRetryIntervalMs, this,
-        [this, token] { resolveChannelCreateStages(token); });
+    if (m_channelStageRecoveryRetries < maximumChannelStageRecoveryRetries) {
+        ++m_channelStageRecoveryRetries;
+        QTimer::singleShot(channelStageRecoveryRetryIntervalMs, this,
+            [this, token] { resolveChannelCreateStages(token); });
+        return;
+    }
+    const auto step = qMin(m_channelStageRecoveryBackoffStep + 1, 5);
+    ++m_channelStageRecoveryBackoffStep;
+    const auto backoff = qMin<qint64>(channelStageRecoveryBackoffCapMs,
+        qint64(channelStageRecoveryRetryIntervalMs) << step);
+    QTimer::singleShot(int(backoff), this, [this, token] { resolveChannelCreateStages(token); });
 }
 
 void NativeController::channelCollection(const QString &owner, const QString &id, quint64 ticket,

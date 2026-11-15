@@ -872,7 +872,8 @@ private:
     // The first authenticated use of a vault scans the stages and resolves
     // each pending attempt by fetching the stream under its staged identity,
     // verifying the encrypted echo, committing the key, then clearing.
-    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; bool dispatchAttempted = true; };
+    struct PendingCreateStage { QString attempt, key; QByteArray groupKey; bool dispatchAttempted = true;
+        qint64 createdAt = 0; int missingEvidence = 0; };
     void maybeResolveChannelCreateStages();
     void resolveChannelCreateStages(const QString &token);
     void resolveNextChannelCreateStage(QVector<PendingCreateStage> stages, const QString &token,
@@ -880,8 +881,23 @@ private:
     void scheduleChannelStageRecoveryRetry(const QString &token);
     QString m_channelStageToken;
     int m_channelStageRecoveryRetries = 0;
+    int m_channelStageRecoveryBackoffStep = 0;
     static constexpr int maximumChannelStageRecoveryRetries = 5;
     static constexpr int channelStageRecoveryRetryIntervalMs = 1000;
+    // Review finding 4575117269: after the fast window is exhausted recovery
+    // re-arms with exponential backoff capped at this interval, so a failure
+    // that outlives the window heals without a restart and without a tight loop.
+    static constexpr qint64 channelStageRecoveryBackoffCapMs = 30000;
+    // Review findings 4575672241/4575672242: a dispatch-attempted stage is
+    // retired only after this many DEFINITIVE 404 recovery answers observed
+    // across SEPARATE scan cycles are durably recorded on the stage AND the
+    // stage is older than the reclaim age below. Together they establish the
+    // creation is impossible: a POST still in flight or still committing is
+    // protected by the cross-cycle requirement (each cycle is a fresh check
+    // separated by at least the retry interval) and by the age requirement
+    // (no real server commits a stream POST this late).
+    static constexpr int minimumChannelStageMissingObservations = 5;
+    static constexpr qint64 minimumChannelStageReclaimAgeMs = 10 * 60 * 1000;
     void loadChannelDefault(const QString &owner, const QString &id, quint64 ticket);
     void checkChannelMembers(const QString &owner, const QString &id, quint64 ticket);
     void addChannelMembers(const QString &owner, const QString &id, quint64 ticket);
