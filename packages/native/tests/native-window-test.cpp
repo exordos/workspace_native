@@ -19686,7 +19686,7 @@ private:
         scene.controller.openMessageLink(QStringLiteral("ew://open/#user/") + missing);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLinkFailure"), 3000);
         QVERIFY(!visibleItem("profileLayer"));
-        QCOMPARE(visibleItem("profileLinkFailure")->height(), 45.0);
+        QCOMPARE(visibleItem("profileLinkFailure")->height(), 57.0);
         QCOMPARE(scene.text("profileLinkFailureText"), QStringLiteral("Could not open this profile. It may be unavailable or you may not have access."));
         click(scene.window, visibleItem("profileLinkFailureClose"));
         QTRY_VERIFY(!visibleItem("profileLinkFailure"));
@@ -19713,6 +19713,7 @@ private:
     {
         QFETCH(QString, locale); QFETCH(bool, dark);
         ProfileWindowScene scene;
+        scene.window->setWidth(700); // Also exercise the native minimum width.
         scene.preferences.setPaletteId("blue-cold");
         scene.preferences.setMode(dark ? "dark" : "light");
         scene.preferences.setLocale(locale);
@@ -19731,9 +19732,13 @@ private:
             : QStringLiteral("Could not open this profile. It may be unavailable or you may not have access.");
         QCOMPARE(label->property("text").toString(), expected);
         QCOMPARE(label->property("color").value<QColor>(), QColor(dark ? "#3d5eff" : "#7087ff"));
-        QCOMPARE(visibleItem("profileLinkFailure")->height(), 45.0);
+        QCOMPARE(visibleItem("profileLinkFailure")->height(), 57.0);
         auto *close = visibleItem("profileLinkFailureClose"); QVERIFY(close);
         QCOMPARE(close->property("text").toString(), locale == "ru" ? QString::fromUtf8("Закрыть") : QString("Close"));
+        QCOMPARE(close->height(), 32.0);
+        QCOMPARE(close->property("font").value<QFont>().pixelSize(), 12);
+        QVERIFY(close->width() < 80.0);
+        QVERIFY(!label->property("truncated").toBool());
         click(scene.window, close);
         QTRY_VERIFY(!visibleItem("profileLinkFailure"));
     }
