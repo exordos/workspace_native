@@ -481,6 +481,22 @@ upgrade is recorded separately below. Earlier intermittent failures remain
 unexplained, despite this passing run.
 See [About/update checks](provenance/about-update-checks.json).
 
+An older retained executable now recognizes an exact newer version already
+selected by the managed installation. It verifies `current`, VERSION and the
+executable before offering **Restart now**, without downloading or applying the
+same archive again. Discovery never grants restart consent. The explicit action
+revalidates the target and uses the existing shutdown, storage flush and
+single-instance handoff. Invalid existing targets fail without replacement;
+the install-time check also covers another copy installing during the download.
+The installer and its immutable-directory and lock rules are unchanged.
+
+Eight updater regressions and one QML policy regression failed before the fix.
+Afterward, Updater63, AboutPolicy11, Locale14, twelve visible Main-window checks
+and all six installer checks passed, and the production executable built.
+The Main checks exercise real local release HTTP and managed-directory fixtures
+in English and Russian. A two-release process restart and Wayland acceptance
+were not rerun for this change.
+
 
 [0.1.1](https://github.com/exordos/workspace_native/releases/tag/0.1.1) is public.
 Both master and tag CI passed; the actual downloaded 63,558,061-byte archive

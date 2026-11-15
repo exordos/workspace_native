@@ -199,7 +199,7 @@ bool NativeUpdater::allowedDownload(const QUrl &url, bool redirect) const
 
 void NativeUpdater::download()
 {
-    if (busy() || m_downloadUrl.isEmpty() || m_expectedSize <= 0
+    if (busy() || m_state == QStringLiteral("ready") || m_downloadUrl.isEmpty() || m_expectedSize <= 0
         || m_expectedSha256.size() != 64) return;
     const auto ticket = ++m_ticket;
     discardFile();
@@ -397,6 +397,8 @@ void NativeUpdater::install()
     if (m_state != QStringLiteral("downloaded") || !m_file || m_downloadedPath.isEmpty()) return;
     const auto ticket = ++m_ticket;
     m_error.clear();
+    // Another copy may have installed this release since our metadata check.
+    if (reuseInstalledVersion(ticket)) return;
     m_progress = 0;
     m_staging = std::make_unique<QTemporaryDir>(QDir(m_cachePath).filePath(QStringLiteral("install-XXXXXX")));
     if (!m_staging->isValid() || installRoot().isEmpty()) {
@@ -577,6 +579,25 @@ bool NativeUpdater::installedVersionMatches() const
         && binary.isFile() && binary.isExecutable();
 }
 
+bool NativeUpdater::reuseInstalledVersion(quint64 ticket)
+{
+    const auto root = installRoot();
+    if (root.isEmpty()) return false;
+    const QFileInfo target(QDir(root).filePath(QStringLiteral("versions/") + m_availableVersion));
+    if (!target.exists() && !target.isSymLink()) return false;
+    // A version directory is immutable. Only reuse the exact verified target
+    // already selected by current; never overwrite or select an existing one.
+    if (!installedVersionMatches()) {
+        fail(ticket, tr("The installed update could not be verified."));
+        return true;
+    }
+    discardFile();
+    m_progress = 1;
+    m_state = QStringLiteral("ready");
+    emit changed();
+    return true;
+}
+
 void NativeUpdater::restart()
 {
     if (m_state != QStringLiteral("ready")) return;
@@ -633,6 +654,7 @@ void NativeUpdater::parseRelease(quint64 ticket)
     m_downloadUrl = url;
     m_expectedSha256 = hashMatch.captured(1).toLatin1().toLower();
     m_expectedSize = qint64(size);
+    if (reuseInstalledVersion(ticket)) return;
     m_state = QStringLiteral("available");
     emit changed();
 }

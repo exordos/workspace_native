@@ -23,12 +23,14 @@ FocusScope {
     readonly property bool busy: phase === "checking" || phase === "downloading" || phase === "installing"
     readonly property bool installPhase: phase === "downloaded" || phase === "installing" || phase === "ready"
     readonly property bool canInstall: !!updater && phase === "downloaded" && targetVersion.length > 0 && installTarget.length === 0
+    readonly property bool canRestart: !!updater && phase === "ready" && targetVersion.length > 0
     readonly property bool canCheck: !!updater && !busy && !installPhase
     readonly property bool indicatorVisible: !!updater && ["available", "downloading", "downloaded", "installing", "ready"].indexOf(phase) >= 0
     readonly property string indicatorLabel: phase === "available"
         ? qsTr("Version %1 available").arg(targetVersion || "?")
         : phase === "downloading"
             ? qsTr("Downloading update… %1%").arg(Math.round(Number(updater.progress || 0) * 100))
+            : phase === "ready" ? qsTr("Restart now")
             : installPhase ? qsTr("Update ready to install") : qsTr("Application update")
 
     property bool policyReady: false
@@ -86,6 +88,8 @@ FocusScope {
             installUpdater = source;
             installTarget = targetVersion;
             source.install();
+        } else if (canRestart) {
+            source.restart();
         } else if (canCheck) {
             source.check();
         }
@@ -356,8 +360,8 @@ FocusScope {
                                 horizontalPadding: 12
                                 verticalPadding: 0
                                 hoverEnabled: true
-                                text: drawer.installPhase ? qsTr("Install and restart") : qsTr("Check for updates")
-                                enabled: drawer.canInstall || drawer.canCheck
+                                text: drawer.canRestart ? qsTr("Restart now") : drawer.installPhase ? qsTr("Install and restart") : qsTr("Check for updates")
+                                enabled: drawer.canInstall || drawer.canRestart || drawer.canCheck
                                 onClicked: drawer.activateUpdateAction()
                                 contentItem: Text {
                                     text: action.text

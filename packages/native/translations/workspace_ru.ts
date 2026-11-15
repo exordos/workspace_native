@@ -2644,6 +2644,10 @@
             <translation>Установить и перезапустить</translation>
         </message>
         <message>
+            <source>Restart now</source>
+            <translation>Перезапустить</translation>
+        </message>
+        <message>
             <source>Check for updates</source>
             <translation>Проверить обновления</translation>
         </message>
