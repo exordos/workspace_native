@@ -210,3 +210,9 @@ active `bg-accent/20`, selected `bg-accent/10`, else hover.
   its cross-folder search model; the native sidebar keeps the simple
   folder-scoped filter plus the search clear on folder change, matching the
   selection semantics above.
+- The `/folders/` response deliberately bypasses the tracked request helper:
+  the connection banner (reference `layout-connection-banner.lib.ts`, native
+  `observeTransport`) is driven by the snapshot request families
+  (`streams`/`users`), and a folder success or failure must not move
+  transport health in either direction. This kept the
+  `overlayBannerTransportDropFlipsPhaseOfflineThenRecovers` invariant intact.
