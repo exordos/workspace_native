@@ -250,6 +250,21 @@ read path already uses for safe copy; the native test asserts
    `sourceName === "native"` streams stays out of scope (same deviation as
    #243 deviation 3).
 
+7. "Request this key again" on a locally-saved generation: the reference
+   runtime (`chat-e2ee-controller.lib.ts:185-230`) creates and posts a fresh
+   `key_request` even while the local store holds the key, because staging
+   leaves the local copy intact ("Request sent. The saved key remains
+   available."). The native request primitive
+   (`native-controller.cpp` `startChatRequest`) short-circuits when the vault
+   row already holds a usable 32-byte generation: native staging replaces the
+   local bytes with an empty pending slot (the POST guard in `postChatRequest`
+   asserts `bytes.isEmpty()`), so re-requesting a saved key would drop the
+   local copy the reference contract keeps. The native details button keeps
+   the reference enable-gate, pressing it is a safe no-op, and the
+   `key_request` POST + sent-status projection are exercised through the
+   current-key-missing recovery (same primitive, key absent) and the
+   controller request-flow cases.
+
 ## Tests (issue acceptance)
 
 Controller group `native-native-controller` (`native-controller-test.cpp`):
@@ -277,21 +292,27 @@ Window group `native-native-e2ee-ui` (`native-e2ee-read-test.cpp`, added to the
 existing CMake function list - no new ctest group), data-driven en/ru x
 dark/light over `ProtectedChatInfoScene`:
 
-5. `uiEncryptedChatKeyScreenShowsKeyCopyAndLocalKeys`: key screen shows the
-   `Current key ID` label + copy button, the UUID chip matches the stream key,
-   activating the copy puts the UUID in the clipboard, the created line equals
-   `Created: <joined date>` of the earliest `key_announced` row for that key;
-   the saved-keys section is collapsed by default, expanding shows Current /
-   Historical rows with `first8...last4` monospace rows and `Added:` dates;
-   opening a row pushes the `local-key` screen (full UUID + both date labels);
-   Back returns to the key screen at contentY 0.
-6. `uiEncryptedChatKeyScreenRequestAndReissueActions`: request-current-key path
-   (current key not in the vault) shows the hint + button, posting it sends the
-   `key_request` (mock-server assertion) and reveals the sent-status line;
-   the details screen's request/`Request this key again` posts for that key;
-   reissue shows the pending state while the POST is deferred (no sleeps) and
-   the details `Delete from this device` removes the vault row and the row
-   disappears from the expanded list.
+5. `uiEncryptedChatKeyScreenInventoryAndDetails`: the key screen shows the
+   `Current key ID` chip (chip text = the stream key), the copy button puts the
+   UUID on the clipboard, and the saved-keys section starts collapsed, then
+   expands to Current/Historical rows (`first8...last4` monospace, added
+   dates). A row opens the `local-key` details (full uuid, state line, the
+   `Not found in loaded history` announcement fallback, added label); Back
+   returns to the key screen. `Request this key again` mirrors the reference
+   enable-gate; on native it is a safe no-op for a generation the vault
+   already holds (deviation 7), so the wire request and sent-status lines are
+   proven through the current-key-missing recovery: deleting the current
+   generation's local row surfaces the missing hint, `Request current key`
+   posts the `key_request` and the sent-status line appears. The catalog
+   snapshot that follows stream load keeps `canRequest` false until it
+   settles; the case waits for the rights projection (same gate the reference
+   reads from `getRights()`).
+6. `uiEncryptedChatKeyScreenSourceGeometry` (data-driven en/ru x dark/light):
+   the measured reference geometry - `text-sm` muted label over the card-bg
+   chip (height 32), the 24 px ghost copy button, the 36 px `Reissue key`
+   button, the 44 px collapsible row, the 50 px key rows with accent/muted
+   Current/Historical badges, and the details labels/buttons - asserted
+   against the native token palette (NativeTheme `card-bg`, `accent`).
 
 Every new `qsTr` string (context `NativeEncryptedChatInfo`) and every new
 controller `tr` string lands in `packages/native/translations/workspace_ru.ts`
