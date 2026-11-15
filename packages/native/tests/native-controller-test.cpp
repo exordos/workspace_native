@@ -15034,6 +15034,95 @@ private slots:
         return {};
     }
 
+    void sidebarSearchKeepsHydrationOwnedAndDeduplicated_data()
+    {
+        QTest::addColumn<bool>("logoutWhileHeld");
+        QTest::newRow("current-owner") << false;
+        QTest::newRow("logout-before-response") << true;
+    }
+
+    void sidebarSearchKeepsHydrationOwnedAndDeduplicated()
+    {
+        QFETCH(bool, logoutWhileHeld);
+        Fixture fixture;
+        fixture.streams = [](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Engineering", 0, 0, 0)}}; };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto gets = std::make_shared<int>(0);
+        fixture.topics = [gates, gets](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") != streamId) return Response{QJsonArray{}, 400};
+            ++*gets;
+            Response response{QJsonArray{inboxTopic(topicId, streamId, "Planning", 0, 0, 0)}};
+            response.defer = [gates](auto send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 1);
+        QCOMPARE(*gets, 0);
+        for (const auto &query : {QString("p"), QString("pl"), QString("planning")})
+            fixture.controller.setSidebarSearchQuery(query);
+        QTRY_VERIFY(*gets == 1 && gates->size() == 1);
+        QVERIFY(fixture.controller.selectedStream().isEmpty());
+        QVERIFY(fixture.controller.selectedTopic().isEmpty());
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        if (logoutWhileHeld) {
+            fixture.controller.logout();
+            QTRY_VERIFY(!fixture.controller.authenticated());
+        }
+        (*gates)[0](); gates->clear();
+        if (logoutWhileHeld) {
+            QTest::qWait(200);
+            QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+            return;
+        }
+        QTRY_COMPARE(fixture.controller.sidebarStreams().size(), 1);
+        QCOMPARE(fixture.controller.sidebarStreams().first().toMap().value("searchTopics").toList()
+            .first().toMap().value("id").toString(), topicId);
+        fixture.controller.setSidebarSearchQuery("unmatched");
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        fixture.controller.setSidebarSearchQuery(" #PLANNING ");
+        QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
+        QCOMPARE(*gets, 1);
+        auto changed = inboxTopic(topicId, streamId, "Renamed", 0, 0, 0, "2026-06-22T11:10:00Z");
+        QSignalSpy updates(&fixture.controller, &NativeController::sidebarStreamsChanged);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.updated", changed, 20)));
+        QVERIFY(!updates.isEmpty()); QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        fixture.controller.setSidebarSearchQuery("renamed");
+        QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("topic.deleted", changed, 21)));
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        fixture.controller.setSidebarSearchQuery("  ");
+        QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
+        QVERIFY(fixture.controller.selectedStream().isEmpty());
+    }
+
+    void sidebarSearchFollowsParticipantEmailUpdates()
+    {
+        Fixture fixture;
+        const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        auto user = QJsonObject{{"uuid", peer}, {"username", "alice"}, {"first_name", "Alice"},
+            {"last_name", "Ng"}, {"email", "alice@example.invalid"}};
+        fixture.users = [user](const Request &) { return Response{QJsonArray{user,
+            QJsonObject{{"uuid", userId}, {"username", "cassi"}, {"first_name", "Cassandra"},
+                {"last_name", "Volkova"}, {"email", "viewer@example.invalid"}}}}; };
+        fixture.streams = [peer](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Private conversation", 0, 0, 0, true, peer)}}; };
+        loginInbox(fixture, 1);
+        for (const auto &query : {QString("alice ng"), QString(" ALICE@EXAMPLE.INVALID "),
+                QString("cassandra volkova"), QString("viewer@example.invalid"), QString("private conversation")}) {
+            fixture.controller.setSidebarSearchQuery(query);
+            QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
+        }
+        fixture.controller.setSidebarSearchQuery("alice@example.invalid");
+        user["email"] = "new@example.invalid";
+        QSignalSpy updates(&fixture.controller, &NativeController::sidebarStreamsChanged);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("user.updated", user, 20)));
+        QVERIFY(!updates.isEmpty()); QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        fixture.controller.setSidebarSearchQuery("new@example.invalid");
+        QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
+        fixture.controller.logout(); QTRY_VERIFY(!fixture.controller.authenticated());
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+    }
+
     void inboxGroupsDirectAndChannelsExcludingPassiveTraffic()
     {
         Fixture fixture;
