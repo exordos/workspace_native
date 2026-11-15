@@ -66,19 +66,27 @@ public:
     // answers. Records written before this contract existed (no field) decode
     // as dispatch-attempted: the safe, never-lossy default.
     //
-    // Conclusive-absence evidence (review findings 4575672241/4575672242):
-    // a dispatch-attempted stage is retained on non-committal answers, but a
-    // stage whose stream 404s forever could then never be removed and would
-    // permanently hold one of the MaximumCreateStages budget slots. Each
-    // recovery scan cycle that observes a DEFINITIVE 404 for the stream dur-
-    // ably bumps missingEvidence; a 2xx answer (the stream exists) resets it
-    // to 0; transport errors and 5xx leave it untouched (they prove neither).
-    // The controller retires the stage only once the durable counter plus the
-    // stage's age establish that creation is impossible (see the controller's
-    // minimumChannelStageMissingObservations / minimumChannelStageReclaimAge).
-    // This never re-classifies an in-flight or still-committing POST: the
-    // counter can only grow across SEPARATE scan cycles, each one a fresh
-    // definitive 404, and only after the stage aged past any late commit.
+    // Dormant quarantine (review findings 4575672241/4575672242 as
+    // re-scoped by 4576535469): a dispatch-attempted stage is retained on
+    // non-committal answers, and a definitive 404 proves only that the
+    // stream is absent NOW — never that the dispatched POST can no longer
+    // land (this client observes no server-side deadline or cancellation
+    // for the attempt), so absence alone is not a definitive terminal
+    // outcome and may never destroy the stage's group key. Each recovery
+    // scan cycle that observes a DEFINITIVE 404 durably bumps
+    // missingEvidence (a 2xx answer resets it to 0; transport errors and
+    // 5xx prove neither and leave it untouched); the counter SATURATES at
+    // the controller's minimumChannelStageMissingObservations. A stage at
+    // saturation is DORMANT: its key stays quarantined inside this same
+    // bounded MaximumCreateStages budget — dormant records are stage
+    // records, never extra storage and never evicted — recovery keeps
+    // re-checking them with its bounded backoff, and when a stream finally
+    // lands the verified encrypted echo commits the key and frees the
+    // slot (re-adoption). The residual starvation bound accepted by
+    // design: a full budget of dormant attempts rejects new encrypted
+    // creates locally until one of their streams lands; the alternative —
+    // evicting dormant keys to free slots — would restore the very key
+    // loss that finding 4576535469 reported.
     struct CreateStage {
         QString attempt;
         QString key;
