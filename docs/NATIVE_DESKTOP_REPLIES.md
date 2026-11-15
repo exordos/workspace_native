@@ -105,6 +105,20 @@ See Deviations.
 
 ## Native design
 
+### Quote lookup lifetime (#184)
+
+Queued lookups and their transient-error retry timers belong to the authenticated
+owner and API generation that scheduled them. Check that captured context before
+dispatch, response publication, and retry. Session changes retire pending lookup
+markers and backoff; reset also clears resolved quote records. A fresh projection
+after token renewal can resolve again without inheriting a cancelled request.
+Same-session network failures retain the existing self-driving retry.
+
+Controller regressions cover logout and account switch before retry, logout before
+queued dispatch, renewal during a request or backoff, and recovery without another
+projection. These use the real controller and HTTP fixture; live-server and desktop
+acceptance are separate checks.
+
 ### Reply session (controller)
 
 `src/native-controller.h/.cpp` gains a reply session that mirrors the 0.8.0
