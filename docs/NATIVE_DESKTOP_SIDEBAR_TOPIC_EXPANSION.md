@@ -21,7 +21,9 @@ active topic highlights its row. Search retains its existing native behavior.
 Background expansion limits its own concurrent topic requests to two; foreground
 navigation and search retain their existing independent paths. Topic hydration
 updates the affected sidebar row and the Inbox when it is visible, without
-republishing unrelated window state for every background response.
+republishing unrelated window state for every background response. A saved
+snapshot remains visible if revalidation fails; a later explicit interaction
+can retry it. A deferred cache result does not release a still-running request.
 
 Synthetic Linux window checks exercise expansion, restart, reveal levels and
 focus. Live service and other-platform acceptance are separate.
