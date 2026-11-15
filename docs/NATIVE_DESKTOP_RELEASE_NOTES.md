@@ -1,3 +1,46 @@
+# Workspace Native 0.26.0 - Linux development preview
+
+Four reference surfaces joined the client, plus a batch of fixes from the field:
+
+- Conversation deep links are real: a stream or topic link now opens that
+  conversation natively - canonical UUIDs and encoded names, default-topic
+  tokens, and the honest unavailable notice for foreign or missing
+  destinations. Links queued before login dispatch once the session is
+  verified, and a newer link replaces an older queued one.
+- Failed attachment downloads no longer vanish: a download center shows byte
+  progress, lets you cancel, open or reveal a finished file, and retries a
+  failed row in place - retry waits for a verified session refresh and reuses
+  the same file identity and name. Removing a download record never deletes
+  the saved file.
+- Opening a conversation lands on the first unread message and restores the
+  previous reading position, matching the reference navigation.
+- Editing a message now manages its existing attachments: removable
+  attachment cards survive the edit session.
+- Image attachments whose bytes do not match their extension are rejected at
+  selection with the localized attachment error; the validated bytes are the
+  bytes that go on the wire, even if the source file changes mid-flight.
+- Sidebar search now matches topic names and direct-chat participants, not
+  only stream titles.
+- Unread counters reconcile from the last visible topic message, so a counter
+  never shows messages you have already scrolled past.
+- A conversation link queued before login survives startup that opens Inbox:
+  the dispatcher waits for the verified catalog and hands the link to the
+  authorized route handler.
+- Composer formatting actions are keyboard accessible.
+- Meeting links that embed IPv6 literals inside message text are recognized.
+- Quote thumbnails renew their file leases when the image scope changes, so
+  previews survive credential renewal.
+- A saved conversation that the server no longer offers is quietly retired
+  instead of erroring on every start.
+- Token renewal no longer strands key operations: an in-flight key reissue or
+  rotation check settles as interrupted instead of holding the busy marker
+  for the rest of the session (durable rotation pins are untouched), and a
+  late definitive recovery answer can no longer update evidence for a
+  creation attempt the user already discarded - the fence and its regression
+  tests are deterministic regardless of stage scan order.
+
+---
+
 # Workspace Native 0.25.1 - Linux development preview
 
 Bug-fix release on top of 0.25.0:
