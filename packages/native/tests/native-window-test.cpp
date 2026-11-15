@@ -1960,10 +1960,12 @@ struct ProfileWindowScene {
     // encryptedDm flags the seeded DM stream as E2EE (valid key uuid on the
     // catalog row) without ever reading its chat key: the fixture stream is
     // encrypted while no local send key exists.
-    explicit ProfileWindowScene(bool callRoutes = false, bool encryptedDm = false)
+    explicit ProfileWindowScene(bool callRoutes = false, bool encryptedDm = false,
+        bool omitDefaultTopic = false)
         : preferences(directory.filePath("profile.ini")), session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
+        if (omitDefaultTopic) fixture.created.remove("default_topic_uuid");
         if (encryptedDm) {
             fixture.created["encryption"] = true;
             fixture.created["current_encryption_key_uuid"] =
@@ -17053,9 +17055,16 @@ private:
     // calls epic #33 lands (issue body). Message resolves per the
     // direct-navigation contract: DM stream exists -> open its default
     // topic; already on that DM -> stay put.
+    void windowProfileOtherUserMessageOpensDirectDefaultTopic_data()
+    {
+        QTest::addColumn<bool>("omitDefaultTopic");
+        QTest::newRow("catalog-default") << false;
+        QTest::newRow("verified-topics-fallback") << true;
+    }
     void windowProfileOtherUserMessageOpensDirectDefaultTopic()
     {
-        ProfileWindowScene scene;
+        QFETCH(bool, omitDefaultTopic);
+        ProfileWindowScene scene(false, false, omitDefaultTopic);
         scene.openPeerProfile(channelPeer);
         QTRY_COMPARE(scene.text("nativeRightDrawerTitle"), QStringLiteral("Information"));
         QTRY_COMPARE(scene.text("profileTitle"), QStringLiteral("Alice"));
@@ -17299,6 +17308,74 @@ private:
         QVERIFY(scene.layer()->property("pendingRemoveAvatar").toBool() == false);
     }
 
+    void windowProfileSaveKeepsAvatarAfterDelayedRefresh_data()
+    {
+        QTest::addColumn<bool>("remove");
+        QTest::newRow("upload") << false;
+        QTest::newRow("remove") << true;
+    }
+    void windowProfileSaveKeepsAvatarAfterDelayedRefresh()
+    {
+        QFETCH(bool, remove);
+        ProfileWindowScene scene;
+        const auto previousAvatar = QStringLiteral("urn:image:77777777-7777-4777-8777-777777777777");
+        const auto newAvatar = QStringLiteral("urn:image:88888888-8888-4888-8888-888888888888");
+        auto uploadedAvatar = previousAvatar;
+        bool holdRefresh = false;
+        std::function<void()> releaseRefresh;
+        const auto fallback = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/actions/avatar_upload/invoke")) {
+                ++scene.fixture.avatarUploadPosts;
+                return {QJsonObject{{"uuid", userId}, {"avatar", uploadedAvatar}}};
+            }
+            if (holdRefresh && request.method == "GET"
+                && request.target.path() == "/api/workspace/v1/messenger/users/" + userId) {
+                ++scene.fixture.projectionGets;
+                auto row = scene.fixture.iamRow;
+                row["avatar"] = previousAvatar;
+                Response response{row};
+                response.defer = [&](auto send) { releaseRefresh = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        const auto path = scene.directory.filePath("avatar.png");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(avatarProbePng(false));
+        file.close();
+        scene.controller.uploadOwnProfileAvatar(path);
+        QTRY_COMPARE(scene.controller.userAvatar(userId), previousAvatar);
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.controller.ownProfileLoaded());
+        click(scene.window, visibleItem("profileAction-edit"));
+        auto *firstName = visibleItem("profileField-firstName");
+        QVERIFY(firstName);
+        firstName->setProperty("text", QStringLiteral("Updated"));
+        uploadedAvatar = newAvatar;
+        if (remove) scene.setPendingRemove(true);
+        else scene.setPendingAvatar(path);
+        holdRefresh = true;
+        auto *scroll = visibleItem("profileScroll");
+        QVERIFY(scroll);
+        scroll->setProperty("contentY", qMax(0.0, scroll->property("contentHeight").toReal() - scroll->height()));
+        click(scene.window, visibleItem("profileSaveButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(releaseRefresh), 2000);
+        QTRY_VERIFY(!visibleItem("profileEditFooter"));
+        const auto expected = remove ? QString{} : newAvatar;
+        QCOMPARE(scene.controller.userAvatar(userId), expected);
+        releaseRefresh();
+        QTRY_VERIFY(scene.api.findChildren<QNetworkReply *>().isEmpty());
+        QCOMPARE(scene.layer()->property("snapshot").toMap().value("avatar").toString(), expected);
+        QCOMPARE(scene.text("profileTitle"), QStringLiteral("Updated Volkova"));
+        scroll->setProperty("contentY", 0);
+        QCOMPARE(visibleItem("profileAvatarInitial") != nullptr, remove);
+        QCOMPARE(scene.fixture.iamPuts, 1);
+        QCOMPARE(scene.fixture.avatarResets, remove ? 1 : 0);
+        QCOMPARE(scene.fixture.avatarUploadPosts, remove ? 1 : 2);
+    }
+
     // Share copies {origin}/#user/{uuid} (buildWorkspaceProfileShareLink) and
     // flips the chip to "Copied" with the check glyph for 2000 ms
     // (copyable.tsx flip-back), then reverts to "Share".
@@ -17427,6 +17504,49 @@ private:
         QCOMPARE(scene.fixture.lastPatch.value("description").toString(),
             QStringLiteral("Note\nsecond"));
         QTRY_VERIFY(!visibleItem("profileEditFooter"));
+    }
+
+    void windowProfileAboutMeIsVisibleAfterLoadAndSaveOnlyForItsOwner()
+    {
+        ProfileWindowScene scene;
+        const auto initial = QStringLiteral("First line\n<b>literal markup</b>\n") + QString(120, QLatin1Char('w'));
+        scene.fixture.iamRow["description"] = initial;
+        scene.openOwnProfile();
+        QTRY_VERIFY(scene.controller.ownProfileLoaded());
+        auto *scroll = visibleItem("profileScroll");
+        QVERIFY(scroll);
+        scroll->setProperty("contentY", qMax(0.0, scroll->property("contentHeight").toReal() - scroll->height()));
+        QTRY_COMPARE(scene.text("profileDetailValue-description"), initial);
+        auto *description = visibleItem("profileDetailValue-description");
+        QVERIFY(description);
+        QCOMPARE(description->property("textFormat").toInt(), 0); // Text.PlainText
+        QVERIFY(description->property("lineCount").toInt() > 3); // explicit LF and wrapping
+        QVERIFY(description->height() >= description->property("contentHeight").toReal());
+        QVERIFY(!visibleItem("profileDetailCopy-description"));
+        const auto position = description->mapToItem(scroll, QPointF());
+        QVERIFY(position.y() >= 0);
+        QVERIFY(position.y() + description->height() <= scroll->height() + 1);
+
+        scroll->setProperty("contentY", 0);
+        click(scene.window, visibleItem("profileAction-edit"));
+        auto *field = visibleItem("profileDescriptionField");
+        QVERIFY(field);
+        const auto saved = QStringLiteral("Saved line\nSecond line");
+        field->setProperty("text", saved);
+        scroll->setProperty("contentY", qMax(0.0, scroll->property("contentHeight").toReal() - scroll->height()));
+        click(scene.window, visibleItem("profileSaveButton"));
+        QTRY_VERIFY(!visibleItem("profileEditFooter"));
+        QTRY_COMPARE(scene.text("profileDetailValue-description"), saved);
+        QCOMPARE(scene.fixture.lastPatch.value("description").toString(), saved);
+        scene.openPeerProfile(channelPeer);
+        QVERIFY(!visibleItem("profileDetailValue-description"));
+        QCOMPARE(scene.fixture.iamGets, 1); // Peer profiles never fetch another user's IAM profile.
+        scene.openOwnProfile();
+        QTRY_COMPARE(scene.text("profileDetailValue-description"), saved);
+        scene.fixture.iamRow["description"] = QString{};
+        scene.controller.loadOwnProfile();
+        QTRY_COMPARE(scene.controller.ownProfile().value("description").toString(), QString{});
+        QVERIFY(!visibleItem("profileDetailValue-description"));
     }
 
     // docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md (issue #156): the reserve trigger

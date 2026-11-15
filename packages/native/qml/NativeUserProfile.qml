@@ -224,6 +224,13 @@ Item {
         if (editable)
             rows.push({kind: "description", id: "description", icon: "info.svg",
                 label: qsTr("About me")})
+        else if (page.isSelf && controller.ownProfileLoaded) {
+            const description = String(controller.ownProfile.description || "")
+            if (description.length > 0)
+                rows.push({kind: "row", id: "description", icon: "info.svg",
+                    label: qsTr("About me"), value: description,
+                    unavailable: false, copy: false, multiline: true})
+        }
         return rows
     }
 
@@ -696,11 +703,15 @@ Item {
                         required property var modelData
                         objectName: "profileDetail-" + modelData.id
                         width: parent.width
-                        height: modelData.kind === "description" ? 64 : 36
+                        readonly property bool multiline: modelData.multiline === true
+                        height: modelData.kind === "description" ? 64
+                            : multiline ? Math.max(52, detailTexts.implicitHeight) : 36
                         Item {
                             id: detailIconBox
                             width: 32; height: 32
-                            anchors.bottom: parent.bottom
+                            anchors.bottom: detailRow.multiline ? undefined : parent.bottom
+                            anchors.top: detailRow.multiline ? parent.top : undefined
+                            anchors.topMargin: detailRow.multiline ? 20 : 0
                             ProfileGlyph {
                                 anchors.centerIn: parent
                                 asset: detailRow.modelData.icon
@@ -709,12 +720,14 @@ Item {
                             }
                         }
                         Column {
+                            id: detailTexts
                             objectName: "profileDetailTexts-" + detailRow.modelData.id
                             anchors.left: detailIconBox.right
                             anchors.leftMargin: 12
                             anchors.right: parent.right
-                            anchors.rightMargin: 32
-                            anchors.bottom: parent.bottom
+                            anchors.rightMargin: detailRow.multiline ? 0 : 32
+                            anchors.bottom: detailRow.multiline ? undefined : parent.bottom
+                            anchors.top: detailRow.multiline ? parent.top : undefined
                             spacing: 4
                             visible: detailRow.modelData.kind === "row"
                             Text {
@@ -735,7 +748,8 @@ Item {
                                 font.pixelSize: 14
                                 font.italic: detailRow.modelData.unavailable === true
                                 lineHeightMode: Text.FixedHeight; lineHeight: 16
-                                elide: Text.ElideRight
+                                wrapMode: detailRow.multiline ? Text.Wrap : Text.NoWrap
+                                elide: detailRow.multiline ? Text.ElideNone : Text.ElideRight
                                 color: detailRow.modelData.unavailable === true
                                     ? page.colors["text-muted"] : page.colors["text-primary"]
                             }
