@@ -10755,6 +10755,69 @@ mv -Tf "$root/.current-new" "$root/current"
         picker->setParentItem(nullptr);
     }
 
+    void bottomReadAnchorRepairsServerCounter_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        for (const auto *locale : {"en", "ru"}) for (const auto *theme : {"light", "dark"})
+            QTest::newRow(qPrintable(QString(locale) + '-' + theme)) << QString(locale) << QString(theme);
+    }
+    void bottomReadAnchorRepairsServerCounter()
+    {
+        QFETCH(QString, locale); QFETCH(QString, theme);
+        WindowRestoreFixture fixture;
+        fixture.preferences.setLocale(locale); fixture.preferences.setMode(theme);
+        for (int i = 0; i < fixture.history.size(); ++i) {
+            auto row = fixture.history[i].toObject(); row["read"] = true; fixture.history[i] = row;
+        }
+        fixture.topicBody["unread_count"] = fixture.topicBody["active_unread_count"] = 3;
+        fixture.streamBody["unread_count"] = fixture.streamBody["active_unread_count"] = 3;
+        QStringList anchors;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/actions/read_up_to/invoke")) {
+                anchors.append(request.target.path().section('/', -4, -4));
+                fixture.topicBody["unread_count"] = fixture.topicBody["active_unread_count"] = 0;
+                fixture.streamBody["unread_count"] = fixture.streamBody["active_unread_count"] = 0;
+                return {fixture.history.last()};
+            }
+            return fallback(request);
+        };
+        QQmlApplicationEngine engine; loadNativeUi(engine, &fixture.controller, &fixture.preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Bottom read fixture did not settle before teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        QQuickWindow other; other.resize(300, 200); other.show(); other.requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(&other));
+        fixture.session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(fixture.session.projects().size(), 1); fixture.session.selectProject(projectId);
+        QTRY_COMPARE(fixture.controller.streams().size(), 1);
+        fixture.controller.selectStream(streamId); QTRY_COMPARE(fixture.controller.topics().size(), 1);
+        fixture.controller.selectTopic(topicId); QTRY_COMPARE(fixture.controller.messages().size(), 32);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+        QTest::qWait(400); QVERIFY(anchors.isEmpty());
+        other.hide(); window->raise(); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTest::qWait(400); QVERIFY(anchors.isEmpty()); // active, but not at the tail
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, -120000),
+            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &wheel);
+        QTRY_VERIFY(list->property("atYEnd").toBool());
+        QTRY_COMPARE_WITH_TIMEOUT(anchors.size(), 1, 2000);
+        QCOMPARE(anchors.first(), fixture.lastUuid);
+        QTRY_COMPARE(fixture.controller.topics().first().toMap().value("unread").toInt(), 0);
+        QTRY_COMPARE(fixture.controller.streams().first().toMap().value("unread").toInt(), 0);
+        for (int i = 0; i < 3; ++i) QVERIFY(QMetaObject::invokeMethod(list, "markVisibleRead"));
+        QTest::qWait(400); QCOMPARE(anchors.size(), 1);
+        other.close();
+    }
+
     void onlyTheActiveVisibleViewportAdvancesTheReadBoundary()
     {
         QTemporaryDir preferencesDirectory;

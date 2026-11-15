@@ -9973,6 +9973,84 @@ private slots:
         QCOMPARE(mutations, 1);
     }
 
+    void bottomReadAnchorRepairsAlreadyReadTail_data()
+    {
+        QTest::addColumn<bool>("staleCounter");
+        QTest::newRow("counter-clears") << false;
+        QTest::newRow("stale-counter-deduplicates") << true;
+    }
+    void bottomReadAnchorRepairsAlreadyReadTail()
+    {
+        QFETCH(bool, staleCounter);
+        Fixture fixture;
+        auto row = message(); row["read"] = true;
+        auto topic = creationTopic(topicId, streamId, "Read anchor");
+        topic["unread_count"] = topic["active_unread_count"] = 3;
+        topic["last_message_uuid"] = messageId;
+        auto stream = QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+            {"name", "Read anchor"}, {"encryption", false}, {"unread_count", 3},
+            {"active_unread_count", 3}, {"passive_unread_count", 0}, {"last_message_uuid", messageId}};
+        int posts = 0, counterGets = 0; QString postedPath;
+        fixture.topics = [&](const Request &) { return Response{QJsonArray{topic}}; };
+        fixture.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        fixture.messages = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/read_up_to/invoke")) {
+                ++posts; postedPath = request.target.path();
+                if (!staleCounter) {
+                    topic["unread_count"] = topic["active_unread_count"] = 0;
+                    stream["unread_count"] = stream["active_unread_count"] = 0;
+                }
+                return Response{row, 200, 100, {}};
+            }
+            return Response{QJsonArray{row}};
+        };
+        fixture.counters = [&](const Request &request) {
+            ++counterGets;
+            return Response{request.target.path().contains("/stream_topics/") ? topic : stream};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.markMessagesReadUpTo(messageId);
+        QTest::qWait(100); QCOMPARE(posts, 0); // ordinary admission still requires unread rows
+        fixture.controller.markTopicReadAtBottom();
+        fixture.controller.markTopicReadAtBottom(); // in-flight deduplication
+        QTRY_COMPARE(posts, 1);
+        QCOMPARE(postedPath, QString("/api/workspace/v1/messenger/messages/") + messageId + "/actions/read_up_to/invoke");
+        QTRY_COMPARE(counterGets, 2);
+        QTRY_COMPARE(fixture.controller.topics().first().toMap().value("unread").toInt(), staleCounter ? 3 : 0);
+        QTRY_COMPARE(fixture.controller.streams().first().toMap().value("unread").toInt(), staleCounter ? 3 : 0);
+        for (int i = 0; i < 3; ++i) fixture.controller.markTopicReadAtBottom();
+        QTest::qWait(200); QCOMPARE(posts, 1); QCOMPARE(counterGets, 2);
+    }
+
+    void bottomReadAnchorRequiresCurrentLoadedTopic_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"zero-counter", "unknown-last", "no-last", "aggregate", "logout"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+    void bottomReadAnchorRequiresCurrentLoadedTopic()
+    {
+        QFETCH(QString, scenario);
+        Fixture fixture;
+        auto row = message(); row["read"] = true;
+        auto topic = creationTopic(topicId, streamId, "Read anchor");
+        topic["unread_count"] = topic["active_unread_count"] = scenario == "zero-counter" ? 0 : 3;
+        topic["last_message_uuid"] = scenario == "no-last" ? QJsonValue::Null
+            : QJsonValue(scenario == "unknown-last" ? returnedId : messageId);
+        int posts = 0;
+        fixture.topics = [&](const Request &) { return Response{QJsonArray{topic}}; };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") { ++posts; return Response{row}; }
+            return Response{QJsonArray{row}};
+        };
+        QVERIFY(fixture.start());
+        if (scenario == "aggregate") fixture.controller.selectStream(streamId);
+        if (scenario == "logout") fixture.session.logout();
+        QTRY_VERIFY(!fixture.controller.busy());
+        fixture.controller.markTopicReadAtBottom();
+        QTest::qWait(200); QCOMPARE(posts, 0);
+    }
+
     void incompleteReadCounterSnapshotsCannotInventZeroUnread()
     {
         Fixture fixture;
