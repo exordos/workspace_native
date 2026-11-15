@@ -146,12 +146,17 @@ int main(int argc, char **argv)
         controller.setWindowFocused(window->isActive());
         // hide/show/minimize map onto the reference hidden WindowActivityState
         // for the presence cadence (issue #78); Qt delivers it as the
-        // visibilityChanged signal rather than a filterable event type.
-        controller.setWindowVisible(window->isVisible());
-        QObject::connect(window, &QWindow::visibilityChanged, &controller,
-            [&controller, window](QWindow::Visibility) {
-                controller.setWindowVisible(window->isVisible());
-            });
+        // visibilityChanged signal rather than a filterable event type. Qt
+        // keeps isVisible() true while minimized, so the minimized tier is
+        // projected separately - the reference ladder treats minimized as
+        // hidden (fix-round-2, cid 4576526934).
+        const auto projectVisibility = [&controller, window](QWindow::Visibility visibility) {
+            const bool minimized = visibility == QWindow::Minimized;
+            controller.setWindowMinimized(minimized);
+            controller.setWindowVisible(!minimized && visibility != QWindow::Hidden);
+        };
+        projectVisibility(window->visibility());
+        QObject::connect(window, &QWindow::visibilityChanged, &controller, projectVisibility);
     }
     QString restartExecutable;
     bool shuttingDown = false;

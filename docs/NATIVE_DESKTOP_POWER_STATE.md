@@ -74,25 +74,37 @@ sees the trusted services):
   (suspend + resume with cursors kept) and re-establishes the realtime link
   and epoch catch-up immediately — the counterpart of the reference
   `reconnectAll("power_resume")` with no delay. Because this path discards a
-  healthy socket and bypasses the reconnect backoff, resume-triggered
-  reconnects are floored: the first resume inside a 5 s window reconnects,
-  later repeated resumes inside the floor are ignored (a spoofed peer on an
-  injected bus cannot spam it; the real link, or RealtimeClient's own backoff,
-  covers any later drop).
+  healthy socket and bypasses the reconnect backoff, bare resume signals are
+  floored: a resume without a preceding sleep notification inside a 5 s window
+  is ignored (a spoofed peer on an injected bus cannot spam it; the real link,
+  or RealtimeClient's own backoff, covers any later drop). A resume that was
+  PRECEDED by a `PrepareForSleep(true)` sleep notification is a genuine sleep
+  cycle and always reconnects: the floor timer is monotonic and excludes
+  suspended time, so a real sleep->wake->sleep->wake inside five wall-clock
+  seconds would otherwise suppress the honest second wake (fix-round-2,
+  cid 4576829140).
 - Battery: `setOnBattery(bool)` re-times the presence heartbeat. The
   heartbeat reproduces the full reference ladder over the three window states
   the native shell projects (visibility and focus, mirrored from
-  `QWindow::isVisible`/`isActive` in `main.cpp`): focused `30 000 ms *
+  `QWindow::visibilityChanged` in `main.cpp`): focused `30 000 ms *
   batteryFactor`, unfocused `120 000 ms` mains / `160 000 ms` battery, and
   hidden `max(30 000, 300 000) ms * batteryFactor` — `300 000 ms` mains,
-  `600 000 ms` battery (`user-workspace-presence-reporter.lib.ts:31-40`).
-  The heartbeat POSTs `/api/workspace/v1/users/{uuid}/actions/presence/invoke`
-  with `{"status": "active"}` (the same endpoint the manual status editor
+  `600 000 ms` battery (`user-workspace-presence-reporter.lib.ts:24-25,39`).
+  Minimized counts as hidden: the reference ladder keys on `document.hidden`,
+  which covers minimized windows in the Chromium-backed shell, while Qt keeps
+  `isVisible()` true when minimized, so `main.cpp` projects the minimized and
+  hidden tiers through separate seams (`setWindowMinimized` /
+  `setWindowVisible`) and either one selects the hidden tier (fix-round-2,
+  cid 4576526934). The heartbeat POSTs
+  `/api/workspace/v1/users/{uuid}/actions/presence/invoke` with
+  `{"status": "active"}` (the same endpoint the manual status editor
   uses), never while the account is manually away/DND — a heartbeat must not
   overwrite a manual status, matching the reference rule that what a beat is
   allowed to claim is decided separately from when it fires.
-- `PrepareForSleep(true)` is observed but needs no native action: the OS
-  freezes the process anyway; the reference only timestamps the suspension.
+- `PrepareForSleep(true)` needs no teardown action — the OS freezes the
+  process anyway and the reference only timestamps the suspension — but it
+  arms the sleep-cycle mark that lets the following resume bypass the
+  reconnect floor (see Resume above).
 
 ## Tests
 
@@ -126,6 +138,18 @@ Fix-round-1 added cases (same group, same fixture):
 - `spoofedResumeBurstCannotSpamRealtimeReconnects`: five `PrepareForSleep`
   resumes inside the floor window force at most zero extra reconnects — the
   socket count stays at the one legitimate resume reconnect (finding 4).
+
+Fix-round-2 added cases (same group, same fixture):
+
+- `minimizedWindowUsesReferenceHiddenPresenceCadence`: minimized selects the
+  hidden tier (`300000` mains, `600000` battery), restoring returns to the
+  unfocused ladder, and hidden alone still outranks focus (cid 4576526934).
+  RED before the fix: minimized landed on `120000`/`160000`.
+- `genuineSleepCycleResumeBypassesReconnectFloor`: a bare resume storm stays
+  floored (two sockets), every resume that follows a `PrepareForSleep(true)`
+  reconnects even inside the floor window (three more sockets), and a bare
+  burst after the last cycle is floored again (cid 4576829140). RED before
+  the fix: the first genuine cycle resume inside the floor was suppressed.
 
 ## Live verification note
 
