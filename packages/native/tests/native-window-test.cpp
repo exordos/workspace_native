@@ -21102,6 +21102,61 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *add=visibleItem("folderAddButton"); QVERIFY(add);
         QVERIFY(add->property("enabled").toBool());
     }
+
+    // Review finding (cid 4577604523): the folder icon button must close the
+    // drafts view like the surrounding cell does - selecting a folder while
+    // drafts are open swaps the page out in the reference too.
+    void folderRailIconClickClosesDraftsAndSelectsTheFolder()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderStreamB = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",7},{"background_color_value",0x2563eb},
+                        {"folder_items",QJsonArray{QJsonObject{{"uuid","fi-b"},{"stream_uuid",folderStreamB},
+                            {"chat_type","channel"}}}}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha"), windowChannel(folderStreamB,"Beta")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path == "/api/workspace/v1/messenger/streams/"+folderStreamB) return {windowChannel(folderStreamB,"Beta")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/messenger/drafts/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folder icon drafts teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(),2,2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+folderFocus) && visibleItem("folderIcon-"+folderFocus), 5000);
+        // Drafts are open; selecting a folder through its icon closes them.
+        controller.showDrafts();
+        QTRY_VERIFY(controller.draftsVisible());
+        click(window,visibleItem("folderIcon-"+folderFocus));
+        QTRY_COMPARE(controller.selectedFolder(),folderFocus);
+        QTRY_VERIFY(!controller.draftsVisible());
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {

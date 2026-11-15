@@ -20925,6 +20925,97 @@ private slots:
         QCOMPARE(f.controller.selectedFolder(), allChatsFolder);
         QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
     }
+
+    // Review finding (cid 4577604519): the loader must walk every page of the
+    // paginated /folders/ endpoint before publishing, so folders beyond the
+    // first page reach the rail instead of silently vanishing.
+    void folderRailLoaderFollowsPaginationToTheLastPage()
+    {
+        FolderRailFixture f;
+        const QString laterUuid = QStringLiteral("7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a");
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (!request.target.path().endsWith("/messenger/folders/")) return fallback(request);
+            if (QUrlQuery(request.target).queryItemValue("page_marker").isEmpty())
+            {
+                Response first{QJsonArray{folderRailFolder(f.customUuid, "Focus", "created", 0, 0)}};
+                first.headers = {{QByteArrayLiteral("X-Pagination-Marker"), QByteArrayLiteral("page-2")}};
+                return first;
+            }
+            return Response{QJsonArray{folderRailFolder(laterUuid, "Later", "created", 0, 0)}};
+        };
+        QVERIFY(f.start());
+        // All + synthesized Personal/Channels plus the server folders of both pages.
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 5, 4000);
+        QCOMPARE(folderKeys(f.controller.folders()),
+                 (QStringList{"all", "personal", "channels", f.customUuid, laterUuid}));
+        // The second page is requested with the marker the first page handed back.
+        int pageTwoRequests = 0;
+        for (const auto &request : f.server.requests)
+            if (request.target.path().endsWith("/messenger/folders/")
+                && QUrlQuery(request.target).queryItemValue("page_marker") == QLatin1String("page-2"))
+                ++pageTwoRequests;
+        QCOMPARE(pageTwoRequests, 1);
+    }
+
+    // Review finding (cid 4577604521): the store exposes folder items with the
+    // camelCase streamUuid; accepting only stream_uuid leaves the membership
+    // empty and hides the folder's chats.
+    void folderRailAcceptsCamelCaseStreamUuidInsideFolderItems()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0, {}, true),
+            QJsonObject{{"uuid", f.customUuid}, {"title", "Focus"}, {"systemType", "created"},
+                {"unreadCount", 0}, {"backgroundColorValue", 0x2563eb},
+                {"folderItems", QJsonArray{QJsonObject{{"uuid", "fi-b"}, {"streamUuid", f.streamB},
+                    {"chatType", "channel"}}}}}}};
+        QVERIFY(f.start());
+        // all + custom from the server, synthesized personal + channels pair.
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto custom = f.controller.folders().last().toMap();
+        QCOMPARE(custom.value("id").toString(), f.customUuid);
+        QCOMPARE(custom.value("streamIds").toStringList(), (QStringList{f.streamB}));
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{f.streamB}));
+    }
+
+    // Review finding (cid 4577604531): the positional "first untyped row is
+    // All" rule is a legacy shape for servers without a system row; once the
+    // fixed All UUID is present, an untyped foreign UUID must resolve to
+    // created or both rows take the All key and the custom folder becomes
+    // unselectable from the rail.
+    void folderRailKeepsTheFixedAllRowWhenAFirstUntypedFolderArrives()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            // First row carries no system_type at all, next to the fixed All row.
+            QJsonObject{{"uuid", f.customUuid}, {"title", "Focus"},
+                {"unread_count", 0}, {"background_color_value", 0x2563eb}},
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto folders = f.controller.folders();
+        // The fixed All UUID owns the All key; the untyped foreign UUID is created.
+        QCOMPARE(folderKeys(folders), (QStringList{"all", "personal", "channels", f.customUuid}));
+        QCOMPARE(folders.first().toMap().value("id").toString(), allChatsFolder);
+        const auto custom = folders.last().toMap();
+        QCOMPARE(custom.value("systemType").toString(), QStringLiteral("created"));
+        QCOMPARE(custom.value("key").toString(), f.customUuid);
+        // The custom folder stays selectable through its own rail key.
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(f.controller.selectedFolder(), f.customUuid);
+        // Legacy shape without a fixed All row keeps the positional fallback:
+        // the first untyped row still resolves to All.
+        FolderRailFixture legacy;
+        legacy.folders = Response{QJsonArray{
+            QJsonObject{{"uuid", legacy.customUuid}, {"title", "Legacy all"},
+                {"unread_count", 0}, {"background_color_value", 0}}}};
+        QVERIFY(legacy.start());
+        QTRY_COMPARE_WITH_TIMEOUT(legacy.controller.folders().size(), 3, 4000);
+        QCOMPARE(folderKeys(legacy.controller.folders()).first(), QStringLiteral("all"));
+        QCOMPARE(legacy.controller.folders().first().toMap().value("id").toString(), legacy.customUuid);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

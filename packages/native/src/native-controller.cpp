@@ -9301,8 +9301,13 @@ QVariantList NativeController::streams() const
 
 // Issue #83 (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md): the reference normalizes
 // system type from the fixed UUIDs first; a reported "all" on any other UUID
-// is dropped, and a missing type on the legacy first slot means "all".
-static QString folderRailSystemType(const QString &uuid, const QString &reported, int index)
+// is dropped, and a missing type on the legacy first slot means "all" - but
+// only while the payload carries no fixed All row (review cid 4577604531);
+// once the fixed All UUID is present, an untyped foreign UUID is a created
+// folder, otherwise both rows take the All key and the custom folder can no
+// longer be selected from the rail.
+static QString folderRailSystemType(const QString &uuid, const QString &reported, int index,
+    bool fixedAllPresent)
 {
     if (uuid == allChatsFolderUuid) return QStringLiteral("all");
     if (uuid == personalFolderUuid) return QStringLiteral("personal");
@@ -9310,7 +9315,8 @@ static QString folderRailSystemType(const QString &uuid, const QString &reported
     if (reported == QStringLiteral("personal") || reported == QStringLiteral("channels")
         || reported == QStringLiteral("created"))
         return reported;
-    return index == 0 && reported.isEmpty() ? QStringLiteral("all") : QStringLiteral("created");
+    return index == 0 && reported.isEmpty() && !fixedAllPresent
+        ? QStringLiteral("all") : QStringLiteral("created");
 }
 
 static QString folderRailKey(const QString &systemType, const QString &uuid)
@@ -9353,36 +9359,20 @@ void NativeController::loadFolders()
             return a.systemType == QStringLiteral("all") && b.systemType != QStringLiteral("all");
         });
     };
-    // One page like the reference default page size; folder lists beyond the
-    // limit are a tracked follow-up (the rail is small by design).
-    // Bypasses request() on purpose: the folder rail is not one of the
-    // snapshot request families the connection banner tracks
-    // (layout-connection-banner.lib.ts via observeTransport), so a folder
-    // response must never flip transport health in either direction.
-    QUrlQuery query; query.addQueryItem("page_limit", "200");
-    m_api->request("GET", messenger + QStringLiteral("/folders/"), {}, query,
-        [this, guard, synthesize](const ApiResult &result) {
-        if (!guard()) return;
-        if (!result.ok() || !result.data.isArray())
-        {
-            // A failed folder read keeps whatever is shown; only the very
-            // first load falls back to the synthesized trio so the rail never
-            // renders empty. Staying quiet mirrors the reference, which keeps
-            // the rail on its last known folders instead of an error toast.
-            if (m_folders.isEmpty())
-            {
-                m_folders.clear();
-                synthesize();
-                for (auto &row : m_folders) row.key = folderRailKey(row.systemType, row.uuid);
-                emit foldersChanged();
-                emit sidebarStreamsChanged();
-            }
-            return;
-        }
+    // Publish only after a completed walk over every page (review cid
+    // 4577604519): /folders/ is paginated and folders beyond the first page
+    // must reach the rail exactly like the other collection walks deliver.
+    const auto publish = [this, synthesize](const QJsonArray &values) {
+        // Fixed All row pre-pass for the positional fallback (review cid
+        // 4577604531): the legacy "first untyped row is All" rule only applies
+        // when the payload carries no fixed All UUID of its own.
+        bool fixedAllPresent = false;
+        for (const auto &value : values)
+            if (value.toObject().value("uuid").toString() == allChatsFolderUuid) { fixedAllPresent = true; break; }
         QVector<FolderRow> serverRows;
         QSet<QString> ids;
         int index = -1;
-        for (const auto &value : result.data.toArray())
+        for (const auto &value : values)
         {
             const auto raw = value.toObject();
             const auto uuid = raw.value("uuid").toString();
@@ -9394,7 +9384,7 @@ void NativeController::loadFolders()
             row.title = raw.value("title").toString();
             const auto reported = (raw.contains("systemType")
                 ? raw.value("systemType") : raw.value("system_type")).toString();
-            row.systemType = folderRailSystemType(uuid, reported, index);
+            row.systemType = folderRailSystemType(uuid, reported, index, fixedAllPresent);
             const auto color = raw.contains("backgroundColorValue")
                 ? raw.value("backgroundColorValue") : raw.value("background_color_value");
             row.color = quint32(color.toDouble()) & 0x00ffffffu;
@@ -9404,7 +9394,11 @@ void NativeController::loadFolders()
                 ? raw.value("folderItems").toArray() : raw.value("folder_items").toArray();
             for (const auto &item : items)
             {
-                const auto stream = item.toObject().value("stream_uuid").toString();
+                // The store hands out camelCase streamUuid on the DTO items
+                // (review cid 4577604521); accept both spellings.
+                const auto entry = item.toObject();
+                const auto stream = (entry.contains("streamUuid")
+                    ? entry.value("streamUuid") : entry.value("stream_uuid")).toString();
                 if (!stream.isEmpty() && !row.streamIds.contains(stream))
                     row.streamIds.append(stream);
             }
@@ -9452,7 +9446,53 @@ void NativeController::loadFolders()
         for (auto &row : m_folders) row.key = folderRailKey(row.systemType, row.uuid);
         emit foldersChanged();
         emit sidebarStreamsChanged();
-    });
+    };
+    // Bypasses request() on purpose: the folder rail is not one of the
+    // snapshot request families the connection banner tracks
+    // (layout-connection-banner.lib.ts via observeTransport), so a folder
+    // response must never flip transport health in either direction. The
+    // walk below follows X-Pagination-Marker cursors directly for the same
+    // reason the first page cannot use the shared collection() helper.
+    const auto walk = [this, guard, synthesize, publish](const auto &self, QJsonArray pages,
+                                                        QUrlQuery query, QSet<QByteArray> markers) -> void {
+        m_api->request("GET", messenger + QStringLiteral("/folders/"), {}, query,
+            [this, guard, synthesize, publish, self, pages, query, markers](const ApiResult &result) mutable {
+            if (!guard()) return;
+            if (!result.ok() || !result.data.isArray())
+            {
+                // A failed folder read keeps whatever is shown; only the very
+                // first load falls back to the synthesized trio so the rail
+                // never renders empty. Staying quiet mirrors the reference,
+                // which keeps the rail on its last known folders instead of an
+                // error toast. A mid-walk failure abandons the partial pages:
+                // the rail keeps its last complete list.
+                if (m_folders.isEmpty())
+                {
+                    m_folders.clear();
+                    synthesize();
+                    for (auto &row : m_folders) row.key = folderRailKey(row.systemType, row.uuid);
+                    emit foldersChanged();
+                    emit sidebarStreamsChanged();
+                }
+                return;
+            }
+            for (const auto &value : result.data.toArray()) pages.append(value);
+            // A repeated cursor or an absurd accumulation ends the walk with
+            // what was collected, mirroring the guards of the other walkers.
+            if (!result.nextMarker.isEmpty() && pages.size() <= 100000
+                && !markers.contains(result.nextMarker))
+            {
+                markers.insert(result.nextMarker);
+                query.removeAllQueryItems("page_marker");
+                query.addQueryItem("page_marker", QString::fromUtf8(result.nextMarker));
+                self(self, pages, query, markers);
+                return;
+            }
+            publish(pages);
+        });
+    };
+    QUrlQuery query; query.addQueryItem("page_limit", "200");
+    walk(walk, QJsonArray{}, query, {});
 }
 
 QVariantList NativeController::folders() const

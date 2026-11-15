@@ -2601,6 +2601,7 @@ ApplicationWindow {
                 Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
                 NativeIconButton {
                     colors: root.colors
+                    objectName: "folderIcon-" + String(folderCell.folder.key)
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: 10
                     width: 32
@@ -2609,8 +2610,9 @@ ApplicationWindow {
                     asset: folderCell.iconAsset
                     help: String(folderCell.folder.title || "")
                     glyphSize: 32
-                    // The reference icon button selects like the whole cell.
-                    onClicked: root.controller.selectFolder(String(folderCell.folder.key))
+                    // The reference icon button selects like the whole cell,
+                    // drafts-closing included (review cid 4577604523).
+                    onClicked: { root.controller.closeDrafts(); root.controller.selectFolder(String(folderCell.folder.key)) }
                     iconColor: folderCell.isCustom ? folderCell.folderColor
                         : folderCell.interactive ? root.colors["text-primary"] : root.colors["text-muted"]
                     background: Rectangle {
