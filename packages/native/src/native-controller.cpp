@@ -111,6 +111,15 @@ void NativeController::resetChatRuntime(bool preserveInitialOrder)
     resetChatControls(false, preserveInitialOrder ? ChatOutcomeRetention::OrderOnly : ChatOutcomeRetention::Clear);
     if (!lookupGuard) return;
     interruptChatKeyResponse();
+    // Issue #294: a vault swap or detach retires any in-flight reissue and
+    // rotation-resolution operation - their callbacks can no longer land
+    // meaningfully, so release the transient markers here as well. The durable
+    // rotation pins are untouched, exactly like an interruption (#244 rules).
+    ++m_chatReissueOperation;
+    m_chatReissueBusy = false; m_chatReissueKey.clear();
+    ++m_rotationResolvePass;
+    m_rotationResolveActive = false;
+    m_rotationStageTickets.clear(); m_rotationStageResolving.clear();
     m_chatLocalRequest.clear();
     m_chatAuthority = {};
     m_chatBusy = false;
@@ -666,10 +675,16 @@ void NativeController::reissueChatKey()
         || !currentStream()->security || !isUuid(currentStream()->security->currentKey)) return;
     if (!QStringList{"owner", "administrator"}.contains(currentStream()->role)) return;
     const auto epoch = m_chatEpoch, selection = m_selection;
+    // Issue #294: this reissue's operation identity. A session change or vault
+    // swap retires it (the generation fence already drops its callbacks); the
+    // bump additionally guarantees a retired callback can never clear or
+    // re-set a newer reissue's busy state or durable pin (mirrors #293).
+    const auto operation = ++m_chatReissueOperation;
     m_chatReissueBusy = true; m_chatKeyActionError.clear(); emit stateChanged();
-    ensureChatAuthority([this, epoch, selection](bool okay, const QString &) {
+    ensureChatAuthority([this, epoch, selection, operation](bool okay, const QString &) {
         const QPointer<NativeController> guard(this);
         if (!guard) return;
+        if (operation != m_chatReissueOperation) return; // retired by a session change
         if (!chatContext(epoch, selection)) { m_chatReissueBusy = false; return; }
         const auto failReissue = [this] {
             m_chatReissueBusy = false;
@@ -727,7 +742,11 @@ void NativeController::reissueChatKey()
             failReissue(); return;
         }
         m_chatReissueKey = newKey;
-        request("POST", messenger + "/messages/", body, {}, [this, address, epoch, selection](const ApiResult &result) {
+        request("POST", messenger + "/messages/", body, {},
+            [this, address, epoch, selection, operation](const ApiResult &result) {
+            // Issue #294: a completion for a retired operation must not touch
+            // the vault or the busy state of a newer reissue.
+            if (operation != m_chatReissueOperation) return;
             // Resolve the durable mark from the outcome (review 4576750798): an
             // accepted announcement or a definite 4xx refusal clears the pin; any
             // other answer (timeout, 5xx, transport failure) leaves the mark set
@@ -791,19 +810,27 @@ void NativeController::maybeResolveRotationStages()
     auto stages = m_chatKeys->rotationStages(lease);
     if (stages.failure != NativeChatKeyVault::Failure::None || stages.values.isEmpty()) return;
     m_rotationResolveActive = true;
-    QTimer::singleShot(0, this, [this, lease, stages = std::move(stages.values)] {
-        resolveRotationStagePass(lease, std::move(stages));
+    // Issue #294: the pass identity. An interruption (API generation bump)
+    // retires the pass; a delayed completion of a retired pass must never
+    // write the vault or settle a newer pass that has since started.
+    const auto pass = ++m_rotationResolvePass;
+    QTimer::singleShot(0, this, [this, lease, pass, stages = std::move(stages.values)] {
+        resolveRotationStagePass(lease, std::move(stages), pass);
     });
 }
 
 void NativeController::resolveRotationStagePass(const NativeChatKeyVault::Lease &lease,
-    QVector<NativeChatKeyVault::RotationStage> stages)
+    QVector<NativeChatKeyVault::RotationStage> stages, quint64 pass)
 {
+    // Issue #294: a retired pass was already settled by the interruption that
+    // retired it; its late frames prove nothing and touch nothing.
+    if (pass != m_rotationResolvePass) return;
     if (stages.isEmpty() || !authenticated() || !m_chatKeys || !m_chatKeys->available()
         || !sameChatLease(m_chatKeys->lease(), lease)) { m_rotationResolveActive = false; return; }
     const auto stage = stages.takeFirst();
     request("GET", messenger + "/messages/" + stage.announcement, {}, {},
-        [this, lease, stage, stages](const ApiResult &result) mutable {
+        [this, lease, stage, stages, pass](const ApiResult &result) mutable {
+        if (pass != m_rotationResolvePass) return; // Issue #294: retired by a session change
         // Verified echo: the accepted key_announced message for the staged
         // generation exists server-side, so the delayed success has landed.
         const auto parsed = result.ok()
@@ -853,8 +880,54 @@ void NativeController::resolveRotationStagePass(const NativeChatKeyVault::Lease 
         }
         // Any other answer (transport error, 5xx) proves neither presence
         // nor absence: the durable record is left untouched.
-        resolveRotationStagePass(lease, std::move(stages));
+        resolveRotationStagePass(lease, std::move(stages), pass);
     });
+}
+
+void NativeController::interruptChatRotationOperations()
+{
+    // Issue #294: the same-generation bump that retires the channel-stage
+    // checks (#293) also retires the key-reissue POST and the rotation
+    // resolution GETs; the shared request wrapper drops those callbacks, so
+    // nothing else would ever settle the transient markers. Like #293, only
+    // the retired operations' markers are released, and their operation
+    // tickets are retired with them so a delayed completion can neither
+    // settle a newer operation nor re-set a released marker. The durable
+    // rotation pins and staged keys stay byte-for-byte intact: cancellation
+    // proves nothing about the announcement, and the fail-closed pin rules
+    // (#244) still free a pin only on a verified echo or a definite 4xx.
+    bool changed = false;
+    if (m_chatReissueBusy || !m_chatReissueKey.isEmpty()) {
+        ++m_chatReissueOperation; // the dropped completion must never settle a newer reissue
+        m_chatReissueBusy = false;
+        m_chatReissueKey.clear();
+        changed = true;
+    }
+    // Interrupted user checks report as unresolved (nothing was proven), the
+    // same answer a non-committal server response gives, so the retry is
+    // available and the pinned key is never lost.
+    const auto retiredChecks = m_rotationStageTickets.keys();
+    if (!retiredChecks.isEmpty()) {
+        m_rotationStageTickets.clear();
+        m_rotationStageResolving.clear();
+        for (const auto &stageId : retiredChecks) {
+            const auto separator = stageId.indexOf(QLatin1Char('|'));
+            emit rotationStageResolved(stageId.left(separator), stageId.mid(separator + 1),
+                QStringLiteral("unresolved"),
+                tr("The server did not answer conclusively. The staged key was kept."));
+        }
+        changed = true;
+    }
+    if (m_rotationResolveActive) {
+        ++m_rotationResolvePass; // the abandoned pass's late frames must not continue under a new pass
+        m_rotationResolveActive = false;
+        changed = true;
+    }
+    if (changed) emit stateChanged();
+    // Re-arm an automatic pass abandoned mid-GET as soon as the same owner is
+    // usable again (a no-op while the session or vault is not ready); the same
+    // owner's re-login arms it through the authenticated path as well.
+    maybeResolveRotationStages();
 }
 
 // Issue #244 review 4577108887: recovery protocol for rotation stages whose
@@ -915,12 +988,25 @@ void NativeController::checkRotationStage(const QString &streamUuid, const QStri
         return;
     }
     const auto announcement = pin.value->announcement;
-    m_rotationStageResolving.insert(stream + QLatin1Char('|') + key);
+    // Issue #294: operation ticket for this check (mirrors the #293 create-stage
+    // contract): only this ticket may settle the stage's marker; an interruption
+    // retires the ticket, so the retired check can neither settle a newer check
+    // for the same stage nor re-set a released marker.
+    const auto checkId = stream + QLatin1Char('|') + key;
+    const auto checkTicket = ++m_rotationStageTicketCounter;
+    m_rotationStageResolving.insert(checkId);
+    m_rotationStageTickets.insert(checkId, checkTicket);
+    const auto settleCheck = [this, checkId, checkTicket, settle](const QString &outcome, const QString &message) {
+        const auto current = m_rotationStageTickets.constFind(checkId);
+        if (current == m_rotationStageTickets.constEnd() || current.value() != checkTicket) return;
+        m_rotationStageTickets.erase(m_rotationStageTickets.find(checkId));
+        settle(outcome, message);
+    };
     request("GET", messenger + "/messages/" + announcement, {}, {},
-        [this, lease, stream, key, kept, settle](const ApiResult &result) {
+        [this, lease, stream, key, kept, settleCheck](const ApiResult &result) {
         if (!authenticated() || !m_chatKeys || !m_chatKeys->available()
             || !sameChatLease(m_chatKeys->lease(), lease)) {
-            settle(kept, tr("Encrypted chat keys are not available right now.")); return; }
+            settleCheck(kept, tr("Encrypted chat keys are not available right now.")); return; }
         const auto parsed = result.ok()
             ? parseMessage(result.data.toObject(), m_session->project()) : std::optional<Message>{};
         const bool echoed = parsed && parsed->kind == QLatin1String("key_announced") && parsed->crypto
@@ -932,7 +1018,7 @@ void NativeController::checkRotationStage(const QString &streamUuid, const QStri
             // kept - a check can only re-adopt, never discard).
             const auto cleared = m_chatKeys->clearRotationStage(lease, {stream, key})
                 == NativeChatKeyVault::Failure::None;
-            settle(cleared ? QStringLiteral("resolved") : kept, cleared
+            settleCheck(cleared ? QStringLiteral("resolved") : kept, cleared
                 ? tr("The rotation announcement landed. The staged key is no longer pending.")
                 : tr("The rotation stage could not be resolved right now."));
             return;
@@ -947,17 +1033,17 @@ void NativeController::checkRotationStage(const QString &streamUuid, const QStri
             const auto saturated = qMin(evidence + 1, maximumRotationStageMissingObservations);
             if (saturated != evidence)
                 m_chatKeys->setRotationStageMissingEvidence(lease, {stream, key}, saturated);
-            settle(kept, tr("The rotation announcement was not found yet. The staged key was kept.")); return;
+            settleCheck(kept, tr("The rotation announcement was not found yet. The staged key was kept.")); return;
         }
         if (result.ok()) {
             // The announcement message exists but confirms another generation:
             // not terminal for this stage, but the stored absence is void -
             // the message is being served, exactly as in the create protocol.
             m_chatKeys->setRotationStageMissingEvidence(lease, {stream, key}, 0);
-            settle(kept, tr("The rotation announcement exists but did not confirm this key. The stage was kept."));
+            settleCheck(kept, tr("The rotation announcement exists but did not confirm this key. The stage was kept."));
             return;
         }
-        settle(kept, tr("The server did not answer conclusively. The staged key was kept."));
+        settleCheck(kept, tr("The server did not answer conclusively. The staged key was kept."));
     });
 }
 
@@ -7642,6 +7728,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // recovery GETs; settle their transient state so they can retry/re-arm.
         interruptChannelStageOperations();
         retireConversationOpening();
+        // Issue #294: the same bump retires the key-reissue POST and the
+        // rotation-resolution GETs; release their busy/single-flight markers
+        // (durable rotation pins stay) so a later operation can proceed under
+        // the renewed session.
+        interruptChatRotationOperations();
         m_messageFields.clear();
         // Same-token renewals retain their transfers. A changed generation fences
         // both active operations and queued paths before resetting their UI state.
@@ -7666,6 +7757,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // sign-out (its GET was retired with the previous generation) re-arms
         // here, once the same owner is ready again.
         maybeResolveChannelCreateStages();
+        // Issue #294: same contract for an automatic rotation-resolution pass
+        // abandoned across the sign-out.
+        maybeResolveRotationStages();
         openCache();
         if (!guard) return;
         m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
@@ -8929,6 +9023,16 @@ void NativeController::reset()
     m_channelStageTickets.clear();
     m_channelStageResolving.clear();
     m_channelStageRecoveryPassInFlight = false;
+    // Issue #294: likewise no reissue or rotation-resolution transient marker
+    // survives the owner it was running for; durable rotation pins are vault
+    // state and intentionally outlive reset().
+    ++m_chatReissueOperation;
+    m_chatReissueBusy = false;
+    m_chatReissueKey.clear();
+    ++m_rotationResolvePass;
+    m_rotationResolveActive = false;
+    m_rotationStageTickets.clear();
+    m_rotationStageResolving.clear();
     interruptTopicCreations();
     interruptChannelCreations();
     interruptDirectChats();

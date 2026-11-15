@@ -24653,7 +24653,11 @@ private slots:
         for (const auto &row : f.controller.unresolvedRotationStages())
             listed = listed || row.toObject().value("keyUuid").toString() == firstKey;
         QVERIFY2(listed, "the pin interrupted by the renewal stayed hidden from the unresolved inventory");
-        // A later operation can proceed under the renewed session.
+        // A later operation can proceed under the renewed session: the user
+        // reopens the key screen (the refresh re-verifies the catalog, exactly
+        // like the issue's trigger), then reissues again.
+        f.controller.refresh();
+        QTest::qWait(500);
         f.controller.reissueChatKey();
         QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 2; }, 5000),
             "reissue could not dispatch again after the token renewal");
@@ -24707,9 +24711,10 @@ private slots:
         auto hold = std::make_shared<std::atomic<bool>>(true);
         auto releases = std::make_shared<std::vector<std::function<void()>>>();
         const auto inner = f.server.handler;
-        f.server.handler = [inner, hold, releases](const Request &request) -> Response {
-            if (request.method == "GET"
-                && request.target.path().startsWith(QLatin1String("/api/workspace/v1/messenger/messages/"))) {
+        const auto announcementTarget =
+            QStringLiteral("/api/workspace/v1/messenger/messages/") + announcement;
+        f.server.handler = [inner, hold, releases, announcementTarget](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == announcementTarget) {
                 auto response = inner(request);
                 if (hold->load())
                     response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
@@ -24727,8 +24732,12 @@ private slots:
         (*releases)[1](); // the re-armed pass's own inconclusive answer ends that pass
         // The announcement lands after the renewal: a later inventory refresh
         // can start a fresh pass and adopt it - no restart, no blind resend.
+        // (The catalog refresh first mirrors the session refresh completing,
+        // which re-verifies the catalog the inventory pass reads through.)
         f.serverAnnouncedMessages.insert(announcement, key);
         hold->store(false);
+        f.controller.refresh();
+        QTest::qWait(500);
         f.controller.refreshChatLocalKeys();
         QVERIFY2(QTest::qWaitFor([&] {
             return f.vault.readRotationStage(f.vault.lease(), {streamId, key}).failure

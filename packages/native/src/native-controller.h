@@ -806,7 +806,12 @@ private:
     // in-flight rotation announcements (see native-chat-key-vault.h).
     void maybeResolveRotationStages();
     void resolveRotationStagePass(const NativeChatKeyVault::Lease &lease,
-        QVector<NativeChatKeyVault::RotationStage> stages);
+        QVector<NativeChatKeyVault::RotationStage> stages, quint64 pass);
+    // Issue #294: an API-generation bump (token renewal, sign-out, server
+    // switch) retires the reissue POST and rotation-resolution GETs without
+    // their callbacks ever running; this releases the transient busy and
+    // single-flight markers of those retired operations (durable pins stay).
+    void interruptChatRotationOperations();
     void postChatRequest(const QString &key, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
     bool matchesChatRequest(const Message &message, const QString &key,
                             const NativeChatKeyVault::PendingRequest &pending, bool observed) const;
@@ -845,6 +850,15 @@ private:
     // a user check in flight (one check per stage at a time).
     QString m_chatReissueKey;
     QSet<QString> m_rotationStageResolving;
+    // Issue #294: operation identity for the transient rotation/reissue state,
+    // mirroring the #293 create-stage tickets. A completion of a retired
+    // operation must never settle away or re-set a newer operation's marker;
+    // only the ticket-owning operation may clear it, and an interruption
+    // retires the tickets so a dropped callback cannot settle anything later.
+    quint64 m_chatReissueOperation = 0; // fences the reissue authority/POST callbacks
+    quint64 m_rotationResolvePass = 0;  // fences the automatic resolution pass
+    QHash<QString, quint64> m_rotationStageTickets;
+    quint64 m_rotationStageTicketCounter = 0;
     // Definitive-absence observations that saturate a dispatched rotation
     // stage into the dormant quarantine (mirrors the accepted create-stage
     // protocol of #234: bounded, never key-destroying).
