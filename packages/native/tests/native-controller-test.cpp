@@ -11479,6 +11479,94 @@ private slots:
             return row.value("quoteContent").toString() == QLatin1String("edited origin"); })(), 5000);
     }
 
+    void quoteLookupWorkRetiresWithItsSession_data()
+    {
+        QTest::addColumn<QString>("transition");
+        QTest::newRow("logout-before-retry") << QString("logout");
+        QTest::newRow("switch-before-retry") << QString("switch");
+        QTest::newRow("reset-before-queued-dispatch") << QString("queued");
+    }
+    void quoteLookupWorkRetiresWithItsSession()
+    {
+        QFETCH(QString, transition);
+        Fixture fixture, successor;
+        fixture.aggregateMessages = true;
+        successor.aggregateMessages = true;
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QString("[Bobby](urn:quote:%1)\n\nanswer").arg(farId), returnedId);
+        int firstLookups = 0, successorLookups = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).hasQueryItem("uuid")) {
+                ++firstLookups;
+                return {QJsonObject{}, 500};
+            }
+            return {QJsonArray{reply}};
+        };
+        successor.messages = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("uuid") == farId) ++successorLookups;
+            return {QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("loading"));
+        if (transition == "queued") {
+            // Projection only queued dispatch: no event-loop turn has sent it.
+            QCOMPARE(firstLookups, 0);
+        } else {
+            QTRY_COMPARE(firstLookups, 1);
+            QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        }
+        fixture.controller.logout();
+        QVERIFY(!fixture.controller.authenticated());
+        if (transition == "switch") {
+            QVERIFY(fixture.start(successor.server.origin()));
+            QVERIFY(fixture.controller.authenticated());
+            QVERIFY(fixture.controller.messages().isEmpty());
+        }
+        // No active conversation needs the old UUID. This watches local failures
+        // too: while signed out the old timer cannot reach HTTP but used to emit
+        // another quote update and arm yet another retry.
+        QSignalSpy updates(&fixture.controller, &NativeController::messagesChanged);
+        QTest::qWait(3700);
+        QCOMPARE(successorLookups, 0);
+        QCOMPARE(firstLookups, transition == "queued" ? 0 : 1);
+        QCOMPARE(updates.size(), 0);
+        QVERIFY(fixture.controller.messages().isEmpty());
+    }
+
+    void quoteLookupNewGenerationCanResolveAgain_data()
+    {
+        QTest::addColumn<bool>("inFlight");
+        QTest::newRow("retired-in-flight") << true;
+        QTest::newRow("retired-backoff") << false;
+    }
+    void quoteLookupNewGenerationCanResolveAgain()
+    {
+        QFETCH(bool, inFlight);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString farId = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b";
+        const auto reply = message(QString("[Bobby](urn:quote:%1)\n\nanswer").arg(farId), returnedId);
+        int lookups = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (!QUrlQuery(request.target).hasQueryItem("uuid")) return {QJsonArray{reply}};
+            ++lookups;
+            if (lookups == 1) return {QJsonObject{}, 500, inFlight ? 600 : 0};
+            return {QJsonArray{message("recovered quote", farId)}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("loading"));
+        QTRY_COMPARE(lookups, 1);
+        if (!inFlight) QTRY_VERIFY(fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        fixture.api.setAccessToken("synthetic-quote-renewal");
+        // A new view demand must not inherit a cancelled request's in-flight
+        // entry or its backoff; the old generation's timer is retired as well.
+        QTRY_COMPARE_WITH_TIMEOUT(modelMessage(fixture.controller, returnedId).value("quoteContent").toString(),
+            QString("recovered quote"), 1200);
+        QCOMPARE(lookups, 2);
+        QTest::qWait(3700);
+        QCOMPARE(lookups, 2);
+    }
+
     // After a transport failure the retry is self-driving: the lookup re-issues
     // even though the test performs no further projections (review #119, round 2).
     void failedQuoteLookupRetriesWithoutFurtherProjections()

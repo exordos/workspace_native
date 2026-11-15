@@ -7588,6 +7588,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(session, &Session::projectsAvailable, this, &NativeController::stateChanged);
     connect(api, &ApiClient::sessionChanged, this, [this] {
         const QPointer<NativeController> lookupGuard(this);
+        // Transport callbacks from the previous generation will not settle.
+        // New projections must be able to resolve their quotes immediately.
+        m_quoteInFlight.clear();
+        m_quoteRetryAfter.clear();
         // Retired transport callbacks are deliberately dropped. Settle their
         // UI operations here while retaining same-owner retry UUIDs.
         const auto pollOperations = m_pendingPollCreations;
@@ -8597,6 +8601,7 @@ void NativeController::reset()
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
     m_quotes.clear();
     m_quoteInFlight.clear();
+    m_quoteRetryAfter.clear();
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
@@ -13371,14 +13376,21 @@ void NativeController::openMessageInChat(const QString &id)
 
 void NativeController::scheduleQuoteFetch(const QString &id) const
 {
+    if (!authenticated()) return;
     if (m_quotes.contains(id) || m_quoteInFlight.contains(id)) return;
     if (m_quoteRetryAfter.value(id, 0) > QDateTime::currentMSecsSinceEpoch()) return;
     m_quoteInFlight.insert(id);
     auto *self = const_cast<NativeController *>(this);
-    QMetaObject::invokeMethod(self, [self, id] {
-        const auto project = self->m_session->project();
+    const auto project = m_session->project();
+    const auto current = [self, owner = creationOwnerKey(), generation = m_api->generation()] {
+        return self->authenticated() && self->creationOwnerKey() == owner
+            && self->m_api->generation() == generation;
+    };
+    QMetaObject::invokeMethod(self, [self, id, project, current] {
+        if (!current()) return;
         self->request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", id}},
-            [self, id](const ApiResult &result) {
+            [self, id, project, current](const ApiResult &result) {
+            if (!current()) return;
             self->m_quoteInFlight.remove(id);
             if (!result.ok()) {
                 // A transport failure is not an authoritative miss: keep the lookup
@@ -13387,7 +13399,9 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
                 // The timer re-issues the lookup on its own so the preview recovers
                 // even when no projection happens after the connection returns.
                 self->m_quoteRetryAfter.insert(id, QDateTime::currentMSecsSinceEpoch() + 3000);
-                QTimer::singleShot(3200, self, [self, id] { self->scheduleQuoteFetch(id); });
+                QTimer::singleShot(3200, self, [self, id, current] {
+                    if (current()) self->scheduleQuoteFetch(id);
+                });
                 emit self->messagesChanged();
                 return;
             }
@@ -13395,7 +13409,7 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             QuoteRecord record;
             const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
             const auto parsed = rows.isEmpty() ? std::optional<Message>{}
-                : parseMessage(rows.first().toObject(), self->m_session->project());
+                : parseMessage(rows.first().toObject(), project);
             if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
                 record.authorId = parsed->author;
                 record.content = parsed->content;
