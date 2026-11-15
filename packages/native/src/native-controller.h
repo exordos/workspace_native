@@ -15,6 +15,7 @@
 #include "call/incoming-call-lifecycle.h"
 #include "native-call-bridge.h"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QLocale>
 #include <QSet>
@@ -387,6 +388,9 @@ public:
     // Window focus mirror for desktop notifications (Electron sends
     // window:activity from the focus/blur handlers in main.ts).
     Q_INVOKABLE void setWindowFocused(bool focused);
+    // Window visibility mirror (issue #78): hidden windows take the hidden
+    // presence tier.
+    Q_INVOKABLE void setWindowVisible(bool visible);
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
     // Reference bootstrap error banner Retry (bootstrapRetryNonce analogue):
@@ -1125,6 +1129,9 @@ private:
     QTimer m_presenceHeartbeat;
     QPointer<RealtimeClient> m_realtime;
     QPointer<PowerWatcher> m_powerWatcher;
+    // Clock for the resume-reconnect floor (fix-round-1 finding 4): restarted
+    // on every resume-triggered reconnectNow, resumes inside the floor ignored.
+    QElapsedTimer m_resumeReconnectClock;
     bool m_onBattery = false;
     QVector<Stream> m_streams;
     // Issue #132 channel info drawer state for the selected stream. The
@@ -1168,6 +1175,7 @@ private:
     QVector<Topic> m_topics;
     NotificationService m_notifications;
     bool m_windowFocused = true;
+    bool m_windowVisible = true;
     QVector<Message> m_messages;
     struct UserPresentation {
         QString name, avatar, presence, statusLabel;

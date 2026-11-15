@@ -120,7 +120,7 @@ int main(int argc, char **argv)
     controller.useFiles(&files);
     workspace::RealtimeClient realtime(&api, &session);
     controller.useRealtime(&realtime);
-    // Session-bus power observer: resume reconnects realtime at once, and a
+    // System-bus power observer: resume reconnects realtime at once, and a
     // battery source widens the presence heartbeat (issue #78). With no
     // logind/UPower on the bus both paths silently stay at mains behaviour.
     workspace::PowerWatcher powerWatcher;
@@ -144,6 +144,14 @@ int main(int argc, char **argv)
         auto *focusWatcher = new WindowFocusWatcher(&controller);
         window->installEventFilter(focusWatcher);
         controller.setWindowFocused(window->isActive());
+        // hide/show/minimize map onto the reference hidden WindowActivityState
+        // for the presence cadence (issue #78); Qt delivers it as the
+        // visibilityChanged signal rather than a filterable event type.
+        controller.setWindowVisible(window->isVisible());
+        QObject::connect(window, &QWindow::visibilityChanged, &controller,
+            [&controller, window](QWindow::Visibility) {
+                controller.setWindowVisible(window->isVisible());
+            });
     }
     QString restartExecutable;
     bool shuttingDown = false;
