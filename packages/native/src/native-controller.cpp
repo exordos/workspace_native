@@ -14242,11 +14242,16 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
         if (m_pollSendAttempts.value(conversation).messageUuid == attempt.messageUuid)
             m_pollSendAttempts.remove(conversation);
         const auto raw = result.data.toObject();
-        observeMessage(raw);
-        m_messages = mergeMessages(m_messages, {*parsed});
-        ++m_messageRevision;
-        pruneMessageFields();
-        emit messagesChanged();
+        // Completion belongs to the submitted conversation even if navigation
+        // has replaced the visible window. Keep the accepted send/cache below,
+        // but publish rows only if they belong to the currently selected view.
+        if (inConversation(*parsed)) {
+            observeMessage(raw);
+            m_messages = mergeMessages(m_messages, {*parsed});
+            ++m_messageRevision;
+            pruneMessageFields();
+            emit messagesChanged();
+        }
         projectCanonical(raw, NativeCache::Projection::Insert | NativeCache::Projection::Payload
             | NativeCache::Projection::Star, context);
         if (!guard) return;

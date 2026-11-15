@@ -19990,6 +19990,180 @@ private slots:
             QVERIFY(!(request.method == "POST" && request.target.path().endsWith("/messages/")));
     }
 
+    void sendPollCompletionStaysWithItsConversation_data()
+    {
+        QTest::addColumn<QString>("navigation");
+        QTest::addColumn<bool>("realtimeFirst");
+        for (const auto *navigation : {"stay", "other-topic", "other-stream", "stream", "return"})
+            for (const bool realtimeFirst : {false, true})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(navigation,
+                    realtimeFirst ? "realtime-first" : "response-only")))
+                    << QString::fromLatin1(navigation) << realtimeFirst;
+    }
+
+    void sendPollCompletionStaysWithItsConversation()
+    {
+        QFETCH(QString, navigation);
+        QFETCH(bool, realtimeFirst);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto &controller = fixture.controller;
+        controller.useCache(&cache);
+        const auto source = message("Source message");
+        const auto destination = message("Other topic message", returnedId, secondTopicId);
+        const auto otherStream = pollFixtureUuid(98);
+        const auto otherTopic = pollFixtureUuid(97);
+        auto otherStreamMessage = destination;
+        otherStreamMessage.insert("stream_uuid", otherStream);
+        otherStreamMessage.insert("topic_uuid", otherTopic);
+        QJsonObject created;
+        QVector<QJsonObject> creates;
+        std::function<void()> release;
+        const auto releaseOnExit = qScopeGuard([&] { if (release) release(); });
+        fixture.topics = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream)
+                return Response{QJsonArray{creationTopic(otherTopic, otherStream, "Other stream topic")}};
+            return Response{QJsonArray{creationTopic(topicId, streamId, "Source topic"),
+                creationTopic(secondTopicId, streamId, "Other topic")}};
+        };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                creates.append(request.body);
+                created = pollMessageDto(request.body.value("uuid").toString(), 1, false);
+                Response response{created};
+                if (creates.size() == 1)
+                    response.defer = [&](std::function<void()> send) { release = std::move(send); };
+                return response;
+            }
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream)
+                return Response{QJsonArray{otherStreamMessage}};
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            return Response{topic == secondTopicId ? QJsonArray{destination} : QJsonArray{source}};
+        };
+        QVERIFY(fixture.start());
+        if (navigation == "other-stream")
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("stream.created",
+                QJsonObject{{"uuid", otherStream}, {"project_id", projectId},
+                    {"name", "Other stream"}, {"encryption", false}}, 7900)));
+        QTRY_VERIFY(cache.available());
+        QVERIFY(flushCache(cache));
+        const QVariantList questions{
+            QVariantMap{{QString("text"), QStringLiteral("Which day?")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        QSignalSpy completed(&controller, &NativeController::pollCreated);
+        QSignalSpy failed(&controller, &NativeController::pollActionFailed);
+        controller.sendPoll(questions, false, false, false, QStringLiteral("always"), false, {});
+        QTRY_VERIFY(bool(release));
+        QCOMPARE(creates.size(), 1);
+        const auto id = created.value("uuid").toString();
+        if (realtimeFirst) {
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.created", created, 7901)));
+            QTRY_VERIFY(!modelMessage(controller, id).isEmpty());
+        }
+        if (navigation == "other-topic" || navigation == "return") {
+            controller.selectTopic(secondTopicId);
+            QTRY_VERIFY(!controller.busy());
+            QTRY_VERIFY(!modelMessage(controller, returnedId).isEmpty());
+        } else if (navigation == "other-stream") {
+            controller.selectStream(otherStream);
+            QTRY_VERIFY(!controller.busy());
+            QTRY_VERIFY(!modelMessage(controller, returnedId).isEmpty());
+        } else if (navigation == "stream") {
+            controller.selectTopic({});
+            QTRY_VERIFY(!controller.busy());
+            QTRY_VERIFY(!modelMessage(controller, messageId).isEmpty());
+        }
+        if (navigation == "return") {
+            controller.selectTopic(topicId);
+            QTRY_VERIFY(!controller.busy());
+            QTRY_VERIFY(!modelMessage(controller, messageId).isEmpty());
+        }
+        QVERIFY(flushCache(cache));
+        const auto before = controller.messages();
+        QSignalSpy changed(&controller, &NativeController::messagesChanged);
+        auto send = std::move(release); release = {}; send();
+        QTRY_COMPARE(completed.count(), 1);
+        QCOMPARE(completed.first(), QVariantList({id, streamId, topicId}));
+        QCOMPARE(failed.count(), 0);
+        if (navigation == "other-topic" || navigation == "other-stream") {
+            QCOMPARE(controller.messages(), before);
+            QCOMPARE(changed.count(), 0);
+            QVERIFY(modelMessage(controller, id).isEmpty());
+        } else {
+            int occurrences = 0;
+            for (const auto &row : controller.messages())
+                if (row.toMap().value("id").toString() == id) ++occurrences;
+            QCOMPARE(occurrences, 1);
+        }
+        // The accepted send still reaches its original cached page after navigation.
+        const auto saved = cacheEntry(cache, cache.lease(),
+            {NativeCache::Kind::History, streamId, topicId, {}});
+        QVERIFY(saved);
+        int cachedOccurrences = 0;
+        for (const auto &row : saved->rows)
+            if (row.toObject().value("uuid").toString() == id) ++cachedOccurrences;
+        QCOMPARE(cachedOccurrences, 1);
+        if (navigation == "other-topic") {
+            const auto other = cacheEntry(cache, cache.lease(),
+                {NativeCache::Kind::History, streamId, secondTopicId, {}});
+            QVERIFY(other);
+            for (const auto &row : other->rows)
+                QVERIFY(row.toObject().value("uuid").toString() != id);
+        }
+        // Completion retires A's attempt even while another conversation is open.
+        if (controller.selectedStream() != streamId) {
+            controller.selectStream(streamId);
+            QTRY_VERIFY(!controller.busy());
+            QTRY_COMPARE(controller.topics().size(), 2);
+        }
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        controller.sendPoll(questions, false, false, false, QStringLiteral("always"), false, {});
+        QTRY_COMPARE(completed.count(), 2);
+        QCOMPARE(creates.size(), 2);
+        QVERIFY(creates.last().value("uuid").toString() != id);
+    }
+
+    void sendPollLateResponseCannotCrossSessionGeneration_data()
+    {
+        QTest::addColumn<bool>("logout");
+        QTest::newRow("token-replacement") << false;
+        QTest::newRow("sign-out") << true;
+    }
+
+    void sendPollLateResponseCannotCrossSessionGeneration()
+    {
+        QFETCH(bool, logout);
+        Fixture fixture;
+        std::function<void()> release;
+        const auto releaseOnExit = qScopeGuard([&] { if (release) release(); });
+        fixture.messages = [&](const Request &request) {
+            if (request.method != "POST") return Response{QJsonArray{message()}};
+            Response response{pollMessageDto(request.body.value("uuid").toString(), 1, false)};
+            response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        const QVariantList questions{
+            QVariantMap{{QString("text"), QStringLiteral("Which day?")}, {QString("options"), QVariantList{
+                QVariantMap{{QString("text"), QStringLiteral("Monday")}},
+                QVariantMap{{QString("text"), QStringLiteral("Tuesday")}}}}}};
+        QSignalSpy completed(&controller, &NativeController::pollCreated);
+        controller.sendPoll(questions, false, false, false, QStringLiteral("always"), false, {});
+        QTRY_VERIFY(bool(release));
+        if (logout) controller.logout();
+        else fixture.api.setAccessToken("synthetic-replaced-poll-token");
+        const auto before = controller.messages();
+        auto send = std::move(release); release = {}; send();
+        QTest::qWait(100);
+        QCOMPARE(controller.messages(), before);
+        QCOMPARE(completed.count(), 0);
+    }
+
     void sendPollIdenticalRetryReusesCanonicalUuidsUntilConfirmed()
     {
         Fixture fixture;

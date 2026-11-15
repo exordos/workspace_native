@@ -143,6 +143,18 @@ through the existing `messagesChanged` signal. Failures never mutate the model;
 (for `vote` / `add_poll_option`, empty otherwise) so the UI tickets own all
 user-visible strings. No new `tr()` strings ship in this ticket.
 
+Successful poll creation keeps the captured destination through completion
+(issue #275). It retires that conversation's attempt, projects the accepted DTO
+into existing cached history for that destination and emits `pollCreated` for
+that stream/topic.
+The visible message window and its revision change only when the accepted row
+belongs to the selected conversation. Navigating to another topic or stream
+does not append a late POST result to that window or emit a spurious
+`messagesChanged`. The original topic and its stream aggregate admit the result
+once, including when realtime delivered the same UUID first. Returning to the
+original conversation before completion also admits the row. API-generation and cache
+lease fences continue to reject a result from an invalidated session/owner.
+
 ## Test surface
 
 - `domain-test`: full-field poll parse; the guard matrix above (including the
@@ -157,3 +169,11 @@ user-visible strings. No new `tr()` strings ship in this ticket.
   order/read state; add_poll_option replay accepted at 200 without duplication;
   create guard and body; update_settings always carries both fields; poll
   voters strict page and marker.
+- `sendPollCompletionStaysWithItsConversation`: a deferred HTTP create followed
+  by topic/aggregate navigation or A-to-B-to-A, with and without earlier realtime
+  delivery; checks visible rows and notifications, canonical cached destination,
+  no duplicate UUID and retirement of the original attempt.
+- `sendPollLateResponseCannotCrossSessionGeneration`: token replacement/sign-out
+  while the create response is held cannot publish the old completion or row.
+  Poll-dialog cancellation on generation loss remains tracked separately in
+  issue #274; these controller cases do not establish that UI lifecycle.
