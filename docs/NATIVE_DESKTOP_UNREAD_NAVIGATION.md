@@ -9,9 +9,9 @@ refreshes topic/stream active and passive counters. Its window suppresses reads
 while inactive, hidden, minimized, stale, loading or covered by a modal surface.
 These mechanisms remain authoritative; navigation must not invent read state.
 
-The missing opening behavior is separate from this existing read pipeline:
-`messageList.replaceMessages` currently gives every new route tail-follow intent.
-A conversation with an unread message above the tail therefore opens below it.
+The missing opening behavior was separate from this existing read pipeline:
+`messageList.replaceMessages` gave every new route tail-follow intent.
+A conversation with an unread message above the tail therefore opened below it.
 The reference centers the first unread message, keeps a stable divider at its
 author-group start, and supplies a floating tail button with a loaded-unread
 badge. An already-read conversation still opens at the tail.
@@ -83,3 +83,77 @@ remembered anchors, fresh-tail loading and failure retention, rejected malformed
 or foreign responses, cancellation, credential generation changes, and a read
 receipt overtaking either the earliest-unread query or the around-window pages.
 The latter two asynchronous cases exposed candidate defects before their fixes.
+
+The corrected original-QML regression failed for a loaded first unread, an
+unread outside the latest page, and return-position preservation. The candidate
+then exposed two separate visible failures: returning after a settled bulk-read
+restored the obsolete position, and a large real wheel jump recycled the divider
+before its geometry could retire it. Their tests now wait for the actual rendered
+frame, so neither a transient layout nor immediate engine destruction can count
+as a navigation result. The bulk-read route lease is re-armed only by fresh user
+movement; the divider also uses the rendered row order when its delegate has been
+recycled.
+
+The existing visible-read window fixture also enabled realtime without a
+synchronizer. Its old `reloadSnapshot()` kept the verification barrier closed.
+The focused regression reproduced zero outgoing boundaries after activation;
+the fixture now completes ordinary bootstrap before stopping background polling.
+The production readiness gate remains intact. The test still checks inactive,
+minimized, hidden and modal windows, the exact visible boundary, and confirmed
+counter refresh.
+
+Existing image pixel and transfer-count checks caught a compatibility regression
+in the candidate: using the saved-position key as the displayed route disabled
+media admission, and the intermediate opening layout restarted image metadata
+requests. The displayed route retains its existing service-scope identity; only
+the position map uses the owner/runtime key. Verified-history image admission
+waits for the final opening viewport. Provisional cached images keep their prior
+admission behavior while canonical history is unavailable.
+
+The existing scroll-preservation fixture initially returned its fifty-row read
+history for every GET, including the new one-row unread lookup. A new message at
+the tail reproduced zero read receipts because opening correctly rejected that
+invalid response. The fixture now serves the requested earliest unread (or an
+empty array), preserving its original scroll and read-boundary assertions.
+
+A read/history event during saved-anchor paging reproduced a failed restoration.
+Saved-position retries now repeat the same owned UUID lookup and around-window
+load once, independently of unread-boundary retries. Only a confirmed missing
+saved UUID falls back to unread; repeated history churn retains a bounded failure
+instead of silently moving the reader to the tail.
+
+The full-window run also reproduced an explicit-link regression when the target
+is an account-irrelevant service message. Taking navigation ownership cancelled
+the queued layout, so its empty-window paging pass never ran. The existing
+anchor regression passed on the base and failed on the candidate; explicit
+anchor hand-off now invokes that same bounded paging pass. Ordinary anchors
+still do not count as user scrolling or request older pages.
+
+Two older pagination fixtures now answer the added unread-only lookup with the
+correct empty array for their fully read histories. The aggregate visible-read
+fixture completes an ordinary verified bootstrap and explicitly takes manual
+navigation ownership before loading its 400-row viewport. It still verifies
+pagination, bounded delegates, two exact topic read boundaries and inactive /
+minimized suppression. Automatic opening is covered separately.
+
+The later full-window run exposed the same incomplete synthetic bootstrap in
+both media-viewer read-isolation rows. The old base passed because it did not
+require opening readiness; the candidate correctly withheld reads. The fixture
+now completes the verified bootstrap before enabling synthetic realtime. All
+eight media isolation rows pass with the real viewer and unchanged read gates.
+
+The reply-tab selection control also failed on the unmodified base. Its short
+author produced a 63 px pill: rounding the whole-pill centre selected the exact
+boundary between the author hit area and the 32 px close control. The test now
+clicks the author region explicitly, while retaining the separate real close
+button click, tab-count checks, selected message and preserved draft assertions.
+
+The profile and attachment-picker teardown failures were independently reproduced
+on the base. Qt reports a parent active while its transient PiP or popup remains
+active, even after the parent has received FocusOut and is hidden. The test helper
+now closes only that window's transient family, deepest first, before its existing
+focus-before-surface checks. The original two-second acknowledgement limit and
+incubation/frame assertions remain intact. A separate root/tool/unrelated-window
+regression fails with the old helper and verifies both ordered teardown and
+preservation of the unrelated window. The three original failing scenes and
+existing lifecycle controls also pass with this helper.

@@ -3955,6 +3955,7 @@ ApplicationWindow {
                 property bool openingApplied: false
                 property var openingPosition: null
                 property string positionRuntime: ""
+                property string displayedPositionRoute: ""
                 property var conversationPositions: ({})
                 property var positionOrder: []
                 property bool positionSaveAllowed: true
@@ -3963,11 +3964,14 @@ ApplicationWindow {
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
                 readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
                 function routeKey() {
+                    return serviceScope();
+                }
+                function positionKey() {
                     return JSON.stringify([root.controller.conversationOpening.runtime,
                         root.controller.selectedStream, root.controller.selectedTopic]);
                 }
                 function rememberViewport() {
-                    if (!positionSaveAllowed || !openingApplied || !displayedRoute.length || !messageSnapshot.length || positioning)
+                    if (!positionSaveAllowed || !openingApplied || !displayedPositionRoute.length || !messageSnapshot.length || positioning)
                         return;
                     const snapshot = captureViewport();
                     const position = snapshot.followTail
@@ -3975,9 +3979,9 @@ ApplicationWindow {
                         : { kind: "anchor", messageId: snapshot.anchorId, offset: snapshot.offset };
                     if (!position.messageId.length) return;
                     const positions = Object.assign({}, conversationPositions);
-                    const order = positionOrder.filter(key => key !== displayedRoute);
-                    positions[displayedRoute] = position;
-                    order.push(displayedRoute);
+                    const order = positionOrder.filter(key => key !== displayedPositionRoute);
+                    positions[displayedPositionRoute] = position;
+                    order.push(displayedPositionRoute);
                     while (order.length > 12) delete positions[order.shift()];
                     conversationPositions = positions;
                     positionOrder = order;
@@ -3995,7 +3999,7 @@ ApplicationWindow {
                         return false;
                     });
                     conversationPositions = positions;
-                    if (displayedRoute.length && affected(displayedRoute)) {
+                    if (displayedPositionRoute.length && affected(displayedPositionRoute)) {
                         // A later route cleanup must not save this old viewport
                         // again. Fresh user movement re-arms position recording.
                         positionSaveAllowed = false;
@@ -4020,16 +4024,24 @@ ApplicationWindow {
                 }
                 function dismissPassedUnreadDivider() {
                     if (positioning || !openingApplied || unreadDividerDismissed || !unreadAnchorId.length) return;
+                    let dividerIndex = -1, firstVisible = -1;
                     for (let i = 0; i < count; ++i) {
-                        const row = itemAtIndex(i);
-                        if (row && row.unreadDivider) {
-                            const divider = row.unreadDivider;
-                            if (divider.mapToItem(messageList, 0, divider.height).y <= 0) {
+                        if (renderedMessages.get(i).unreadStart) dividerIndex = i;
+                        const row = itemAtIndex(i) as MessageBoundaryRow;
+                        if (!row) continue;
+                        if (row.unreadDivider) {
+                            if (row.unreadDivider.mapToItem(messageList, 0, row.unreadDivider.height).y <= 0)
                                 unreadDividerDismissed = true;
-                                return;
-                            }
+                            return;
+                        }
+                        if (firstVisible < 0 && row.readBoundary) {
+                            const top = row.readBoundary.mapToItem(messageList, 0, 0).y;
+                            if (top < height && top + row.readBoundary.height > 0) firstVisible = i;
                         }
                     }
+                    // A large wheel jump can recycle the divider's delegate
+                    // before this pass. The rendered row order still locates it.
+                    if (dividerIndex >= 0 && firstVisible > dividerIndex) unreadDividerDismissed = true;
                 }
                 function scrollToLatest() {
                     takeOpeningControl();
@@ -4129,11 +4141,12 @@ ApplicationWindow {
                     const route = routeKey();
                     const opening = root.controller.conversationOpening;
                     const sameRoute = displayedRoute === route;
-                    if (!sameRoute) {
+                    if (!sameRoute || positionRuntime !== opening.runtime) {
                         if (positionRuntime === opening.runtime) rememberViewport();
                         else { conversationPositions = ({}); positionOrder = []; }
                         positionRuntime = opening.runtime;
-                        openingPosition = conversationPositions[route] || null;
+                        displayedPositionRoute = positionKey();
+                        openingPosition = conversationPositions[displayedPositionRoute] || null;
                         positionSaveAllowed = true;
                         openingApplied = false;
                         unreadAnchorId = "";
@@ -4327,7 +4340,13 @@ ApplicationWindow {
                     function onAnchorChanged() {
                         if (root.controller.anchorMessageId) {
                             messageList.takeOpeningControl();
-                            Qt.callLater(() => messageList.anchorToMessage(root.controller.anchorMessageId));
+                            Qt.callLater(() => {
+                                messageList.anchorToMessage(root.controller.anchorMessageId);
+                                // Explicit navigation cancels the opening layout.
+                                // A filtered service anchor still needs the normal
+                                // empty-window paging pass after that hand-off.
+                                messageList.maybeAdvanceHiddenWindow();
+                            });
                         }
                     }
                 }
@@ -4406,6 +4425,7 @@ ApplicationWindow {
                 onContentYChanged: {
                     scheduleVisibleRead(); scheduleServiceInspection();
                     dismissPassedUnreadDivider();
+                    Qt.callLater(dismissPassedUnreadDivider);
                     // Issue #156: user-attributed scroll passes hand the reserve
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
@@ -5703,6 +5723,7 @@ ApplicationWindow {
                                             width: Math.min(Math.max(0, parent.width - 2), implicitWidth)
                                             bodyActive: mediaMessageBody.visible && !messageList.positioning
                                                 && messageList.displayedRoute === messageList.serviceScope()
+                                                && (!root.controller.messageHistoryReady || messageList.openingApplied)
                                             onOpened: root.openReference(reference, picture.failed)
                                         }
                                     }

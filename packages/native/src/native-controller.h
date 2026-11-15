@@ -1286,6 +1286,7 @@ private:
     void loadMessages(bool older = false, bool latest = false);
     void retireConversationOpening();
     void resolveOpeningUnread(quint64 ticket, int attempt = 0);
+    void resolveOpeningSaved(quint64 ticket, const QString &savedAnchor, int attempt = 0);
     void openConversationAnchor(const Message &message);
     void finishConversationOpening(const QString &id = {}, bool failed = false);
     void loadAroundAnchor();
@@ -1719,6 +1720,8 @@ private:
         bool prepared = false, pending = false, automaticAnchor = false, failed = false;
         QString target;
         int unreadAttempt = -1;
+        QString savedAnchor;
+        int savedAttempt = 0;
     } m_conversationOpening;
     quint64 m_nextConversationOpening = 0;
     QTimer m_anchorHighlight;

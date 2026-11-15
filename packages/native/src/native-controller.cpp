@@ -9292,8 +9292,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         if (kind == "stream.read") {
             const QPointer<NativeController> positionGuard(this);
+            const auto positionGeneration = m_api->generation();
             emit conversationMarkedRead(stream->uuid, {});
-            if (!positionGuard) return true;
+            if (!positionGuard || positionGeneration != m_api->generation()) return true;
             // Reading a stream drops its mention index entries
             // (activity-realtime-applier.lib.ts:97-103).
             if (mentionIndexClearStream(stream->uuid)) emit stateChanged();
@@ -9417,8 +9418,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         if (kind == "topic.read") {
             const QPointer<NativeController> positionGuard(this);
+            const auto positionGeneration = m_api->generation();
             emit conversationMarkedRead(streamId, topic->uuid);
-            if (!positionGuard) return true;
+            if (!positionGuard || positionGeneration != m_api->generation()) return true;
             // Reading a topic drops its mention index entries
             // (activity-realtime-applier.lib.ts:90-96).
             if (mentionIndexClearTopic(streamId, topic->uuid)) emit stateChanged();
@@ -12319,7 +12321,7 @@ void NativeController::prepareConversationOpening(const QString &savedAnchor)
     if (!messageHistoryReady() || busy() || (m_conversationOpening.prepared
         && m_conversationOpening.selection == m_selection
         && m_conversationOpening.generation == m_api->generation())) return;
-    m_conversationOpening = {m_selection, m_api->generation(), ++m_nextConversationOpening, true, true};
+    m_conversationOpening = {m_selection, m_api->generation(), ++m_nextConversationOpening, true, true, false, false, {}, -1};
     // Explicit links own their existing anchor hand-off and highlight.
     if (!m_pendingAnchorMessage.isEmpty() || !m_anchorMessage.isEmpty()) {
         finishConversationOpening();
@@ -12330,29 +12332,36 @@ void NativeController::prepareConversationOpening(const QString &savedAnchor)
     emit stateChanged();
     if (!guard || ticket != m_conversationOpening.ticket || m_conversationOpening.selection != m_selection
         || m_conversationOpening.generation != m_api->generation()) return;
-    if (isUuid(savedAnchor)) {
-        if (findMessage(savedAnchor)) {
-            finishConversationOpening(savedAnchor);
-            return;
-        }
-        const auto selection = m_selection;
-        request("GET", messenger + "/messages/", {}, {{"uuid", savedAnchor}},
-            [this, ticket, selection, savedAnchor](const ApiResult &result) {
-            if (ticket != m_conversationOpening.ticket || selection != m_selection) return;
-            const auto rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
-            const auto message = rows.size() == 1 ? parseMessage(rows.first().toObject(), m_session->project()) : std::optional<Message>{};
-            if (message && message->uuid == savedAnchor && inConversation(*message)) {
-                openConversationAnchor(*message);
-            } else if (result.status == 404 || (result.ok() && result.data.isArray() && rows.isEmpty())) {
-                // A deleted saved position falls back to today's unread boundary.
-                resolveOpeningUnread(ticket);
-            } else {
-                finishConversationOpening({}, true);
-            }
-        });
-    } else {
-        resolveOpeningUnread(ticket);
+    if (isUuid(savedAnchor)) resolveOpeningSaved(ticket, savedAnchor);
+    else resolveOpeningUnread(ticket);
+}
+
+void NativeController::resolveOpeningSaved(quint64 ticket, const QString &savedAnchor, int attempt)
+{
+    if (ticket != m_conversationOpening.ticket || m_conversationOpening.selection != m_selection
+        || m_conversationOpening.generation != m_api->generation()) return;
+    m_conversationOpening.savedAnchor = savedAnchor;
+    m_conversationOpening.savedAttempt = attempt;
+    if (findMessage(savedAnchor)) {
+        finishConversationOpening(savedAnchor);
+        return;
     }
+    const auto selection = m_selection;
+    request("GET", messenger + "/messages/", {}, {{"uuid", savedAnchor}},
+        [this, ticket, selection, savedAnchor](const ApiResult &result) {
+        if (ticket != m_conversationOpening.ticket || selection != m_selection) return;
+        const auto rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
+        const auto message = rows.size() == 1 ? parseMessage(rows.first().toObject(), m_session->project()) : std::optional<Message>{};
+        if (message && message->uuid == savedAnchor && inConversation(*message)) {
+            openConversationAnchor(*message);
+        } else if (result.status == 404 || (result.ok() && result.data.isArray() && rows.isEmpty())) {
+            // Only a confirmed deleted position changes the opening intent.
+            m_conversationOpening.savedAnchor.clear();
+            resolveOpeningUnread(ticket);
+        } else {
+            finishConversationOpening({}, true);
+        }
+    });
 }
 
 void NativeController::resolveOpeningUnread(quint64 ticket, int attempt)
@@ -13217,7 +13226,10 @@ void NativeController::loadAroundAnchor()
             m_conversationOpening.automaticAnchor = false;
             clearAnchor();
             if (!guard) return;
-            if (m_conversationOpening.unreadAttempt == 0) resolveOpeningUnread(openingTicket, 1);
+            if (!m_conversationOpening.savedAnchor.isEmpty() && m_conversationOpening.savedAttempt == 0)
+                resolveOpeningSaved(openingTicket, m_conversationOpening.savedAnchor, 1);
+            else if (m_conversationOpening.savedAnchor.isEmpty() && m_conversationOpening.unreadAttempt == 0)
+                resolveOpeningUnread(openingTicket, 1);
             else finishConversationOpening({}, true);
             return;
         }
