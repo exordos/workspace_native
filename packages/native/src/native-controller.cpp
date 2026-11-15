@@ -11255,6 +11255,14 @@ void NativeController::setDraft(const QString &text)
     if (!m_editingMessage.isEmpty()) {
         if (m_editBuffer == text) return;
         m_editBuffer = text;
+        auto &cards = m_editAttachments[m_editRestoresReply ? m_replyActiveTab : QString()];
+        cards = NativeMarkdown::updateEditAttachments(text, cards);
+        for (auto &entry : cards) {
+            auto card = entry.toMap();
+            if (card.value("id").toString().isEmpty()) {
+                card.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces)); entry = card;
+            }
+        }
         ++m_editRevision;   // a save may not close past this revision (issue #115)
         // A restored edit keeps the answer lockstep with the buffer, as the plain
         // reply session below does (issue #202).
@@ -11262,6 +11270,7 @@ void NativeController::setDraft(const QString &text)
             if (m_editRestoresReply && tab.id == m_replyActiveTab && tab.answer != text)
                 tab.answer = text;
         emit draftChanged();
+        emit editSessionChanged();
         emit stateChanged();
         return;
     }
@@ -13259,6 +13268,7 @@ bool NativeController::selectReplyTab(const QString &tabId)
         m_replyActiveTab = tabId;
         emit replySessionChanged();
         setDraft(tab.answer);
+        if (m_editRestoresReply) emit editSessionChanged();
         return true;
     }
     return false; // selectWorkspaceReplyTab is a no-op for unknown ids
@@ -13275,7 +13285,14 @@ void NativeController::removeReplyTab(const QString &tabId)
     if (removedIndex >= m_replyTabs.size()) return;
     const auto wasActive = m_replyActiveTab == tabId;
     m_replyTabs.removeAt(removedIndex);
+    if (m_editRestoresReply) {
+        const auto cards = m_editAttachments.take(tabId);
+        if (m_replyTabs.isEmpty()) m_editAttachments.insert(QString(), cards);
+        ++m_editRevision;
+        emit editSessionChanged();
+    }
     if (m_replyTabs.isEmpty()) { m_replyActiveTab.clear(); m_replyRoute.clear(); emit replySessionChanged();
+        if (m_editRestoresReply) emit editSessionChanged();
         emit stateChanged(); // the removed tab may have held the last sendable answer
         return; }
     if (!wasActive) { emit replySessionChanged(); emit stateChanged(); return; }
@@ -13285,6 +13302,7 @@ void NativeController::removeReplyTab(const QString &tabId)
     m_replyActiveTab = fallback.id;
     emit replySessionChanged();
     setDraft(fallback.answer);
+    if (m_editRestoresReply) emit editSessionChanged();
 }
 
 bool NativeController::reorderReplyTab(const QString &tabId, int destinationIndex)
@@ -13309,7 +13327,13 @@ bool NativeController::reorderReplyTab(const QString &tabId, int destinationInde
 
 void NativeController::cancelReply()
 {
+    if (m_editRestoresReply && !m_editingMessage.isEmpty()) {
+        const auto cards = m_editAttachments.value(m_replyActiveTab);
+        m_editAttachments.clear(); m_editAttachments.insert(QString(), cards);
+        ++m_editRevision;
+    }
     closeReplySession();
+    if (m_editRestoresReply) emit editSessionChanged();
 }
 
 void NativeController::closeReplySession()
@@ -14034,12 +14058,25 @@ bool NativeController::beginEditMessage(const QString &id)
     // the answer, never the raw urn:quote markdown. Quoted origins outside the
     // loaded window resolve through the existing quote lookup path.
     const auto restored = parseEditQuoteRestore(message->content);
+    m_editAttachments.clear();
+    NativeMarkdown parser;
+    const auto extract = [this, &parser](const QString &body, const QString &tabId) {
+        const auto content = parser.editContent(body);
+        QVariantList cards;
+        for (const auto &entry : content.value("attachments").toList()) {
+            auto card = entry.toMap();
+            card.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
+            cards.append(card);
+        }
+        m_editAttachments.insert(tabId, cards);
+        return content.value("markdown").toString();
+    };
     for (const auto &entry : restored) {
         ReplyTab tab;
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = entry.messageUuid;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-        tab.answer = entry.answer;
+        tab.answer = extract(entry.answer, tab.id);
         tab.reference = entry.referenceLine;
         // A "?text=" selection on the restored line is the quoted fragment
         // (issue #218): the banner shows it while the verbatim reference keeps
@@ -14056,7 +14093,7 @@ bool NativeController::beginEditMessage(const QString &id)
         m_replyRoute = conversationKey();
     }
     m_editingMessage = id;
-    m_editBuffer = restored.isEmpty() ? message->content : restored.first().answer;
+    m_editBuffer = restored.isEmpty() ? extract(message->content, {}) : m_replyTabs.first().answer;
     m_editRoute = conversationKey();
     // Each open session gets a fresh identity and buffer revision (issue #115), so an
     // in-flight save from a previous session can never match the reopened one.
@@ -14070,6 +14107,34 @@ bool NativeController::beginEditMessage(const QString &id)
     return true;
 }
 
+QVariantList NativeController::editAttachments() const
+{
+    if (m_editingMessage.isEmpty()) return {};
+    return m_editAttachments.value(m_editRestoresReply ? m_replyActiveTab : QString());
+}
+
+QString NativeController::editAnswer(const QString &text, const QString &tabId) const
+{
+    return NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(tabId));
+}
+
+void NativeController::removeEditAttachment(const QString &id)
+{
+    if (m_editingMessage.isEmpty() || !editableMessage(m_editingMessage) || m_editRoute != conversationKey()) return;
+    auto &cards = m_editAttachments[m_editRestoresReply ? m_replyActiveTab : QString()];
+    for (qsizetype index = 0; index < cards.size(); ++index) {
+        const auto card = cards[index].toMap();
+        if (card.value("id").toString() != id) continue;
+        const auto text = NativeMarkdown().removeEditAttachment(m_editBuffer, card.value("markdown").toString());
+        cards.removeAt(index);
+        ++m_editRevision; // even a detached line changes the submitted body
+        setDraft(text);
+        emit editSessionChanged();
+        emit stateChanged();
+        return;
+    }
+}
+
 void NativeController::cancelEditMessage()
 {
     closeEditSession();
@@ -14080,7 +14145,7 @@ void NativeController::submitEditMessage()
     if (m_editingMessage.isEmpty()) return;
     if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
     const auto id = m_editingMessage;
-    auto text = m_editBuffer;
+    auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
     // Issue #202: a restored edit re-serializes every quote block the same way a
     // reply send does - quote line + blank line + answer per tab, joined by blank
     // lines with trailing whitespace trimmed - so the quote identity (including a
@@ -14096,7 +14161,7 @@ void NativeController::submitEditMessage()
                 report(tr("This message can no longer be replied to."));
                 return;
             }
-            const auto answer = (tab.id == m_replyActiveTab ? text : tab.answer).trimmed();
+            const auto answer = (tab.id == m_replyActiveTab ? text : editAnswer(tab.answer, tab.id)).trimmed();
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
         text = blocks.join(QStringLiteral("\n\n"));
@@ -14144,7 +14209,8 @@ bool NativeController::canSaveEdit() const
         if (operation.editSession == m_editSession) return false;
     const auto *stream = currentStream();
     if (!stream || stream->encrypted) return false;
-    return !m_editBuffer.trimmed().isEmpty() && m_editBuffer.size() <= 40000;
+    const auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
+    return !text.trimmed().isEmpty() && text.size() <= 40000;
 }
 
 void NativeController::closeEditSession()
@@ -14155,6 +14221,7 @@ void NativeController::closeEditSession()
     m_editRestoresReply = false;
     m_editingMessage.clear();
     m_editBuffer.clear();
+    m_editAttachments.clear();
     m_editRoute.clear();
     emit editSessionChanged();
     emit draftChanged();

@@ -6109,6 +6109,7 @@ ApplicationWindow {
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
                     + replyTabStrip.height
                     + (replyNotice.visible ? replyNotice.height : 0)
+                    + editAttachmentStrip.height
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -6420,6 +6421,105 @@ ApplicationWindow {
                         }
                     }
                 }
+                ListView {
+                    id: editAttachmentStrip
+                    objectName: "editAttachmentStrip"
+                    y: (editMessageNotice.visible ? editMessageNotice.height : 0)
+                        + replyTabStrip.height + (replyNotice.visible ? replyNotice.height : 0)
+                    x: 8
+                    width: parent.width - 16
+                    height: count > 0 ? 70 : 0
+                    clip: true
+                    orientation: ListView.Horizontal
+                    boundsBehavior: Flickable.StopAtBounds
+                    spacing: 8
+                    model: root.controller.editAttachments
+                    delegate: Rectangle {
+                        id: editAttachmentCard
+                        required property var modelData
+                        objectName: "editAttachment-" + modelData.id
+                        y: 8
+                        width: Math.min(240, editAttachmentStrip.width)
+                        height: 58
+                        radius: 8
+                        color: root.colors["composer-outer"]
+                        border.width: 1
+                        border.color: root.colors["border-subtle"]
+                        Accessible.role: Accessible.ListItem
+                        Accessible.name: modelData.label || qsTr("File")
+                        Rectangle {
+                            id: editAttachmentFallback
+                            objectName: "editAttachmentFallback-" + editAttachmentCard.modelData.id
+                            x: 9; y: 9; width: 40; height: 40; radius: 8
+                            color: root.colors.bg
+                            visible: editAttachmentPreview.imageUrl.length === 0
+                            NativeIconButton {
+                                anchors.centerIn: parent
+                                width: 18; height: 18; glyphSize: 18
+                                colors: root.colors
+                                iconColor: root.colors["text-muted"]
+                                asset: (editAttachmentCard.modelData.kind === "image" ? "images"
+                                    : editAttachmentCard.modelData.kind === "video" ? "videos" : "files") + ".svg"
+                                focusPolicy: Qt.NoFocus
+                                hoverEnabled: false
+                                background: null
+                                Accessible.ignored: true
+                            }
+                        }
+                        NativeMessageImage {
+                            id: editAttachmentPreview
+                            objectName: "editAttachmentPreview-" + editAttachmentCard.modelData.id
+                            x: 9; y: 9; width: 40; height: 40
+                            colors: root.colors
+                            viewport: editAttachmentStrip
+                            reference: editAttachmentCard.modelData.kind === "image" ? editAttachmentCard.modelData.reference : ""
+                            label: editAttachmentCard.modelData.label || ""
+                            bodyActive: root.visible && root.controller.editingMessageId.length > 0
+                                && editAttachmentCard.modelData.kind === "image"
+                            opacity: imageUrl.length > 0 ? 1 : 0
+                            imageFillMode: Image.PreserveAspectCrop
+                            imageCornerRadius: 8
+                        }
+                        Column {
+                            x: 61; y: 13
+                            width: Math.max(0, parent.width - x - 45)
+                            spacing: 2
+                            Text {
+                                width: parent.width
+                                text: editAttachmentCard.modelData.label || qsTr("File")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 12; font.weight: Font.Medium
+                                lineHeightMode: Text.FixedHeight; lineHeight: 14
+                                elide: Text.ElideRight; color: root.colors["text-primary"]
+                            }
+                            Text {
+                                width: parent.width
+                                text: {
+                                    const name = String(editAttachmentCard.modelData.label || "")
+                                    const extension = name.indexOf(".") >= 0 ? name.split(".").pop().toUpperCase() : ""
+                                    const format = extension || (editAttachmentCard.modelData.kind === "image" ? qsTr("Image")
+                                        : editAttachmentCard.modelData.kind === "video" ? qsTr("Video") : qsTr("File"))
+                                    const bytes = Number(editAttachmentCard.modelData.sizeBytes)
+                                    return format + (Number.isFinite(bytes) && bytes > 0
+                                        ? " · " + Qt.locale(root.preferences.locale).formattedDataSize(bytes, 1, Locale.DataSizeSIFormat) : "")
+                                }
+                                textFormat: Text.PlainText
+                                font.pixelSize: 12; lineHeightMode: Text.FixedHeight; lineHeight: 15
+                                elide: Text.ElideRight; color: root.colors["text-muted"]
+                            }
+                        }
+                        NativeIconButton {
+                            objectName: "editAttachmentRemove-" + editAttachmentCard.modelData.id
+                            x: parent.width - width - 9; y: 17
+                            width: 24; height: 24; glyphSize: 12; cornerRadius: 12
+                            colors: root.colors; asset: "close.svg"
+                            help: qsTr("Remove %1").arg(editAttachmentCard.modelData.label || qsTr("File"))
+                            focusPolicy: Qt.StrongFocus
+                            onClicked: root.controller.removeEditAttachment(editAttachmentCard.modelData.id)
+                        }
+                    }
+                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+                }
                 ColumnLayout {
                     id: composerInputColumn
                     // Padded composer column: message-composer.ui.tsx:2040
@@ -6431,6 +6531,7 @@ ApplicationWindow {
                     anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
                         + replyTabStrip.height
                         + (replyNotice.visible ? replyNotice.height : 0)
+                        + editAttachmentStrip.height
                     spacing: 4
                     RowLayout {
                         Layout.fillWidth: true
