@@ -678,6 +678,9 @@ ApplicationWindow {
     readonly property bool channelUnresolved: root.controller.channelCreationBusy || root.controller.channelCreationUncertain || root.channelPartialMembers
     readonly property bool directViewIntent: directViewPeer.length > 0 && directViewPeer === root.controller.directChatForm.peerUuid && (!directViewAttempt.length || directViewAttempt === root.controller.directChatForm.attemptId)
     readonly property var directVisibleUsers: {
+        // Closed/inactive pickers must not project and sort the entire user
+        // directory on every startup state notification (issue #157).
+        if (!createChatDialog.visible || chatTabs.currentIndex !== 0) return [];
         const query = chatUserQuery.trim().toLowerCase();
         return root.controller.directChatChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
     }
@@ -735,6 +738,7 @@ ApplicationWindow {
     readonly property bool channelFormFrozen: root.chatMutationBusy || channelPhase !== "idle" && channelPhase !== "failed" && channelPhase !== "ready"
     readonly property string channelPrimaryAction: root.controller.channelCreationBusy ? channelRequestedAction : channelPhase === "uncertain" ? "check" : channelPhase === "members-required" ? "add" : channelPhase === "members-failed" ? "retry" : ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 ? "create" : "none"
     readonly property var channelVisibleMembers: {
+        if (!createChatDialog.visible || chatTabs.currentIndex !== 1) return [];
         const query = chatUserQuery.trim().toLowerCase();
         return root.controller.channelMemberChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => {
             const selected = Number(root.channelSelectedMembers.indexOf(b.id) >= 0) - Number(root.channelSelectedMembers.indexOf(a.id) >= 0);

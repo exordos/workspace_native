@@ -401,6 +401,10 @@ see [cache benchmarks](NATIVE_DESKTOP_CACHE_BENCHMARK.md).
 
 ## Messaging, realtime and files
 
+The [startup directory regression](NATIVE_DESKTOP_STARTUP.md) covers hidden user
+pickers during cold and warm-cache bootstrap, with visible interaction checks and
+repeatable publication/liveness measurements. Full startup acceptance remains open.
+
 ### Response cache
 
 [NativeCache](../packages/native/src/native-cache.h) is a bounded SQLite response

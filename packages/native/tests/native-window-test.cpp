@@ -7525,6 +7525,165 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void startupDirectoryDoesNotPopulateHiddenPickers_data()
+    {
+        QTest::addColumn<bool>("warm");
+        QTest::newRow("cold") << false;
+        QTest::newRow("warm-cache") << true;
+    }
+
+    void startupDirectoryDoesNotPopulateHiddenPickers()
+    {
+        QFETCH(bool, warm);
+        constexpr int directorySize = 3000;
+        QTemporaryDir directory;
+        MockServer server;
+        QJsonArray users, history;
+        for (int i = 0; i < directorySize; ++i) {
+            const auto id = QString("a0000000-0000-4000-8000-%1").arg(i + 1, 12, 16, QChar('0'));
+            const auto name = QString("Member %1").arg(directorySize - i, 4, 10, QChar('0'));
+            users.append(QJsonObject{{"uuid", id}, {"project_id", projectId}, {"username", name},
+                {"first_name", name}, {"email", QString("member%1@example.invalid").arg(i)}});
+        }
+        for (int i = 0; i < 50; ++i) {
+            const auto id = QString("b0000000-0000-4000-8000-%1").arg(i + 1, 12, 16, QChar('0'));
+            history.append(message(QString("Startup message %1\n").arg(i)
+                + QString("Variable height content. ").repeated(1 + i % 7), id));
+        }
+        const QJsonArray streams{windowChannel(streamId, "Startup channel")};
+        const QJsonArray topics{windowChannelTopic(topicId, streamId, "Startup topic")};
+        if (warm) {
+            NativeCache seed(directory.path(), {}, true);
+            QVERIFY(seed.open(server.origin(), projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}}, users));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, streamId, {}, {}}, topics));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, topicId, {}}, history));
+        }
+        std::function<void()> releaseUsers;
+        int userGets = 0;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/users/")) {
+                ++userGets;
+                Response response{users};
+                response.defer = [&](auto send) { releaseUsers = std::move(send); };
+                return response;
+            }
+            if (path.endsWith("/streams/")) return Response{streams};
+            if (path.endsWith("/stream_topics/")) return Response{topics};
+            if (path.endsWith("/messages/")) return Response{history};
+            return sessionResponse(request);
+        };
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("appearance.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QElapsedTimer total, tick;
+        total.start(); tick.start();
+        qint64 longestGap = 0;
+        int heartbeatCount = 0;
+        QTimer heartbeat;
+        heartbeat.setInterval(1);
+        connect(&heartbeat, &QTimer::timeout, &controller, [&] {
+            longestGap = qMax(longestGap, tick.restart()); ++heartbeatCount;
+        });
+        heartbeat.start();
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup window teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto firstFrameMs = total.elapsed();
+        longestGap = 0; tick.restart();
+        auto *content = window->contentItem();
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(bool(releaseUsers));
+        QTRY_COMPARE(controller.streams().size(), 1);
+        if (warm) QTRY_COMPARE(controller.channelMemberChoices().size(), directorySize);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 50);
+        QTRY_VERIFY(visibleItemWithPrefix(content, "message-content-"));
+        auto *composer = item(content, "messageComposer");
+        QVERIFY(composer);
+        QTRY_VERIFY(composer->isEnabled());
+        const auto contentMs = total.elapsed();
+        composer->forceActiveFocus();
+        for (const auto character : QByteArray("Keep this draft while startup is pending")) QTest::keyClick(window, character);
+        QCOMPARE(controller.draft(), QString("Keep this draft while startup is pending"));
+        QVERIFY(!controller.channelMembersVerified());
+        click(window, item(content, "accountMenuButton"));
+        QTRY_VERIFY(visibleItem("ownStatusAction"));
+        click(window, composer);
+        QTRY_VERIFY(!visibleItem("ownStatusAction"));
+        composer->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
+        const auto selectedText = composer->property("selectedText").toString();
+        QVERIFY(!selectedText.isEmpty());
+        const int pendingBeats = heartbeatCount;
+        QTest::qWait(50);
+        QVERIFY(heartbeatCount > pendingBeats);
+        const auto hydrationGap = longestGap;
+        longestGap = 0; tick.restart();
+        QElapsedTimer publication; publication.start();
+        releaseUsers();
+        QTRY_VERIFY(controller.channelMembersVerified());
+        QTest::qWait(30);
+        const auto publicationMs = publication.elapsed();
+        QCOMPARE(controller.channelMemberChoices().size(), directorySize);
+        QCOMPARE(controller.draft(), QString("Keep this draft while startup is pending"));
+        QVERIFY(composer->hasActiveFocus());
+        QCOMPARE(composer->property("selectedText").toString(), selectedText);
+        QCOMPARE(controller.selectedTopic(), topicId);
+        QCOMPARE(userGets, 1);
+        auto *directList = window->findChild<QObject *>("directChatUserList");
+        auto *memberList = window->findChild<QObject *>("channelMemberList");
+        auto *addMembersList = window->findChild<QObject *>("addMembersList");
+        QVERIFY(directList && memberList && addMembersList);
+        qInfo("Startup directory (%s, %d users): window-exposed=%lldms useful-content=%lldms hydration-max-gap=%lldms directory-publication=%lldms publication-max-gap=%lldms hidden-direct=%d hidden-members=%d hidden-add-members=%d",
+            warm ? "warm" : "cold", directorySize, firstFrameMs, contentMs, hydrationGap, publicationMs,
+            longestGap, directList->property("count").toInt(), memberList->property("count").toInt(),
+            addMembersList->property("count").toInt());
+        // A hidden dialog must not sort/materialize either full directory on
+        // every startup state notification. This deterministic guard detects
+        // the work even on machines too fast for a wall-clock threshold.
+        QCOMPARE(addMembersList->property("count").toInt(), 0);
+        QCOMPARE(directList->property("count").toInt(), 0);
+        QCOMPARE(memberList->property("count").toInt(), 0);
+        click(window, item(content, "createChatButton"));
+        QTRY_VERIFY(visibleItem("directChatSearch"));
+        QTRY_COMPARE(directList->property("count").toInt(), directorySize);
+        QCOMPARE(memberList->property("count").toInt(), 0);
+        auto *search = visibleItem("directChatSearch");
+        QVERIFY(search);
+        search->setProperty("text", "Member 0001");
+        QTRY_COMPARE(directList->property("count").toInt(), 1);
+        click(window, visibleItem("createChatTab-1"));
+        QTRY_COMPARE(memberList->property("count").toInt(), 1);
+        QCOMPARE(directList->property("count").toInt(), 0);
+        click(window, visibleItem("createChatClose"));
+        QTRY_COMPARE(memberList->property("count").toInt(), 0);
+        click(window, item(content, "createChatButton"));
+        QTRY_VERIFY(visibleItem("directChatSearch"));
+        QTRY_COMPARE(directList->property("count").toInt(), directorySize);
+        click(window, visibleItem("createChatTab-1"));
+        QTRY_COMPARE(memberList->property("count").toInt(), directorySize);
+        click(window, visibleItem("createChatClose"));
+        QTRY_COMPARE(memberList->property("count").toInt(), 0);
+        cache.shutdown();
+        QTRY_VERIFY(cache.stopped());
+    }
+
     void warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests()
     {
         QTemporaryDir directory;

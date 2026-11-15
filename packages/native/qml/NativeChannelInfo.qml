@@ -624,6 +624,9 @@ Item {
         // buildWorkspaceUserOptions: verified directory candidates minus the
         // existing members, filtered by name/username/email (userPickerSearchText).
         readonly property var pickerOptions: {
+            // This popup also exists while the drawer is closed. Avoid an
+            // unused full-directory projection during startup (issue #157).
+            if (!addMembersDialog.visible) return [];
             const existing = {};
             const members = controller.channelInfoMembers || [];
             for (let i = 0; i < members.length; i += 1)
