@@ -1069,6 +1069,42 @@
             <source>Create poll</source>
             <translation>Создать опрос</translation>
         </message>
+        <message>
+            <source>Review unresolved encrypted channel creations</source>
+            <translation>Показать незавершённые попытки создания зашифрованных каналов</translation>
+        </message>
+        <message>
+            <source>Unresolved encrypted channel creations</source>
+            <translation>Незавершённые попытки создания зашифрованных каналов</translation>
+        </message>
+        <message>
+            <source>Check re-adopts the key if the channel landed; discard is final and may make a late channel unreadable.</source>
+            <translation>«Проверить» вернёт ключ, если канал создался; удаление окончательно — запоздавший канал нельзя будет прочитать.</translation>
+        </message>
+        <message>
+            <source>Created: %1</source>
+            <translation>Создана: %1</translation>
+        </message>
+        <message>
+            <source>All attempts are now resolved.</source>
+            <translation>Все попытки более не требуют уточнения.</translation>
+        </message>
+        <message>
+            <source>Check</source>
+            <translation>Проверить</translation>
+        </message>
+        <message>
+            <source>Discard</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
+            <source>This channel may still appear later. If it does, it can never be read. Discard this creation attempt and its staged key?</source>
+            <translation>Этот канал может появиться позже. Если это произойдёт, его нельзя будет прочитать. Удалить эту попытку создания канала и её ключ?</translation>
+        </message>
+        <message>
+            <source>Discard key</source>
+            <translation>Удалить ключ</translation>
+        </message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -1589,8 +1625,20 @@
             <translation>Не уточнённый канал был найден, и его ключ шифрования сохранён.</translation>
         </message>
         <message>
-            <source>The channel was definitively not created; its creation slot was released.</source>
-            <translation>Канал точно не был создан; слот его создания освобождён.</translation>
+            <source>The channel was not found yet. The attempt and its encryption key were kept.</source>
+            <translation>Канал пока не найден. Попытка и её ключ шифрования сохранены.</translation>
+        </message>
+        <message>
+            <source>The attempt was kept: discarding requires an explicit confirmation, because a channel that appears later could never be read.</source>
+            <translation>Попытка сохранена: удаление требует явного подтверждения, поскольку канал, который появится позже, нельзя будет прочитать.</translation>
+        </message>
+        <message>
+            <source>A check for this attempt is already running. Try again when it finishes.</source>
+            <translation>Для этой попытки уже выполняется проверка. Повторите попытку после её завершения.</translation>
+        </message>
+        <message>
+            <source>The creation attempt was discarded. If its channel appears later, it can never be read.</source>
+            <translation>Попытка создания канала удалена. Если её канал появится позже, его нельзя будет прочитать.</translation>
         </message>
         <message>
             <source>The channel exists but did not confirm this key. The attempt was kept.</source>

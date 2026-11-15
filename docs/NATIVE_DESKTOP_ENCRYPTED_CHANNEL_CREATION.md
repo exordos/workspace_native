@@ -227,49 +227,63 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   the key and clears the stage. Stage records written before this contract existed
   carry no phase and decode as `dispatch-attempted` with zero evidence (the
   same never-lossy default).
-- User-invokable terminal resolution (review finding 4576823403, R7): dormant
-  quarantine removed the key-loss bug but left a permanent dead end — a full
-  32-record budget of dormant attempts rejects every later encrypted create
-  across restarts, and no automatic mechanism may ever free a slot because
-  absence evidence never proves a terminal outcome. The budget must therefore
-  never be permanently starved, and the safe terminal authority a client
-  cannot be is a HUMAN. The shape chosen: (1) an unresolved-attempt inventory
-  on the controller, `unresolvedChannelCreateStages()` — one row per durable
-  stage not owned by a live in-memory intent, carrying the attempt identity
-  (the uuid-attempt and the staged key uuid), the created timestamp, the
-  dispatch phase, the absence evidence count and the DORMANT flag — and never
-  the group key; (2) an explicit user-invokable operation
-  `resolveChannelCreateStage(attemptUuid)` (both `Q_INVOKABLE`, so any UI can
-  drive them without new plumbing; the full settings page that presents them
-  is out of scope for this slice and deliberately not built here), which
-  re-checks the attempt's stream identity NOW and only ever acts on the
-  combination of the human's explicit request plus a DEFINITIVE live answer,
-  reporting the terminal result through the `channelCreateStageResolved
-  (attempt, outcome, message)` signal:
-  - `released` — the canonical GET answers a definitive `404`: the stream does
-    not exist and the human, not an absence heuristic, decides the attempt is
-    not worth waiting for any longer. The stage record is cleared and its
-    budget slot is free again; the key discard is the explicit consequence of
-    that human order, never inferred by the software. A never-dispatched
-    `prepared` stage is also released without a GET (its POST provably never
-    left any process — the same reclaim the recovery scan performs).
-  - `committed` — the stream now exists and the encrypted echo verifies under
-    the staged attempt/key uuid: the key is COMMITTED to the vault (the same
-    re-adoption commit recovery performs) and the stage closed. A resolve can
-    therefore never discard the key of a channel that turned out to exist.
-  - `unresolved` — anything inconclusive (transport error, `5xx`, a `2xx` echo
-    that does not verify, an unknown attempt, a live in-flight intent for the
-    attempt, a failed vault write, or the session/vault lease changing
-    mid-check): the stage record and its key stay byte-for-byte intact (a
+- User-invokable resolution (review findings 4576823403 R7 and 4576938727
+  R8): dormant quarantine removed the key-loss bug but left a permanent dead
+  end — a full 32-record budget of dormant attempts rejects every later
+  encrypted create across restarts, and no automatic mechanism may ever free
+  a slot because absence evidence never proves a terminal outcome. The budget
+  must therefore never be permanently starved, and the safe terminal authority
+  a client cannot be is a HUMAN. Because the client can NEVER prove a terminal
+  negative for an ambiguous create POST, the human's decision is split into
+  two distinct actions: a CHECK that only ever acts on positive proof, and an
+  INFORMED EXPLICIT KEY-DISCARD that carries the user's warned consent.
+  (1) The unresolved-attempt inventory `unresolvedChannelCreateStages()` —
+  one row per durable stage not owned by a live in-memory intent, carrying the
+  attempt identity (the uuid-attempt and the staged key uuid), the created
+  timestamp, the dispatch phase, the absence evidence count and the DORMANT
+  flag — and never the group key. (2) `resolveChannelCreateStage(attemptUuid)`
+  is the user-invokable CHECK of one attempt, and (3)
+  `discardChannelCreateStage(attemptUuid, confirmed)` is the informed
+  explicit discard (all `Q_INVOKABLE`). Outcomes arrive through the
+  `channelCreateStageResolved (attempt, outcome, message)` signal:
+  - `committed` — the check's canonical GET serves the stream and the
+    encrypted echo verifies under the staged attempt/key uuid: the key is
+    COMMITTED to the vault (the same re-adoption commit recovery performs)
+    and the stage closed — terminal via POSITIVE proof. A check can therefore
+    never discard the key of a channel that turned out to exist.
+  - `unresolved` (from a check) — a definitive `404` included: a `404` proves
+    absence NOW, never that a delayed POST cannot still land, and the stage
+    may hold the only copy of the group key, so the stage record and its key
+    stay byte-for-byte intact and the answer is "not found yet". The same
+    retention covers any inconclusive answer (transport error, `5xx`, a
+    non-verifying `2xx`, an unknown attempt, a live in-flight intent, a
+    failed vault write, or the session/vault lease changing mid-check); a
     non-verifying `2xx` only voids the stored absence evidence, exactly like
-    the recovery scan).
-  An encrypted create rejected because the budget is full (`Capacity` from the
-  vault at staging time) now names the condition and points at this path
-  ("All encrypted channel creation slots are held by unresolved attempts...")
-  instead of the generic unavailability line; dormants stay bounded inside the
-  same 32-record budget as in R6 — no automatic aging was reintroduced.
-  R4-style starvation now breaks via explicit user resolve, not automatic
-  eviction.
+    the recovery scan.
+  - `discarded` — the informed explicit key-discard decision: the caller must
+    carry `confirmed == true`, meaning the user was told by name (a UI
+    confirmation) that the channel may still appear later and would then be
+    permanently unreadable. An unconfirmed call is refused and changes
+    nothing. A discard is a decision, not a proof attempt: no GET is issued;
+    the stage record and its staged key are removed and the budget slot is
+    freed, exactly as the warned user asked.
+  A never-dispatched `prepared` stage may also be `released` by a check
+  without a GET (its POST provably never left any process — the same reclaim
+  the recovery scan performs).
+  The user-facing flow exists in the app (review finding 4576938732, R9): an
+  encrypted create rejected because the budget is full (`Capacity` from the
+  vault at staging time) names the condition ("All encrypted channel creation
+  slots are held by unresolved attempts..."), and the create-chat dialog's
+  error surface then offers "Review unresolved encrypted channel creations",
+  which opens a dialog listing the inventory (safe metadata only — attempt
+  uuid and created time, never key material) with per-attempt Check and
+  Discard actions; Discard shows a confirmation that names the key-loss
+  consequence, and only that confirmation calls the controller with
+  `confirmed == true`. Releasing a slot re-enables encrypted creation
+  immediately. Dormants stay bounded inside the same 32-record budget as in
+  R6 — no automatic aging was reintroduced. R4-style starvation now breaks
+  via positive-proof re-adoption or an informed human discard, never via
+  automatic eviction or a bare-404 key destroy.
 - Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
   a `404` from the recovery GET is NOT proof the original POST cannot land —
   a delayed or in-flight creation can still commit server-side moments after

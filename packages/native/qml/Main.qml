@@ -7929,6 +7929,20 @@ ApplicationWindow {
                         lineHeight: 20
                         Accessible.role: Accessible.AlertMessage
                     }
+                    // Issue #234 (review finding 4576938732, R9): when an
+                    // encrypted create is rejected because the durable create
+                    // budget is held by unresolved attempts, the user must be
+                    // able to reach that inventory from this error surface.
+                    Button {
+                        objectName: "channelStageReviewButton"
+                        visible: root.channelSubmitted && root.controller.channelCreationError.length > 0
+                            && root.controller.authenticated
+                            && root.controller.unresolvedChannelCreateStages().length > 0
+                        text: qsTr("Review unresolved encrypted channel creations")
+                        font.pixelSize: 14
+                        Accessible.name: text
+                        onClicked: unresolvedChannelCreationsDialog.open()
+                    }
                 }
             }
             Item {
@@ -8434,6 +8448,210 @@ ApplicationWindow {
                 font.pixelSize: 14; color: root.colors["text-muted"]
             }
             ScrollBar.vertical: ScrollBar {}
+        }
+    }
+
+    // Issue #234 (review finding 4576938732, R9): the unresolved-encrypted-
+    // creations inventory. Rows carry safe bookkeeping metadata only — the
+    // attempt uuid and its created time — never key material. Check re-adopts
+    // the staged key when the channel turns out to exist; Discard is the
+    // informed explicit key-discard: it warns by name that a channel which
+    // appears later can never be read, and only the confirmation of that
+    // warning calls the controller with confirmed == true.
+    Dialog {
+        id: unresolvedChannelCreationsDialog
+        objectName: "unresolvedChannelCreationsDialog"
+        title: qsTr("Unresolved encrypted channel creations")
+        header: null
+        footer: null
+        property string statusText: ""
+        property var stageRows: []
+        property var discardTarget: null
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, root.width - 32)
+        padding: 1 // The CSS border encloses, rather than overlays, the content box.
+        modal: true
+        dim: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#80000000" }
+        background: Rectangle {
+            radius: 10
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        function refresh() {
+            unresolvedChannelCreationsDialog.stageRows = root.controller.unresolvedChannelCreateStages()
+        }
+        function createdText(rowData) {
+            return qsTr("Created: %1").arg(Qt.formatDateTime(new Date(rowData.createdAt), "yyyy-MM-dd hh:mm"))
+        }
+        onOpened: { statusText = ""; discardTarget = null; refresh() }
+        onClosed: discardTarget = null
+        Connections {
+            target: root.controller
+            function onChannelCreateStageResolved(attempt, outcome, message) {
+                unresolvedChannelCreationsDialog.statusText = message
+                unresolvedChannelCreationsDialog.discardTarget = null
+                unresolvedChannelCreationsDialog.refresh()
+            }
+        }
+        contentItem: Column {
+            spacing: 0
+            Column {
+                width: parent.width
+                spacing: 4
+                padding: 20
+                bottomPadding: 16
+                Text {
+                    width: parent.width
+                    text: qsTr("Unresolved encrypted channel creations")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 16; font.weight: Font.DemiBold
+                    lineHeightMode: Text.FixedHeight; lineHeight: 24
+                    color: root.colors["text-primary"]
+                }
+                Text {
+                    width: parent.width
+                    text: qsTr("Check re-adopts the key if the channel landed; discard is final and may make a late channel unreadable.")
+                    textFormat: Text.PlainText; wrapMode: Text.Wrap
+                    color: root.colors["text-muted"]; font.pixelSize: 13
+                    lineHeightMode: Text.FixedHeight; lineHeight: 18
+                }
+            }
+            Rectangle { width: parent.width; height: 1; color: root.colors["border-subtle"] }
+            Flickable {
+                width: parent.width
+                height: Math.min(280, Math.max(72, stageColumn.height + 32))
+                contentHeight: stageColumn.height + 32
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {}
+                Column {
+                    id: stageColumn
+                    x: 16; y: 16; width: parent.width - 32
+                    spacing: 10
+                    Text {
+                        objectName: "channelStageEmpty"
+                        width: parent.width
+                        visible: !unresolvedChannelCreationsDialog.stageRows.length
+                        text: qsTr("All attempts are now resolved.")
+                        textFormat: Text.PlainText
+                        color: root.colors["text-muted"]; font.pixelSize: 14
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                    Repeater {
+                        model: unresolvedChannelCreationsDialog.stageRows
+                        delegate: Rectangle {
+                            id: channelStageRow
+                            required property var modelData
+                            objectName: "channelStageRow"
+                            width: stageColumn.width
+                            height: channelStageRowContent.height + 20
+                            radius: 8
+                            color: root.colors.bg
+                            border.color: root.colors["border-subtle"]
+                            Column {
+                                id: channelStageRowContent
+                                x: 12; y: 10; width: parent.width - 24
+                                spacing: 4
+                                Text {
+                                    objectName: "channelStageAttempt-" + channelStageRow.modelData.attempt
+                                    width: parent.width
+                                    text: channelStageRow.modelData.attempt
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideMiddle
+                                    color: root.colors["text-primary"]; font.pixelSize: 13
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: unresolvedChannelCreationsDialog.createdText(channelStageRow.modelData)
+                                    textFormat: Text.PlainText
+                                    color: root.colors["text-muted"]; font.pixelSize: 12
+                                }
+                                Row {
+                                    topPadding: 4; spacing: 8
+                                    Button {
+                                        objectName: "channelStageCheck-" + channelStageRow.modelData.attempt
+                                        text: qsTr("Check")
+                                        font.pixelSize: 13
+                                        Accessible.name: text
+                                        onClicked: root.controller.resolveChannelCreateStage(channelStageRow.modelData.attempt)
+                                    }
+                                    Button {
+                                        objectName: "channelStageDiscard-" + channelStageRow.modelData.attempt
+                                        text: qsTr("Discard")
+                                        font.pixelSize: 13
+                                        palette.buttonText: root.colors.danger
+                                        Accessible.name: text
+                                        onClicked: unresolvedChannelCreationsDialog.discardTarget = channelStageRow.modelData
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { width: parent.width; height: 1; color: root.colors["border-subtle"] }
+            Column {
+                width: parent.width
+                spacing: 8
+                padding: 16
+                Text {
+                    objectName: "channelStageStatusText"
+                    width: parent.width
+                    visible: unresolvedChannelCreationsDialog.statusText.length > 0
+                    text: visible ? unresolvedChannelCreationsDialog.statusText : ""
+                    textFormat: Text.PlainText; wrapMode: Text.Wrap
+                    color: root.colors["text-secondary"]; font.pixelSize: 13
+                    lineHeightMode: Text.FixedHeight; lineHeight: 18
+                }
+                Rectangle {
+                    objectName: "channelStageDiscardConfirmPanel"
+                    width: parent.width
+                    visible: unresolvedChannelCreationsDialog.discardTarget !== null
+                    height: visible ? discardConfirmColumn.height + 24 : 0
+                    radius: 8
+                    color: Qt.rgba(root.colors.danger.r, root.colors.danger.g, root.colors.danger.b, 0.08)
+                    border.color: root.colors.danger
+                    Column {
+                        id: discardConfirmColumn
+                        x: 12; y: 12; width: parent.width - 24
+                        spacing: 10
+                        Text {
+                            objectName: "channelStageDiscardWarning"
+                            width: parent.width
+                            text: qsTr("This channel may still appear later. If it does, it can never be read. Discard this creation attempt and its staged key?")
+                            textFormat: Text.PlainText; wrapMode: Text.Wrap
+                            color: root.colors["text-primary"]; font.pixelSize: 13
+                            lineHeightMode: Text.FixedHeight; lineHeight: 18
+                        }
+                        Row {
+                            spacing: 8
+                            Button {
+                                objectName: "channelStageDiscardCancel"
+                                text: qsTr("Cancel")
+                                font.pixelSize: 13
+                                Accessible.name: text
+                                onClicked: unresolvedChannelCreationsDialog.discardTarget = null
+                            }
+                            Button {
+                                objectName: "channelStageDiscardConfirm"
+                                text: qsTr("Discard key")
+                                font.pixelSize: 13
+                                palette.buttonText: root.colors.danger
+                                Accessible.name: text
+                                onClicked: {
+                                    const target = unresolvedChannelCreationsDialog.discardTarget
+                                    if (target)
+                                        root.controller.discardChannelCreateStage(target.attempt, true)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
