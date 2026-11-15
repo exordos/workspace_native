@@ -452,7 +452,9 @@ if(BUILD_TESTING)
         uiEncryptedChatInfoDrawerShowsProtectedIdentity
         uiEncryptedChatInfoSettingsScreenNavigation
         uiEncryptedChatInfoMemberListScrollsToEnd
-        uiEncryptedChatInfoGateKeepsOrdinaryInfo)
+        uiEncryptedChatInfoGateKeepsOrdinaryInfo
+        uiEncryptedChatKeyScreenInventoryAndDetails
+        uiEncryptedChatKeyScreenSourceGeometry)
     # The explicit UI list measured 310s green and 548s when failing QTRY waits
     # added time on the GPU-less reference stand (llvmpipe, bare Xvnc 1440x900
     # plus openbox), so the old 360s ceiling timeout-killed healthy runs there.

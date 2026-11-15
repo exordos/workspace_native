@@ -40,7 +40,9 @@ Item {
         pageScroll.contentY = 0
         // Reveal-driven key enumeration (#197 convention: never fetch hidden);
         // the durable vault read is synchronous (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md).
-        if (page.keyScreen || page.localKeyScreen)
+        // The handler runs before the derived readonly bindings below re-evaluate,
+        // so it must read chatScreen directly rather than page.keyScreen.
+        if (page.chatScreen === "key" || page.chatScreen === "local-key")
             page.controller.refreshChatLocalKeys()
     }
 
@@ -735,7 +737,7 @@ Item {
         // section.space-y-3.px-4 inside the ScrollArea gap-5 py-4 flow.
         Column {
             id: keySummaryFlow
-            objectName: "encryptedChatKeySummary"
+            objectName: "encryptedChatKeyScreen"
             x: 16
             y: 16
             width: pageScroll.width - 32
@@ -992,7 +994,6 @@ Item {
                     padding: 0
                     hoverEnabled: true
                     Accessible.name: qsTr("Keys on this device (%1)").arg(page.inventoryKeys.length)
-                    Accessible.expanded: page.localKeysExpanded
                     contentItem: Item {
                         anchors.left: parent.left
                         anchors.right: parent.right
@@ -1115,6 +1116,7 @@ Item {
                                         height: 16
                                         Text {
                                             id: localKeyRowBadge
+                                            objectName: "encryptedChatLocalKeyRowBadge-" + String(localKeyRowButton.modelData.keyUuid)
                                             anchors.right: parent.right
                                             anchors.verticalCenter: parent.verticalCenter
                                             text: localKeyRowButton.modelData.isCurrent
@@ -1271,7 +1273,6 @@ Item {
                             font.family: "monospace"
                             wrapMode: Text.WrapAnywhere
                             color: page.colors["text-primary"]
-                            selectByMouse: true
                         }
                     }
                     Text {
