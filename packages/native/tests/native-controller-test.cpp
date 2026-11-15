@@ -5668,6 +5668,138 @@ private slots:
         delete restarted; restartGuard = nullptr;
     }
 
+    // Review finding 4576823403 (medium, R7): the dormant quarantine (R6)
+    // keeps a conclusively-missing attempt's key forever — correct for the
+    // key, but a full 32-record create budget of dormant attempts then
+    // rejects every later encrypted create across restarts with NO way out,
+    // because automatic recovery may never infer a terminal outcome from
+    // absence alone. The budget must therefore never be PERMANENTLY starved:
+    // the controller exposes the unresolved-attempt inventory and an
+    // explicit user-invokable resolve. The human is the terminal authority:
+    // resolving an attempt whose stream still answers a definitive 404
+    // releases the stage record (an explicit discard the human ordered,
+    // never inferred from absence) and frees the slot, so the 33rd
+    // encrypted create succeeds. Resolving an attempt whose stream NOW
+    // exists must re-adopt (commit) the key instead of discarding it.
+    void encryptedChannelCreationDormantBudgetIsUserResolvable()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        QVector<QString> attempts; QHash<QString, QString> missingByKey; // attempt -> key uuid
+        // The first seeded attempt is the one stream that lands late (only
+        // while the user is resolving it, so the resolve must re-adopt).
+        const auto late = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        auto lateVisible = std::make_shared<std::atomic<bool>>(false);
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &missingByKey, &late,
+            lateVisible](const Request &request) -> Response {
+            const auto prefix = QStringLiteral("/api/workspace/v1/messenger/streams/");
+            const auto path = request.target.path();
+            const auto id = path.startsWith(prefix) ? path.mid(prefix.size()) : QString();
+            if (request.method == "GET" && missingByKey.contains(id)) {
+                if (id != late || !lateVisible->load()) return {QJsonObject{}, 404};
+                auto row = creationChannel(late); // the late commit landed
+                row["encryption"] = true;
+                row["current_encryption_key_uuid"] = missingByKey.value(late);
+                return {row, 200};
+            }
+            return inner(request);
+        };
+        for (int i = 0; i < int(NativeChatKeyVault::MaximumCreateStages); ++i) {
+            NativeChatKeyVault::CreateStage stage{i == 0 ? late
+                    : QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(),
+                QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(), QByteArray(32, char('a' + i)),
+                1700000000000 + i};
+            QCOMPARE(keys.putCreateStage(keys.lease(), stage), NativeChatKeyVault::Failure::None);
+            QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), stage.attempt), NativeChatKeyVault::Failure::None);
+            missingByKey.insert(stage.attempt, stage.key);
+            attempts.append(stage.attempt);
+            stage.clearSecrets();
+        }
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        // Reproduce the accepted R6 residual bound first: every stage
+        // saturates its absence evidence and the whole budget is held.
+        QVERIFY2(QTest::qWaitFor([&] {
+            const auto stages = keys.createStages(keys.lease());
+            if (stages.values.size() != int(NativeChatKeyVault::MaximumCreateStages)) return false;
+            for (const auto &stage : stages.values)
+                if (stage.missingEvidence < 5 || stage.groupKey.size() != 32) return false;
+            return true;
+        }, 30000), "the dormant-full-budget scenario did not reproduce");
+        // The inventory: every unresolved attempt is visible with its
+        // identity, created timestamp and dormant flag — never its key.
+        const auto inventory = controller.unresolvedChannelCreateStages();
+        QCOMPARE(inventory.size(), int(NativeChatKeyVault::MaximumCreateStages));
+        for (const auto &value : inventory) {
+            const auto row = value.toObject();
+            const auto attempt = row.value("attempt").toString();
+            QVERIFY2(missingByKey.contains(attempt), qPrintable(attempt));
+            QCOMPARE(row.value("keyUuid").toString(), missingByKey.value(attempt));
+            QVERIFY(row.value("dispatchAttempted").toBool());
+            QVERIFY(row.value("dormant").toBool());
+            QVERIFY(row.value("createdAt").toDouble() >= 1700000000000.0);
+            QVERIFY(!row.contains("groupKey")); // key material never leaves the vault
+        }
+        // Resolving an attempt that is not staged changes nothing.
+        {
+            QSignalSpy bogus(&controller, &NativeController::channelCreateStageResolved);
+            controller.resolveChannelCreateStage(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            QVERIFY2(QTest::qWaitFor([&] { return bogus.size() == 1; }, 5000),
+                "resolving an unknown attempt never settled");
+            QCOMPARE(bogus.at(0).at(1).toString(), QStringLiteral("unresolved"));
+            QCOMPARE(keys.createStages(keys.lease()).values.size(), int(NativeChatKeyVault::MaximumCreateStages));
+        }
+        // The 33rd encrypted create is rejected locally while the budget is
+        // fully held by dormant attempts.
+        controller.createChannel("Starved while dormant", "", false, false, {}, true);
+        QVERIFY2(QTest::qWaitFor([&] { return !controller.channelCreationBusy(); }, 8000),
+            "a budget-starved encrypted create did not settle locally");
+        QCOMPARE(test.posts, 0);
+        QVERIFY(!controller.channelCreationError().isEmpty());
+        // The user resolves one attempt whose stream is STILL definitively
+        // absent: a human terminal decision, so the stage record is released
+        // and the budget slot freed — no possibly-live key was discarded
+        // (this attempt's stream does not exist and the human was told so).
+        const auto released = attempts.last();
+        {
+            QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+            controller.resolveChannelCreateStage(released);
+            QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+                "resolving a definitively-missing attempt never settled");
+            QCOMPARE(done.at(0).at(0).toString(), released);
+            QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("released"));
+        }
+        QCOMPARE(keys.readCreateStage(keys.lease(), released).failure, NativeChatKeyVault::Failure::MissingKey);
+        QCOMPARE(controller.unresolvedChannelCreateStages().size(), int(NativeChatKeyVault::MaximumCreateStages) - 1);
+        // The freed slot: the 33rd encrypted create now goes through and
+        // completes end-to-end.
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        controller.createChannel("After user resolve", "", false, false, {}, true);
+        QVERIFY2(QTest::qWaitFor([&] { return controller.channelCreationPhase() == "ready"; }, 8000),
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QCOMPARE(test.posts, 1);
+        QCOMPARE(complete.size(), 1);
+        // Resolve is never a silent key discard: when the attempt's stream
+        // NOW exists, resolving re-adopts (commits) the key instead.
+        *lateVisible = true;
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.resolveChannelCreateStage(late);
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 8000),
+            "resolving the landed attempt never settled");
+        QCOMPARE(done.at(0).at(0).toString(), late);
+        QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("committed"));
+        auto stored = keys.read(keys.lease(), {late, missingByKey.value(late)});
+        QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(stored.value.bytes, QByteArray(32, char('a'))); // committed, not discarded
+        stored.value.bytes.fill('\\0');
+        QCOMPARE(keys.readCreateStage(keys.lease(), late).failure, NativeChatKeyVault::Failure::MissingKey);
+    }
+
     void channelMemberRecoveryPreservesTheConfirmedStreamAndFrozenSet_data()
     {
         QTest::addColumn<QString>("outcome");

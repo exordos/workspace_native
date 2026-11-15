@@ -439,6 +439,25 @@ public:
         bool inviteOnly, bool announce, const QVariantList &memberUuids, bool encrypted = false);
     Q_INVOKABLE void checkChannelCreation();
     Q_INVOKABLE void retryChannelMembers();
+    // Review finding 4576823403 (medium, R7): dormant-quarantined create
+    // stages keep their group key forever, but each one also holds a slot of
+    // the vault's bounded 32-record create budget, and automatic recovery
+    // may NEVER infer a terminal outcome from absence evidence alone — so
+    // the budget must never be PERMANENTLY starved. Safe exit: a human is
+    // the terminal authority. unresolvedChannelCreateStages() lists every
+    // unresolved durable attempt (attempt uuid, staged key uuid, created
+    // timestamp, dispatch phase, absence evidence, dormant flag — never key
+    // material) so a UI can present them; resolveChannelCreateStage(attempt)
+    // is the explicit user-invokable terminal decision: a definitive 404 at
+    // resolve time releases the stage record (an explicit human discard,
+    // never inferred) and frees the budget slot; a stream that now exists
+    // with a verifying encrypted echo commits (re-adopts) the key instead of
+    // discarding it; any inconclusive answer keeps everything untouched.
+    // Outcomes arrive via channelCreateStageResolved. Surfaced on the
+    // controller so any UI can drive it; a full settings page is out of
+    // scope for this slice.
+    Q_INVOKABLE QJsonArray unresolvedChannelCreateStages() const;
+    Q_INVOKABLE void resolveChannelCreateStage(const QString &attempt);
     Q_INVOKABLE void refreshChannelInfo();
     Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
@@ -596,6 +615,13 @@ signals:
     void messagesChanged();
     void topicCreated(QString stream, QString topic);
     void channelCreated(QString stream, QString defaultTopic);
+    // R7 (review finding 4576823403): terminal result of one explicit
+    // resolveChannelCreateStage call: "committed" (the stream exists and the
+    // encrypted echo verified — the staged key was adopted and the stage
+    // closed), "released" (a definitive 404 — the user explicitly closed the
+    // attempt and freed its budget slot), "unresolved" (nothing conclusive —
+    // the stage and its key were kept unchanged).
+    void channelCreateStageResolved(QString attempt, QString outcome, QString message);
     void directChatOpened(QString stream, QString peer, QString defaultTopic);
     void messageSent(QString id, QString stream, QString topic);
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
@@ -882,6 +908,10 @@ private:
     QString m_channelStageToken;
     int m_channelStageRecoveryRetries = 0;
     int m_channelStageRecoveryBackoffStep = 0;
+    // R7 (review finding 4576823403): attempts whose user-invokable resolve
+    // check is currently in flight — at most one resolve per attempt at a
+    // time; a second call for the same attempt is ignored while one runs.
+    QSet<QString> m_channelStageResolving;
     static constexpr int maximumChannelStageRecoveryRetries = 5;
     static constexpr int channelStageRecoveryRetryIntervalMs = 1000;
     // Review finding 4575117269: after the fast window is exhausted recovery
