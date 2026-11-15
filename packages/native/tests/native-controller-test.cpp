@@ -13,6 +13,7 @@
 #include <QUrl>
 #include "native-markdown.h"
 #include "realtime-client.h"
+#include "power-watcher.h"
 #include "mock-server.h"
 
 #include <QElapsedTimer>
@@ -21,6 +22,8 @@
 #include <QSignalSpy>
 #include <QDBusConnection>
 #include <QDBusAbstractAdaptor>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QMetaProperty>
 #include <QCryptographicHash>
@@ -292,6 +295,98 @@ public:
         });
     }
     QUrl origin() const { return QUrl(QString("http://127.0.0.1:%1").arg(serverPort())); }
+};
+
+// UPower-shaped stub for the power fixture bus: the adaptor backs
+// org.freedesktop.DBus.Properties.Get, so the watcher's initial read sees the
+// battery exactly like the real daemon answers it.
+class UpowerStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+    bool onBattery = false;
+};
+
+class UpowerAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.UPower")
+    Q_PROPERTY(bool OnBattery READ onBattery)
+public:
+    explicit UpowerAdaptor(UpowerStub *owner) : QDBusAbstractAdaptor(owner), m_owner(owner) {}
+    bool onBattery() const { return m_owner->onBattery; }
+private:
+    UpowerStub *m_owner;
+};
+
+// Private session bus for the power watcher (issue #78) so the tests never
+// touch the host's real logind/UPower. Two named connections: the watched
+// bus handed to the watcher, and a "daemon side" that owns the well-known
+// names and emits the signals, like the real daemons do.
+class PowerBusFixture final
+{
+public:
+    QProcess daemon;
+    // QDBusConnection has no default ctor; sessionBus() is a per-process
+    // handle even when disconnected, replaced by the fixture bus below.
+    QDBusConnection watcherBus {QDBusConnection::sessionBus()};
+    QDBusConnection daemonSide {QDBusConnection::sessionBus()};
+    bool ok = false;
+    explicit PowerBusFixture(const QString &tag)
+    {
+        static int counter = 0;
+        const auto id = QString::number(++counter);
+        const auto exe = QStandardPaths::findExecutable("dbus-daemon");
+        if (exe.isEmpty()) return;
+        daemon.setProgram(exe);
+        daemon.setArguments({"--session", "--print-address=1", "--nofork"});
+        daemon.start();
+        if (!daemon.waitForStarted(5000) || !daemon.waitForReadyRead(5000)) return;
+        const auto address = QString::fromLatin1(daemon.readLine()).trimmed();
+        if (!address.startsWith("unix:")) return;
+        m_watcherName = "power-watch-" + tag + '-' + id;
+        m_daemonName = "power-daemon-" + tag + '-' + id;
+        watcherBus = QDBusConnection::connectToBus(address, m_watcherName);
+        daemonSide = QDBusConnection::connectToBus(address, m_daemonName);
+        ok = watcherBus.isConnected() && daemonSide.isConnected();
+    }
+    ~PowerBusFixture()
+    {
+        if (!m_watcherName.isEmpty()) QDBusConnection::disconnectFromBus(m_watcherName);
+        if (!m_daemonName.isEmpty()) QDBusConnection::disconnectFromBus(m_daemonName);
+        if (daemon.state() != QProcess::NotRunning) {
+            daemon.terminate();
+            if (!daemon.waitForFinished(3000)) daemon.kill();
+            daemon.waitForFinished(2000);
+        }
+    }
+    PowerBusFixture(const PowerBusFixture &) = delete;
+    PowerBusFixture &operator=(const PowerBusFixture &) = delete;
+    bool claimService(const QString &name) { return daemonSide.registerService(name); }
+    bool exportObject(const QString &path, QObject *object)
+    {
+        return daemonSide.registerObject(path, object);
+    }
+    void emitPrepareForSleep(bool sleeping)
+    {
+        auto signal = QDBusMessage::createSignal("/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager", "PrepareForSleep");
+        signal << sleeping;
+        daemonSide.send(signal);
+    }
+    void emitOnBattery(bool onBattery)
+    {
+        auto signal = QDBusMessage::createSignal("/org/freedesktop/UPower",
+            "org.freedesktop.DBus.Properties", "PropertiesChanged");
+        signal << QVariant(QStringLiteral("org.freedesktop.UPower"))
+            << QVariant(QVariantMap{{QStringLiteral("OnBattery"), onBattery}})
+            << QVariant(QStringList());
+        daemonSide.send(signal);
+    }
+private:
+    QString m_watcherName;
+    QString m_daemonName;
 };
 
 // Login wizard organization discovery payload (issue #58), shaped after the
@@ -13955,6 +14050,109 @@ private slots:
         // The backfilled topic must never reshape the active catalog.
         QCOMPARE(fixture.controller.topics().size(), catalogSize);
         service->setTransport(nullptr);
+    }
+
+    // --- issue #78: power state (docs/NATIVE_DESKTOP_POWER_STATE.md) ---
+
+    void powerResumeReconnectsRealtimeWithoutBackoff()
+    {
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10},
+                    {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+        QCOMPARE(gateway.sockets.size(), 1);
+        PowerBusFixture bus("resume");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        QVERIFY(bus.claimService("org.freedesktop.login1"));
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // PrepareForSleep(true) is informational: it must not tear down the
+        // healthy link.
+        bus.emitPrepareForSleep(true);
+        QTest::qWait(300);
+        QCOMPARE(gateway.sockets.size(), 1);
+        QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+        // PrepareForSleep(false): a healthy link has no other reason to drop
+        // and come back, so the gateway's second socket can only be the
+        // resume-triggered reconnect, and it must arrive without the backoff.
+        bus.emitPrepareForSleep(false);
+        QTRY_COMPARE_WITH_TIMEOUT(gateway.sockets.size(), 2, 3000);
+        QTRY_COMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+    }
+
+    void batteryCadenceFollowsUpowerInitialReadAndPropertyChanges()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.isOnBattery(), false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        PowerBusFixture bus("battery");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        UpowerStub upower;
+        upower.onBattery = true;
+        new UpowerAdaptor(&upower);
+        QVERIFY(bus.exportObject("/org/freedesktop/UPower", &upower));
+        QVERIFY(bus.claimService("org.freedesktop.UPower"));
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // The initial Properties.Get already reports the battery: 30000*2.
+        QTRY_VERIFY(watcher.isOnBattery());
+        QTRY_COMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 60000);
+        QVERIFY(fixture.controller.isOnBattery());
+        // Unfocused keeps the reference pair 160000 on battery / 120000 on AC.
+        fixture.controller.setWindowFocused(false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 160000);
+        bus.emitOnBattery(false);
+        QTRY_COMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 120000);
+        fixture.controller.setWindowFocused(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        bus.emitOnBattery(true);
+        QTRY_VERIFY(fixture.controller.isOnBattery());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 60000);
+        bus.emitOnBattery(false);
+        QTRY_VERIFY(!fixture.controller.isOnBattery());
+    }
+
+    void powerWatcherDegradesOnABusWithoutPowerServices()
+    {
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10},
+                    {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+        PowerBusFixture bus("bare");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // A bus without logind or UPower: the initial Get fails quietly, no
+        // signal ever arrives, the mains cadence stays, the healthy realtime
+        // link survives the tick, and nothing crashed.
+        QTest::qWait(500);
+        QVERIFY(!watcher.isOnBattery());
+        QVERIFY(!fixture.controller.isOnBattery());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        QCOMPARE(gateway.sockets.size(), 1);
+        QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
     }
 
     void signOutClosesActiveNotifications()
