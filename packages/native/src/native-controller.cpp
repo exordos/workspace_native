@@ -12845,8 +12845,8 @@ void NativeController::flushPendingDeepLink(bool settle)
     // Wait until the session and the default conversation restore have
     // settled; otherwise a selection storm would trample the anchor.
     if (m_pendingDeepLink.isEmpty() || !authenticated() || busy()
-        || m_session->project().isEmpty() || streams().isEmpty() || m_stream.isEmpty()
-        || !m_conversationRestore.isEmpty())
+        || m_session->project().isEmpty() || !m_catalogVerified || m_syncBlocked
+        || !m_conversationRestore.isEmpty() || m_conversationRestoreScheduled || m_topicOpening.active)
         return;
     if (settle) {
         // All startup publications wait for the same settling timer; a second

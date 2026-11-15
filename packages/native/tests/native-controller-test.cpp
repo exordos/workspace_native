@@ -1758,6 +1758,47 @@ private slots:
         QCOMPARE(test.mutations, 0);
     }
 
+    void queuedStreamLinkOpensFromStartupInbox_data()
+    {
+        QTest::addColumn<QString>("saved");
+        QTest::newRow("missing-stream") << QString("missing");
+        QTest::newRow("no-saved-conversation") << QString("none");
+        QTest::newRow("existing-stream-control") << QString("existing");
+        QTest::newRow("slow-topic-restore") << QString("slow-topic");
+    }
+
+    void queuedStreamLinkOpensFromStartupInbox()
+    {
+        QFETCH(QString, saved);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        TopicOpeningFixture test;
+        const auto owner = conversationPreferenceOwner(test.fixture.server.origin());
+        if (saved != "none")
+            preferences.recordLastConversation(owner, saved == "missing" ? openingStreamId : streamId,
+                saved == "slow-topic" ? openingRequestedId : QString{});
+        if (saved == "slow-topic") test.lookupDelay = 1100;
+        auto &controller = test.fixture.controller;
+        controller.usePreferences(&preferences);
+        const auto origin = test.fixture.server.origin();
+        controller.openMessageLink("ew://open/org/127.0.0.1-" + QString::number(origin.port())
+            + "/project/" + projectId + "/stream/" + streamId);
+        controller.login(origin.toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        if (saved == "slow-topic") {
+            QTRY_COMPARE(test.lookups, 1);
+            QTest::qWait(850);
+            QVERIFY(controller.topicResolving());
+            QVERIFY(controller.selectedStream().isEmpty());
+        }
+        QTRY_VERIFY(!controller.busy() && !controller.topicResolving());
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedStream(), streamId, 1500);
+        QVERIFY(controller.error().isEmpty());
+        QCOMPARE(test.mutations, 0);
+    }
+
     void automaticConversationRestorePreservesTransientErrorsAndExplicitOpenErrors_data()
     {
         QTest::addColumn<bool>("automatic"); QTest::addColumn<int>("status");

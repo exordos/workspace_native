@@ -10041,14 +10041,17 @@ mv -Tf "$root/.current-new" "$root/current"
     void externalStreamTopicLinkShowsDestinationConversation_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("startup");
         for (const auto *locale : {"en", "ru"})
             for (const auto *mode : {"light", "dark"})
-                QTest::newRow(qPrintable(QString(locale) + '-' + mode)) << QString(locale) << QString(mode);
+                for (const auto *startup : {"running", "queued-missing", "queued-fresh"})
+                    QTest::newRow(qPrintable(QString(locale) + '-' + mode + '-' + startup))
+                        << QString(locale) << QString(mode) << QString(startup);
     }
 
     void externalStreamTopicLinkShowsDestinationConversation()
     {
-        QFETCH(QString, locale); QFETCH(QString, mode);
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(QString, startup);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale(locale); preferences.setMode(mode);
@@ -10070,6 +10073,10 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             return sessionResponse(request);
         };
+        const auto owner = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(QJsonArray{
+            server.origin().toString(QUrl::FullyEncoded), projectId, userId}).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex());
+        if (startup == "queued-missing") preferences.recordLastConversation(owner, returnedId, {});
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
@@ -10079,16 +10086,20 @@ mv -Tf "$root/.current-new" "$root/current"
         });
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(QTest::qWaitForWindowActive(window));
+        const QString route = "ew://open/org/127.0.0.1-" + QString::number(server.origin().port())
+            + "/project/" + projectId + "/stream/" + streamId;
+        if (startup != "running")
+            controller.openMessageLink(route + "/topic/" + QString::fromUtf8(QUrl::toPercentEncoding(destination)));
         session.login(server.origin(), "synthetic-user", "synthetic-password");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 2);
-        controller.selectTopic(topicId);
-        QTRY_VERIFY(!controller.busy());
-        QTRY_VERIFY(item(window->contentItem(), "message-" + messageId));
-        const QString route = "ew://open/org/127.0.0.1-" + QString::number(server.origin().port())
-            + "/project/" + projectId + "/stream/" + streamId;
-        controller.openMessageLink(route + "/topic/" + QString::fromUtf8(QUrl::toPercentEncoding(destination)));
+        if (startup == "running") {
+            controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 2);
+            controller.selectTopic(topicId);
+            QTRY_VERIFY(!controller.busy());
+            QTRY_VERIFY(item(window->contentItem(), "message-" + messageId));
+            controller.openMessageLink(route + "/topic/" + QString::fromUtf8(QUrl::toPercentEncoding(destination)));
+        }
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), secondTopicId, 2500);
         QTRY_VERIFY(item(window->contentItem(), "message-" + returnedId));
         QTRY_VERIFY(item(window->contentItem(), "message-" + returnedId)->isVisible());
