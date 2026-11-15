@@ -2615,18 +2615,35 @@ void NativeController::saveOwnStatus(const QString &text, const QString &emoji, 
 }
 
 namespace {
-// Reference cadence (user-workspace-presence-reporter.lib.ts:20-25). The
-// hidden tier (300000 * factor) needs a window-hidden signal the native
-// shell does not project yet; docs/NATIVE_DESKTOP_POWER_STATE.md.
+// Reference cadence (user-workspace-presence-reporter.lib.ts:20-25 and
+// workspacePresenceIntervalMs at :31-40, workspace_ui 61dacef7): active is
+// base * batteryFactor, the unfocused tier has its own measured pair, and a
+// hidden window reports at max(base, 300000) * batteryFactor - the radio
+// wake-up is the cost, and a window the user cannot see is the least urgent
+// thing the client does. docs/NATIVE_DESKTOP_POWER_STATE.md.
 constexpr int PresenceActiveMs = 30000;             // WORKSPACE_PRESENCE_REPORT_INTERVAL_MS
 constexpr int PresenceUnfocusedMs = 120000;         // WORKSPACE_PRESENCE_UNFOCUSED_INTERVAL_MS
 constexpr int PresenceUnfocusedBatteryMs = 160000;  // ..._UNFOCUSED_BATTERY_...
+constexpr int PresenceHiddenMs = 300000;            // WORKSPACE_PRESENCE_HIDDEN_INTERVAL_MS
 constexpr int PresenceBatteryMultiplier = 2;        // WORKSPACE_PRESENCE_BATTERY_MULTIPLIER
+// Floor between resume-triggered reconnects (fix-round-1 finding 4,
+// cid 4576526936). Trust model: on the system bus the login1 name is
+// owner-controlled by systemd, so resume there is a trusted service event.
+// On any injected bus a peer may own the name and spam PrepareForSleep(false);
+// each accepted resume drops the healthy socket and bypasses the reconnect
+// backoff, so repeated resumes inside this floor are ignored - the link the
+// first wake restored stays up, and RealtimeClient's own backoff still
+// recovers a later drop on its normal schedule.
+constexpr qint64 ResumeReconnectFloorMs = 5000;
 } // namespace
 
 int NativeController::presenceHeartbeatIntervalMs() const
 {
     const auto factor = m_onBattery ? PresenceBatteryMultiplier : 1;
+    // Hidden outranks focus: a minimized window is neither active nor visible
+    // in the reference WindowActivityState ladder (visibility.ts:12-16).
+    if (!m_windowVisible)
+        return qMax(PresenceActiveMs, PresenceHiddenMs) * factor;
     if (m_windowFocused) return PresenceActiveMs * factor;
     return m_onBattery ? PresenceUnfocusedBatteryMs : PresenceUnfocusedMs;
 }
@@ -2646,7 +2663,16 @@ void NativeController::setPowerWatcher(PowerWatcher *watcher)
     // resume; suspend is informational here because the OS freezes the whole
     // process anyway.
     connect(watcher, &PowerWatcher::resumed, this, [this] {
-        if (m_realtime) m_realtime->reconnectNow("power_resume");
+        if (!m_realtime) return;
+        // Resume-triggered reconnects bypass the reconnect backoff, so bound
+        // them (fix-round-1 finding 4, cid 4576526936): the first resume in a
+        // floor window reconnects immediately like a real wake, repeated
+        // resumes inside the floor are ignored (the restored link stays up,
+        // and RealtimeClient's own backoff still covers any later drop).
+        if (m_resumeReconnectClock.isValid() && m_resumeReconnectClock.elapsed() < ResumeReconnectFloorMs)
+            return;
+        m_resumeReconnectClock.start();
+        m_realtime->reconnectNow("power_resume");
     });
     connect(watcher, &PowerWatcher::batteryChanged, this, &NativeController::setOnBattery);
 }
@@ -9275,6 +9301,13 @@ void NativeController::setWindowFocused(bool focused)
     m_windowFocused = focused;
     m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
     m_notifications.setWindowFocused(focused);
+}
+
+void NativeController::setWindowVisible(bool visible)
+{
+    if (m_windowVisible == visible) return;
+    m_windowVisible = visible;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
 }
 
 void NativeController::maybeOfferCallInvite(const Message &message)

@@ -42,7 +42,9 @@ has its own measured constant.
 ## Native design
 
 New `workspace::PowerWatcher` (`packages/native/src/power-watcher.{h,cpp}`),
-a session-bus D-Bus observer:
+a system-bus D-Bus observer (logind and UPower are system services; dbus
+policy restricts their well-known names to the daemons, so the subscription
+sees the trusted services):
 
 - `org.freedesktop.login1`, object `/org/freedesktop/login1`, interface
   `org.freedesktop.login1.Manager`: `PrepareForSleep` signal (`true` = about
@@ -52,13 +54,17 @@ a session-bus D-Bus observer:
   `org.freedesktop.UPower`, property `OnBattery`: one async
   `org.freedesktop.DBus.Properties.Get` (reply unwrapped from `QDBusVariant`)
   plus a `PropertiesChanged` subscription. Emits `batteryChanged(bool)`.
-- Graceful no-daemon path: with no session bus the watcher subscribes to
+- Graceful no-daemon path: with no system bus the watcher subscribes to
   nothing; with a bus but no `logind`/`UPower`, the signal rules simply never
   match and the `Get` error is ignored, so the client keeps its mains-power
   behaviour (`isOnBattery()` stays `false`). This mirrors the reference
   browser build where no bridge exists and `isOnBattery()` stays false.
-  `start()` takes an injectable `QDBusConnection` (default: session bus) so
-  tests drive it from a private bus fixture.
+  `start()` takes an injectable `QDBusConnection` (default: `defaultBus()`,
+  i.e. the system bus) so tests drive it from a private bus fixture, and the
+  `defaultBusKind()` seam lets a test pin the default selection.
+- A late initial `Properties.Get` reply never overwrites fresher state: the
+  read captures a monotonic revision stamp, every applied `PropertiesChanged`
+  bumps it, and a reply whose stamp fell behind is dropped (fix-round-1).
 
 `NativeController` wiring:
 
@@ -67,13 +73,19 @@ a session-bus D-Bus observer:
 - Resume: `RealtimeClient::reconnectNow(reason)` drops the backoff state
   (suspend + resume with cursors kept) and re-establishes the realtime link
   and epoch catch-up immediately — the counterpart of the reference
-  `reconnectAll("power_resume")` with no delay.
+  `reconnectAll("power_resume")` with no delay. Because this path discards a
+  healthy socket and bypasses the reconnect backoff, resume-triggered
+  reconnects are floored: the first resume inside a 5 s window reconnects,
+  later repeated resumes inside the floor are ignored (a spoofed peer on an
+  injected bus cannot spam it; the real link, or RealtimeClient's own backoff,
+  covers any later drop).
 - Battery: `setOnBattery(bool)` re-times the presence heartbeat. The
-  heartbeat reproduces the reference ladder for the two window states the
-  native shell distinguishes today: focused `30 000 ms * batteryFactor`,
-  unfocused `120 000 ms` mains / `160 000 ms` battery. The hidden tier
-  (`30 000 ms * batteryFactor`, battery `600 000 ms`) needs a window-hidden
-  signal the native shell does not project yet and stays reference-only.
+  heartbeat reproduces the full reference ladder over the three window states
+  the native shell projects (visibility and focus, mirrored from
+  `QWindow::isVisible`/`isActive` in `main.cpp`): focused `30 000 ms *
+  batteryFactor`, unfocused `120 000 ms` mains / `160 000 ms` battery, and
+  hidden `max(30 000, 300 000) ms * batteryFactor` — `300 000 ms` mains,
+  `600 000 ms` battery (`user-workspace-presence-reporter.lib.ts:31-40`).
   The heartbeat POSTs `/api/workspace/v1/users/{uuid}/actions/presence/invoke`
   with `{"status": "active"}` (the same endpoint the manual status editor
   uses), never while the account is manually away/DND — a heartbeat must not
@@ -99,6 +111,21 @@ connection registered as `org.freedesktop.login1` / `org.freedesktop.UPower`:
   `30 000 ms` and back again.
 - Bare bus: a watcher on a bus without the services starts, keeps the mains
   cadence, never reconnects a healthy realtime socket and never crashes.
+
+Fix-round-1 added cases (same group, same fixture):
+
+- `powerWatcherDefaultsToTheSystemBus`: the `defaultBusKind()` seam — which
+  is also `start()`'s default argument — resolves to the system bus (finding
+  1, cid 4576526925).
+- `staleInitialBatteryReadYieldsToFreshPowerSignal`: the fixture's UPower
+  stub holds the `Get` reply for 700 ms while a fresher `PropertiesChanged`
+  lands first; the late stale reply must be dropped (finding 2).
+- `hiddenWindowUsesReferenceHiddenPresenceCadence`: hidden -> 300000 ms,
+  hidden + battery -> 600000 ms, and coming back restores the
+  focused/unfocused ladder (finding 3).
+- `spoofedResumeBurstCannotSpamRealtimeReconnects`: five `PrepareForSleep`
+  resumes inside the floor window force at most zero extra reconnects — the
+  socket count stays at the one legitimate resume reconnect (finding 4).
 
 ## Live verification note
 

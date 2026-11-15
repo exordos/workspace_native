@@ -17,6 +17,7 @@
 #include "mock-server.h"
 
 #include <QElapsedTimer>
+#include <QDeadlineTimer>
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QSignalSpy>
@@ -306,6 +307,10 @@ class UpowerStub final : public QObject
 public:
     using QObject::QObject;
     bool onBattery = false;
+    // Holds the Properties.Get reply inside the adaptor read long enough for a
+    // test to emit a fresher PropertiesChanged, reproducing a delayed stale
+    // reply arriving after the newer signal (fix-round-1 finding 2).
+    int getDelayMs = 0;
 };
 
 class UpowerAdaptor final : public QDBusAbstractAdaptor
@@ -315,7 +320,18 @@ class UpowerAdaptor final : public QDBusAbstractAdaptor
     Q_PROPERTY(bool OnBattery READ onBattery)
 public:
     explicit UpowerAdaptor(UpowerStub *owner) : QDBusAbstractAdaptor(owner), m_owner(owner) {}
-    bool onBattery() const { return m_owner->onBattery; }
+    bool onBattery() const
+    {
+        if (m_owner->getDelayMs > 0) {
+            // The fixture's "daemon side" dispatches this read on the shared
+            // thread; keep pumping events so the bus keeps moving while the
+            // reply is held.
+            QDeadlineTimer deadline(m_owner->getDelayMs);
+            while (!deadline.hasExpired())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        }
+        return m_owner->onBattery;
+    }
 private:
     UpowerStub *m_owner;
 };
@@ -14152,6 +14168,118 @@ private slots:
         QVERIFY(!fixture.controller.isOnBattery());
         QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
         QCOMPARE(gateway.sockets.size(), 1);
+        QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+    }
+
+    void powerWatcherDefaultsToTheSystemBus()
+    {
+        // Fix-round-1 finding 1 (cid 4576526925): logind and UPower are
+        // system-bus services, so the default connection a start() with no
+        // argument selects must be the system bus; the injectable-bus
+        // parameter stays for the private fixture bus the other cases use.
+        QVERIFY(workspace::PowerWatcher::defaultBusKind() == workspace::PowerWatcher::Bus::System);
+        // The seam is what start()'s default argument uses, and it resolves
+        // to the process' system-bus handle (same bus object, not just a bus
+        // that happens to be reachable).
+        QVERIFY(workspace::PowerWatcher::defaultBus().interface()
+            == QDBusConnection::systemBus().interface());
+    }
+
+    void staleInitialBatteryReadYieldsToFreshPowerSignal()
+    {
+        // Fix-round-1 finding 2 (cid 4576526932): a Properties.Get reply that
+        // lands after a fresher PropertiesChanged must not overwrite it.
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        PowerBusFixture bus("stale-read");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        UpowerStub upower;
+        upower.onBattery = true;
+        upower.getDelayMs = 700; // The reply lands after the signal below.
+        new UpowerAdaptor(&upower);
+        QVERIFY(bus.exportObject("/org/freedesktop/UPower", &upower));
+        QVERIFY(bus.claimService("org.freedesktop.UPower"));
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // The mains signal arrives while the stale read is still in flight;
+        // when that reply finally lands it must be discarded.
+        bus.emitOnBattery(false);
+        QTest::qWait(1100); // Past the held reply and the signal both.
+        QVERIFY(!watcher.isOnBattery());
+        QVERIFY(!fixture.controller.isOnBattery());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        // A real change after the discarded reply still reaches the client.
+        bus.emitOnBattery(true);
+        QTRY_VERIFY(watcher.isOnBattery());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 60000);
+    }
+
+    void hiddenWindowUsesReferenceHiddenPresenceCadence()
+    {
+        // Fix-round-1 finding 3 (cid 4576526934): a hidden window must use the
+        // hidden tier. Reference: workspacePresenceIntervalMs returns
+        // max(baseIntervalMs, WORKSPACE_PRESENCE_HIDDEN_INTERVAL_MS) * batteryFactor
+        // for the hidden state (user-workspace-presence-reporter.lib.ts:39 at
+        // 61dacef7), with WORKSPACE_PRESENCE_HIDDEN_INTERVAL_MS = 300 000
+        // (line 24) and WORKSPACE_PRESENCE_BATTERY_MULTIPLIER = 2 (line 25) —
+        // 300000 ms mains, 600000 ms on battery.
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+        fixture.controller.setWindowVisible(false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 300000);
+        // Hidden outranks focus state and stretches on battery.
+        fixture.controller.setWindowFocused(false);
+        fixture.controller.setOnBattery(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 600000);
+        // Coming back restores the focused/unfocused ladder.
+        fixture.controller.setWindowVisible(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 160000); // unfocused, battery
+        fixture.controller.setOnBattery(false);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 120000); // unfocused, mains
+        fixture.controller.setWindowFocused(true);
+        QCOMPARE(fixture.controller.presenceHeartbeatIntervalMs(), 30000);
+    }
+
+    void spoofedResumeBurstCannotSpamRealtimeReconnects()
+    {
+        // Fix-round-1 finding 4 (cid 4576526936): on an injected bus any peer
+        // may own org.freedesktop.login1, so repeated PrepareForSleep(false)
+        // must not pile up backoff-bypassing reconnects beyond the resume
+        // reconnect floor.
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10},
+                    {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QStringLiteral("live"));
+        QCOMPARE(gateway.sockets.size(), 1);
+        PowerBusFixture bus("resume-burst");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        QVERIFY(bus.claimService("org.freedesktop.login1"));
+        workspace::PowerWatcher watcher;
+        fixture.controller.setPowerWatcher(&watcher);
+        watcher.start(bus.watcherBus);
+        // The first resume reconnects immediately, like a real wake.
+        bus.emitPrepareForSleep(false);
+        QTRY_COMPARE_WITH_TIMEOUT(gateway.sockets.size(), 2, 3000);
+        // A burst inside the floor window cannot force further reconnects.
+        // The short gaps let every forced reconnect reach the gateway accept,
+        // so an unbounded spam would visibly pile up sockets here.
+        for (int i = 0; i < 5; ++i) {
+            bus.emitPrepareForSleep(false);
+            QTest::qWait(200);
+        }
+        QTest::qWait(500);
+        QCOMPARE(gateway.sockets.size(), 2);
         QCOMPARE(fixture.controller.syncState(), QStringLiteral("live"));
     }
 
