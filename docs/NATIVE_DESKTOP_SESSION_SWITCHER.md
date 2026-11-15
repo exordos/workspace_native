@@ -185,3 +185,17 @@ confirmation, activates the next remembered inbox; the last dropdown row
 "Add server" opens the sign-in step with remembered accounts preserved.
 Geometry oracles are fixed pixel values measured from the reference component
 (font-independent), per the issue #16 rule.
+
+## Notification ownership on session transitions (issue #183)
+
+Leaving the live session through a switcher logout, account switch or Add server
+retires its active desktop banners, pending metadata-grace candidates and click
+routes through the same `Session::signedOut` cleanup as ordinary logout. This
+happens before a successor resumes and uses the controller's last verified owner
+key, since `Session` has already cleared its public identity. Switching and Add
+server still preserve remembered credentials. Removing a different remembered
+row and refreshing the current token preserve the live owner's notifications.
+
+The controller regression `sessionTransitionsRetireNotificationOwner` covers
+remembered and synthesized current rows, successor/no-successor transitions and
+the corresponding preservation cases; see [notification tests](NATIVE_DESKTOP_NOTIFICATIONS.md#session-switcher-retirement-regression-issue-183).

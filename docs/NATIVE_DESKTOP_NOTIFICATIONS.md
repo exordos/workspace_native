@@ -201,10 +201,15 @@ list (the pollution repro reverted to the old append fails this guard).
   owner retirement together with their click routes, and pruned from tracking
   when a read closes them. Sign-out can no longer leave an untracked generic
   banner on the desktop.
-- Account transitions: the controller session is constructor-injected and
-  never reassigned, so logout is the only owner transition and the retirement
-  sweep covers aggregates, pending candidates, decided entries, fallback
-  banners and the notification topic backfill.
+- Account transitions: all session logout/detach paths retire the last verified
+  notification owner through the controller's `Session::signedOut` handler.
+  This includes ordinary logout, both remembered and synthesized switcher rows,
+  switching accounts and Add server. The sweep covers aggregates, pending
+  candidates, decided entries, fallback banners and the notification topic
+  backfill. Switching and Add server keep remembered credentials, but retire
+  notifications because their click routes use the window's active session.
+  A same-owner token refresh and removing a non-current remembered account keep
+  the active owner's notifications.
 
 New acceptance cases: 14. per-bucket row bound with an honest display count;
 15. sign-out closes generic fallback banners (RED observed: the generic banner
@@ -226,3 +231,21 @@ survived logout before the fix).
   resolves timestamp ties deterministically (lowest message uuid first)
   instead of relying on hash iteration order, so a burst of same-timestamp
   messages cannot evict the banner body it just displayed.
+
+## Session switcher retirement regression (issue #183)
+
+`sessionTransitionsRetireNotificationOwner` exercises the controller with real
+`Session`/`SessionVault` transitions, synthetic session responses and the existing
+recording notification transport. Thirty cases independently check active
+aggregate/fallback banners, pending metadata-grace candidates and stale tag
+actions. Remembered and synthesized current rows are covered both with a
+successor account and as the last row. Ordinary logout, switching, Add server,
+same-owner refresh and removing another remembered row are included.
+
+On the original implementation, all 18 switcher/switch/Add server checks failed:
+banners remained, grace candidates appeared after retirement and stale tags
+emitted navigation for the new session. The 12 ordinary-logout/refresh/other-row
+controls passed. The shared sign-out cleanup makes all 30 pass; retired candidates
+no longer invoke metadata resolution and retired tags emit neither activation
+nor navigation. These are controller/notification integration tests; the live
+notification daemon and rendered switcher are separate platform acceptance.

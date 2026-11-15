@@ -7386,6 +7386,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // bump. A same-owner token refresh re-authenticates without changing the
     // owner key and therefore does not retire in-flight work.
     connect(m_session, &Session::signedOut, this, [this] {
+        // Session has already cleared its live identity. Use the last verified
+        // owner so every logout/detach path retires its banners and grace work,
+        // including switcher logout, account switching and Add server (#183).
+        m_notifications.onOwnerRetired(m_sessionGenerationOwner);
+        m_topicNotificationBackfill.clear();
+        m_topicMetadataInFlight.clear();
         ++m_sessionGeneration;
         m_sessionGenerationOwner.clear();
     });
@@ -8536,11 +8542,6 @@ bool NativeController::isAuthGuardActive() const
 
 void NativeController::logout()
 {
-    // Banners must not outlive the account that produced them (the reference
-    // closes every active owner notification on sign-out).
-    m_notifications.onOwnerRetired(creationOwnerKey());
-    m_topicNotificationBackfill.clear();
-    m_topicMetadataInFlight.clear();
     const QPointer<NativeController> self(this);
     const QPointer<Session> session(m_session);
     bool accepted = true;

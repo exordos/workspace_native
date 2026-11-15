@@ -18288,6 +18288,147 @@ private slots:
         QCOMPARE(controller.savedAccounts().size(), 2);
     }
 
+    void sessionTransitionsRetireNotificationOwner_data()
+    {
+        QTest::addColumn<QString>("transition");
+        QTest::addColumn<bool>("remembered");
+        QTest::addColumn<bool>("successor");
+        QTest::addColumn<QString>("observation");
+        for (const auto &observation : {"banners", "pending", "actions"}) {
+            for (const bool remembered : {false, true}) {
+                for (const bool successor : {false, true})
+                    QTest::addRow("switcher-%s-%s-%s", remembered ? "remembered" : "live",
+                        successor ? "successor" : "last", observation)
+                        << QString("switcher") << remembered << successor << QString(observation);
+                QTest::addRow("ordinary-%s-%s", remembered ? "remembered" : "live", observation)
+                    << QString("ordinary") << remembered << true << QString(observation);
+            }
+            for (const auto &transition : {"switch", "add-server", "refresh", "remove-other"})
+                QTest::addRow("%s-%s", transition, observation)
+                    << QString(transition) << true << true << QString(observation);
+        }
+    }
+
+    void sessionTransitionsRetireNotificationOwner()
+    {
+        QFETCH(QString, transition); QFETCH(bool, remembered); QFETCH(bool, successor);
+        QFETCH(QString, observation);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("notification-accounts.ini"), &secrets);
+        const QUrl server("https://switcher.invalid");
+        const QString userB{"66666666-6666-4666-8666-666666666666"};
+        SavedAccount a{SessionVault::accountId(server, projectId, userId), server, projectId, userId, "alice", "Alpha"};
+        SavedAccount b{SessionVault::accountId(server, projectId, userB), server, projectId, userB, "bob", "Beta"};
+        int saves = 0;
+        if (remembered)
+            vault.save(a, "switch-refresh-a", [&](const QString &error) { QVERIFY(error.isEmpty()); ++saves; });
+        if (successor)
+            vault.save(b, "switch-refresh-b", [&](const QString &error) { QVERIFY(error.isEmpty()); ++saves; });
+        QTRY_COMPARE(saves, int(remembered) + int(successor));
+        QString currentUser = userId;
+        ApiClient api;
+        Session session(&api, nullptr, [&](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            QJsonValue data; int status = 404; QString error{"not found"};
+            if (path.endsWith("/actions/get_token/invoke")) {
+                currentUser = body.toObject().value("refresh_token").toString() == "switch-refresh-b" ? userB : userId;
+                data = QJsonObject{{"access_token", "synthetic-token"}, {"refresh_token",
+                    currentUser == userB ? "switch-refresh-b" : "switch-refresh-a"}, {"expires_in", 3600}};
+                status = 200; error.clear();
+            } else if (path.endsWith("/actions/introspect")) {
+                data = QJsonObject{{"user_info", QJsonObject{{"uuid", currentUser}}},
+                    {"project_id", projectId}, {"otp_verified", true}, {"permissions", QJsonArray{}}};
+                status = 200; error.clear();
+            } else if (path == "/api/core/v1/iam/projects/") {
+                data = QJsonArray{QJsonObject{{"uuid", projectId}, {"name", "Notification project"}, {"status", "ACTIVE"}}};
+                status = 200; error.clear();
+            }
+            const ApiResult result{data, status, {}, error};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeController controller(&api, &session);
+        controller.setRealtimeMode(true);
+        if (remembered) {
+            session.setVault(&vault);
+            controller.resumeSavedAccount(a.id);
+        } else {
+            controller.login(server.toString(), "alice", "synthetic-password", "");
+            QTRY_COMPARE(controller.projects().size(), 1);
+            controller.openProject(projectId);
+        }
+        QTRY_VERIFY(controller.authenticated()); QTRY_VERIFY(!controller.busy());
+        if (!remembered) session.setVault(&vault); // A stays a synthesized live row; B may be remembered.
+        QCOMPARE(session.currentSavedAccountId(), remembered ? a.id : QString{});
+        QCOMPARE(controller.sessionSwitcherSessions().first().toMap().value("id").toString(), a.id);
+        QCOMPARE(controller.sessionSwitcherSessions().first().toMap().value("isCurrent").toBool(), true);
+        const auto ownerA = controller.creationOwnerKey(); QVERIFY(!ownerA.isEmpty());
+        RecordingNotifications sent;
+        auto *service = controller.notifications(); service->setTransport(&sent);
+        const auto resetTransport = qScopeGuard([&] { service->setTransport(nullptr); });
+        int retiredMetadataLookups = 0;
+        service->setMetadataResolver([&](NotificationCandidate &candidate) {
+            if (candidate.owner != controller.creationOwnerKey()) ++retiredMetadataLookups;
+            return candidate.messageUuid == historyMessage(500).value("uuid").toString();
+        });
+        NotificationCandidate candidate;
+        candidate.owner = ownerA; candidate.messageUuid = historyMessage(500).value("uuid").toString();
+        candidate.streamUuid = streamId; candidate.topicUuid = topicId;
+        candidate.authorUuid = notificationAuthor; candidate.content = "Synthetic notification";
+        candidate.streamMode = "all_messages"; candidate.streamKnown = true; candidate.topicKnown = true;
+        candidate.streamName = "Channel"; candidate.topicName = "Topic"; candidate.senderName = "Author";
+        service->ingest(candidate);
+        QCOMPARE(sent.shows.size(), 1);
+        const auto aggregate = sent.lastTag(); QVERIFY(aggregate.startsWith("bucket:"));
+        service->setMetadataGrace(30, 5);
+        candidate.messageUuid = historyMessage(501).value("uuid").toString();
+        service->ingest(candidate);
+        QTRY_COMPARE(sent.shows.size(), 2);
+        const auto fallback = sent.lastTag(); QVERIFY(fallback.startsWith("msg:"));
+        service->setMetadataGrace(250, 5);
+        candidate.messageUuid = historyMessage(502).value("uuid").toString();
+        service->ingest(candidate);
+        QCOMPARE(service->pendingCount(), 1);
+        QSignalSpy routed(service, &NotificationService::routeRequested);
+        QSignalSpy activated(service, &NotificationService::activationRequested);
+        if (transition == "switcher") controller.logoutWorkspaceSession(a.id);
+        else if (transition == "ordinary") controller.logout();
+        else if (transition == "switch") controller.selectWorkspaceSession(b.id);
+        else if (transition == "add-server") controller.openAddServer();
+        else if (transition == "refresh") session.requestRefresh();
+        else controller.logoutWorkspaceSession(b.id);
+        const bool keepsOwner = transition == "refresh" || transition == "remove-other";
+        if (transition == "switch" || (transition == "switcher" && successor)) {
+            QTRY_VERIFY(controller.authenticated()); QTRY_VERIFY(!controller.busy());
+            QTRY_COMPARE(session.user(), userB);
+            QVERIFY(controller.creationOwnerKey() != ownerA);
+        } else if (keepsOwner) {
+            QTRY_VERIFY(!controller.busy()); QVERIFY(controller.authenticated());
+            QCOMPARE(controller.creationOwnerKey(), ownerA);
+        } else {
+            QTRY_VERIFY(!controller.authenticated());
+        }
+        if (observation == "banners") {
+            QCOMPARE(sent.closed.contains(aggregate), !keepsOwner);
+            QCOMPARE(sent.closed.contains(fallback), !keepsOwner);
+            QCOMPARE(service->trackedTagCount(), keepsOwner ? 1 : 0);
+        } else if (observation == "pending") {
+            QTest::qWait(350); // Longer than the real shortened grace timer.
+            QCOMPARE(sent.shows.size(), keepsOwner ? 3 : 2);
+            QCOMPARE(service->pendingCount(), 0);
+            QCOMPARE(retiredMetadataLookups, 0);
+        } else {
+            service->click(aggregate); service->click(fallback);
+            QCOMPARE(routed.size(), keepsOwner ? 2 : 0);
+            QCOMPARE(activated.size(), keepsOwner ? 2 : 0);
+            if (!keepsOwner) {
+                QVERIFY(controller.selectedStream().isEmpty());
+                QVERIFY(controller.selectedTopic().isEmpty());
+            }
+        }
+    }
+
     void sessionSwitcherLogoutRoutesThroughNextInbox()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
