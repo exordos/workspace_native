@@ -61,6 +61,31 @@ private slots:
         service.shutdown(); QTRY_VERIFY_WITH_TIMEOUT(service.stopped(), 2000); QVERIFY(!service.available());
     }
 
+    void outgoingWritesDrainOnDestructionAndInactiveOwnerCleanupIsScoped()
+    {
+        QTemporaryDir directory;
+        OutgoingRecord outgoing; outgoing.uuid = returnedId; outgoing.stream = streamId; outgoing.topic = topicId;
+        outgoing.routeTopic = topicId; outgoing.publicId = messageId; outgoing.createdAt = 1760000000123;
+        outgoing.payload = {{"kind", "markdown"}, {"content", "immutable body"}}; outgoing.draftText = "input";
+        {
+            NativeDraftService service(directory.path()); QVERIFY(service.open(ownerA)); QTRY_VERIFY(service.available());
+            QVERIFY(service.putOutgoing(service.lease(), outgoing, this, {}));
+            // Destruction must drain even an accepted write whose callback has
+            // not returned; neither switching owner nor shutdown may drop it.
+        }
+        { NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None); QCOMPARE(store.outgoing().rows.size(), 1); }
+        {
+            NativeDraftService service(directory.path()); QVERIFY(service.open(ownerB)); QTRY_VERIFY(service.available());
+            const auto lease = service.lease(); bool written = false;
+            QVERIFY(service.putOutgoing(lease, outgoing, this, [&](Failure f) { written = f == Failure::None; })); QTRY_VERIFY(written);
+            bool cleared = false; QVERIFY(service.clearOutgoing(ownerA, this, [&](Failure f) { cleared = f == Failure::None; })); QTRY_VERIFY(cleared);
+            bool read = false; QVERIFY(service.outgoing(lease, this, [&](auto page) { read = page.failure == Failure::None && page.rows.size() == 1; })); QTRY_VERIFY(read);
+            service.shutdown(); QTRY_VERIFY(service.stopped());
+        }
+        { NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerA), Failure::None); QVERIFY(store.outgoing().rows.isEmpty()); }
+        { NativeDraftStore store(directory.path()); QCOMPARE(store.open(ownerB), Failure::None); QCOMPARE(store.outgoing().rows.size(), 1); }
+    }
+
     void latestRestorableConversationUsesTimeUuidAndConsumedState()
     {
         QTemporaryDir directory; NativeDraftService service(directory.path()); QVERIFY(service.open(ownerA));

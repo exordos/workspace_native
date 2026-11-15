@@ -117,7 +117,7 @@ inline QJsonObject message(const QString &content = "Hello from a synthetic acco
                            const QString &uuid = messageId, const QString &topic = topicId)
 {
     return {{"uuid", uuid}, {"project_id", projectId}, {"stream_uuid", streamId},
-            {"topic_uuid", topic}, {"author_uuid", userId}, {"is_own", true},
+            {"topic_uuid", topic}, {"user_uuid", userId}, {"author_uuid", userId}, {"is_own", true},
             {"read", true}, {"starred", false}, {"created_at", "2026-01-02T10:00:00.000Z"},
             {"payload", QJsonObject{{"kind", "markdown"}, {"content", content}}}};
 }

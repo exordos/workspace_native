@@ -184,7 +184,7 @@ NativeDraftStore::Failure NativeDraftStore::open(const QString &owner)
         int version = -1;
         if (!query.exec("PRAGMA user_version") || !query.next()) failure = Failure::Corrupt;
         else version = query.value(0).toInt();
-        if (failure == Failure::None && version != 0 && version != 1) failure = Failure::Schema;
+        if (failure == Failure::None && version != 0 && version != 1 && version != 2) failure = Failure::Schema;
         if (failure == Failure::None) {
             for (const auto *sql : {"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA foreign_keys=ON",
                     "PRAGMA cache_size=-2048", "PRAGMA secure_delete=ON"})
@@ -211,6 +211,17 @@ NativeDraftStore::Failure NativeDraftStore::open(const QString &owner)
         }
         if (failure == Failure::None
             && !query.exec("SELECT uuid, stream, topic, updated_at, phase, consumed, payload FROM draft_records LIMIT 0"))
+            failure = Failure::Corrupt;
+        if (failure == Failure::None && version < 2) {
+            if (!m_database.transaction()) failure = Failure::Unavailable;
+            else {
+                const bool ok = query.exec("CREATE TABLE outgoing_messages (uuid TEXT PRIMARY KEY NOT NULL, "
+                    "stream TEXT NOT NULL, route_topic TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(stream, route_topic))")
+                    && query.exec("PRAGMA user_version=2");
+                if (!ok || !m_database.commit()) { m_database.rollback(); failure = Failure::Unavailable; }
+            }
+        }
+        if (failure == Failure::None && !query.exec("SELECT uuid, stream, route_topic, payload FROM outgoing_messages LIMIT 0"))
             failure = Failure::Corrupt;
         if (failure == Failure::None && !query.exec("CREATE INDEX IF NOT EXISTS draft_conversation_order "
                 "ON draft_records (stream, topic, updated_at DESC, uuid DESC)"))
@@ -393,6 +404,152 @@ NativeDraftStore::Failure NativeDraftStore::apply(const QVector<DraftRecord> &wr
         }
     }
     if (!ok || !m_database.commit()) { m_database.rollback(); return Failure::Unavailable; }
+    return protectFiles() ? Failure::None : Failure::Unavailable;
+}
+
+namespace {
+QByteArray encodeOutgoing(const OutgoingRecord &r)
+{
+    return QJsonDocument(QJsonObject{{"format", 1}, {"uuid", r.uuid}, {"stream", r.stream}, {"topic", r.topic},
+        {"routeTopic", r.routeTopic}, {"publicId", r.publicId}, {"payload", r.payload},
+        {"draftUuid", r.draftUuid}, {"draftSnapshot", r.draftSnapshot}, {"draftText", r.draftText},
+        {"replyActive", r.replyActive}, {"replySnapshot", r.replySnapshot},
+        {"createdAt", r.createdAt}, {"deletionRevision", r.deletionRevision}}).toJson(QJsonDocument::Compact);
+}
+std::optional<OutgoingRecord> decodeOutgoing(const QByteArray &bytes)
+{
+    if (bytes.size() > NativeDraftStore::MaximumOutgoingRecordBytes) return {};
+    QJsonParseError error; const auto raw = QJsonDocument::fromJson(bytes, &error).object();
+    if (error.error != QJsonParseError::NoError || raw.value("format") != QJsonValue(1)) return {};
+    for (const auto *field : {"uuid", "stream", "topic", "routeTopic", "publicId", "draftUuid", "draftSnapshot", "draftText", "replyActive"})
+        if (!raw.value(QLatin1String(field)).isString()) return {};
+    if (!raw.value("payload").isObject() || !raw.value("replySnapshot").isArray()) return {};
+    OutgoingRecord r;
+    r.uuid = raw.value("uuid").toString(); r.stream = raw.value("stream").toString(); r.topic = raw.value("topic").toString();
+    r.routeTopic = raw.value("routeTopic").toString(); r.publicId = raw.value("publicId").toString(); r.payload = raw.value("payload").toObject();
+    r.draftUuid = raw.value("draftUuid").toString(); r.draftSnapshot = raw.value("draftSnapshot").toString(); r.draftText = raw.value("draftText").toString();
+    r.replyActive = raw.value("replyActive").toString(); r.replySnapshot = raw.value("replySnapshot").toArray();
+    if (!integer(raw, "createdAt", r.createdAt) || !integer(raw, "deletionRevision", r.deletionRevision)) return {};
+    return NativeDraftStore::valid(r) ? std::optional<OutgoingRecord>(r) : std::nullopt;
+}
+}
+
+qsizetype NativeDraftStore::serializedSize(const OutgoingRecord &r) { return encodeOutgoing(r).size(); }
+bool NativeDraftStore::valid(const OutgoingRecord &r)
+{
+    const auto uuid = [](const QString &s) { return isUuid(s) && s == s.toLower(); };
+    if (!uuid(r.uuid) || !uuid(r.stream) || !uuid(r.topic) || !uuid(r.publicId)
+        || (!r.routeTopic.isEmpty() && !uuid(r.routeTopic)) || r.createdAt <= 0 || r.createdAt > 9007199254740991LL
+        || r.deletionRevision < 0 || r.deletionRevision > 9007199254740991LL
+        || serializedSize(r) > MaximumOutgoingRecordBytes) return false;
+    const auto kind = r.payload.value("kind").toString();
+    const auto content = r.payload.value("content").toString();
+    if (!r.payload.value("content").isString() || content.isEmpty()) return false;
+    if (kind == "e2ee") {
+        const auto bytes = content.toLatin1();
+        const auto decoded = QByteArray::fromBase64(bytes, QByteArray::AbortOnBase64DecodingErrors);
+        return r.payload.size() == 3 && uuid(r.payload.value("key_uuid").toString()) && content.size() <= 213336
+            && !decoded.isEmpty() && decoded.toBase64() == bytes && QString::fromLatin1(bytes) == content
+            && r.draftUuid.isEmpty() && r.draftSnapshot.isEmpty() && r.draftText.isEmpty()
+            && r.replyActive.isEmpty() && r.replySnapshot.isEmpty();
+    }
+    if (kind != "markdown" || r.payload.size() != 2 || r.routeTopic != r.topic || content.size() > 40000
+        || content.contains(":::") || !draftText(r.draftText) || r.deletionRevision != 0
+        || (!r.draftUuid.isEmpty() && (!uuid(r.draftUuid) || !uuid(r.draftSnapshot)))
+        || (r.draftUuid.isEmpty() && !r.draftSnapshot.isEmpty()) || r.replySnapshot.size() > 64) return false;
+    for (const auto &value : r.replySnapshot) {
+        if (!value.isArray() || value.toArray().size() != 3) return false;
+        const auto tab = value.toArray();
+        if (!tab[0].isString() || !tab[1].isString() || !tab[2].isString()
+            || tab[0].toString().size() > 128 || !uuid(tab[1].toString()) || !draftText(tab[2].toString())) return false;
+    }
+    return r.replyActive.size() <= 128;
+}
+
+NativeDraftStore::OutgoingPage NativeDraftStore::outgoing()
+{
+    if (!available()) return {};
+    QSqlQuery query(m_database);
+    query.prepare("SELECT uuid, stream, route_topic, substr(payload, 1, ?), typeof(payload) FROM outgoing_messages ORDER BY uuid LIMIT ?");
+    query.addBindValue(MaximumOutgoingRecordBytes + 1); query.addBindValue(MaximumOutgoingRecords + 1);
+    if (!query.exec()) return {};
+    OutgoingPage result{Failure::None, {}}; qsizetype bytes = 0;
+    while (query.next()) {
+        const auto payload = query.value(3).toByteArray(); bytes += payload.size();
+        auto row = decodeOutgoing(payload);
+        if (!row || row->uuid != query.value(0).toString() || row->stream != query.value(1).toString()
+            || row->routeTopic != query.value(2).toString() || query.value(4).toString() != "blob"
+            || result.rows.size() == MaximumOutgoingRecords || bytes > MaximumOutgoingBytes) return {Failure::Corrupt, {}};
+        result.rows.append(std::move(*row));
+    }
+    return query.lastError().isValid() ? OutgoingPage{Failure::Corrupt, {}} : result;
+}
+
+NativeDraftStore::Failure NativeDraftStore::putOutgoing(const OutgoingRecord &r)
+{
+    if (!available()) return Failure::Unavailable;
+    if (!valid(r)) return Failure::InvalidRecord;
+    const auto existing = outgoing(); if (existing.failure != Failure::None) return existing.failure;
+    qsizetype bytes = serializedSize(r); bool found = false;
+    for (const auto &row : existing.rows) {
+        if (row.uuid == r.uuid) {
+            auto expected = row; expected.publicId = r.publicId;
+            if (encodeOutgoing(expected) != encodeOutgoing(r)) return Failure::InvalidRecord;
+            found = true;
+        } else {
+            if (row.stream == r.stream && row.routeTopic == r.routeTopic) return Failure::InvalidRecord;
+            bytes += serializedSize(row);
+        }
+    }
+    if ((!found && existing.rows.size() == MaximumOutgoingRecords) || bytes > MaximumOutgoingBytes) return Failure::Capacity;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    QSqlQuery query(m_database);
+    query.prepare("INSERT INTO outgoing_messages VALUES (?, ?, ?, ?) ON CONFLICT(uuid) DO UPDATE SET payload=excluded.payload");
+    query.addBindValue(r.uuid); query.addBindValue(r.stream); query.addBindValue(r.routeTopic.isNull() ? QStringLiteral("") : r.routeTopic);
+    query.addBindValue(encodeOutgoing(r));
+    if (!query.exec() || !m_database.commit()) { m_database.rollback(); return Failure::Unavailable; }
+    return protectFiles() ? Failure::None : Failure::Unavailable;
+}
+
+NativeDraftStore::Failure NativeDraftStore::finishOutgoing(const QString &uuid, bool consumeDraft,
+    const std::shared_ptr<OutgoingRetirement> &retirement)
+{
+    if (!available()) return Failure::Unavailable;
+    if (!isUuid(uuid)) return Failure::InvalidRecord;
+    const auto page = outgoing(); if (page.failure != Failure::None) return page.failure;
+    const auto found = std::find_if(page.rows.cbegin(), page.rows.cend(), [&](const auto &r) { return r.uuid == uuid; });
+    if (found == page.rows.cend()) return Failure::None;
+    if (!m_database.transaction()) return Failure::Unavailable;
+    bool okay = true;
+    if (consumeDraft && !found->draftUuid.isEmpty()) {
+        const auto draft = read(found->draftUuid);
+        if (draft.failure != Failure::None) okay = false;
+        else if (draft.record && draft.record->snapshot == found->draftSnapshot && draft.record->text == found->draftText
+            && draft.record->stream == found->stream && draft.record->topic == found->topic && !draft.record->consumed) {
+            auto consumed = *draft.record; consumed.consumed = true; consumed.phase = DraftRecord::Phase::Deleting;
+            QSqlQuery update(m_database); update.prepare("UPDATE draft_records SET phase=?, consumed=1, payload=? WHERE uuid=?");
+            update.addBindValue(static_cast<int>(consumed.phase)); update.addBindValue(encode(consumed)); update.addBindValue(consumed.uuid);
+            okay = update.exec();
+        }
+    }
+    QSqlQuery query(m_database); query.prepare("DELETE FROM outgoing_messages WHERE uuid=?"); query.addBindValue(uuid);
+    if (!okay || !query.exec()) { m_database.rollback(); return Failure::Unavailable; }
+    bool committed = false;
+    if (retirement) {
+        // The writer lock is already held. WAL commit cannot wait for another
+        // writer or reader here; never hold the GUI cancellation lock over SQL
+        // statement execution or its busy timeout.
+        const std::lock_guard<std::mutex> lock(retirement->mutex);
+        if (!retirement->cancelled) committed = m_database.commit();
+    } else committed = m_database.commit();
+    if (!committed) { m_database.rollback(); return Failure::Unavailable; }
+    return protectFiles() ? Failure::None : Failure::Unavailable;
+}
+NativeDraftStore::Failure NativeDraftStore::clearOutgoing()
+{
+    if (!available() || !m_database.transaction()) return Failure::Unavailable;
+    QSqlQuery query(m_database);
+    if (!query.exec("DELETE FROM outgoing_messages") || !m_database.commit()) { m_database.rollback(); return Failure::Unavailable; }
     return protectFiles() ? Failure::None : Failure::Unavailable;
 }
 

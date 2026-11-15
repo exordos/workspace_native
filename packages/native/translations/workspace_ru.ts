@@ -1157,6 +1157,22 @@
             <source>Try again</source>
             <translation>Попробовать снова</translation>
         </message>
+    <message>
+        <source>Checking pending message…</source>
+        <translation>Проверка ожидающего сообщения…</translation>
+    </message>
+    <message>
+        <source>This message is waiting for confirmation.</source>
+        <translation>Это сообщение ожидает подтверждения.</translation>
+    </message>
+    <message>
+        <source>Discard pending message?</source>
+        <translation>Удалить ожидающее сообщение?</translation>
+    </message>
+    <message>
+        <source>The message may already have been sent. Discard its pending status and keep the current draft?</source>
+        <translation>Возможно, сообщение уже отправлено. Удалить его из очереди и сохранить текущий черновик?</translation>
+    </message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -2304,6 +2320,42 @@
             <source>Could not rename the chat. Try again.</source>
             <translation>Не удалось переименовать чат. Попробуйте снова.</translation>
         </message>
+    <message>
+        <source>The original encryption key is unavailable. This pending message cannot be retried.</source>
+        <translation>Исходный ключ шифрования недоступен. Повторная отправка этого сообщения невозможна.</translation>
+    </message>
+    <message>
+        <source>Sending is unavailable. Your text is preserved.</source>
+        <translation>Отправка недоступна. Ваш текст сохранён.</translation>
+    </message>
+    <message>
+        <source>The pending message could not be saved. Your text is preserved.</source>
+        <translation>Не удалось сохранить сообщение в очереди. Ваш текст сохранён.</translation>
+    </message>
+    <message>
+        <source>The saved message was deleted. Your text is preserved.</source>
+        <translation>Сохранённое сообщение было удалено. Ваш текст сохранён.</translation>
+    </message>
+    <message>
+        <source>Pending messages could not be loaded. Sending is paused.</source>
+        <translation>Не удалось загрузить очередь сообщений. Отправка приостановлена.</translation>
+    </message>
+    <message>
+        <source>A pending message was restored. Check its status before retrying.</source>
+        <translation>Восстановлено сообщение из очереди. Проверьте его статус перед повторной отправкой.</translation>
+    </message>
+    <message>
+        <source>Message confirmation could not be saved. Check its status again.</source>
+        <translation>Не удалось сохранить подтверждение сообщения. Проверьте его статус ещё раз.</translation>
+    </message>
+    <message>
+        <source>The pending message could not be removed.</source>
+        <translation>Не удалось удалить сообщение из очереди.</translation>
+    </message>
+    <message>
+        <source>Pending messages could not be removed. The saved account was kept.</source>
+        <translation>Не удалось удалить очередь сообщений. Сохранённый аккаунт оставлен.</translation>
+    </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>

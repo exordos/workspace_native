@@ -150,6 +150,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString selectedStream READ selectedStream NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTopic READ selectedTopic NOTIFY stateChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
+    Q_PROPERTY(QVariantMap outgoingSend READ outgoingSend NOTIFY stateChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
@@ -564,6 +565,8 @@ public:
     Q_INVOKABLE void createTopic(const QString &stream, const QString &name);
     Q_INVOKABLE void checkTopicCreation();
     Q_INVOKABLE void send();
+    QVariantMap outgoingSend() const;
+    Q_INVOKABLE void discardPendingSend();
     Q_INVOKABLE void checkPendingSend();
     Q_INVOKABLE void retryPendingSend();
     Q_INVOKABLE void copyMessage(const QString &id);
@@ -1265,6 +1268,11 @@ private:
     void refreshReadStreamCounter(const Message &boundary);
     struct SendIntent {
         QString uuid, text; // Existing ordinary-send representation remains first.
+        bool durable = false, restored = false, retired = false, admitted = false, automaticChecked = false;
+        qint64 createdAt = 0;
+        std::shared_ptr<OutgoingRetirement> retirement;
+        QString replyActive;
+        QJsonArray replySnapshot;
         QString wire; // Wire markdown: the draft, or the urn:quote line plus the answer.
         bool encrypted = false, busy = false, dispatched = false, materialLost = false, statusOnly = false;
         QString owner, user, project, stream, topic, routeTopic, key, currentKey, publicId, phase, error;
@@ -1277,6 +1285,27 @@ private:
         bool draftCaptured = false;
         quint64 draftRevision = 0;
     };
+    void synchronizeOutgoing();
+    NativeDraftService *outgoingStorage() const;
+    bool outgoingReady() const;
+    bool outgoingOwned(const SendIntent &intent, bool writing) const;
+    bool outgoingContext(const QString &conversation, const QString &id, quint64 ticket) const;
+    OutgoingRecord outgoingRecord(const SendIntent &intent) const;
+    void admitOutgoing(const QString &conversation, std::function<void()> dispatch);
+    void retireOutgoing(const SendIntent &intent, std::function<void()> complete);
+    void cancelOutgoingRetirement(const QString &publicId);
+    void failOutgoing(const QString &conversation, const QString &id, quint64 ticket, const QString &error);
+    void recoverOrdinarySend(bool retry);
+    void postOrdinarySend(const QString &conversation, const QString &id, quint64 ticket);
+    void readOrdinarySend(const QString &conversation, const QString &id, quint64 ticket, bool retry);
+    void confirmOrdinarySend(const QJsonObject &raw, const QString &conversation, const QString &id, quint64 ticket);
+    void finishForgetSavedAccount(const QString &id, std::function<void()> done);
+    QString m_outgoingOwner;
+    NativeDraftService::Lease m_outgoingLease;
+    QPointer<NativeDraftService> m_outgoingService;
+    bool m_outgoingLoaded = false, m_outgoingLoading = false, m_outgoingSyncing = false;
+    QString m_outgoingError;
+    quint64 m_nextOutgoing = 0;
     QString encryptedSendTarget() const;
     bool encryptedSendOwned(const SendIntent &intent, bool writing) const;
     bool encryptedSendContext(const QString &conversation, const QString &id, quint64 ticket) const;

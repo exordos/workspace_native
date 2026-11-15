@@ -6537,6 +6537,71 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem(window->contentItem(), "streamNewTopicAction"));
     }
 
+    void sidebarFullActionCapacityKeepsArchiveIndependent()
+    {
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowChannelFixture fixture; auto target = windowChannel(streamId, "A target");
+        target["unread_count"] = 1; target["active_unread_count"] = 1;
+        QJsonArray streams{target}; QStringList busyIds; QMap<QString, QJsonObject> rows;
+        for (int i = 0; i < 32; ++i) {
+            const auto id = QString("aaaaaaaa-aaaa-4aaa-8aaa-%1").arg(i + 1, 12, 16, QLatin1Char('0'));
+            auto row = windowChannel(id, QString("Busy %1").arg(i));
+            row["unread_count"] = 1; row["active_unread_count"] = 1;
+            busyIds.append(id); rows.insert(id, row); streams.append(row);
+        }
+        QVector<std::function<void()>> held; bool drain = false; int archives = 0;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/") && request.method == "GET") return {streams};
+            if (path.endsWith("/actions/read/invoke")) {
+                auto row = rows.value(path.section("/streams/", 1).section('/', 0, 0));
+                row["unread_count"] = 0; row["active_unread_count"] = 0;
+                Response response{row};
+                if (!drain) response.defer = [&](std::function<void()> send) { held.append(std::move(send)); };
+                return response;
+            }
+            if (path.endsWith("/streams/" + streamId + "/actions/archive/invoke")) {
+                ++archives; target["is_archived"] = true;
+                target["updated_at"] = "2026-01-02T10:01:00Z";
+                return {target, 200, 100, {}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Chat capacity window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 33); QTRY_VERIFY(!controller.busy());
+        for (const auto &id : busyIds) { controller.markChatRead(id); QVERIFY(controller.chatActionState(id).value("pending").toBool()); }
+        QTRY_VERIFY(!held.isEmpty());
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
+        auto *row = item(window->contentItem(), "stream-" + streamId); row->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Menu);
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu); QTRY_VERIFY(menu->property("opened").toBool());
+        auto *read = window->findChild<QQuickItem *>("streamMarkReadAction"); QVERIFY(read);
+        auto *rename = window->findChild<QQuickItem *>("streamRenameAction"); QVERIFY(rename);
+        auto *archive = window->findChild<QQuickItem *>("streamArchiveAction"); QVERIFY(archive);
+        awaitTopicMenuLayout(window, archive, streamId);
+        QVERIFY(read->isVisible()); QVERIFY(rename->isVisible());
+        const bool unavailable = !read->isEnabled() && !rename->isEnabled();
+        QVERIFY(archive->isEnabled()); click(window, archive);
+        auto *dialog = window->findChild<QObject *>("chatActionDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *confirm = visibleItem("chatActionConfirm"); QVERIFY(confirm); QVERIFY(confirm->isEnabled());
+        click(window, confirm); QVERIFY(controller.chatActionState(streamId).value("pending").toBool()); QVERIFY(!confirm->isEnabled());
+        drain = true; const auto releases = held; held.clear(); for (const auto &release : releases) release();
+        QTRY_COMPARE(archives, 1); QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(controller.archivedChats().size(), 1);
+        QCOMPARE(controller.archivedChats().first().toMap().value("id").toString(), streamId);
+        QVERIFY2(unavailable, "The full read/rename capacity must disable both menu actions without blocking Archive");
+    }
+
     void sidebarChatActionsCompleteFromMenu_data()
     {
         QTest::addColumn<QString>("theme"); QTest::addColumn<QString>("scenario");
@@ -23781,6 +23846,74 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // The add-folder button is enabled chrome (the creation flow is issue #84).
         auto *add=visibleItem("folderAddButton"); QVERIFY(add);
         QVERIFY(add->property("enabled").toBool());
+    }
+
+    void durableOutgoingActualMainRetriesAndDiscards_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"}) for (const auto *mode : {"light", "dark"})
+            QTest::addRow("%s-%s", locale, mode) << QString(locale) << QString(mode);
+    }
+    void durableOutgoingActualMainRetriesAndDiscards()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory; WindowDraftFixture fixture;
+        QVector<QJsonObject> posts; QStringList requests; QJsonObject saved; bool complete = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.contains("/messenger/messages/")) {
+                if (request.method == "POST") {
+                    posts.append(request.body); requests.append("POST");
+                    const auto placement = QUuid::createUuidV5(QUuid(topicId), request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                    saved = message(request.body.value("payload").toObject().value("content").toString(), placement);
+                    return complete ? Response{saved} : Response{QJsonObject{}, 503};
+                }
+                if (!path.endsWith('/')) {
+                    requests.append("GET"); return complete && posts.size() == 2 ? Response{saved} : Response{QJsonObject{}, 404};
+                }
+                return {QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session); controller.useDrafts(&drafts);
+        NativePreferences preferences(directory.filePath("preferences.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] { if (guard) closeIncubatedTestWindow(engine, guard.data()); });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session)); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.setDraft("Durable outgoing original"); QTRY_VERIFY(controller.canSend()); click(window, view("sendButton"));
+        QTRY_COMPARE(posts.size(), 1); QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(view("pendingOutgoingStatus"));
+        QVERIFY(!view("sendButton")->isEnabled()); QVERIFY(view("retryPendingOutgoingButton")->isEnabled());
+        QCOMPARE(view("retryPendingOutgoingButton")->property("text").toString(), locale == "ru" ? QString("Повторить") : QString("Retry"));
+        auto *composer = view("messageComposer"); QVERIFY(composer); composer->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent edited; edited.setCommitString("Newer draft survives retry"); QCoreApplication::sendEvent(composer, &edited);
+        QTRY_COMPARE(controller.draft(), "Newer draft survives retry");
+        const auto captures = qEnvironmentVariable("CASSI_OUTGOING_SCREENSHOTS");
+        if (!captures.isEmpty()) QVERIFY(window->grabWindow().save(QDir(captures).filePath(locale + "-" + mode + "-pending.png")));
+        complete = true; click(window, view("retryPendingOutgoingButton")); QTRY_COMPARE(posts.size(), 2);
+        QTRY_VERIFY(controller.outgoingSend().isEmpty()); QCOMPARE(posts[0], posts[1]);
+        QCOMPARE(requests, QStringList({"POST", "GET", "POST", "GET"})); QCOMPARE(controller.draft(), "Newer draft survives retry");
+        complete = false; QTRY_VERIFY(controller.canSend()); click(window, view("sendButton"));
+        QTRY_COMPARE(posts.size(), 3); QTRY_VERIFY(!controller.busy());
+        auto *list = view("messageList"); QVERIFY(list);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        click(window, view("discardPendingOutgoingButton"));
+        auto *dialog = window->findChild<QObject *>("discardPendingOutgoingDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(!list->property("readActive").toBool());
+        QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool()); QVERIFY(!controller.outgoingSend().isEmpty());
+        QTRY_VERIFY(list->property("readActive").toBool());
+        click(window, view("discardPendingOutgoingButton")); QTRY_VERIFY(dialog->property("visible").toBool());
+        QQmlExpression discardButton(qmlContext(dialog), dialog, "standardButton(8388608)"); // Dialog.Discard
+        auto *discard = qobject_cast<QQuickItem *>(discardButton.evaluate().value<QObject *>());
+        QVERIFY(!discardButton.hasError()); QVERIFY(discard); click(window, discard);
+        QTRY_VERIFY(controller.outgoingSend().isEmpty());
+        QCOMPARE(controller.draft(), "Newer draft survives retry"); QCOMPARE(posts.size(), 3);
+        QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
     }
 
     // Review finding (cid 4577604523): the folder icon button must close the

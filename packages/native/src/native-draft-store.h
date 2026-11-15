@@ -1,11 +1,13 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QSqlDatabase>
 #include <QStringList>
 #include <QVector>
 #include <QSet>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 class QLockFile;
@@ -31,6 +33,26 @@ struct DraftRecord {
     // A public draft promoted to private input retains only deletion metadata.
     bool privateDeletion = false;
     bool privateCreateUncertain = false;
+};
+
+// Immutable pre-dispatch composer intent. Encrypted entries contain ciphertext
+// only; private composer text and key bytes never enter this store.
+struct OutgoingRecord {
+    QString uuid, stream, topic, routeTopic, publicId;
+    QJsonObject payload;
+    QString draftUuid, draftSnapshot, draftText;
+    QString replyActive;
+    QJsonArray replySnapshot;
+    qint64 createdAt = 0, deletionRevision = 0;
+};
+
+// One controller and its existing storage worker order deletion observation
+// against retirement. SQL statement/busy waits run outside this short guard;
+// only the final WAL commit shares the deletion boundary.
+struct OutgoingRetirement {
+    std::mutex mutex;
+    bool cancelled = false;
+    void cancel() { const std::lock_guard<std::mutex> lock(mutex); cancelled = true; }
 };
 
 // Durable unsent work is separate from the evictable history cache. This
@@ -65,6 +87,21 @@ public:
         QVector<Preview> rows;
         QString next;
     };
+    struct OutgoingPage {
+        Failure failure = Failure::Unavailable;
+        QVector<OutgoingRecord> rows;
+    };
+    static constexpr int MaximumOutgoingRecords = 64;
+    static constexpr qsizetype MaximumOutgoingBytes = 16 * 1024 * 1024;
+    static constexpr qsizetype MaximumOutgoingRecordBytes = 512 * 1024;
+    static bool valid(const OutgoingRecord &record);
+    static qsizetype serializedSize(const OutgoingRecord &record);
+    OutgoingPage outgoing();
+    Failure putOutgoing(const OutgoingRecord &record);
+    // Atomically retire the send and mark only its captured draft consumed.
+    Failure finishOutgoing(const QString &uuid, bool consumeDraft,
+                           const std::shared_ptr<OutgoingRetirement> &retirement = {});
+    Failure clearOutgoing();
     static constexpr qsizetype MaximumRecordBytes = 4 * 1024 * 1024;
     static constexpr int MaximumPageRows = 100;
     static constexpr qsizetype MaximumBatchBytes = 8 * 1024 * 1024;

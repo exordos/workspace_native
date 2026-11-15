@@ -49,7 +49,7 @@ add_library(workspace-native-core STATIC
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
     src/power-watcher.cpp src/power-watcher.h
-    src/native-controller.cpp src/native-controller.h)
+    src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
 # VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):

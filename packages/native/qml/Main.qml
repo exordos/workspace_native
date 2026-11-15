@@ -514,7 +514,8 @@ ApplicationWindow {
         composerText.forceActiveFocus(Qt.OtherFocusReason);
         composerText.cursorPosition = composerText.length;
     }
-    readonly property var encryptedPendingSend: root.chatEncryption.pendingSend || ({})
+    readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
+    readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
     readonly property bool encryptedSendingKeyOutdated: root.encryptedComposerHasKey && String(root.chatEncryption.sendingKeyUuid) !== String(root.chatEncryption.currentKeyUuid || "")
     readonly property string encryptionKeyNoticeId: root.controller.ownerKey + "/" + root.controller.selectedStream + "/" + String(root.chatEncryption.currentKeyUuid || "")
@@ -886,7 +887,7 @@ ApplicationWindow {
     }
     function openChatAction(mode) {
         const stream = currentStream(streamMenuTarget);
-        if (!stream || !streamMenuState.available) return;
+        if (!stream || !(mode === "archive" ? streamMenuState.canArchive : streamMenuState.available)) return;
         chatActionTarget = stream.id;
         chatActionOwner = root.controller.ownerKey;
         chatActionContext = String(stream.contextKey || "");
@@ -899,7 +900,7 @@ ApplicationWindow {
         else chatActionDialog.open();
     }
     function submitChatAction() {
-        if (!chatActionTarget.length || chatActionState.pending || !chatActionState.available) return;
+        if (!chatActionTarget.length || chatActionState.pending || !(chatActionMode === "archive" ? chatActionState.canArchive : chatActionState.available)) return;
         const stream = currentStream(chatActionTarget);
         if (!stream) return;
         if (chatActionMode === "rename" && (!chatRenameInput.text.trim().length || chatRenameInput.text.trim() === stream.name)) return;
@@ -4014,7 +4015,7 @@ ApplicationWindow {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -6007,6 +6008,44 @@ ApplicationWindow {
                 onClicked: root.controller.loadNewer()
             }
             Rectangle {
+                id: outgoingStatus
+                objectName: "pendingOutgoingStatus"
+                visible: !root.encryptedConversation && (String(root.pendingOutgoing.id || "").length > 0 || String(root.pendingOutgoing.error || "").length > 0)
+                Layout.fillWidth: true
+                Layout.preferredHeight: outgoingStatusContent.implicitHeight + 20
+                color: root.colors["composer-outer"]
+                ColumnLayout {
+                    id: outgoingStatusContent
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 10
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.pendingOutgoing.busy ? qsTr("Checking pending message…") : String(root.pendingOutgoing.error || qsTr("This message is waiting for confirmation."))
+                        color: root.colors["text-muted"]
+                        wrapMode: Text.Wrap; textFormat: Text.PlainText
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                    }
+                    RowLayout {
+                        NativeButton {
+                            objectName: "checkPendingOutgoingButton"; colors: root.colors
+                            text: qsTr("Check status"); enabled: Boolean(root.pendingOutgoing.canCheck)
+                            onClicked: root.controller.checkPendingSend()
+                        }
+                        NativeButton {
+                            objectName: "retryPendingOutgoingButton"; colors: root.colors
+                            text: qsTr("Retry"); enabled: Boolean(root.pendingOutgoing.canRetry)
+                            onClicked: root.controller.retryPendingSend()
+                        }
+                        NativeButton {
+                            objectName: "discardPendingOutgoingButton"; colors: root.colors
+                            text: qsTr("Discard"); enabled: Boolean(root.pendingOutgoing.canDiscard)
+                            onClicked: outgoingDiscard.openForPending()
+                        }
+                    }
+                }
+            }
+            Rectangle {
                 id: encryptionStatus
                 objectName: "encryptedReadStatus"
                 readonly property bool inlineKeyNotice: root.encryptedKeyNoticeVisible && root.chatEncryption.available
@@ -6167,6 +6206,13 @@ ApplicationWindow {
                             text: qsTr("Retry")
                             Accessible.name: qsTr("Retry sending the same message")
                             onClicked: root.controller.retryPendingSend()
+                        }
+                        NativeButton {
+                            objectName: "discardPendingEncryptedSendButton"
+                            colors: root.colors; text: qsTr("Discard")
+                            visible: String(root.pendingOutgoing.id || "").length > 0
+                            enabled: Boolean(root.pendingOutgoing.canDiscard)
+                            onClicked: outgoingDiscard.openForPending()
                         }
                     }
                 }
@@ -7754,6 +7800,36 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: outgoingDiscard
+        objectName: "discardPendingOutgoingDialog"
+        property string pendingId: ""
+        property string pendingOwner: ""
+        function openForPending() {
+            pendingId = String(root.pendingOutgoing.id || ""); pendingOwner = root.controller.ownerKey;
+            if (pendingId.length > 0) open();
+        }
+        anchors.centerIn: parent
+        width: Math.min(root.width - 48, 464)
+        modal: true; title: qsTr("Discard pending message?")
+        standardButtons: Dialog.Cancel | Dialog.Discard
+        contentItem: Label {
+            text: qsTr("The message may already have been sent. Discard its pending status and keep the current draft?")
+            wrapMode: Text.Wrap; textFormat: Text.PlainText
+        }
+        onDiscarded: {
+            if (pendingId === String(root.pendingOutgoing.id || "") && pendingOwner === root.controller.ownerKey)
+                root.controller.discardPendingSend();
+        }
+        Connections {
+            target: root.controller
+            function onStateChanged() {
+                if (outgoingDiscard.visible && (outgoingDiscard.pendingId !== String(root.pendingOutgoing.id || "")
+                    || outgoingDiscard.pendingOwner !== root.controller.ownerKey)) outgoingDiscard.close();
+            }
+        }
+    }
+
+    Dialog {
         id: referenceNotice
         anchors.centerIn: parent
         width: Math.min(root.width - 48, 464)
@@ -7913,7 +7989,7 @@ ApplicationWindow {
                     objectName: "chatActionConfirm"
                     colors: root.colors; primary: true
                     text: root.chatActionState.pending ? qsTr("Please wait…") : root.chatActionMode === "archive" ? qsTranslate("SidebarChatActions", "Archive") : root.chatActionMode === "rename" ? qsTr("Save") : qsTr("Try again")
-                    enabled: root.chatActionState.available && (root.chatActionMode !== "rename"
+                    enabled: (root.chatActionMode === "archive" ? root.chatActionState.canArchive : root.chatActionState.available) && (root.chatActionMode !== "rename"
                         || chatRenameInput.text.trim().length > 0 && chatRenameInput.text.trim() !== String((root.currentStream(root.chatActionTarget) || {}).name || ""))
                     onClicked: root.submitChatAction()
                     KeyNavigation.tab: root.chatActionMode === "rename" ? chatRenameInput : chatActionCancel

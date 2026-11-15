@@ -17,6 +17,7 @@ public:
     using Done = std::function<void(Failure)>;
     using ReadDone = std::function<void(NativeDraftStore::Read)>;
     using PageDone = std::function<void(NativeDraftStore::Page)>;
+    using OutgoingDone = std::function<void(NativeDraftStore::OutgoingPage)>;
     using PreviewDone = std::function<void(NativeDraftStore::PreviewPage)>;
     static constexpr int MaximumDataJobs = 8;
     static constexpr int MaximumControlJobs = 2; // Stop has one reserved barrier.
@@ -40,6 +41,13 @@ public:
                QObject *receiver = nullptr, Done done = {});
     bool retainStreams(const Lease &lease, const QSet<QString> &authorized,
                        QObject *receiver = nullptr, Done done = {});
+    bool outgoing(const Lease &lease, QObject *receiver, OutgoingDone done);
+    bool putOutgoing(const Lease &lease, const OutgoingRecord &record, QObject *receiver, Done done);
+    bool finishOutgoing(const Lease &lease, const QString &uuid, bool consumeDraft, QObject *receiver, Done done,
+                        std::shared_ptr<OutgoingRetirement> retirement = {});
+    // Explicit account forgetting uses a captured verified owner even when it is
+    // not selected. The worker drains prior accepted writes before this purge.
+    bool clearOutgoing(const QString &owner, QObject *receiver, Done done);
     // FIFO completion barrier. Per-Apply receipts report durable success/failure.
     bool flush(QObject *receiver, Done done);
     void shutdown();

@@ -898,6 +898,7 @@ NativeDraftService::Failure NativeDrafts::failure() const
         : !state->invalidShadow.isEmpty() ? Failure::InvalidRecord : state->failure;
 }
 
+NativeDraftService *NativeDrafts::storage() const { return d->storage; }
 void NativeDrafts::setOwner(const QString &owner)
 {
     const auto next = ownerValid(owner) ? owner : QString{};
