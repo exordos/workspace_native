@@ -189,15 +189,27 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   create, restarts included. If the dispatch marker itself cannot be written,
   creation is rejected locally and the stage cleared on the spot: at that
   point the POST has provably not been dispatched and never will be, so the
-  reclaim is safe. Residual risk, accepted deliberately: a crash between the
-  durable marker and the actual socket write leaves a `dispatch-attempted`
-  stage whose POST also never left; recovery retains it (bounded rescans)
-  instead of risking the lossy direction. Retaining a stage that never lands
-  costs at most budget slots and repeated harmless GETs; retiring a stage
-  whose POST can still land would strand a created channel whose only key
-  copy is in the vault — so the tradeoff always resolves toward retention.
-  Stage records written before this contract existed carry no phase and
-  decode as `dispatch-attempted` (the same never-lossy default).
+  reclaim is safe. Residual hole (closed by conclusive-absence evidence): a
+  crash between the durable marker and the actual socket write leaves a
+  `dispatch-attempted` stage whose POST also never left, and whose stream
+  answers `404` to every recovery GET forever — retention alone could never
+  remove it, so a bounded run of such crashes would permanently exhaust the
+  budget. Each recovery scan cycle that gets a DEFINITIVE `404` durably
+  bumps the stage record's `missingEvidence` counter; a `2xx` answer (the
+  stream exists) resets it to `0`; transport errors and `5xx` prove neither
+  presence nor absence and leave it untouched. The controller retires the
+  stage only once FIVE consecutive definitive `404` observations recorded
+  across SEPARATE scan cycles are on the record AND the stage is at least
+  10 minutes old (`minimumChannelStageMissingObservations` /
+  `minimumChannelStageReclaimAgeMs`). That combination is what keeps the R2
+  retention contract closed: a POST still in flight or still committing is
+  never reclassified — in-session the live intent is skipped by the scan and
+  only the POST's own definite rejection (400/401/403/404) or the verified
+  echo closes it, and after a restart a late commit lands within seconds,
+  long before the age floor, where its first `2xx` re-verifies the echo and
+  voids the evidence. Stage records written before this contract existed
+  carry no phase and decode as `dispatch-attempted` with zero evidence (the
+  same never-lossy default).
 - Recovery resolution rules (review findings 4575117257/4575117265/4575117269):
   a `404` from the recovery GET is NOT proof the original POST cannot land —
   a delayed or in-flight creation can still commit server-side moments after
@@ -208,9 +220,12 @@ existing call keeps ordinary behaviour). With `encrypted = true`:
   create-stage budget and starving later encrypted creates). A scan pass that
   ends with any stage unresolved (vault read failure, failed GET, 404,
   non-verifying echo) schedules a bounded in-session rescan — at most 5
-  retries, 1 s apart, per owner+vault-lease — so a transient outage heals
-  without requiring a controller restart; a stream that never lands stops
-  polling after the cap and is re-checked by the next controller init. A
+  fast retries, 1 s apart, per owner+vault-lease. Once that fast window is
+  exhausted with stages still unresolved the scan does NOT go silent for the
+  lease: it re-arms with exponential backoff capped at 30 s per cycle (each
+  re-arm is a fresh scan cycle), so an outage longer than the window still
+  heals without a controller restart; a pass with nothing unresolved stops
+  arming, so an idle vault never polls. A
   `prepared` (never-dispatched) stage never reaches this retention rule: it
   is retired by the two-phase dispatch contract above before any request.
 - `channelCreationForm()` additionally exposes `encrypted`, which is what the
@@ -268,6 +283,14 @@ any recovery GET for the never-dispatched attempts
 (`encryptedChannelCreationCrashBeforeDispatchStagesCannotStarveLaterCreates`);
 and the guard that a dispatched stage whose recovery sees `404` is retained,
 never retired (`encryptedChannelCreationDispatchAttemptedStageSurvivesRecoveryScan`).
+The conclusive-absence follow-ups add: 32 dispatch-attempted stages whose
+streams 404 forever are reclaimed from durable evidence accumulated across
+separate scan cycles, freeing the budget for a later create
+(`encryptedChannelCreationDispatchAttemptedStagesWithConclusiveMissingEvidenceAreReclaimed`);
+and recovery re-arming with bounded backoff after the fast retry window ends
+while the failure is still in effect, so an outage longer than the window
+still commits the stage in-session
+(`encryptedChannelCreationRecoveryReArmsAfterFastRetryWindowEnds`).
 
 `native-window-test.cpp` (group `native-native-window`) covers: the switch is
 present, enabled and interactive; turning it on clears and disables
