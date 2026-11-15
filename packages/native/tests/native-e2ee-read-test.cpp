@@ -10449,15 +10449,17 @@ private slots:
         // follows stream load keeps canRequest false until it settles (same
         // gate the reference holds behind getRights()).
         QTRY_COMPARE(scene.evaluate("controller.encryption.canRequest"), QVariant(true));
-        // "Request this key again" mirrors the reference button and gate, but
-        // the native request primitive short-circuits generations the vault
-        // already holds (staging would drop the local copy, which the
-        // reference "saved key remains available" contract forbids - docs
-        // deviation 7). Pressing it must therefore be a safe no-op, and the
-        // key_request POST + sent-status projection are proven by the
-        // current-key-missing recovery below plus the controller request cases.
+        // R2 review 4576750804: "Request this key again" posts a fresh
+        // key_request for the saved generation and surfaces the sent status,
+        // and must not replace the saved local bytes (the reference "saved
+        // key remains available" contract; deviation 7 retired).
         QVERIFY(scene.require("encryptedChatRequestLocalKeyButton")->isEnabled());
         encryptedUiClick(scene.require("encryptedChatRequestLocalKeyButton"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyRequested")
+            && scene.item("encryptedChatLocalKeyRequested")->isVisible());
+        QCOMPARE(scene.text("encryptedChatLocalKeyRequested"),
+            QString("Request sent. The saved key remains available."));
+        QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, historicalKey}).value.bytes.size(), 32);
         QVERIFY(scene.require("encryptedChatLocalKeyScreen"));
         QCOMPARE(scene.text("encryptedChatLocalKeyUuid"), historicalKey);
         encryptedUiClick(scene.require("nativeRightDrawerBack"));
@@ -10468,6 +10470,12 @@ private slots:
         QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
         QCOMPARE(scene.text("encryptedChatLocalKeyState"), QString("Current"));
         encryptedUiClick(scene.require("encryptedChatDeleteLocalKeyButton"));
+        auto *confirmDialog = scene.window->findChild<QObject *>("encryptedChatDeleteLocalKeyConfirm");
+        QVERIFY(confirmDialog);
+        QTRY_VERIFY(confirmDialog->property("visible").toBool());
+        auto *confirmDelete = confirmDialog->findChild<QQuickItem *>("encryptedChatDeleteLocalKeyConfirmDelete");
+        QVERIFY(confirmDelete);
+        encryptedUiClick(confirmDelete);
         QTRY_VERIFY(scene.item("encryptedChatLocalKeyUnavailable"));
         QCOMPARE(scene.text("encryptedChatLocalKeyUnavailable"),
             QString("This key is no longer saved on this device."));
@@ -10478,6 +10486,82 @@ private slots:
         QTRY_COMPARE(scene.evaluate("controller.encryption.canRequest"), QVariant(true));
         encryptedUiClick(scene.require("encryptedChatRequestCurrentKeyButton"));
         QTRY_VERIFY(scene.item("encryptedChatCurrentKeyRequested"));
+    }
+
+    void uiEncryptedChatKeyScreenDeleteConfirmation_data()
+    {
+        QTest::addColumn<QString>("locale");
+        for (const auto *locale : {"en", "ru"}) QTest::newRow(locale) << QString(locale);
+    }
+    // R2 review 4576750806: the details danger button routes through the
+    // reference confirmation dialog naming the copy loss; Cancel keeps the
+    // durable row, Confirm performs the deletion.
+    void uiEncryptedChatKeyScreenDeleteConfirmation()
+    {
+        QFETCH(QString, locale);
+        ProtectedChatInfoScene scene(locale, "dark", true, 2, true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat delete-confirmation window did not close", __FILE__, __LINE__);
+        });
+        const QString historicalKey = QStringLiteral("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d");
+        QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, historicalKey}, QByteArray(32, 'k'), 0),
+            NativeChatKeyVault::Failure::None);
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyUuid"));
+        encryptedUiClick(scene.require("encryptedChatLocalKeysToggle"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeysList"));
+        QTRY_VERIFY(scene.require("encryptedChatLocalKeyRow-" + historicalKey)->isVisible());
+        encryptedUiClick(scene.require("encryptedChatLocalKeyRow-" + historicalKey));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyScreen"));
+        // The danger button no longer removes the row directly: the dialog
+        // names the consequence first (deleteLocalKeyConfirmTitle/Description).
+        // The Popup is not part of the visual item scan, so it is looked up the
+        // same way the Main.qml dialog tests do (findChild + visible property).
+        const auto dialog = [&] {
+            return scene.window->findChild<QObject *>("encryptedChatDeleteLocalKeyConfirm");
+        };
+        const auto dialogOpen = [&] {
+            auto *popup = dialog();
+            return popup && popup->property("visible").toBool();
+        };
+        const auto dialogText = [&](const QString &name) {
+            auto *popup = dialog();
+            auto *label = popup ? popup->findChild<QObject *>(name) : nullptr;
+            return label ? label->property("text").toString() : QString();
+        };
+        const auto dialogButton = [&](const QString &name) -> QQuickItem * {
+            auto *popup = dialog();
+            return popup ? popup->findChild<QQuickItem *>(name) : nullptr;
+        };
+        encryptedUiClick(scene.require("encryptedChatDeleteLocalKeyButton"));
+        QTRY_VERIFY(dialogOpen());
+        QCOMPARE(dialogText("encryptedChatDeleteLocalKeyConfirmTitle"), locale == "ru"
+            ? QString("Удалить сохранённый ключ?") : QString("Delete the saved key?"));
+        QCOMPARE(dialogText("encryptedChatDeleteLocalKeyConfirmDescription"), locale == "ru"
+            ? QString("Сообщения, зашифрованные этим ключом, будут недоступны на этом устройстве "
+                      "до повторного получения ключа. Ключ в чате и на других устройствах сохранится.")
+            : QString("Messages encrypted with this key will be unavailable on this device until "
+                      "you obtain the key again. The key in the chat and on other devices will "
+                      "remain unchanged."));
+        QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, historicalKey}).value.bytes.size(), 32);
+        // Cancel keeps the durable row.
+        encryptedUiClick(dialogButton("encryptedChatDeleteLocalKeyConfirmCancel"));
+        QTRY_VERIFY(!dialogOpen());
+        QCOMPARE(scene.text("encryptedChatLocalKeyUuid"), historicalKey);
+        QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, historicalKey}).value.bytes.size(), 32);
+        // Confirm removes the row, exactly as the reference does after Yes.
+        encryptedUiClick(scene.require("encryptedChatDeleteLocalKeyButton"));
+        QTRY_VERIFY(dialogOpen());
+        encryptedUiClick(dialogButton("encryptedChatDeleteLocalKeyConfirmDelete"));
+        QTRY_VERIFY(scene.item("encryptedChatLocalKeyUnavailable"));
+        QCOMPARE(scene.f.vault.read(scene.f.vault.lease(), {streamId, historicalKey}).value.bytes.size(), 0);
     }
 
     void uiEncryptedChatKeyScreenSourceGeometry_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }

@@ -221,23 +221,35 @@ read path already uses for safe copy; the native test asserts
 
 ## Deviations from the reference (measured, deliberate)
 
-1. Delete confirmation dialog: the reference wraps `e2ee.deleteLocalKey` in the
-   shared ConfirmationDialog (`deleteLocalKeyConfirmTitle/Description`). The
-   native app has no shared drawer-scope confirmation widget yet; the native
-   danger button performs the deletion directly (the action is recoverable -
-   the key can be requested again) and the controller action boundary is
-   identical. Porting the dialog (its two extra strings included) is deferred
-   to the shared-dialog slice.
+1. Delete confirmation dialog (resolved in R2): the reference wraps
+   `e2ee.deleteLocalKey` in the shared ConfirmationDialog
+   (`deleteLocalKeyConfirmTitle/Description`). The native drawer scope has no
+   shared confirmation widget yet, so the details screen declares a
+   page-scoped `Dialog` (`encryptedChatDeleteLocalKeyConfirm`) with the
+   reference title/description copy; the danger button opens it and only the
+   confirm button calls `deleteChatLocalKey`. Deleting a local key may drop
+   the device's only copy of a historical generation, so the dialog names the
+   consequence (messages become unreadable on this device; chat and other
+   devices keep the key).
 2. Inventory `loading` state only covers "store opening" (`storeOpening`):
    native vault enumeration is a synchronous durable read, so there is no
    fetch-in-flight phase to render; the reference's `loading` flag is its async
    storage read. Error and empty states port 1:1.
-3. Reissue is a single-attempt action: the reference stages creations
+3. Reissue stages durably (resolved in R2): the reference stages creations
    crash-resumably (`listStagedCreations`/`writeStagedCreation`, recovered
-   rotation) before announcing. The native action stages the new key in the
-   vault and announces it; an interrupted reissue simply does not announce and
-   leaves the old key current (no staged-creation recovery ledger yet). The
-   pending/verifying/sending presentation and the failure text match.
+   rotation) before announcing. The native action writes a `RotationStage`
+   pin (vault record `rotation-stage-v1`) for the staged generation BEFORE
+   the `key_announced` POST is dispatched. While the pin is set the controller
+   refuses to delete that key, so a staged rotation key can never lose its
+   bytes while the announcement outcome is unknown. The pin clears only on a
+   verified announcement echo (the accepted `key_announced` message names the
+   staged generation -> key becomes current) or a definite rejection (400 /
+   401 / 403 / 404 on the announcement POST). Timeouts, 5xx answers and
+   absence of the message are never treated as terminal; a success that
+   landed while the process was gone is recovered by the GET recheck pass
+   (`maybeResolveRotationStages`), armed on vault attach, login and inventory
+   reveal. The pending/verifying/sending presentation and the failure text
+   match.
 4. No `KeyRequestHistory` section on the key screen (the request/grant flow is
    #222/#226 territory, out of this issue's acceptance list).
 5. Drawer title: the reference title plumbing for the key screens is the shell
@@ -250,20 +262,20 @@ read path already uses for safe copy; the native test asserts
    `sourceName === "native"` streams stays out of scope (same deviation as
    #243 deviation 3).
 
-7. "Request this key again" on a locally-saved generation: the reference
-   runtime (`chat-e2ee-controller.lib.ts:185-230`) creates and posts a fresh
-   `key_request` even while the local store holds the key, because staging
-   leaves the local copy intact ("Request sent. The saved key remains
-   available."). The native request primitive
-   (`native-controller.cpp` `startChatRequest`) short-circuits when the vault
-   row already holds a usable 32-byte generation: native staging replaces the
-   local bytes with an empty pending slot (the POST guard in `postChatRequest`
-   asserts `bytes.isEmpty()`), so re-requesting a saved key would drop the
-   local copy the reference contract keeps. The native details button keeps
-   the reference enable-gate, pressing it is a safe no-op, and the
-   `key_request` POST + sent-status projection are exercised through the
-   current-key-missing recovery (same primitive, key absent) and the
-   controller request-flow cases.
+7. "Request this key again" on a locally-saved generation (resolved in R2):
+   the reference runtime (`chat-e2ee-controller.lib.ts:185-230`) creates and
+   posts a fresh `key_request` even while the local store holds the key,
+   because staging leaves the local copy intact ("Request sent. The saved key
+   remains available."). The details button now passes its explicit
+   generation to `requestChatKey(keyUuid)`, and `startChatRequest` routes an
+   explicit fresh request to the wire even when the vault row already holds
+   the bytes: the request is staged as a pending request (never an empty
+   bytes slot overwrite), the `key_request` POST goes out, and the sent
+   status surfaces while the saved generation's bytes stay untouched
+   (`chatLocalKeyRequestSavedGenerationSendsAndKeepsTheSavedBytes`). The
+   implicit current-key recovery and the check/retry passes keep the original
+   local short-circuit (a usable local generation is already the success
+   state for those passes).
 
 ## Tests (issue acceptance)
 
@@ -287,32 +299,51 @@ Controller group `native-native-controller` (`native-controller-test.cpp`):
    and the inventory; a non-UUID argument and a stale vault report the
    localized `deleteLocalKeyFailed` text; the current key row stays deletable
    like the reference (the request-current-key recovery then applies).
+5. `chatLocalKeyRotationAnnouncementPinsTheStagedKey`: while a rotation
+   announcement is in flight (deferred POST) the staged generation is pinned:
+   delete is refused with the localized pin text and the vault bytes stay
+   intact; the pinned answer matrix — echo (201) releases the pin and delete,
+   403 rejection clears it, 500 keeps it set with the row still pinned — and
+   the success path stores the new key in the inventory.
+6. `chatLocalKeyRotationPinSurvivesRestartAndDelayedEchoLands`: a new
+   controller over the same vault directory sees the pin after restart
+   (durable `rotation-stage-v1`), delete stays refused, and the delayed
+   announcement echo landing (or the GET recheck seeing it on the server)
+   resolves the pin so the row can be deleted afterwards.
+7. `chatLocalKeyRequestSavedGenerationSendsAndKeepsTheSavedBytes`: requesting
+   a generation the vault already saves posts a fresh `key_request`, reports
+   the sent status, and leaves the local bytes (and revision) unchanged.
 
 Window group `native-native-e2ee-ui` (`native-e2ee-read-test.cpp`, added to the
 existing CMake function list - no new ctest group), data-driven en/ru x
 dark/light over `ProtectedChatInfoScene`:
 
-5. `uiEncryptedChatKeyScreenInventoryAndDetails`: the key screen shows the
+8. `uiEncryptedChatKeyScreenInventoryAndDetails`: the key screen shows the
    `Current key ID` chip (chip text = the stream key), the copy button puts the
    UUID on the clipboard, and the saved-keys section starts collapsed, then
    expands to Current/Historical rows (`first8...last4` monospace, added
    dates). A row opens the `local-key` details (full uuid, state line, the
    `Not found in loaded history` announcement fallback, added label); Back
    returns to the key screen. `Request this key again` mirrors the reference
-   enable-gate; on native it is a safe no-op for a generation the vault
-   already holds (deviation 7), so the wire request and sent-status lines are
-   proven through the current-key-missing recovery: deleting the current
-   generation's local row surfaces the missing hint, `Request current key`
-   posts the `key_request` and the sent-status line appears. The catalog
-   snapshot that follows stream load keeps `canRequest` false until it
-   settles; the case waits for the rights projection (same gate the reference
-   reads from `getRights()`).
-6. `uiEncryptedChatKeyScreenSourceGeometry` (data-driven en/ru x dark/light):
+   enable-gate and, for a generation the vault already holds, posts a fresh
+   `key_request` and shows the sent-status line while the saved row stays
+   intact (deviation 7); the current-key-missing recovery (delete the current
+   generation's local row -> `Request current key`) exercises the same
+   primitive with the bytes absent. The catalog snapshot that follows stream
+   load keeps `canRequest` false until it settles; the case waits for the
+   rights projection (same gate the reference reads from `getRights()`).
+9. `uiEncryptedChatKeyScreenSourceGeometry` (data-driven en/ru x dark/light):
    the measured reference geometry - `text-sm` muted label over the card-bg
    chip (height 32), the 24 px ghost copy button, the 36 px `Reissue key`
    button, the 44 px collapsible row, the 50 px key rows with accent/muted
    Current/Historical badges, and the details labels/buttons - asserted
    against the native token palette (NativeTheme `card-bg`, `accent`).
+10. `uiEncryptedChatKeyScreenDeleteConfirmation` (data-driven en/ru): pressing
+   `Delete from this device` opens `encryptedChatDeleteLocalKeyConfirm` with
+   the localized title/description naming the irreversible local-copy loss;
+   Cancel closes it and the vault row (bytes included) stays intact; the
+   confirm button removes the row and the details screen falls back to the
+   unavailable state.
 
 Every new `qsTr` string (context `NativeEncryptedChatInfo`) and every new
 controller `tr` string lands in `packages/native/translations/workspace_ru.ts`

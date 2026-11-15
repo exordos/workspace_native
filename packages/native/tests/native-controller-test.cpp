@@ -41,6 +41,7 @@
 #include <atomic>
 #include <QTemporaryDir>
 #include <QMap>
+#include <QUuid>
 #include <QTest>
 #include <QUrlQuery>
 #include <QWebSocket>
@@ -1388,6 +1389,14 @@ struct KeyManagementFixture {
     int announcementPosts = 0;
     QJsonArray announcementBodies;
     std::function<void()> releaseAnnouncement;
+    // R2 review 4576750804: the saved-generation re-request needs the same
+    // deterministic key_request echo the controller binds after a POST.
+    int requestPosts = 0;
+    QJsonArray requestBodies;
+    // R2 review 4576750798: a restart resolves a lost announcement response by
+    // GET-ing the announcement message under its uuid; the server only has the
+    // row when the POST actually landed (message uuid -> key uuid).
+    QHash<QString, QString> serverAnnouncedMessages;
     explicit KeyManagementFixture() : vault(directory.path(), &secrets)
     {
         server.handler = [this](const Request &request) -> Response {
@@ -1429,7 +1438,28 @@ struct KeyManagementFixture {
                         response.defer = [this](std::function<void()> send) { releaseAnnouncement = send; };
                     return response;
                 }
+                if (payload.value("kind").toString() == "key_request") {
+                    ++requestPosts;
+                    requestBodies.append(request.body);
+                    // The controller binds the request by its deterministic placement
+                    // (V5 of the topic over the local request id), so the accepted
+                    // row must carry exactly that uuid.
+                    const auto topic = request.body.value("topic_uuid").toString();
+                    const auto placement = QUuid::createUuidV5(QUuid(topic),
+                        request.body.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                    auto saved = message({}, placement, topic);
+                    saved["payload"] = payload;
+                    return {saved, messagePostStatus};
+                }
                 return {message({}, "60000000-0000-4000-8000-000000000009", topicId), 201};
+            }
+            if (request.method == "GET" && path.startsWith("/api/workspace/v1/messenger/messages/")) {
+                const auto uuid = path.mid(QString::fromLatin1("/api/workspace/v1/messenger/messages/").size()).toLower();
+                const auto landed = serverAnnouncedMessages.constFind(uuid);
+                if (landed == serverAnnouncedMessages.constEnd()) return {QJsonObject{}, 404};
+                auto row = message({}, uuid, secondTopicId);
+                row["payload"] = QJsonObject{{"kind", "key_announced"}, {"key_uuid", *landed}};
+                return {row, 200};
             }
             return sessionResponse(request);
         };
@@ -1482,6 +1512,48 @@ struct KeyManagementFixture {
     {
         QCOMPARE(vault.put(vault.lease(), {streamId, key}, QByteArray(32, char(7)), 0),
             NativeChatKeyVault::Failure::None);
+    }
+    QVariantList inventoryRows() const { return controller.chatKeyInventory().value("keys").toList(); }
+    QStringList inventoryUuids() const
+    {
+        QStringList result;
+        for (const auto &row : inventoryRows()) result.append(row.toMap().value("keyUuid").toString());
+        return result;
+    }
+};
+
+// R2 review 4576750798: restart simulation. The live controller/vault pair is
+// torn down (the announcement response never returns), and a fresh client,
+// session, controller and vault come up over the same durable vault directory
+// and the same mock server. The old vault is closed first so the single-writer
+// vault lock transfers, exactly like a process restart would release it.
+struct KeyManagementRestart {
+    KeyManagementFixture &fixture;
+    ApiClient api{nullptr, true};
+    Session session{&api};
+    NativeController controller{&api, &session};
+    NativeChatKeyVault vault;
+    explicit KeyManagementRestart(KeyManagementFixture &owner)
+        : fixture(owner), vault(owner.directory.path(), &owner.secrets) {}
+    bool start()
+    {
+        fixture.vault.close();
+        controller.login(fixture.tls.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return false;
+        controller.openProject(projectId);
+        if (!QTest::qWaitFor([this] { return controller.streams().size() == 1; }, 2000)) return false;
+        controller.selectStream(streamId);
+        if (!QTest::qWaitFor([this] { return !controller.topics().isEmpty(); }, 2000)) return false;
+        controller.selectTopic(topicId);
+        if (!QTest::qWaitFor([this] { return !controller.busy() && controller.messages().size() == 3; }, 2000)) return false;
+        NativeChatKeyVault::Failure openFailure = NativeChatKeyVault::Failure::Unavailable;
+        vault.open(fixture.tls.origin(), projectId, userId, "Synthetic key device",
+            [&openFailure](NativeChatKeyVault::Failure failure) { openFailure = failure; });
+        if (!QTest::qWaitFor([&openFailure] { return openFailure != NativeChatKeyVault::Failure::Unavailable; }, 2000))
+            return false;
+        if (openFailure != NativeChatKeyVault::Failure::None) return false;
+        controller.useChatKeys(&vault);
+        return true;
     }
     QVariantList inventoryRows() const { return controller.chatKeyInventory().value("keys").toList(); }
     QStringList inventoryUuids() const
@@ -21361,6 +21433,138 @@ private slots:
             QStringLiteral("Could not delete the key from this device. Please try again."));
         f.controller.refreshChatLocalKeys();
         QCOMPARE(f.controller.chatKeyInventory().value("state").toString(), QStringLiteral("error"));
+    }
+
+    // R2 critical (review thread 4576750798): reissue stages the new generation
+    // in the vault BEFORE the key_announced POST, and the inventory shows it
+    // immediately. Deleting that staged key while the announcement is still in
+    // flight loses the only copy if the server accepts the announcement later,
+    // so an in-flight announcement must pin the key: deletion is refused while
+    // the mark is set, the mark clears on a verified echo (accepted POST) or a
+    // definite refusal (4xx), and transient outcomes (5xx) are not terminal.
+    void chatLocalKeyRotationAnnouncementPinsTheStagedKey()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.controller.refreshChatLocalKeys();
+        f.deferAnnouncements = true;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY_WITH_TIMEOUT(f.releaseAnnouncement != nullptr, 5000);
+        const auto staged = f.announcementBodies.last().toObject()
+            .value("payload").toObject().value("key_uuid").toString();
+        QVERIFY(!staged.isEmpty());
+        // An inventory refresh while the announcement is in flight surfaces the
+        // staged row (this is the review's scenario).
+        f.controller.refreshChatLocalKeys();
+        QVERIFY(f.inventoryUuids().contains(staged));
+        f.controller.deleteChatLocalKey(staged);
+        QVERIFY2(f.vault.read(f.vault.lease(), {streamId, staged}).value.bytes.size() == 32,
+            "a staged rotation key must not be deletable while its announcement is in flight");
+        QVERIFY(f.inventoryUuids().contains(staged));
+        QCOMPARE(f.controller.encryption().value("actionError").toString(),
+            QStringLiteral("This key is still being announced. It cannot be deleted yet."));
+        // A verified echo resolves the mark: once the POST is accepted the pin
+        // is lifted and the regular deletion rules apply to the new row.
+        f.releaseAnnouncement();
+        f.releaseAnnouncement = nullptr;
+        f.deferAnnouncements = false;
+        QTRY_VERIFY(!f.controller.encryption().value("reissueBusy").toBool());
+        QTest::qWaitFor([&] { f.controller.deleteChatLocalKey(staged);
+            return !f.inventoryUuids().contains(staged); }, 3000);
+        QVERIFY2(!f.inventoryUuids().contains(staged),
+            "deleting the announced key must be allowed once the echo verified");
+        // A definite refusal (4xx) also resolves the mark.
+        f.messagePostStatus = 403;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY(f.controller.encryption().value("actionError").toString()
+            == QStringLiteral("Could not reissue the encryption key. Please try again."));
+        const auto refused = f.announcementBodies.last().toObject()
+            .value("payload").toObject().value("key_uuid").toString();
+        f.controller.refreshChatLocalKeys();
+        QVERIFY(f.inventoryUuids().contains(refused));
+        QVERIFY(QTest::qWaitFor([&] { f.controller.deleteChatLocalKey(refused);
+            return !f.inventoryUuids().contains(refused); }, 3000));
+        // A 5xx answer is not terminal: the mark stays set and the row pinned.
+        f.messagePostStatus = 500;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY(f.controller.encryption().value("actionError").toString()
+            == QStringLiteral("Could not reissue the encryption key. Please try again."));
+        const auto uncertain = f.announcementBodies.last().toObject()
+            .value("payload").toObject().value("key_uuid").toString();
+        f.controller.refreshChatLocalKeys();
+        f.controller.deleteChatLocalKey(uncertain);
+        QVERIFY(f.inventoryUuids().contains(uncertain));
+        QCOMPARE(f.controller.encryption().value("actionError").toString(),
+            QStringLiteral("This key is still being announced. It cannot be deleted yet."));
+    }
+
+    // R2 critical (review thread 4576750798), restart half: the in-flight pin
+    // lives in the durable vault, so a restarted controller must keep refusing
+    // the deletion, and a success that landed while the process was gone must
+    // resolve the pin through the announcement echo (GET of the deterministic
+    // message uuid) on the next inventory reveal.
+    void chatLocalKeyRotationPinSurvivesRestartAndDelayedEchoLands()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.controller.refreshChatLocalKeys();
+        f.deferAnnouncements = true;
+        f.controller.reissueChatKey();
+        QTRY_VERIFY_WITH_TIMEOUT(f.releaseAnnouncement != nullptr, 5000);
+        const auto body = f.announcementBodies.last().toObject();
+        const auto staged = body.value("payload").toObject().value("key_uuid").toString();
+        const auto announcement = body.value("uuid").toString();
+        QVERIFY(!QUuid(announcement).isNull());
+        // The response never returns and the process restarts over the same
+        // durable vault: the staged row is still present and still pinned.
+        KeyManagementRestart restart(f);
+        QVERIFY(restart.start());
+        restart.controller.refreshChatLocalKeys();
+        QVERIFY(restart.inventoryUuids().contains(staged));
+        restart.controller.deleteChatLocalKey(staged);
+        QVERIFY2(restart.vault.read(restart.vault.lease(), {streamId, staged}).value.bytes.size() == 32,
+            "the rotation pin must survive the restart: the stage lives in the durable vault");
+        QCOMPARE(restart.controller.encryption().value("actionError").toString(),
+            QStringLiteral("This key is still being announced. It cannot be deleted yet."));
+        // The announcement actually landed while the process was gone. The
+        // reveal-driven recheck GETs the message and must resolve the pin, so
+        // the delayed success still lands and the row returns to normal rules.
+        f.serverAnnouncedMessages.insert(announcement.toLower(), staged);
+        QVERIFY(QTest::qWaitFor([&] { restart.controller.refreshChatLocalKeys();
+            restart.controller.deleteChatLocalKey(staged);
+            return !restart.inventoryUuids().contains(staged); }, 5000));
+        QVERIFY(restart.controller.encryption().value("actionError").toString().isEmpty());
+    }
+
+    // R2 medium (review thread 4576750804): the details screen's "Request this
+    // key again" button is enabled for a saved generation, but the request
+    // primitive short-circuited while the vault held the bytes and produced
+    // neither a request nor a success status. The reference re-requests a saved
+    // generation - a fresh key_request POST while the saved copy stays intact.
+    void chatLocalKeyRequestSavedGenerationSendsAndKeepsTheSavedBytes()
+    {
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        f.seedKey(KeyManagementFixture::KeyOld);
+        f.controller.refreshChatLocalKeys();
+        QCOMPARE(f.inventoryUuids().size(), 2);
+        f.controller.requestChatKey(KeyManagementFixture::KeyOld);
+        QVERIFY2(QTest::qWaitFor([&] { return f.requestPosts == 1; }, 5000),
+            "requesting a saved generation must post a key_request instead of short-circuiting");
+        const auto posted = f.requestBodies.last().toObject();
+        const auto payload = posted.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), QStringLiteral("key_request"));
+        QCOMPARE(payload.value("key_uuid").toString(), KeyManagementFixture::KeyOld);
+        QCOMPARE(posted.value("stream_uuid").toString(), streamId);
+        // The request reaches the reference "requested" success state, and the
+        // saved bytes are untouched (the request stays bindable for a later grant).
+        QTRY_VERIFY(f.controller.encryption().value("state").toString() == QStringLiteral("requested"));
+        QCOMPARE(f.controller.encryption().value("keyUuid").toString(), KeyManagementFixture::KeyOld);
+        QCOMPARE(f.vault.read(f.vault.lease(), {streamId, KeyManagementFixture::KeyOld}).value.bytes.size(), 32);
+        QCOMPARE(f.inventoryUuids().size(), 2);
     }
 };
 
