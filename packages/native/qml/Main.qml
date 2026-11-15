@@ -1239,6 +1239,9 @@ ApplicationWindow {
 
     Connections {
         target: root.controller
+        function onConversationMarkedRead(streamUuid, topicUuid) {
+            messageList.forgetPositions(streamUuid, topicUuid);
+        }
         function onStateChanged() {
             root.settleComposerEmojiUi();
             root.settleOwnStatusUi();
@@ -1262,6 +1265,7 @@ ApplicationWindow {
             // Credential fields live in the credentials wizard step and are
             // destroyed (not just cleared) once a session or projects appear.
             messageList.updateServiceContext();
+            messageList.continueOpening();
             messageList.scheduleVisibleRead();
         }
         function onEditSessionChanged() {
@@ -3588,7 +3592,7 @@ ApplicationWindow {
                 property bool anchorJumpPending: false
                 readonly property real distanceFromTop: contentY - originY + topMargin
                 // Drag/fling is user scrolling too (handleTouchMove analogue).
-                onMovementStarted: { userScrollSeen = true; ++userScrollGeneration }
+                onMovementStarted: { userScrollSeen = true; ++userScrollGeneration; takeOpeningControl() }
                 MouseArea {
                     // Wheel observer mirroring the reference handleWheel: it
                     // marks the scroll intent, then scrolls the measured
@@ -3610,6 +3614,7 @@ ApplicationWindow {
                     onWheel: function (wheel) {
                         messageList.userScrollSeen = true
                         ++messageList.userScrollGeneration
+                        messageList.takeOpeningControl()
                         wheel.accepted = root.scrollFlickableWithWheel(messageList, wheel)
                     }
                 }
@@ -3859,6 +3864,7 @@ ApplicationWindow {
                 }
                 function updateServiceContext() {
                     if (serviceSession.scope !== serviceScope()) {
+                        if (positionRuntime === root.controller.conversationOpening.runtime) rememberViewport();
                         ++serviceInspectionTicket;
                         serviceSession = { scope: serviceScope(), ready: false, seen: {}, latest: null, preferences: {}, revision: 0, focusKey: "" };
                         consumedHistoryCommit = -1;
@@ -3945,9 +3951,97 @@ ApplicationWindow {
                 // attribution.
                 property bool tailFollow: true
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
+                property string openingContext: ""
+                property bool openingApplied: false
+                property var openingPosition: null
+                property string positionRuntime: ""
+                property var conversationPositions: ({})
+                property var positionOrder: []
+                property bool positionSaveAllowed: true
+                property string unreadAnchorId: ""
+                property bool unreadDividerDismissed: false
+                readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
+                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
                 function routeKey() {
-                    return serviceScope();
+                    return JSON.stringify([root.controller.conversationOpening.runtime,
+                        root.controller.selectedStream, root.controller.selectedTopic]);
+                }
+                function rememberViewport() {
+                    if (!positionSaveAllowed || !openingApplied || !displayedRoute.length || !messageSnapshot.length || positioning)
+                        return;
+                    const snapshot = captureViewport();
+                    const position = snapshot.followTail
+                        ? { kind: "bottom", messageId: String(messageSnapshot[messageSnapshot.length - 1].id) }
+                        : { kind: "anchor", messageId: snapshot.anchorId, offset: snapshot.offset };
+                    if (!position.messageId.length) return;
+                    const positions = Object.assign({}, conversationPositions);
+                    const order = positionOrder.filter(key => key !== displayedRoute);
+                    positions[displayedRoute] = position;
+                    order.push(displayedRoute);
+                    while (order.length > 12) delete positions[order.shift()];
+                    conversationPositions = positions;
+                    positionOrder = order;
+                }
+                function forgetPositions(streamUuid, topicUuid) {
+                    const affected = key => {
+                        const route = JSON.parse(key);
+                        return route[0] === root.controller.conversationOpening.runtime && route[1] === streamUuid
+                            && (!topicUuid.length || !route[2].length || route[2] === topicUuid);
+                    };
+                    const positions = Object.assign({}, conversationPositions);
+                    positionOrder = positionOrder.filter(key => {
+                        if (!affected(key)) return true;
+                        delete positions[key];
+                        return false;
+                    });
+                    conversationPositions = positions;
+                    if (displayedRoute.length && affected(displayedRoute)) {
+                        // A later route cleanup must not save this old viewport
+                        // again. Fresh user movement re-arms position recording.
+                        positionSaveAllowed = false;
+                        openingPosition = null;
+                    }
+                }
+                function continueOpening() {
+                    if (openingApplied || displayedRoute !== routeKey() || !root.controller.messageHistoryReady
+                        || root.controller.busy || positioning)
+                        return;
+                    root.controller.prepareConversationOpening(openingPosition ? openingPosition.messageId : "");
+                    if (!openingApplied && !positioning && root.controller.conversationOpening.ready)
+                        replaceMessages(messageSnapshot, true);
+                }
+                function takeOpeningControl() {
+                    positionSaveAllowed = true;
+                    if (openingApplied && root.controller.conversationOpening.ready) return;
+                    openingApplied = true;
+                    pendingViewport = null;
+                    positioning = false;
+                    root.controller.cancelConversationOpening();
+                }
+                function dismissPassedUnreadDivider() {
+                    if (positioning || !openingApplied || unreadDividerDismissed || !unreadAnchorId.length) return;
+                    for (let i = 0; i < count; ++i) {
+                        const row = itemAtIndex(i);
+                        if (row && row.unreadDivider) {
+                            const divider = row.unreadDivider;
+                            if (divider.mapToItem(messageList, 0, divider.height).y <= 0) {
+                                unreadDividerDismissed = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                function scrollToLatest() {
+                    takeOpeningControl();
+                    const snapshot = captureViewport();
+                    snapshot.followTail = true;
+                    snapshot.userGenerationAtCapture = ++userScrollGeneration;
+                    pendingViewport = snapshot;
+                    tailFollow = true;
+                    positioning = true;
+                    if (root.controller.canLoadNewer) root.controller.loadLatestMessages();
+                    const ticket = ++layoutTicket;
+                    Qt.callLater(() => restoreViewport(ticket));
                 }
                 // The reference zero-visible-window effect (workspace-message-list
                 // .ui.tsx:998-1022 at 61dacef78dab2f5d0be76f283bebf49fe29b84af):
@@ -4016,8 +4110,15 @@ ApplicationWindow {
                 }
                 function rowModel(rows, index) {
                     const entry = rows[index];
+                    let unreadStart = false;
+                    if (unreadAnchorId.length && !unreadDividerDismissed
+                        && (index === 0 || !sameAuthorGroup(rows[index - 1], entry))) {
+                        for (let i = index; i < rows.length && (i === index || sameAuthorGroup(rows[i - 1], rows[i])); ++i)
+                            if (String(rows[i].id) === unreadAnchorId) { unreadStart = true; break; }
+                    }
                     return {
                         entry: entry,
+                        unreadStart: unreadStart,
                         dayKey: root.messageDay(entry.createdAt),
                         groupFirst: index === 0 || !sameAuthorGroup(rows[index - 1], entry),
                         groupLast: index + 1 === rows.length || !sameAuthorGroup(entry, rows[index + 1]),
@@ -4025,6 +4126,24 @@ ApplicationWindow {
                     };
                 }
                 function replaceMessages(rows, reproject) {
+                    const route = routeKey();
+                    const opening = root.controller.conversationOpening;
+                    const sameRoute = displayedRoute === route;
+                    if (!sameRoute) {
+                        if (positionRuntime === opening.runtime) rememberViewport();
+                        else { conversationPositions = ({}); positionOrder = []; }
+                        positionRuntime = opening.runtime;
+                        openingPosition = conversationPositions[route] || null;
+                        positionSaveAllowed = true;
+                        openingApplied = false;
+                        unreadAnchorId = "";
+                        unreadDividerDismissed = false;
+                        userScrollSeen = false;
+                    }
+                    if (openingContext !== opening.context) {
+                        openingContext = opening.context;
+                        openingApplied = false;
+                    }
                     if (!reproject) {
                         const snapshot = [];
                         const length = rows.length;
@@ -4034,11 +4153,24 @@ ApplicationWindow {
                     const history = Number(root.controller.historyCommitRevision);
                     const historical = !reproject && history !== consumedHistoryCommit;
                     if (!reproject) consumedHistoryCommit = history;
-                    const route = routeKey();
-                    const sameRoute = displayedRoute === route;
                     const snapshot = sameRoute && pendingViewport ? pendingViewport : captureViewport();
                     if (!sameRoute)
                         snapshot.followTail = true;
+                    if (!openingApplied && opening.ready && root.controller.messageHistoryReady) {
+                        let target = String(opening.messageId || "");
+                        const firstUnread = messageSnapshot.find(row => !row.read);
+                        unreadAnchorId = firstUnread ? String(firstUnread.id) : "";
+                        if (openingPosition && openingPosition.kind === "bottom") {
+                            const previous = messageSnapshot.findIndex(row => String(row.id) === openingPosition.messageId);
+                            const fresh = messageSnapshot.slice(previous + 1).find(row => !row.read);
+                            target = fresh ? String(fresh.id) : root.controller.canLoadNewer ? target : "";
+                        }
+                        snapshot.initialOpening = true;
+                        snapshot.followTail = !target.length;
+                        snapshot.anchorId = target;
+                        snapshot.center = Boolean(target.length && (!openingPosition || openingPosition.kind !== "anchor"));
+                        snapshot.offset = openingPosition && openingPosition.kind === "anchor" ? openingPosition.offset : 0;
+                    }
                     const projection = projectServiceRows(messageSnapshot, historical);
                     positioning = true;
                     visibleReadTimer.stop();
@@ -4146,7 +4278,8 @@ ApplicationWindow {
                             forceMeasuredLayout();
                             const row = itemAtIndex(anchorIndex) as MessageBoundaryRow;
                             if (row && row.readBoundary)
-                                contentY += row.readBoundary.mapToItem(messageList, 0, 0).y - snapshot.offset;
+                                contentY += row.readBoundary.mapToItem(messageList, 0, 0).y
+                                    - (snapshot.center ? (height - row.readBoundary.height) / 2 : snapshot.offset);
                         } else {
                             contentY = snapshot.scrollY;
                         }
@@ -4157,6 +4290,7 @@ ApplicationWindow {
                         return;
                     }
                     pendingViewport = null;
+                    if (snapshot.initialOpening) openingApplied = true;
                     positioning = false;
                     // Issue #212 review: the swap suppressed every scroll note
                     // (positioning gate), so re-arm the controller's prefetch
@@ -4167,6 +4301,8 @@ ApplicationWindow {
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                     maybeAdvanceHiddenWindow();
+                    continueOpening();
+                    dismissPassedUnreadDivider();
                 }
                 function anchorToMessage(id) {
                     if (!id)
@@ -4189,8 +4325,10 @@ ApplicationWindow {
                 Connections {
                     target: root.controller
                     function onAnchorChanged() {
-                        if (root.controller.anchorMessageId)
+                        if (root.controller.anchorMessageId) {
+                            messageList.takeOpeningControl();
                             Qt.callLater(() => messageList.anchorToMessage(root.controller.anchorMessageId));
+                        }
                     }
                 }
                 function followSentMessage(id) {
@@ -4267,6 +4405,7 @@ ApplicationWindow {
                 onReadActiveChanged: scheduleVisibleRead()
                 onContentYChanged: {
                     scheduleVisibleRead(); scheduleServiceInspection();
+                    dismissPassedUnreadDivider();
                     // Issue #156: user-attributed scroll passes hand the reserve
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
@@ -4332,6 +4471,40 @@ ApplicationWindow {
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                 }
+                NativeIconButton {
+                    id: scrollToBottomButton
+                    objectName: "scrollToBottomButton"
+                    parent: messageList
+                    z: 10
+                    x: messageList.width - width - 16
+                    y: messageList.height - height - 16
+                    width: 40; height: 40; glyphSize: 20; cornerRadius: 8
+                    colors: root.colors; asset: "chevron-down.svg"
+                    visible: messageList.count > 0 && !messageList.positioning
+                        && (!messageList.tailFollow || root.controller.canLoadNewer || root.controller.conversationOpening.failed)
+                    enabled: !root.controller.busy && !root.controller.conversationOpening.pending
+                    help: messageList.unreadCount > 0
+                        ? qsTr("Scroll to bottom, %1 unread").arg(root.countText(messageList.unreadCount)) : qsTr("Scroll to bottom")
+                    background: Rectangle {
+                        radius: 8; color: root.colors["bg-elevated"]
+                        border.width: scrollToBottomButton.visualFocus ? 2 : 1
+                        border.color: root.colors[scrollToBottomButton.visualFocus ? "accent-soft" : "border-subtle"]
+                    }
+                    onClicked: messageList.scrollToLatest()
+                    Rectangle {
+                        objectName: "scrollToBottomUnreadBadge"
+                        visible: messageList.unreadCount > 0
+                        anchors.right: parent.right; anchors.rightMargin: -8
+                        anchors.top: parent.top; anchors.topMargin: -14
+                        width: Math.max(20, scrollUnreadText.implicitWidth + 8); height: 20; radius: 10
+                        color: root.colors["badge-bg"]
+                        Text {
+                            id: scrollUnreadText
+                            anchors.centerIn: parent; text: root.countText(messageList.unreadCount)
+                            font.pixelSize: 12; color: root.colors["badge-text"]
+                        }
+                    }
+                }
                 Text {
                     visible: messageList.count === 0
                     anchors.centerIn: parent
@@ -4351,6 +4524,7 @@ ApplicationWindow {
                     required property bool groupFirst
                     required property bool groupLast
                     required property bool topicRunStart
+                    required property bool unreadStart
                     required serviceGroupId
                     required property bool serviceFirst
                     required property bool serviceLast
@@ -4366,7 +4540,8 @@ ApplicationWindow {
                     // The capsule can extend into another delegate. Its local
                     // z cannot cross the Loader/list-row stacking boundary.
                     z: messageBodyLoader.item ? messageBodyLoader.item.quickReactionsLayer : 1
-                    readonly property real bodyTop: (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeader.height : 0)
+                    readonly property Item unreadDivider: unreadRule.visible ? unreadRule : null
+                    readonly property real bodyTop: unreadRule.height + (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeader.height : 0)
                     height: bodyTop + (messageBodyLoader.active && messageBodyLoader.item ? messageBodyLoader.item.height : 0) + (serviceLast ? (index + 1 < messageList.count ? 8 : 4) : 0)
                     readId: String(entry.id)
                     dispatchReadId: serviceReadId
@@ -4375,7 +4550,24 @@ ApplicationWindow {
                         if (messageBodyLoader.item) messageBodyLoader.item.settleGeometry();
                     }
                     Item {
+                        id: unreadRule
+                        objectName: "unreadDivider"
+                        visible: viewRow.unreadStart && !messageList.unreadDividerDismissed
+                        width: parent.width; height: visible ? 24 : 0
+                        property string text: messageList.unreadCount > 0
+                            ? qsTr("Unread messages • %1").arg(root.countText(messageList.unreadCount)) : qsTr("Unread messages")
+                        Accessible.name: text; Accessible.role: Accessible.StaticText
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
+                            spacing: 8
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
+                            Text { text: unreadRule.text; textFormat: Text.PlainText; font.pixelSize: 12; lineHeightMode: Text.FixedHeight; lineHeight: 16; color: root.colors["notice-base"] }
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
+                        }
+                    }
+                    Item {
                         id: serviceTopicDivider
+                        y: unreadRule.height
                         objectName: "serviceTopicDivider-" + viewRow.entry.id
                         visible: viewRow.serviceFirst && root.aggregateConversation && viewRow.topicRunStart
                         width: parent.width
@@ -4400,7 +4592,7 @@ ApplicationWindow {
                         id: serviceHeader
                         objectName: "serviceGroupHeader-" + viewRow.entry.id
                         visible: viewRow.serviceFirst
-                        y: serviceTopicDivider.height + 4
+                        y: unreadRule.height + serviceTopicDivider.height + 4
                         width: parent.width
                         height: visible ? Math.max(28, serviceToggle.implicitHeight) + 8 : 0
                         readonly property color tone: root.colors[viewRow.serviceStatus === "action-required" ? "notice-base" : "text-muted"]

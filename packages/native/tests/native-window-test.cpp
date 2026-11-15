@@ -48,6 +48,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QQmlIncubator>
 #include <QQmlExpression>
 #include <QQmlIncubator>
 #include <QJSValue>
@@ -11000,6 +11001,207 @@ mv -Tf "$root/.current-new" "$root/current"
         for (int i = 0; i < 3; ++i) QVERIFY(QMetaObject::invokeMethod(list, "markVisibleRead"));
         QTest::qWait(400); QCOMPARE(anchors.size(), 1);
         other.close();
+    }
+
+    void conversationOpeningShowsUnreadBeforeTheTail_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto *scenario : {"unread", "all-read", "divider", "divider-stable", "divider-passed", "tail-button", "outside-window", "return-position", "bulk-read", "bulk-stream", "outside-tail", "return-outside", "return-tail"})
+            for (const auto *locale : {"en", "ru"})
+                for (const auto *mode : {"light", "dark"})
+                    QTest::newRow(qPrintable(QString("%1-%2-%3").arg(scenario, locale, mode)))
+                        << QString(scenario) << QString(locale) << QString(mode);
+    }
+
+    void conversationOpeningShowsUnreadBeforeTheTail()
+    {
+        QFETCH(QString, scenario); QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("unread.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        MockServer server;
+        const bool paged = scenario.startsWith("outside-") || scenario == "return-outside";
+        const int total = paged ? 120 : 50;
+        const auto uuid = [](int i) { return QString("85000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')); };
+        QJsonArray history;
+        for (int i = 0; i < total; ++i) {
+            auto row = message(QString("Unread navigation message %1 with a stable visible body").arg(i), uuid(i));
+            row["is_own"] = false; row["author_uuid"] = channelPeer;
+            row["read"] = scenario == "all-read" || scenario.startsWith("return-") || scenario.startsWith("bulk-") || i < 20;
+            row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(i).toString(Qt::ISODateWithMs);
+            // The first unread row starts an author group. A separate same-group
+            // case below checks the divider's group placement after opening.
+            if (i < 20) row["author_uuid"] = userId;
+            history.append(row);
+        }
+        QStringList anchors;
+        const auto unread = [&] {
+            int count = 0; for (const auto &row : history) count += !row.toObject().value("read").toBool(); return count;
+        };
+        const auto stream = [&] { return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Unread navigation"},
+            {"encryption", false}, {"unread_count", unread()}, {"active_unread_count", unread()},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
+        const auto topic = [&] { return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "First unread"}, {"unread_count", unread()}, {"active_unread_count", unread()},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return {QJsonArray{stream()}};
+            if (path.endsWith("/streams/" + streamId)) return {stream()};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return {QJsonArray{topic()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return {topic()};
+            if (path.endsWith("/messages/")) {
+                if (!paged) return {history};
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("read") == "false") {
+                    for (const auto &value : history) if (!value.toObject().value("read").toBool()) return {QJsonArray{value}};
+                    return {QJsonArray{}};
+                }
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.hasQueryItem("uuid")) return {QJsonArray{history[query.queryItemValue("uuid").right(12).toInt()]}};
+                const int anchor = marker.isEmpty() ? total : marker.right(12).toInt();
+                const bool newer = query.queryItemValue("sort_dir") == "asc";
+                QJsonArray page;
+                const int begin = newer ? anchor + 1 : qMax(0, anchor - 50);
+                const int end = newer ? qMin(total, anchor + 51) : anchor;
+                for (int i = begin; i < end; ++i) page.append(history[i]);
+                Response response{page};
+                if (newer ? end < total : begin > 0)
+                    response.headers["X-Pagination-Marker"] = uuid(newer ? end - 1 : begin).toUtf8();
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4); const auto boundary = id.right(12).toInt();
+                anchors.append(id);
+                for (int i = 0; i <= boundary; ++i) { auto row = history[i].toObject(); row["read"] = true; history[i] = row; }
+                return {history[boundary]};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        QQuickWindow other; other.resize(300, 200); other.show(); other.requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(&other));
+        session.login(server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId); QTRY_VERIFY(session.ready());
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(!controller.busy());
+        controller.setRealtimeMode(true); // Stop polling after the ordinary verified bootstrap.
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.messages().size() >= 50);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTRY_VERIFY(controller.messageHistoryReady());
+        if (list->property("openingApplied").isValid()) QTRY_VERIFY(list->property("openingApplied").toBool());
+        QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+        QTest::qWait(350); QVERIFY(anchors.isEmpty());
+        const auto messageCenter = [&](int i) {
+            auto *body = item(window->contentItem(), "message-" + uuid(i));
+            return body ? body->mapToItem(list, QPointF(0, body->height() / 2)).y() : -10000.;
+        };
+        if (scenario == "unread" || scenario.startsWith("outside-")) {
+            QTRY_VERIFY_WITH_TIMEOUT(qAbs(messageCenter(20) - list->height() / 2) < 45, 2000);
+            QVERIFY(messageCenter(total - 1) > list->height() || messageCenter(total - 1) < 0);
+            other.hide(); window->raise(); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+            QTRY_VERIFY(!anchors.isEmpty());
+            QVERIFY(anchors.first() != uuid(total - 1));
+            QTRY_COMPARE(controller.topics().first().toMap().value("unread").toInt(), unread());
+            QVERIFY(unread() > 0);
+            if (scenario == "outside-tail") {
+                auto *button = visibleItem(window->contentItem(), "scrollToBottomButton"); QVERIFY(button);
+                click(window, button);
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(119) >= 0 && messageCenter(119) <= list->height(), 3000);
+                QTRY_COMPARE(unread(), 0);
+                QVERIFY(!controller.canLoadNewer());
+            }
+            const auto captures = qEnvironmentVariable("CASSI_NATIVE_UNREAD_SCREENSHOT_DIRECTORY");
+            if (!captures.isEmpty() && scenario == "unread") {
+                QDir().mkpath(captures);
+                QVERIFY(window->grabWindow().save(QDir(captures).filePath("unread-" + locale + '-' + mode + ".png")));
+            }
+        } else if (scenario.startsWith("return-") || scenario.startsWith("bulk-")) {
+            if (scenario == "return-outside") {
+                controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 100);
+                QTRY_VERIFY(!controller.busy());
+                controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 120);
+                QTRY_VERIFY(!list->property("positioning").toBool());
+            }
+            if (scenario != "return-tail") {
+                QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+                QTRY_VERIFY(messageCenter(0) >= 0 && messageCenter(0) <= list->height());
+            }
+            const qreal offset = messageCenter(0);
+            if (scenario.startsWith("bulk-")) {
+                auto payload = scenario == "bulk-stream" ? stream() : topic();
+                payload["kind"] = scenario == "bulk-stream" ? "stream.read" : "topic.read";
+                QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                    {"uuid", returnedId}, {"payload", payload}}));
+                QTRY_VERIFY(!list->property("positioning").toBool());
+                QTest::qWait(100);
+                QVERIFY(qAbs(messageCenter(0) - offset) < 2);
+            }
+            controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+            QTRY_VERIFY(!controller.busy());
+            if (scenario == "return-tail") {
+                auto next = history.last().toObject(); next["uuid"] = uuid(50); next["read"] = false;
+                next["created_at"] = "2026-01-02T10:00:50.000Z"; history.append(next);
+            }
+            controller.selectTopic(topicId); QTRY_VERIFY(controller.messages().size() >= 50);
+            if (list->property("openingApplied").isValid()) QTRY_VERIFY(list->property("openingApplied").toBool());
+            QTRY_VERIFY(!list->property("positioning").toBool());
+            QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+            if (scenario == "return-tail") {
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(50) >= 0 && messageCenter(50) <= list->height(), 2000);
+                QVERIFY(anchors.isEmpty());
+            } else if (scenario.startsWith("bulk-"))
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(49) >= 0 && messageCenter(49) <= list->height(), 2000);
+            else QTRY_VERIFY_WITH_TIMEOUT(qAbs(messageCenter(0) - offset) < 2, 2000);
+        } else if (scenario == "all-read") {
+            QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+            QVERIFY(!visibleItem(window->contentItem(), "unreadDivider"));
+        } else if (scenario.startsWith("divider")) {
+            QTRY_VERIFY(visibleItem(window->contentItem(), "unreadDivider"));
+            auto *divider = visibleItem(window->contentItem(), "unreadDivider");
+            QCOMPARE(divider->property("text").toString(), locale == "ru" ? QString::fromUtf8("Непрочитанные сообщения • 30") : QString("Unread messages • 30"));
+            QVERIFY(divider->mapToItem(list, QPointF()).y() < messageCenter(20));
+            if (scenario == "divider-stable") {
+                const auto originalY = divider->mapToItem(list, QPointF()).y();
+                QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                    {"uuid", returnedId}, {"payload", QJsonObject{{"kind", "messages.read"},
+                        {"project_id", projectId}, {"message_uuids", QJsonArray{uuid(20)}}}}}));
+                QTRY_VERIFY(!list->property("positioning").toBool());
+                QTRY_VERIFY(visibleItem(window->contentItem(), "unreadDivider"));
+                divider = visibleItem(window->contentItem(), "unreadDivider");
+                QVERIFY(qAbs(divider->mapToItem(list, QPointF()).y() - originalY) < 2);
+                QVERIFY(divider->property("text").toString().endsWith("29"));
+            } else if (scenario == "divider-passed") {
+                QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+                QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+                QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, 20), Q_ARG(int, 0)));
+                QTRY_VERIFY(messageCenter(20) >= 0 && messageCenter(20) <= list->height());
+                QVERIFY(!visibleItem(window->contentItem(), "unreadDivider"));
+            }
+        } else {
+            // Give this action its own RED, independent of opening placement.
+            QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+            QTRY_VERIFY(visibleItem(window->contentItem(), "scrollToBottomButton"));
+            auto *button = visibleItem(window->contentItem(), "scrollToBottomButton");
+            QCOMPARE(button->size(), QSizeF(40, 40));
+            other.hide(); window->raise(); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+            click(window, button);
+            QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+            QTRY_COMPARE(unread(), 0);
+            QTRY_COMPARE(controller.topics().first().toMap().value("unread").toInt(), 0);
+            QTRY_VERIFY(!visibleItem(window->contentItem(), "scrollToBottomButton"));
+        }
+        QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+        other.close(); window->close();
     }
 
     void onlyTheActiveVisibleViewportAdvancesTheReadBoundary()

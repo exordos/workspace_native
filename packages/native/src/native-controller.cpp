@@ -7641,6 +7641,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // Issue #293: a generation bump also retires the channel-stage check and
         // recovery GETs; settle their transient state so they can retry/re-arm.
         interruptChannelStageOperations();
+        retireConversationOpening();
         m_messageFields.clear();
         // Same-token renewals retain their transfers. A changed generation fences
         // both active operations and queued paths before resetting their UI state.
@@ -8867,6 +8868,7 @@ void NativeController::reset()
     m_pendingOrganizationOrigin.clear();
     m_organizationLoading = false;
     m_organizationSettings.clear();
+    retireConversationOpening();
     clearAnchor();
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();
@@ -9289,6 +9291,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 loseChannelCreationAccess(stream->uuid);
         }
         if (kind == "stream.read") {
+            const QPointer<NativeController> positionGuard(this);
+            emit conversationMarkedRead(stream->uuid, {});
+            if (!positionGuard) return true;
             // Reading a stream drops its mention index entries
             // (activity-realtime-applier.lib.ts:97-103).
             if (mentionIndexClearStream(stream->uuid)) emit stateChanged();
@@ -9411,6 +9416,9 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             noteDirectChatEvent(streamId, id, false, matching);
         }
         if (kind == "topic.read") {
+            const QPointer<NativeController> positionGuard(this);
+            emit conversationMarkedRead(streamId, topic->uuid);
+            if (!positionGuard) return true;
             // Reading a topic drops its mention index entries
             // (activity-realtime-applier.lib.ts:90-96).
             if (mentionIndexClearTopic(streamId, topic->uuid)) emit stateChanged();
@@ -12261,7 +12269,169 @@ void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHe
         m_olderPrefetchArmed = true;
 }
 
-void NativeController::loadMessages(bool older)
+QVariantMap NativeController::conversationOpening() const
+{
+    const auto &opening = m_conversationOpening;
+    const bool current = opening.prepared && opening.selection == m_selection
+        && opening.generation == m_api->generation();
+    return {{"context", QString::number(m_api->generation()) + '/' + QString::number(m_selection)},
+        {"runtime", creationOwnerKey() + '/' + QString::number(m_api->generation())},
+        {"ready", current && !opening.pending && !opening.failed},
+        {"pending", current && opening.pending}, {"failed", current && opening.failed},
+        {"messageId", current ? opening.target : QString{}}};
+}
+
+void NativeController::finishConversationOpening(const QString &id, bool failed)
+{
+    m_conversationOpening.pending = false;
+    m_conversationOpening.failed = failed;
+    m_conversationOpening.target = id;
+    if (failed) m_notice = tr("The requested message is unavailable.");
+    emit stateChanged();
+}
+
+void NativeController::retireConversationOpening()
+{
+    if (m_conversationOpening.automaticAnchor) {
+        // Only this automatic around-window request owns the loading flag.
+        m_loading = false;
+        m_pendingAnchorMessage.clear();
+        m_pendingAnchorStream.clear();
+        m_pendingAnchorTopic.clear();
+        m_pendingAnchorParsed.reset();
+        m_anchorBudget = 0;
+    }
+    m_conversationOpening = {};
+    m_conversationOpening.ticket = ++m_nextConversationOpening;
+}
+
+void NativeController::cancelConversationOpening()
+{
+    retireConversationOpening();
+    m_conversationOpening.selection = m_selection;
+    m_conversationOpening.generation = m_api->generation();
+    m_conversationOpening.prepared = true;
+    emit stateChanged();
+}
+
+void NativeController::prepareConversationOpening(const QString &savedAnchor)
+{
+    if (!messageHistoryReady() || busy() || (m_conversationOpening.prepared
+        && m_conversationOpening.selection == m_selection
+        && m_conversationOpening.generation == m_api->generation())) return;
+    m_conversationOpening = {m_selection, m_api->generation(), ++m_nextConversationOpening, true, true};
+    // Explicit links own their existing anchor hand-off and highlight.
+    if (!m_pendingAnchorMessage.isEmpty() || !m_anchorMessage.isEmpty()) {
+        finishConversationOpening();
+        return;
+    }
+    const auto ticket = m_conversationOpening.ticket;
+    const QPointer<NativeController> guard(this);
+    emit stateChanged();
+    if (!guard || ticket != m_conversationOpening.ticket || m_conversationOpening.selection != m_selection
+        || m_conversationOpening.generation != m_api->generation()) return;
+    if (isUuid(savedAnchor)) {
+        if (findMessage(savedAnchor)) {
+            finishConversationOpening(savedAnchor);
+            return;
+        }
+        const auto selection = m_selection;
+        request("GET", messenger + "/messages/", {}, {{"uuid", savedAnchor}},
+            [this, ticket, selection, savedAnchor](const ApiResult &result) {
+            if (ticket != m_conversationOpening.ticket || selection != m_selection) return;
+            const auto rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
+            const auto message = rows.size() == 1 ? parseMessage(rows.first().toObject(), m_session->project()) : std::optional<Message>{};
+            if (message && message->uuid == savedAnchor && inConversation(*message)) {
+                openConversationAnchor(*message);
+            } else if (result.status == 404 || (result.ok() && result.data.isArray() && rows.isEmpty())) {
+                // A deleted saved position falls back to today's unread boundary.
+                resolveOpeningUnread(ticket);
+            } else {
+                finishConversationOpening({}, true);
+            }
+        });
+    } else {
+        resolveOpeningUnread(ticket);
+    }
+}
+
+void NativeController::resolveOpeningUnread(quint64 ticket, int attempt)
+{
+    if (ticket != m_conversationOpening.ticket || m_conversationOpening.selection != m_selection
+        || m_conversationOpening.generation != m_api->generation()) return;
+    m_conversationOpening.unreadAttempt = attempt;
+    if (m_before.isEmpty()) {
+        const auto first = std::find_if(m_messages.cbegin(), m_messages.cend(), [](const Message &row) { return !row.read; });
+        finishConversationOpening(first == m_messages.cend() ? QString{} : first->uuid);
+        return;
+    }
+    const auto selection = m_selection;
+    QUrlQuery query{{"stream_uuid", m_stream}, {"sort_key", "created_at"},
+        {"sort_dir", "asc"}, {"page_limit", "1"}, {"read", "false"}};
+    if (!m_topic.isEmpty()) query.addQueryItem("topic_uuid", m_topic);
+    request("GET", messenger + "/messages/", {}, query,
+        [this, ticket, selection, attempt](const ApiResult &result) {
+        if (ticket != m_conversationOpening.ticket || selection != m_selection) return;
+        if (!result.ok() || !result.data.isArray() || result.data.toArray().size() > 1) {
+            finishConversationOpening({}, true);
+            return;
+        }
+        const auto rows = result.data.toArray();
+        const auto message = rows.isEmpty() ? std::optional<Message>{}
+            : parseMessage(rows.first().toObject(), m_session->project());
+        if (!rows.isEmpty() && (!message || !inConversation(*message) || message->read)) {
+            finishConversationOpening({}, true);
+            return;
+        }
+        const auto firstLoadedUnread = std::find_if(m_messages.cbegin(), m_messages.cend(),
+            [this](const Message &row) { return !row.read && !m_confirmedReadIds.contains(row.uuid); });
+        if (firstLoadedUnread != m_messages.cend() && (!message
+            || firstLoadedUnread->createdMicros < message->createdMicros
+            || (firstLoadedUnread->createdMicros == message->createdMicros && firstLoadedUnread->uuid < message->uuid))) {
+            // The tail and earliest-unread snapshots disagree. Like the reference,
+            // retry once instead of skipping a known unread row.
+            if (attempt == 0) resolveOpeningUnread(ticket, 1);
+            else finishConversationOpening({}, true);
+            return;
+        }
+        if (!message) { finishConversationOpening(); return; }
+        const auto *loaded = findMessage(message->uuid);
+        // A verified read event can overtake the lookup, including for an
+        // out-of-window UUID. Retry once; never reintroduce that unread flag.
+        if (m_confirmedReadIds.contains(message->uuid) || (loaded && loaded->read)) {
+            if (attempt == 0) resolveOpeningUnread(ticket, 1);
+            else finishConversationOpening({}, true);
+            return;
+        }
+        openConversationAnchor(*message);
+    });
+}
+
+void NativeController::openConversationAnchor(const Message &message)
+{
+    if (findMessage(message.uuid)) {
+        finishConversationOpening(message.uuid);
+        return;
+    }
+    m_conversationOpening.automaticAnchor = true;
+    m_pendingAnchorMessage = message.uuid;
+    m_pendingAnchorParsed = message;
+    m_pendingAnchorStream = m_stream;
+    m_pendingAnchorTopic = m_topic;
+    m_anchorBudget = 8;
+    m_anchorAroundTried = true;
+    loadAroundAnchor();
+}
+
+void NativeController::loadLatestMessages()
+{
+    if (!messageHistoryReady() || busy()) return;
+    const QPointer<NativeController> guard(this);
+    cancelConversationOpening();
+    if (guard) loadMessages(false, true);
+}
+
+void NativeController::loadMessages(bool older, bool latest)
 {
     if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
         || m_loading || (older && m_before.isEmpty())) return;
@@ -12277,10 +12447,10 @@ void NativeController::loadMessages(bool older)
     m_loading = true;
     emit stateChanged();
     if (!guard) return;
-    const auto network = [this, guard, older, selection, generation, revision, key, networkStarted] {
+    const auto network = [this, guard, older, latest, selection, generation, revision, key, networkStarted] {
         if (!guard || generation != m_api->generation() || selection != m_selection || *networkStarted) return;
         *networkStarted = true;
-        const auto boundary = m_messages.isEmpty() ? std::optional<Message>{} : std::optional<Message>{m_messages.first()};
+        const auto boundary = latest || m_messages.isEmpty() ? std::optional<Message>{} : std::optional<Message>{m_messages.first()};
         historyPage(older, selection, revision, boundary, older ? key.marker : QByteArray{}, {}, {});
     };
     const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, cacheRevision, older, network](bool savedOnly) {
@@ -12342,7 +12512,7 @@ void NativeController::loadMessages(bool older)
             if (!savedOnly) network();
         });
     };
-    if (!cache || !cache->available()) {
+    if (latest || !cache || !cache->available()) {
         if (cache && !older) m_cacheHydrations[static_cast<int>(NativeCache::Kind::History)] = [fetchCache] { fetchCache(true); };
         network();
         return;
@@ -12884,6 +13054,7 @@ void NativeController::applyMessageRoute(const QString &org, const QString &proj
         clearAnchor(deepLinkUnavailableNotice());
         return;
     }
+    retireConversationOpening();
     m_pendingAnchorMessage = target;
     m_pendingAnchorStream = m_stream;
     m_pendingAnchorTopic = m_topic;
@@ -12927,6 +13098,8 @@ void NativeController::setAnchorMessage(const QString &id)
 
 void NativeController::clearAnchor(const QString &notice)
 {
+    const bool automaticOpening = m_conversationOpening.automaticAnchor;
+    m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
     m_pendingAnchorTopic.clear();
@@ -12935,7 +13108,11 @@ void NativeController::clearAnchor(const QString &notice)
     m_anchorHighlight.stop();
     const bool hadAnchor = !m_anchorMessage.isEmpty();
     m_anchorMessage.clear();
+    const QPointer<NativeController> guard(this);
     if (hadAnchor) emit anchorChanged();
+    if (!guard) return;
+    if (automaticOpening) finishConversationOpening({}, true);
+    if (!guard) return;
     if (!notice.isEmpty()) {
         m_notice = notice;
         emit stateChanged();
@@ -12972,6 +13149,11 @@ void NativeController::reanchorFromWindow()
         m_pendingAnchorTopic.clear();
         m_anchorBudget = 0;
         m_pendingAnchorParsed.reset();
+        if (m_conversationOpening.automaticAnchor) {
+            m_conversationOpening.automaticAnchor = false;
+            finishConversationOpening(target);
+            return;
+        }
         setAnchorMessage(target);
         m_anchorHighlight.start(2500);
         return;
@@ -13021,20 +13203,32 @@ void NativeController::loadAroundAnchor()
     const auto selection = m_selection;
     const auto generation = m_api->generation();
     const auto revision = m_messageRevision;
+    const auto openingTicket = m_conversationOpening.automaticAnchor ? m_conversationOpening.ticket : 0;
     const QPointer<NativeController> guard(this);
     m_loading = true;
     emit stateChanged();
     if (!guard) return;
-    const auto settle = [this, guard, state, selection, generation, revision, target] {
+    const auto settle = [this, guard, state, selection, generation, revision, target, openingTicket] {
         if (!guard) return;
         if (selection != m_selection || generation != m_api->generation()
-            || revision != m_messageRevision || m_pendingAnchorMessage != target) {
+            || (openingTicket && openingTicket != m_conversationOpening.ticket)) return;
+        if (openingTicket && revision != m_messageRevision) {
+            m_loading = false;
+            m_conversationOpening.automaticAnchor = false;
+            clearAnchor();
+            if (!guard) return;
+            if (m_conversationOpening.unreadAttempt == 0) resolveOpeningUnread(openingTicket, 1);
+            else finishConversationOpening({}, true);
+            return;
+        }
+        if (revision != m_messageRevision || m_pendingAnchorMessage != target) {
             m_loading = false;
             emit stateChanged();
             return;
         }
-        if (state->failed) { // the bounded older walk remains the fallback (#55)
+        if (state->failed) { // Explicit links retain the bounded older-walk fallback (#55).
             m_loading = false;
+            if (openingTicket) { clearAnchor(deepLinkUnavailableNotice()); return; }
             emit stateChanged();
             reanchorFromWindow();
             return;
@@ -13060,6 +13254,7 @@ void NativeController::loadAroundAnchor()
             rows.append(*m_pendingAnchorParsed);
         if (invalid) {
             m_loading = false;
+            if (openingTicket) { clearAnchor(deepLinkUnavailableNotice()); return; }
             report(tr("The server returned an invalid conversation history."));
             reanchorFromWindow();
             return;

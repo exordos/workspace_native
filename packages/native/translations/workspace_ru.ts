@@ -62,6 +62,22 @@
         <message><source>Video</source><translation>Видео</translation></message>
         <message><source>Remove %1</source><translation>Удалить %1</translation></message>
         <message>
+            <source>Unread messages</source>
+            <translation>Непрочитанные сообщения</translation>
+        </message>
+        <message>
+            <source>Unread messages • %1</source>
+            <translation>Непрочитанные сообщения • %1</translation>
+        </message>
+        <message>
+            <source>Scroll to bottom</source>
+            <translation>Прокрутить вниз</translation>
+        </message>
+        <message>
+            <source>Scroll to bottom, %1 unread</source>
+            <translation>Прокрутить вниз, непрочитанных: %1</translation>
+        </message>
+        <message>
             <source>Call</source>
             <translation>Позвонить</translation>
         </message>
