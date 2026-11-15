@@ -14839,11 +14839,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::mouseDClick(entry->window(), Qt::LeftButton, {}, filePoint);
         QTRY_COMPARE(accepted.size(), 1); QTRY_COMPARE(uploads, 1); QVERIFY(uploadHeadersOkay);
         QTRY_VERIFY(!controller.fileBusy());
-        QTRY_VERIFY(controller.draft().contains("![upload.png](") && controller.draft().contains("urn:image:" + fileId));
-        QVERIFY(controller.draft().contains(caption)); QVERIFY(controller.error().isEmpty());
-        uploadedDraft = controller.draft();
+        QCOMPARE(controller.draft(), caption); QVERIFY(controller.error().isEmpty());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "uploadCard-1"));
+        QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
+        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&size=230>)\n" + caption;
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
-        QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), uploadedDraft);
+        QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), caption);
         QVERIFY(controller.canSend());
         QTRY_VERIFY(visibleItem(window->contentItem(), "sendButton")
             && visibleItem(window->contentItem(), "sendButton")->isEnabled());
@@ -15166,6 +15167,66 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!wire.contains("![diagram.png]\n"));
     }
 
+    void clipboardFilePathsRequireConfirmationBeforeUpload()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true; const auto fallback = fixture.server.handler;
+        int uploads = 0; QByteArray uploadedBody; bool otherOwner = false;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (otherOwner && request.target.path().endsWith("/actions/introspect"))
+                return Response{QJsonObject{{"user_info", QJsonObject{{"uuid", channelPeer}}}, {"project_id", projectId},
+                    {"otp_verified", true}, {"permissions", QJsonArray{}}}};
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) {
+                ++uploads; uploadedBody = request.rawBody; return Response{QJsonObject{}, 503};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; const auto path = directory.filePath("synthetic-private.txt");
+        QFile input(path); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("synthetic"); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), clipboard, old] {
+            clipboard->setMimeData(old);
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Clipboard confirmation window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Safe text");
+        auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(data);
+        auto *composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTest::qWait(500);
+        QCOMPARE(uploads, 0); QCOMPARE(controller.draft(), QString("Safe text"));
+        auto *dialog = window->findChild<QObject *>("clipboardFilesDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(hasVisibleText(window->contentItem(), path));
+        QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(uploads, 0);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
+        controller.selectTopic(secondTopicId); QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(uploads, 0);
+        controller.selectTopic(topicId); QTRY_VERIFY(controller.canAttach());
+        composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
+        const auto replacement = directory.filePath("other.txt"); QFile other(replacement);
+        QVERIFY(other.open(QIODevice::WriteOnly)); other.write("different"); other.close();
+        auto *replaced = new QMimeData; replaced->setUrls({QUrl::fromLocalFile(replacement)}); clipboard->setMimeData(replaced);
+        auto *confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); click(window, confirm);
+        QTRY_COMPARE(uploads, 1); QVERIFY(uploadedBody.contains("synthetic")); QVERIFY(!uploadedBody.contains("different"));
+        QTRY_VERIFY(!controller.fileBusy()); controller.removeUpload(controller.uploadEntries().first().toMap().value("id").toString());
+        auto *fresh = new QMimeData; fresh->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(fresh);
+        composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
+        session.logout(); QTRY_VERIFY(!dialog->property("visible").toBool());
+        otherOwner = true; session.login(fixture.server.origin(), "other", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(session.user(), channelPeer); QCOMPARE(uploads, 1); QVERIFY(!dialog->property("visible").toBool());
+    }
+
     void composerAcceptsClipboardImagesAndFileDrops_data()
     {
         QTest::addColumn<bool>("paste");
@@ -15365,11 +15426,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(accepted.size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(uploads == 1 || !controller.error().isEmpty(), 2000);
         QVERIFY2(uploads == 1, qPrintable(controller.error()));
-        QTRY_VERIFY(controller.draft().contains("urn:file:" + returnedId) || !controller.error().isEmpty());
-        QVERIFY2(controller.draft().contains("urn:file:" + returnedId), qPrintable(controller.error()));
         QTRY_VERIFY(!controller.fileBusy());
-        QVERIFY(!controller.notice().isEmpty());
-        QCOMPARE(item(content, "fileTransferNotice")->property("text").toString(), controller.notice());
+        QVERIFY2(controller.error().isEmpty(), qPrintable(controller.error()));
+        QVERIFY(!controller.draft().contains("urn:file:" + returnedId));
+        QCOMPARE(controller.uploadEntries().size(), 1);
+        QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
+        QTRY_VERIFY(visibleItem(content, "uploadCard-1"));
         QVERIFY(saveDialog->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
         click(window, item(content, "message-content-" + messageId));
         QTRY_VERIFY(saveDialog->property("visible").toBool());
@@ -15999,8 +16061,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(picker->property("visible").toBool());
         QVERIFY(QMetaObject::invokeMethod(picker, "reject"));
         QTRY_VERIFY(!picker->property("visible").toBool());
-        const auto expected = "[edit-attachment.txt](<urn:file:" + returnedId + "?name=edit-attachment.txt&content_type=text%2Fplain&size=7>)\n\n" + textWhileUploading;
-        QTRY_COMPARE(composer->property("text").toString(), expected);
+        const auto expected = "[edit-attachment.txt](<urn:file:" + returnedId + "?name=edit-attachment.txt&content_type=text%2Fplain&size=7>)\n" + textWhileUploading;
+        QTRY_COMPARE(composer->property("text").toString(), textWhileUploading);
+        QCOMPARE(controller.uploadEntries().size(), 1);
+        QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
+        QTRY_VERIFY(visibleItem(content, "uploadCard-1"));
         QCOMPARE(drafts.text(streamId, topicId), originalDraft);
         QTRY_VERIFY(save->isEnabled());
         click(window, save);

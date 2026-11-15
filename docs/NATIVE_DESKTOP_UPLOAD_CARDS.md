@@ -37,6 +37,21 @@ unsubmitted cards and cancels pending transfers. Local tests use synthetic files
 and HTTP responses. They do not establish live-service behavior, exact
 cross-renderer pixels, native OS picker behavior or Windows/macOS acceptance.
 
+For clipboard file URLs, native deliberately adds a confirmation displaying the
+captured local paths before any file is read or uploaded. A clipboard owner can
+replace expected text with a file URL, so an ordinary paste otherwise sends a
+local file without an explicit file choice. Cancellation or a change of account,
+conversation or edit session drops the captured selection. Clipboard image data
+continues to paste directly, and the file picker and external file drop remain
+explicit file selections.
+
+Like the reference composer, visible image aliases are matched lexically: typed
+text matching an attachment alias is serialized as that image, including a
+matching token in code or reference-style Markdown. This preserves the source
+behavior but means users should avoid an ambiguous matching token while that
+attachment is present; a future change needs to address the same behavior in
+both clients.
+
 ## Cleanup identity boundary
 
 At `workspace_backend` `origin/master` `8259c22a87018dc41064343e86c8d756edb30400`,

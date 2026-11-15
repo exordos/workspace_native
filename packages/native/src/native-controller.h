@@ -716,6 +716,8 @@ public:
     QVariantList uploadEntries() const;
     bool uploadPending() const;
     Q_INVOKABLE bool pasteAttachments();
+    Q_INVOKABLE QVariantList clipboardFiles() const;
+    Q_INVOKABLE void attachClipboardFiles(const QVariantList &urls);
     Q_INVOKABLE void removeUpload(const QString &id);
     Q_INVOKABLE void removeUploadFromText(const QString &id);
     Q_INVOKABLE void retryUpload(const QString &id);
@@ -1344,6 +1346,7 @@ private:
     QString completedDownloadPath(const QString &id);
     void cancelFileTransfers(const QString &reason = {});
     void enqueueUpload(const QString &path, const QString &name = {}, std::shared_ptr<QTemporaryFile> temporary = {});
+    QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
     QString imageAlias(const UploadEntry &entry) const;

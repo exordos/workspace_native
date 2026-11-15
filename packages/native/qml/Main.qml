@@ -4404,7 +4404,7 @@ ApplicationWindow {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -7807,7 +7807,7 @@ ApplicationWindow {
                                         const editing = root.controller.editingMessageId.length > 0;
                                         if (event.key === Qt.Key_V && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))
                                             && !(event.modifiers & (Qt.AltModifier | Qt.GroupSwitchModifier))
-                                            && root.controller.pasteAttachments()) {
+                                            && (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments())) {
                                             event.accepted = true;
                                         } else if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
@@ -8527,6 +8527,57 @@ ApplicationWindow {
                 Accessible.role: Accessible.StatusBar
                 Accessible.name: text
             }
+        }
+    }
+
+    Dialog {
+        id: clipboardFilesDialog
+        objectName: "clipboardFilesDialog"
+        property var files: []
+        property string contextKey: ""
+        property string stream: ""
+        property string topic: ""
+        property string editSession: ""
+        function openForClipboard() {
+            const rows = root.controller.clipboardFiles();
+            if (!rows.length) return false;
+            files = rows; contextKey = root.controller.ownStatusContextKey;
+            stream = root.controller.selectedStream; topic = root.controller.selectedTopic;
+            editSession = root.controller.editSessionKey;
+            open(); return true;
+        }
+        function contextMatches() {
+            return root.controller.canAttach && contextKey === root.controller.ownStatusContextKey
+                && stream === root.controller.selectedStream && topic === root.controller.selectedTopic
+                && editSession === root.controller.editSessionKey;
+        }
+        anchors.centerIn: parent; width: Math.min(root.width - 48, 520); modal: true
+        title: qsTr("Upload files from clipboard?")
+        contentItem: ScrollView {
+            implicitHeight: Math.min(300, paths.implicitHeight)
+            Column {
+                id: paths; width: clipboardFilesDialog.width - clipboardFilesDialog.leftPadding - clipboardFilesDialog.rightPadding
+                spacing: 8
+                Label { width: parent.width; text: qsTr("Check the file paths before uploading."); wrapMode: Text.Wrap }
+                Repeater {
+                    model: clipboardFilesDialog.files
+                    Label { required property var modelData; width: paths.width; text: String(modelData.path)
+                        wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
+                }
+            }
+        }
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
+            Button { text: qsTr("Cancel"); onClicked: clipboardFilesDialog.reject() }
+            Button { objectName: "clipboardFilesConfirm"; text: qsTr("Upload"); onClicked: clipboardFilesDialog.accept() }
+        }
+        onAccepted: {
+            if (contextMatches()) root.controller.attachClipboardFiles(files.map(row => row.url));
+        }
+        onClosed: files = []
+        Connections {
+            target: root.controller
+            function onStateChanged() { if (clipboardFilesDialog.visible && !clipboardFilesDialog.contextMatches()) clipboardFilesDialog.close(); }
         }
     }
 

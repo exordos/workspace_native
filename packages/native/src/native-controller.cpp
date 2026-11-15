@@ -8645,35 +8645,62 @@ void NativeController::validateQueuedUpload(quint64 intent, quint64 epoch)
     if (guard) drainUploads();
 }
 
-bool NativeController::pasteAttachments()
+QString NativeController::clipboardUploadName(const QString &extension, bool image) const
 {
-    if (!canAttach()) return false;
-    const auto *clipboard = QGuiApplication::clipboard();
-    const auto *data = clipboard ? clipboard->mimeData() : nullptr;
-    if (!data) return false;
     QStringList names;
     for (const auto &entry : std::as_const(m_uploadEntries))
         names.append((entry.task.uploadName.isEmpty() ? QFileInfo(entry.task.path).fileName() : entry.task.uploadName).toLower());
-    const auto generatedName = [&](const QString &extension, bool image) {
-        const auto stem = (image ? QStringLiteral("pasted-image-") : QStringLiteral("pasted-file-"))
-            + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
-        auto candidate = stem + extension; int suffix = 2;
-        while (names.contains(candidate.toLower())) candidate = stem + '-' + QString::number(suffix++) + extension;
-        names.append(candidate.toLower()); return candidate;
-    };
+    const auto stem = (image ? QStringLiteral("pasted-image-") : QStringLiteral("pasted-file-"))
+        + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+    auto candidate = stem + extension; int suffix = 2;
+    while (names.contains(candidate.toLower())) candidate = stem + '-' + QString::number(suffix++) + extension;
+    return candidate;
+}
+
+QVariantList NativeController::clipboardFiles() const
+{
+    QVariantList result;
+    if (!canAttach()) return result;
+    const auto *clipboard = QGuiApplication::clipboard();
+    const auto *data = clipboard ? clipboard->mimeData() : nullptr;
+    if (!data) return result;
+    for (const auto &url : data->urls())
+        if (url.isLocalFile() && !url.hasQuery() && !url.hasFragment())
+            result.append(QVariantMap{{"url", url}, {"path", url.toLocalFile()}});
+    return result;
+}
+
+void NativeController::attachClipboardFiles(const QVariantList &urls)
+{
+    if (!canAttach()) return;
     int added = 0;
-    for (const auto &url : data->urls()) {
+    for (const auto &value : urls) {
+        const auto url = value.toUrl();
         if (!url.isLocalFile() || url.hasQuery() || url.hasFragment()) continue;
         const QFileInfo info(url.toLocalFile());
         auto name = info.fileName();
         static const QRegularExpression generic(QStringLiteral("^(?:image|pasted[-_ ]?image|blob)(?:[-_ ]?\\(?\\d+\\)?)?(?:\\.[^.]+)?$"), QRegularExpression::CaseInsensitiveOption);
         if (generic.match(name).hasMatch()) {
             const bool image = QMimeDatabase().mimeTypeForFile(info.filePath(), QMimeDatabase::MatchExtension).name().startsWith("image/");
-            name = generatedName(info.suffix().isEmpty() ? QStringLiteral(".bin") : '.' + info.suffix().toLower(), image);
+            name = clipboardUploadName(info.suffix().isEmpty() ? QStringLiteral(".bin") : '.' + info.suffix().toLower(), image);
         }
         enqueueUpload(info.filePath(), name); ++added;
     }
-    if (!added && data->hasImage()) {
+    if (!added) return;
+    const QPointer<NativeController> guard(this);
+    if (!m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (guard) emit stateChanged();
+    if (guard) drainUploads();
+}
+
+bool NativeController::pasteAttachments()
+{
+    if (!canAttach()) return false;
+    const auto *clipboard = QGuiApplication::clipboard();
+    const auto *data = clipboard ? clipboard->mimeData() : nullptr;
+    if (!data || !clipboardFiles().isEmpty()) return false;
+    int added = 0;
+    if (data->hasImage()) {
         const auto image = qvariant_cast<QImage>(data->imageData());
         // Bound the decoded image before encoding it; FileClient enforces the
         // same 25 MiB upload limit on the resulting private temporary file.
@@ -8681,7 +8708,7 @@ bool NativeController::pasteAttachments()
             auto temporary = std::make_shared<QTemporaryFile>(QDir::tempPath() + "/cassi-clipboard-XXXXXX.png");
             if (temporary->open() && image.save(temporary.get(), "PNG")) {
                 temporary->flush(); temporary->close();
-                enqueueUpload(temporary->fileName(), generatedName(QStringLiteral(".png"), true), temporary); ++added;
+                enqueueUpload(temporary->fileName(), clipboardUploadName(QStringLiteral(".png"), true), temporary); ++added;
             }
         }
     }
@@ -8790,9 +8817,24 @@ void NativeController::removeUploadFromText(const QString &id)
     });
     if (it == m_uploadEntries.cend()) return;
     const auto alias = imageAlias(*it); if (alias.isEmpty()) return;
-    auto value = draft(); value.replace(it->markdown, QString{});
-    value.replace(QRegularExpression(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()")), QString{});
+    const auto markdown = it->markdown;
+    const auto strip = [&](QString value) {
+        value.replace(markdown, QString{});
+        value.replace(QRegularExpression(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()")), QString{});
+        return value;
+    };
+    auto value = strip(draft()); bool changedInactive = false;
+    for (auto &tab : m_replyTabs) {
+        if (tab.id == m_replyActiveTab) continue;
+        const auto answer = strip(tab.answer);
+        if (answer != tab.answer) { tab.answer = answer; changedInactive = true; }
+    }
+    if (changedInactive && !m_editingMessage.isEmpty()) ++m_editRevision;
+    const QPointer<NativeController> guard(this);
     setDraft(value);
+    if (guard && changedInactive) emit replySessionChanged();
+    if (guard && changedInactive && !m_editingMessage.isEmpty()) emit editSessionChanged();
+    if (guard && changedInactive) emit stateChanged();
 }
 
 void NativeController::removeUploadEntry(quint64 intent, bool notify)
@@ -8872,6 +8914,9 @@ void NativeController::retryUpload(const QString &id)
     });
     if (it == m_uploadEntries.end()) return;
     it->status = "validating"; it->error.clear(); it->sent = 0; it->total = -1;
+    if (m_error.startsWith(tr("The attachment could not be uploaded. %1").arg(QString{}))
+        && std::none_of(m_uploadEntries.cbegin(), m_uploadEntries.cend(), [](const UploadEntry &entry) { return entry.status == "error"; }))
+        m_error.clear();
     const auto epoch = m_fileEpoch;
     QTimer::singleShot(0, this, [this, intent, epoch] { validateQueuedUpload(intent, epoch); });
     ++m_uploads; ++m_pendingUploads[it->task.conversation];
@@ -14105,6 +14150,10 @@ void NativeController::send()
     } else if (!attachments.isEmpty()) {
         wire = attachments.join('\n') + (wire.trimmed().isEmpty() ? QString{} : QStringLiteral("\n") + wire.trimmed());
     }
+    if (!boundedText(wire, 40000)) {
+        report(tr("Message is too long (maximum 40,000 characters)."));
+        return;
+    }
     const auto conversation = conversationKey();
     auto intent = m_pendingSends.value(conversation);
     const auto storedText = replaceImageAliases(text, false);
@@ -16267,6 +16316,10 @@ void NativeController::submitEditMessage()
     const auto newAttachments = readyUploadLinks(m_editSession);
     if (!newAttachments.isEmpty())
         text = newAttachments.join('\n') + (text.isEmpty() ? QString{} : QStringLiteral("\n") + text);
+    if (text.size() > 40000 || !boundedText(text, 40000)) {
+        report(tr("Message is too long (maximum 40,000 characters)."));
+        return;
+    }
     // Issue #115: the completion may only close the exact session and buffer revision it
     // submitted. Text typed after Save, or a session reopened for the same UUID, gets a
     // newer identity and survives this completion; B stays savable.

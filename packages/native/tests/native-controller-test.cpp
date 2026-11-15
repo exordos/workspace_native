@@ -23,6 +23,7 @@
 #include <QElapsedTimer>
 #include <QDeadlineTimer>
 #include <QClipboard>
+#include <QMimeData>
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QSignalSpy>
@@ -13996,6 +13997,7 @@ private slots:
         fixture.controller.retryUpload(secondId);
         QTRY_COMPARE(requests, 3);
         QTRY_COMPARE(entries().first().toMap().value("status").toString(), QString("ready"));
+        QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
         QCOMPARE(fixture.controller.draft(), QString("Keep this text"));
         fixture.controller.removeUpload(secondId);
         QVERIFY(entries().isEmpty());
@@ -14228,6 +14230,89 @@ private slots:
         QTRY_VERIFY(!saved.isEmpty()); QTRY_VERIFY(!fixture.controller.busy());
         QTRY_VERIFY(fixture.controller.uploadEntries().isEmpty());
         QCOMPARE(fixture.controller.draft(), QString{});
+    }
+
+    void removingUploadClearsItsAliasFromInactiveReply()
+    {
+        const QString first = "11111111-1111-4111-8111-111111111111", second = "22222222-2222-4222-8222-222222222222";
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        const auto one = message("First", first), two = message("Second", second);
+        fixture.messages = [&](const Request &) { return Response{QJsonArray{one, two}}; };
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") return Response{QJsonObject{}, 204};
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginReply(first));
+        fixture.controller.attachFiles({QUrl::fromLocalFile(path)}); QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto card = fixture.controller.uploadEntries().first().toMap().value("id").toString();
+        fixture.controller.setDraft("first ![diagram.png] answer");
+        const auto firstTab = fixture.controller.replyTabs().first().toMap().value("id").toString();
+        QVERIFY(fixture.controller.addReplyTab(second)); fixture.controller.setDraft("second answer");
+        fixture.controller.removeUpload(card);
+        QVERIFY(fixture.controller.selectReplyTab(firstTab));
+        QCOMPARE(fixture.controller.draft(), QString("first  answer"));
+    }
+
+    void oversizedWireWithAttachmentDoesNotSend()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close(); int posts = 0;
+        fixture.files = [&](const Request &) { return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId},
+            {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") ++posts; return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft(QString(40000, QLatin1Char('a')));
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())}); QTRY_VERIFY(!fixture.controller.fileBusy());
+        fixture.controller.send(); QTest::qWait(400); QCOMPARE(posts, 0);
+        QCOMPARE(fixture.controller.draft().size(), 40000); QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+    }
+
+    void clipboardFileUrlCannotUploadWithoutConfirmation()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("synthetic-private.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("synthetic"); input.close(); int posts = 0;
+        fixture.files = [&](const Request &) { ++posts; return Response{QJsonObject{}, 503}; };
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        QVERIFY(fixture.start()); auto *data = new QMimeData;
+        data->setUrls({QUrl::fromLocalFile(input.fileName())}); clipboard->setMimeData(data);
+        const bool accepted = fixture.controller.pasteAttachments(); QTest::qWait(400);
+        QCOMPARE(posts, 0); QVERIFY(!accepted);
+    }
+
+    void oversizedEditDoesNotProtectAnUnsubmittedUpload()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close(); int puts = 0, deletes = 0;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 6},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        const auto note = message("Original", messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") ++puts;
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{note}} : Response{note};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(messageId));
+        fixture.controller.setDraft(QString(40000, QLatin1Char('a')));
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())}); QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto card = fixture.controller.uploadEntries().first().toMap().value("id").toString();
+        fixture.controller.submitEditMessage(); QTest::qWait(100); QCOMPARE(puts, 0);
+        fixture.controller.removeUpload(card); QTRY_COMPARE_WITH_TIMEOUT(deletes, 1, 2000);
+        QCOMPARE(fixture.controller.draft().size(), 40000);
     }
 
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
