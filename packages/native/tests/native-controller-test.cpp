@@ -18019,6 +18019,106 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(streamRow().value("rows").toList().size(), 2, 3000);
     }
 
+    void sidebarExpansionDeferredCacheDoesNotReleaseHeldNetwork_data()
+    {
+        QTest::addColumn<QString>("terminal");
+        for (const auto *terminal : {"success", "failure", "logout"})
+            QTest::newRow(terminal) << QString(terminal);
+    }
+
+    void sidebarExpansionDeferredCacheDoesNotReleaseHeldNetwork()
+    {
+        QFETCH(QString, terminal);
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        QStringList ids; QJsonArray catalog;
+        for (int i = 0; i < 3; ++i) {
+            const auto id = QString("97000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        const auto cachePath = directory.filePath("cache");
+        {
+            NativeCache initial(cachePath, NativeCache::Policy{}, true);
+            QVERIFY(initial.open(fixture.server.origin(), projectId, userId));
+            QVERIFY(initial.put(initial.lease(), {NativeCache::Kind::Topics, ids[0], {}, {}},
+                {inboxTopic(topicId, ids[0], "Cached", 0, 0, 0)}));
+        }
+        QSemaphore gate; std::atomic_bool hold{false}, entered{false};
+        NativeCacheService cache(cachePath, NativeCache::Policy{}, true, [&] {
+            if (hold.exchange(false)) { entered = true; gate.acquire(); }
+            return QDateTime::currentMSecsSinceEpoch();
+        });
+        QVERIFY(cache.open(fixture.server.origin(), projectId, userId));
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        hold = true;
+        cache.get(cache.lease(), {NativeCache::Kind::Topics, ids[0], {}, {}}, this, [](auto) {});
+        const auto release = qScopeGuard([&] { gate.release(); });
+        QTRY_VERIFY_WITH_TIMEOUT(entered.load(), 3000);
+        fixture.controller.useCache(&cache);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        auto foreground = std::make_shared<std::function<void()>>();
+        auto held = std::make_shared<QHash<QString, std::function<void()>>>();
+        auto gets = std::make_shared<QHash<QString, int>>();
+        fixture.topics = [=](const Request &request) {
+            const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            const int count = ++(*gets)[id];
+            Response response{QJsonArray{inboxTopic(topicId, id, "Current", 0, 0, 0)},
+                terminal == "failure" && id == ids[0] && count == 2 ? 503 : 200};
+            if (id == ids[0] && count == 1) response.defer = [foreground](auto send) { *foreground = std::move(send); };
+            else response.defer = [held, id](auto send) { held->insert(id, std::move(send)); };
+            return response;
+        };
+        loginInbox(fixture, 3);
+        QVERIFY(!cache.available());
+        fixture.controller.selectStream(ids[0]);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(*foreground), 3000);
+        fixture.controller.requestSidebarTopics(ids[1]);
+        fixture.controller.requestSidebarTopics(ids[0]);
+        fixture.controller.requestSidebarTopics(ids[2]);
+        QTRY_VERIFY_WITH_TIMEOUT(held->contains(ids[0]) && held->contains(ids[1]), 3000);
+        (*foreground)(); *foreground = {};
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.topicsComplete(), 3000);
+        gate.release();
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        QTest::qWait(500);
+        QCOMPARE(gets->value(ids[2]), 0);
+        if (terminal != "logout") {
+            auto complete = held->take(ids[0]); complete();
+            QTRY_VERIFY_WITH_TIMEOUT(held->contains(ids[2]), 3000);
+        }
+        fixture.controller.logout();
+        const auto pending = std::move(*held); held->clear();
+        for (auto it = pending.cbegin(); it != pending.cend(); ++it) it.value()();
+    }
+
+    void sidebarExpansionRetriesFailedCacheRevalidation()
+    {
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("cache");
+        {
+            NativeCache initial(path, NativeCache::Policy{}, true);
+            QVERIFY(initial.open(fixture.server.origin(), projectId, userId));
+            const NativeCache::Key key{NativeCache::Kind::Topics, streamId, {}, {}};
+            QVERIFY(initial.put(initial.lease(), key, {inboxTopic(topicId, streamId, "Cached", 0, 0, 0)}));
+            QVERIFY(initial.markStale(initial.lease(), NativeCache::Kind::Topics, streamId));
+        }
+        NativeCacheService cache(path, NativeCache::Policy{}, true);
+        fixture.controller.useCache(&cache);
+        fixture.streams = [](const Request &) { return Response{QJsonArray{inboxStream(streamId, "Engineering", 0, 0, 0)}}; };
+        auto requests = std::make_shared<int>(0);
+        fixture.topics = [requests](const Request &) {
+            const int n = ++*requests;
+            return Response{QJsonArray{inboxTopic(topicId, streamId, "Fresh", 0, 0, 0)}, n == 1 ? 503 : 200};
+        };
+        loginInbox(fixture, 1); QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        fixture.controller.requestSidebarTopics(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(*requests == 1 && fixture.controller.sidebarTopicState(streamId, true).value("known").toBool(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.api.findChildren<QNetworkReply *>().isEmpty(), 3000);
+        QCOMPARE(fixture.controller.sidebarTopicState(streamId, true).value("rows").toList()[0].toMap().value("name").toString(), QString("Cached"));
+        fixture.controller.requestSidebarTopics(streamId);
+        QTRY_COMPARE_WITH_TIMEOUT(*requests, 2, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.sidebarTopicState(streamId, true).value("rows").toList()[0].toMap().value("name").toString(), QString("Fresh"), 3000);
+    }
+
     void sidebarExpansionStaleCacheKeepsNetworkBounded()
     {
         Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -23190,6 +23290,67 @@ private slots:
         releaseTopics();
         QTRY_VERIFY(!controller.profileDirectPending());
         QCOMPARE(controller.selectedTopic(), defaultCount == 1 ? channelDefault : QString{});
+    }
+
+    void profileMessageDeferredCacheWaitsForNetwork_data()
+    {
+        QTest::addColumn<QString>("terminal");
+        for (const auto *terminal : {"success", "failure", "logout"})
+            QTest::newRow(terminal) << QString(terminal);
+    }
+
+    void profileMessageDeferredCacheWaitsForNetwork()
+    {
+        QFETCH(QString, terminal);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        DirectChatFixture test; test.seed(); test.created.remove("default_topic_uuid"); test.gets = 1;
+        {
+            NativeCache seed(directory.path(), {}, true);
+            QVERIFY(seed.open(test.fixture.server.origin(), projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, directId, {}, {}}, {test.defaultTopic}));
+        }
+        QSemaphore gate; std::atomic_bool hold{false}, entered{false};
+        NativeCacheService cache(directory.path(), {}, true, [&] {
+            if (hold.exchange(false)) { entered = true; gate.acquire(); }
+            return QDateTime::currentMSecsSinceEpoch();
+        });
+        QVERIFY(cache.open(test.fixture.server.origin(), projectId, userId));
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        hold = true;
+        cache.get(cache.lease(), {NativeCache::Kind::Topics, directId, {}, {}}, this, [](auto) {});
+        const auto release = qScopeGuard([&] { gate.release(); });
+        QTRY_VERIFY_WITH_TIMEOUT(entered.load(), 3000);
+        auto &controller = test.fixture.controller;
+        controller.useCache(&cache);
+        std::function<void()> releaseTopics;
+        const auto fallback = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == directId) {
+                Response response{QJsonArray{test.defaultTopic}, terminal == "failure" ? 503 : 200};
+                response.defer = [&](auto send) { releaseTopics = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 2); QTRY_VERIFY(!controller.busy());
+        QVERIFY(!cache.available());
+        controller.openDirectChatFromProfile(channelMemberA);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseTopics), 3000);
+        QVERIFY(controller.profileDirectPending());
+        gate.release(); QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topics().isEmpty(), 3000);
+        QVERIFY(controller.profileDirectPending());
+        if (terminal == "logout") {
+            controller.logout();
+            QTRY_VERIFY(!controller.authenticated());
+        }
+        releaseTopics();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.profileDirectPending(), 3000);
+        if (terminal == "success") QTRY_COMPARE(controller.selectedTopic(), channelDefault);
+        else QVERIFY(controller.selectedTopic().isEmpty());
     }
 
     void profileMessageLateDefaultCannotReplaceNewerNavigation()

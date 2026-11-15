@@ -7272,7 +7272,8 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
 {
     if (!authenticated() || !isUuid(streamUuid))
         return;
-    if (m_inboxTopics.contains(streamUuid) || m_inboxHydrating.contains(streamUuid))
+    if ((m_inboxTopics.contains(streamUuid) && !m_inboxStaleTopics.contains(streamUuid))
+        || m_inboxHydrating.contains(streamUuid))
         return;
     // An unknown or archived stream is not a hydratable destination; the row
     // correctly stays out of the Inbox until the catalog knows the stream.
@@ -7305,9 +7306,17 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
         // Stale-owner guard: an owner switch or catalog epoch change may
         // not write into the new inbox (same contract as mentions).
         if (!authenticated() || creationOwnerKey() != owner || m_api->generation() != generation
-            || catalog != m_catalog || m_inboxSelectedRevisions.value(streamUuid) != selectedRevision) {
+            || catalog != m_catalog) {
             settle();
             return false;
+        }
+        if (m_inboxSelectedRevisions.value(streamUuid) != selectedRevision) {
+            // A deferred cache result can arrive while its network request is
+            // still active. Ignore the stale rows and keep the slot until the
+            // request's terminal callback; cache-first falls through to the
+            // existing epoch check, which delivers a terminal failure.
+            if (authoritative) settle();
+            return !authoritative;
         }
         QVector<Topic> topics;
         QSet<QString> ids;
@@ -7344,6 +7353,8 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
+        if (authoritative) m_inboxStaleTopics.remove(streamUuid);
+        else m_inboxStaleTopics.insert(streamUuid);
         // Stale cache can be shown immediately but its network revalidation
         // remains in flight and continues to occupy the background slot.
         if (authoritative) settle();
@@ -7449,6 +7460,7 @@ void NativeController::resetInbox()
 {
     m_inboxVisible = false;
     m_inboxTopics.clear();
+    m_inboxStaleTopics.clear();
     m_inboxSelectedRevisions.clear();
     m_inboxHydrating.clear();
     m_sidebarTopicPending.clear();
@@ -7775,27 +7787,27 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
                 && m_cacheLease.owner == lease.owner && m_cacheLease.generation == lease.generation)
                 cache->put(lease, key, rows);
         }, {}, {}, [guard, failed, authoritativeDelivered] {
-            // A stale cache snapshot already settled the caller's contract:
-            // do not double-report a failure after rows were delivered (#64).
+            // An authoritative snapshot already settled the caller's contract;
+            // stale rows do not replace the network's terminal outcome (#64).
             if (!guard || *authoritativeDelivered) return;
             if (failed) failed();
         });
     };
     const auto fetchCache = [this, guard, cache, lease, key, done, failed, forceNetwork,
-                             authoritativeDelivered, current, network](bool savedOnly) {
+                             networkStarted, authoritativeDelivered, current, network](bool savedOnly) {
         if (*authoritativeDelivered) return;
         if (!current()) {
             // Deferred hydration for a dead epoch can never deliver rows:
             // a savedOnly pass owes its caller the failure terminal (#64).
-            if (savedOnly && failed) failed();
+            if (savedOnly && failed && !*networkStarted) failed();
             return;
         }
         cache->get(lease, key, this, [this, guard, done, failed, forceNetwork, savedOnly,
-                    authoritativeDelivered, current, network](std::optional<NativeCache::Entry> entry) {
+                    networkStarted, authoritativeDelivered, current, network](std::optional<NativeCache::Entry> entry) {
             if (!guard || *authoritativeDelivered) return;
             if (!current()) {
                 if (!savedOnly) network();
-                else if (failed) failed();
+                else if (failed && !*networkStarted) failed();
                 return;
             }
             if (entry) {
@@ -7806,9 +7818,9 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
                 if (fresh) return;
             }
             if (!savedOnly) network();
-            // A savedOnly deferred pass with no entry has no rows to deliver:
-            // close the caller's contract with the failure terminal (#64).
-            else if (failed) failed();
+            // A savedOnly pass must not settle while its network request is
+            // active; that request owns the terminal outcome (#64).
+            else if (failed && !*networkStarted) failed();
         });
     };
     if (!cache || !cache->available()) {
@@ -11428,7 +11440,8 @@ void NativeController::requestSidebarTopics(const QString &stream)
     if (!authenticated() || (stream == m_stream && m_topicsVerified)) return;
     const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
         [&stream](const Stream &value) { return value.uuid == stream; });
-    if (found == m_streams.cend() || found->archived || m_inboxTopics.contains(stream)
+    if (found == m_streams.cend() || found->archived
+        || (m_inboxTopics.contains(stream) && !m_inboxStaleTopics.contains(stream))
         || m_inboxHydrating.contains(stream) || m_sidebarTopicPending.contains(stream)) return;
     m_sidebarTopicPending.append(stream);
     pumpSidebarTopicHydration();
@@ -11443,7 +11456,8 @@ void NativeController::pumpSidebarTopicHydration()
     while (authenticated() && m_sidebarTopicHydrating.size() < maxSidebarRequests
            && !m_sidebarTopicPending.isEmpty()) {
         const auto stream = m_sidebarTopicPending.takeFirst();
-        if (m_inboxTopics.contains(stream) || m_inboxHydrating.contains(stream)) continue;
+        if ((m_inboxTopics.contains(stream) && !m_inboxStaleTopics.contains(stream))
+            || m_inboxHydrating.contains(stream)) continue;
         const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
             [&stream](const Stream &value) { return value.uuid == stream && !value.archived; });
         if (found == m_streams.cend()) continue;
@@ -12962,6 +12976,7 @@ void NativeController::loadTopics()
         if (authoritative && (m_inboxTopics.contains(m_stream) || m_inboxHydrating.contains(m_stream))) {
             ++m_inboxSelectedRevisions[m_stream];
             m_inboxTopics.insert(m_stream, topics);
+            m_inboxStaleTopics.remove(m_stream);
         }
         ++m_readCounterInvalidation;
         m_topicsVerified = authoritative;

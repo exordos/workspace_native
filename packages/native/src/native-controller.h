@@ -1825,6 +1825,7 @@ private:
     bool m_inboxVisible = false;
     QString m_section = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
+    QSet<QString> m_inboxStaleTopics;
     // Foreground authoritative catalogs fence older background completions.
     QHash<QString, quint64> m_inboxSelectedRevisions;
     QHash<QString, quint64> m_inboxHydrating; // stream -> hydration token (#64)

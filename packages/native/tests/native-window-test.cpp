@@ -9847,6 +9847,19 @@ mv -Tf "$root/.current-new" "$root/current"
                 click(window, visibleItem(window->contentItem(), "stream-" + streamId));
                 QTRY_COMPARE(controller.selectedStream(), streamId);
                 QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + secondTopicId));
+                QTRY_VERIFY(controller.topicsComplete());
+                controller.selectTopic(ids[4]);
+                QTRY_COMPARE(controller.selectedTopic(), ids[4]);
+                QTRY_VERIFY(topic(0) && !topic(4));
+                QTest::mouseMove(window, QPoint(1300, 850));
+                auto *streamRow = visibleItem(window->contentItem(), "stream-" + streamId); QVERIFY(streamRow);
+                auto *background = streamRow->property("background").value<QQuickItem *>(); QVERIFY(background);
+                const auto active = QColor(window->property("colors").toMap().value("card-bg-active").toString());
+                QVERIFY2(background->property("color").value<QColor>() != active,
+                    "The reference leaves the expanded stream unhighlighted even when its active topic is beyond the limit");
+                click(window, more()); QTRY_VERIFY(topic(4));
+                auto *topicBackground = topic(4)->property("background").value<QQuickItem *>(); QVERIFY(topicBackground);
+                QCOMPARE(topicBackground->property("color").value<QColor>(), active);
             }
             const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
         }
