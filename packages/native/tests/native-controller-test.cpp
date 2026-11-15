@@ -5433,15 +5433,19 @@ private slots:
         uncommitted.value.bytes.fill('\\0');
     }
 
-    // Review finding 4575672241/4575672242 residual hole: a crash AFTER the
-    // durable dispatch-attempted marker but BEFORE the POST left the process
-    // leaves a dispatch-attempted stage whose stream answers 404 to every
-    // recovery GET forever. Retention-only can never remove it, so a bounded
-    // run of such crashes permanently exhausts the vault's 32-stage create
-    // budget. Recovery must be able to reclaim such stages from durable
-    // evidence: K consecutive definitive 404 answers observed across SEPARATE
-    // scan cycles plus a minimum stage age.
-    void encryptedChannelCreationDispatchAttemptedStagesWithConclusiveMissingEvidenceAreReclaimed()
+    // Review finding 4576535469 (critical, R6): a dispatched POST whose
+    // response was never observed (crash or timeout) may still commit
+    // server-side long after ANY number of recovery 404s — the client can
+    // observe no server-side deadline or cancellation for the attempt, so
+    // absence establishes no definitive terminal outcome, and the stage may
+    // hold the only copy of the group key. The R4 conclusive-absence reclaim
+    // (5 definitive 404s across separate cycles + minimum age) therefore
+    // must NOT delete dispatch-attempted stage material: the stage goes
+    // DORMANT (durable absence counter saturated, key retained) and when the
+    // stream finally lands, the recovery re-adopts it and commits the key.
+    // Pre-fix this test fails: the aged stage is retired once five cycles
+    // have answered 404, and the key is gone before the late commit lands.
+    void encryptedChannelCreationDispatchAttemptedKeySurvivesConclusiveAbsence()
     {
         ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
         NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
@@ -5449,45 +5453,162 @@ private slots:
         keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
             [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
         QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
-        QSet<QString> attempts;
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('a'));
+        // The crashed process left a dispatch-attempted stage whose POST was
+        // handed to the network stack but whose response was never observed,
+        // aged far past the old reclaim window: the exact scenario in which
+        // the server may still commit the channel minutes to hours later.
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto visible = std::make_shared<std::atomic<bool>>(false);
         int recoveryGets = 0;
         EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
-        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempts, &recoveryGets](const Request &request) -> Response {
-            const auto prefix = QStringLiteral("/api/workspace/v1/messenger/streams/");
-            const auto path = request.target.path();
-            if (request.method == "GET" && path.startsWith(prefix) && path.size() > prefix.size()
-                && attempts.contains(path.mid(prefix.size()))) {
-                ++recoveryGets; // every recovery GET for these attempts answers a conclusive 404 forever
-                return {QJsonObject{}, 404};
+        test.fixture.server.handler = [inner = test.fixture.server.handler, visible, &attempt, &keyUuid,
+            &recoveryGets](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                ++recoveryGets;
+                if (!visible->load()) return {QJsonObject{}, 404}; // the late commit has not landed yet
+                auto row = creationChannel(attempt); // and now it lands
+                row["encryption"] = true;
+                row["current_encryption_key_uuid"] = keyUuid;
+                return {row, 200};
             }
             return inner(request);
         };
-        // Simulate the maximum run of crashes inside the mark-to-socket window:
-        // every victim is durably dispatch-attempted, and every stage has aged
-        // past any plausible delayed server-side commit of its POST.
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        // The recovery scans answer definitive 404s across cycle after cycle,
+        // and the stage is far older than the old 10-minute reclaim floor.
+        // The stage may saturate its absence evidence and go dormant, but it
+        // must NEVER be retired: it is the only copy of the group key, and
+        // absence alone proves nothing terminal. (Pre-fix: the reclaim fires
+        // once five cycles and the age floor line up, deleting the key.)
+        QVERIFY2(QTest::qWaitFor([&] {
+            const auto stage = keys.readCreateStage(keys.lease(), attempt);
+            return stage.failure != NativeChatKeyVault::Failure::None
+                || stage.value->missingEvidence >= 5;
+        }, 20000), "the recovery never recorded conclusive absence for the dispatched stage");
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY2(kept.value.has_value(),
+            "recovery destroyed the only group key on absence evidence alone, before any definitive terminal outcome");
+        QCOMPARE(kept.value->groupKey.size(), 32);
+        kept.value->clearSecrets();
+        QVERIFY(keys.read(keys.lease(), {attempt, keyUuid}).value.bytes.isEmpty()); // not committed yet
+        // The stream finally commits server-side. A later recovery scan must
+        // re-adopt the dormant stage: verify the echo, commit the key, and
+        // clear the stage — the channel becomes decryptable with the very
+        // key the absence-based reclaim used to destroy.
+        visible->store(true);
+        QVERIFY2(QTest::qWaitFor([&] {
+            auto stored = keys.read(keys.lease(), {attempt, keyUuid});
+            const bool ok = stored.failure == NativeChatKeyVault::Failure::None && stored.value.bytes == groupKey;
+            stored.value.bytes.fill('\0');
+            return ok;
+        }, 20000), "the dormant stage was not re-adopted after the late stream appeared");
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+    }
+
+    // Review findings 4575672241/4575672242 residual hole, as re-scoped by
+    // review finding 4576535469 (critical, R6): the R4 reclaim retired a
+    // dispatch-attempted stage from absence evidence alone, which can delete
+    // the only group key of a creation whose POST is still able to land.
+    // Retiring dispatch-attempted stages on 404-count + age is therefore
+    // REMOVED. Such stages now saturate their durable absence counter and go
+    // DORMANT with their keys retained inside the vault's bounded 32-record
+    // create-stage budget; recovery keeps re-checking them with the bounded
+    // backoff re-arm. The budget is freed only by definitive terminal
+    // outcomes: a verified encrypted echo (commit) or the live POST's own
+    // definite rejection. This test asserts the new boundary AND the
+    // residual starvation bound the design accepts: a full budget of dormant
+    // stages rejects a new encrypted create locally rather than stealing an
+    // unresolvable attempt's key — and once the dormant streams land, their
+    // stages re-adopt, the budget frees, and creates complete again.
+    void encryptedChannelCreationDispatchAttemptedStagesGoDormantWithoutKeyLoss()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        QHash<QString, QString> missingByKey; // attempt -> key uuid
+        int recoveryGets = 0;
+        auto visible = std::make_shared<std::atomic<bool>>(false);
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &missingByKey, &recoveryGets,
+            visible](const Request &request) -> Response {
+            const auto prefix = QStringLiteral("/api/workspace/v1/messenger/streams/");
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.startsWith(prefix) && path.size() > prefix.size()
+                && missingByKey.contains(path.mid(prefix.size()))) {
+                ++recoveryGets;
+                if (!visible->load()) return {QJsonObject{}, 404}; // missing for every cycle so far
+                auto row = creationChannel(path.mid(prefix.size())); // the late commits land
+                row["encryption"] = true;
+                row["current_encryption_key_uuid"] = missingByKey.value(path.mid(prefix.size()));
+                return {row, 200};
+            }
+            return inner(request);
+        };
+        // Simulate the maximum run of crashes inside the mark-to-socket
+        // window: every victim is durably dispatch-attempted (its POST may
+        // still land), and every stage has aged past the old reclaim window.
         for (int i = 0; i < int(NativeChatKeyVault::MaximumCreateStages); ++i) {
-            NativeChatKeyVault::CreateStage stage{QUuid::createUuid().toString(QUuid::WithoutBraces),
-                QUuid::createUuid().toString(QUuid::WithoutBraces), QByteArray(32, char('a' + i)),
+            NativeChatKeyVault::CreateStage stage{QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(),
+                QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(), QByteArray(32, char('a' + i)),
                 1700000000000 + i};
             QCOMPARE(keys.putCreateStage(keys.lease(), stage), NativeChatKeyVault::Failure::None);
             QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), stage.attempt), NativeChatKeyVault::Failure::None);
-            attempts.insert(stage.attempt.toLower());
+            missingByKey.insert(stage.attempt, stage.key);
             stage.clearSecrets();
         }
         // A fresh authenticated controller scans the durable stages; cycles
-        // separated by the recovery retry interval accumulate the absence
-        // evidence, then the conclusively-missing stages are retired.
+        // separated by the recovery retry intervals accumulate the absence
+        // evidence on each stage. The stages go dormant — keys retained.
         auto &controller = test.fixture.controller;
         controller.useChatKeys(&keys);
-        QVERIFY2(QTest::qWaitFor([&] { return keys.createStages(keys.lease()).values.isEmpty(); }, 30000),
-            "dispatch-attempted stages conclusively missing forever were never reclaimed; the create-stage budget stays exhausted");
-        // Reclaim was evidence-based across separate scan cycles, never a
-        // single-shot delete: every stage needed at least two 404 observations.
+        QVERIFY2(QTest::qWaitFor([&] {
+            const auto stages = keys.createStages(keys.lease());
+            if (stages.values.size() != int(NativeChatKeyVault::MaximumCreateStages)) return false;
+            for (const auto &stage : stages.values) {
+                if (stage.missingEvidence < 5 || stage.groupKey.size() != 32) return false;
+            }
+            return true;
+        }, 30000), "conclusively-missing dispatch-attempted stages were not all retained dormant with keys intact");
+        // Evidence saturates at the dormancy threshold instead of growing,
+        // and recovery stays armed for dormant stages: every stage has been
+        // re-checked across separate scan cycles and never deleted.
+        for (const auto &stage : keys.createStages(keys.lease()).values) QCOMPARE(stage.missingEvidence, 5);
         QVERIFY(recoveryGets >= 2 * int(NativeChatKeyVault::MaximumCreateStages));
-        // The reclaimed budget proves the starvation is gone: an encrypted
-        // create can stage its key and complete again.
+        // Residual bound the design accepts (documented on-thread): the
+        // dormant stages still hold the 32-record budget, so a new encrypted
+        // create is rejected LOCALLY — no POST, no key destroyed — instead
+        // of evicting an unresolvable attempt's only key copy.
+        controller.createChannel("Starved while dormant", "", false, false, {}, true);
+        QVERIFY2(QTest::qWaitFor([&] { return !controller.channelCreationBusy(); }, 8000),
+            "a budget-starved encrypted create did not settle locally");
+        QCOMPARE(test.posts, 0);
+        QVERIFY(!controller.channelCreationError().isEmpty());
+        QCOMPARE(keys.createStages(keys.lease()).values.size(), int(NativeChatKeyVault::MaximumCreateStages));
+        // The dormant streams finally land: recovery re-adopts every stage,
+        // commits its key, and frees the budget — a later create completes.
+        visible->store(true);
+        QVERIFY2(QTest::qWaitFor([&] { return keys.createStages(keys.lease()).values.isEmpty(); }, 45000),
+            "dormant stages were not re-adopted after their late streams appeared");
+        for (auto it = missingByKey.constBegin(); it != missingByKey.constEnd(); ++it) {
+            auto stored = keys.read(keys.lease(), {it.key(), it.value()});
+            QCOMPARE(stored.failure, NativeChatKeyVault::Failure::None);
+            QCOMPARE(stored.value.bytes.size(), 32);
+            stored.value.bytes.fill('\0');
+        }
         QSignalSpy complete(&controller, &NativeController::channelCreated);
-        controller.createChannel("After evidence reclaim", "", false, false, {}, true);
+        controller.createChannel("After dormant re-adoption", "", false, false, {}, true);
         QVERIFY2(QTest::qWaitFor([&] { return controller.channelCreationPhase() == "ready"; }, 8000),
             qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
         QCOMPARE(test.posts, 1);
