@@ -378,6 +378,20 @@ private slots:
         QCOMPARE(renderer.render("**Before** image\n\n![sample](" + urn + ")\n\n_After_ image"), output);
     }
 
+    void webComposerImageLinesRenderWithTheirCaption()
+    {
+        NativeMarkdown renderer;
+        const auto first = "![first](urn:image:" + messageId + ")";
+        const auto secondId = QStringLiteral("99999999-9999-4999-8999-999999999994");
+        const auto second = "![second](urn:image:" + secondId + ")";
+        const auto parts = renderer.render(first + "\n" + second + "\nCaption").value("parts").toList();
+        QCOMPARE(parts.size(), 3);
+        QCOMPARE(parts[0].toMap().value("id").toString(), messageId);
+        QCOMPARE(parts[1].toMap().value("id").toString(), secondId);
+        QCOMPARE(parts[2].toMap().value("kind").toString(), QString("text"));
+        QCOMPARE(parts[2].toMap().value("plain").toString(), QString("Caption"));
+    }
+
     void imageOnlyPartsHaveNoInventedCaptionOrEmptyTextRun()
     {
         NativeMarkdown renderer;

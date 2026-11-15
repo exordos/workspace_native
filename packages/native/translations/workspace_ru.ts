@@ -83,10 +83,40 @@
         <message><source>Show completed topics (%1)</source><translation>Показать завершённые темы (%1)</translation></message>
         <message><source>Show more topics (%1)</source><translation>Показать ещё темы (%1)</translation></message>
         <message><source>Could not open this profile. It may be unavailable or you may not have access.</source><translation>Не удалось открыть профиль. Возможно, он недоступен или у вас нет доступа.</translation></message>
+        <message>
+            <source>Uploading · %1%</source>
+            <translation>Загрузка · %1%</translation>
+        </message>
+        <message>
+            <source>Uploading %1: %2%</source>
+            <translation>Загрузка %1: %2%</translation>
+        </message>
+        <message>
+            <source>Cancel upload of %1</source>
+            <translation>Отменить загрузку %1</translation>
+        </message>
+        <message>
+            <source>Retry upload of %1</source>
+            <translation>Повторить загрузку %1</translation>
+        </message>
+        <message>
+            <source>Attached files</source>
+            <translation>Прикреплённые файлы</translation>
+        </message>
+        <message>
+            <source>Checking file</source>
+            <translation>Проверка файла</translation>
+        </message>
+        <message>
+            <source>Waiting to upload</source>
+            <translation>Ожидает загрузки</translation>
+        </message>
         <message><source>File</source><translation>Файл</translation></message>
         <message><source>Image</source><translation>Изображение</translation></message>
         <message><source>Video</source><translation>Видео</translation></message>
         <message><source>Remove %1</source><translation>Удалить %1</translation></message>
+        <message><source>Remove image from text</source><translation>Удалить изображение из текста</translation></message>
+        <message><source>Drag image into message</source><translation>Перетащить изображение в сообщение</translation></message>
         <message>
             <source>Unread messages</source>
             <translation>Непрочитанные сообщения</translation>
@@ -1597,6 +1627,26 @@
         <message>
             <source>Encrypted fragment</source>
             <translation>Зашифрованный фрагмент</translation>
+        </message>
+        <message>
+            <source>Upload failed</source>
+            <translation>Ошибка загрузки</translation>
+        </message>
+        <message>
+            <source>The file is empty</source>
+            <translation>Файл пуст</translation>
+        </message>
+        <message>
+            <source>The file is too large (maximum 25 MB)</source>
+            <translation>Файл слишком большой (не более 25 МБ)</translation>
+        </message>
+        <message>
+            <source>The image file type does not match its contents</source>
+            <translation>Тип изображения не соответствует его содержимому</translation>
+        </message>
+        <message>
+            <source>The file could not be validated</source>
+            <translation>Не удалось проверить файл</translation>
         </message>
         <message>
             <source>The attachment download could not be started.</source>

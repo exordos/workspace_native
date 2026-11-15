@@ -6800,6 +6800,7 @@ ApplicationWindow {
                 }
             }
             Rectangle {
+                id: messageComposerShell
                 objectName: "messageComposerShell"
                 visible: root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed && !root.aggregateConversation
                 Layout.fillWidth: true
@@ -6812,6 +6813,7 @@ ApplicationWindow {
                     + replyTabStrip.height
                     + (replyNotice.visible ? replyNotice.height : 0)
                     + editAttachmentStrip.height
+                    + uploadCardStrip.height
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -7292,6 +7294,202 @@ ApplicationWindow {
                     }
                     ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
                 }
+                ListView {
+                    id: uploadCardStrip
+                    objectName: "uploadCardStrip"
+                    y: (editMessageNotice.visible ? editMessageNotice.height : 0)
+                        + replyTabStrip.height + (replyNotice.visible ? replyNotice.height : 0) + editAttachmentStrip.height
+                    x: 8; width: parent.width - 16
+                    height: count > 0 ? 70 : 0
+                    clip: true; orientation: ListView.Horizontal
+                    boundsBehavior: Flickable.StopAtBounds; spacing: 10
+                    model: root.controller.uploadEntries
+                    Accessible.role: Accessible.List
+                    Accessible.name: qsTr("Attached files")
+                    delegate: Rectangle {
+                        id: uploadCard
+                        required property var modelData
+                        readonly property bool pending: modelData.status === "queued" || modelData.status === "validating"
+                        readonly property bool uploading: modelData.status === "uploading"
+                        readonly property bool failed: modelData.status === "error"
+                        readonly property string inlineAlias: String(modelData.alias || "")
+                        readonly property bool inlineInText: Boolean(modelData.inText)
+                        readonly property int percent: Number(modelData.total) > 0
+                            ? Math.max(0, Math.min(100, Math.round(Number(modelData.sent) * 100 / Number(modelData.total)))) : 0
+                        objectName: "uploadCard-" + modelData.id
+                        y: 8; width: Math.min(240, uploadCardStrip.width); height: 58; radius: failed ? 12 : 8
+                        color: root.colors["composer-outer"]
+                        border.width: 1; border.color: failed ? root.colors.danger : root.colors["border-subtle"]
+                        Accessible.role: Accessible.ListItem
+                        Accessible.name: modelData.name
+                        Rectangle {
+                            x: 9; y: 9; width: 40; height: 40; radius: 8
+                            color: root.colors.bg; clip: true
+                            Image {
+                                anchors.fill: parent
+                                source: uploadCard.modelData.status === "ready" && uploadCard.modelData.image ? uploadCard.modelData.path : ""
+                                sourceSize.width: 80; sourceSize.height: 80
+                                fillMode: Image.PreserveAspectCrop; asynchronous: true
+                            }
+                            Item {
+                                id: imageDragGhost
+                                width: 40; height: 40
+                                Drag.active: imageDragMouse.drag.active
+                                Drag.source: uploadCard
+                                Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                            }
+                            MouseArea {
+                                id: imageDragMouse
+                                anchors.fill: parent
+                                enabled: uploadCard.inlineAlias.length > 0 && !uploadCard.inlineInText
+                                cursorShape: Qt.OpenHandCursor
+                                Accessible.role: Accessible.Grouping
+                                Accessible.name: qsTr("Drag image into message")
+                                drag.target: imageDragGhost; drag.threshold: 8
+                                onReleased: {
+                                    if (drag.active) imageDragGhost.Drag.drop();
+                                    imageDragGhost.x = 0; imageDragGhost.y = 0;
+                                }
+                            }
+                            Rectangle {
+                                visible: uploadCard.inlineInText
+                                anchors.right: parent.right; anchors.bottom: parent.bottom
+                                width: 40; height: 20; radius: 10; color: root.colors.accent
+                                Text { anchors.left: parent.left; anchors.leftMargin: 3; anchors.verticalCenter: parent.verticalCenter
+                                    text: "TX"; color: "white"; font.pixelSize: 9; font.bold: true }
+                                NativeIconButton {
+                                    objectName: "uploadRemoveInline-" + uploadCard.modelData.id
+                                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    width: 20; height: 20; glyphSize: 10; cornerRadius: 10
+                                    colors: root.colors; asset: "close.svg"
+                                    help: qsTr("Remove image from text")
+                                    onClicked: root.controller.removeUploadFromText(uploadCard.modelData.id)
+                                }
+                            }
+                            NativeIconButton {
+                                anchors.centerIn: parent
+                                visible: !uploadCard.uploading && !(uploadCard.modelData.status === "ready" && uploadCard.modelData.image)
+                                width: 18; height: 18; glyphSize: 18
+                                colors: root.colors; iconColor: root.colors["text-muted"]
+                                asset: uploadCard.failed ? "attachment-upload-error.svg" : "files.svg"
+                                focusPolicy: Qt.NoFocus; hoverEnabled: false; background: null
+                                Accessible.ignored: true
+                            }
+                            Canvas {
+                                anchors.centerIn: parent; width: 18; height: 18
+                                visible: uploadCard.uploading
+                                Accessible.role: Accessible.ProgressBar
+                                Accessible.name: qsTr("Uploading %1: %2%").arg(uploadCard.modelData.name).arg(uploadCard.percent)
+                                property int value: uploadCard.percent
+                                onValueChanged: requestPaint()
+                                onPaint: {
+                                    const ctx = getContext("2d"); ctx.clearRect(0, 0, width, height);
+                                    ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(9, 9, 7.5, 0, 2 * Math.PI);
+                                    ctx.strokeStyle = Qt.alpha(root.colors["text-muted"], 0.24); ctx.stroke();
+                                    ctx.beginPath(); ctx.arc(9, 9, 7.5, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * value / 100);
+                                    ctx.strokeStyle = root.colors.accent; ctx.stroke();
+                                }
+                            }
+                        }
+                        Column {
+                            x: 61; y: 13; width: Math.max(0, parent.width - x - (uploadCard.failed && uploadCard.modelData.retryable ? 57 : 33)); spacing: 2
+                            Text {
+                                width: parent.width; text: uploadCard.modelData.name
+                                textFormat: Text.PlainText; elide: Text.ElideRight
+                                color: root.colors["text-primary"]; font.pixelSize: 12; font.weight: Font.Medium
+                                lineHeightMode: Text.FixedHeight; lineHeight: 14
+                            }
+                            Text {
+                                objectName: "uploadStatus-" + uploadCard.modelData.id
+                                width: parent.width; elide: Text.ElideRight; textFormat: Text.PlainText
+                                color: uploadCard.failed ? root.colors.danger : root.colors["text-muted"]; font.pixelSize: 12
+                                lineHeightMode: Text.FixedHeight; lineHeight: 15
+                                text: {
+                                    const status = uploadCard.modelData.status;
+                                    if (status === "validating") return qsTr("Checking file");
+                                    if (status === "queued") return qsTr("Waiting to upload");
+                                    if (status === "uploading") return qsTr("Uploading · %1%").arg(uploadCard.percent);
+                                    if (status === "error") return uploadCard.modelData.error;
+                                    const name = String(uploadCard.modelData.name);
+                                    const dot = name.lastIndexOf(".");
+                                    const extension = dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 4) : "FILE";
+                                    const bytes = Number(uploadCard.modelData.size);
+                                    const size = bytes < 1024 ? bytes + " B" : bytes < 1048576 ? Math.round(bytes / 1024) + " KB"
+                                        : (Math.round(bytes / 104857.6) / 10) + " MB";
+                                    return extension + " · " + size;
+                                }
+                            }
+                        }
+                        NativeIconButton {
+                            objectName: "uploadRetry-" + uploadCard.modelData.id
+                            visible: uploadCard.failed && uploadCard.modelData.retryable
+                            x: parent.width - 57; y: 17; width: 24; height: 24; glyphSize: 16; cornerRadius: 12
+                            colors: root.colors; asset: "attachment-retry.svg"; focusPolicy: Qt.StrongFocus
+                            help: qsTr("Retry upload of %1").arg(uploadCard.modelData.name)
+                            onClicked: root.controller.retryUpload(uploadCard.modelData.id)
+                        }
+                        NativeIconButton {
+                            objectName: "uploadCancel-" + uploadCard.modelData.id
+                            x: parent.width - width - 9; y: 17
+                            width: 24; height: 24; glyphSize: 12; cornerRadius: 12
+                            colors: root.colors; asset: "close.svg"; focusPolicy: Qt.StrongFocus
+                            help: uploadCard.uploading ? qsTr("Cancel upload of %1").arg(uploadCard.modelData.name)
+                                : qsTr("Remove %1").arg(uploadCard.modelData.name)
+                            onClicked: root.controller.removeUpload(uploadCard.modelData.id)
+                        }
+                    }
+                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+                }
+                DropArea {
+                    id: composerDropArea
+                    objectName: "composerDropArea"
+                    property bool externalFiles: false
+                    anchors.fill: parent; z: 4
+                    onEntered: drag => {
+                        if (drag.source && drag.source.inlineAlias) {
+                            externalFiles = false;
+                            drag.accepted = true;
+                            return;
+                        }
+                        let local = false;
+                        if (drag.hasUrls) {
+                            for (let i = 0; i < drag.urls.length; ++i)
+                                if (String(drag.urls[i]).toLowerCase().startsWith("file:")) local = true;
+                        }
+                        externalFiles = root.controller.canAttach && local;
+                        drag.accepted = externalFiles;
+                    }
+                    onExited: externalFiles = false
+                    onDropped: drop => {
+                        externalFiles = false;
+                        if (drop.source && drop.source.inlineAlias) {
+                            const p = composerDropArea.mapToItem(composerText, drop.x, drop.y);
+                            if (p.x >= 0 && p.y >= 0 && p.x <= composerText.width && p.y <= composerText.height
+                                && !drop.source.inlineInText && !composerText.readOnly) {
+                                const at = composerText.positionAt(p.x, p.y);
+                                const alias = drop.source.inlineAlias;
+                                const next = composerText.text.slice(0, at) + alias + composerText.text.slice(at);
+                                root.controller.draft = next;
+                                composerText.forceActiveFocus(); composerText.select(at + alias.length, at + alias.length);
+                                drop.accepted = true;
+                            } else drop.accepted = false;
+                            return;
+                        }
+                        const files = [];
+                        for (let i = 0; i < drop.urls.length; ++i)
+                            if (String(drop.urls[i]).toLowerCase().startsWith("file:")) files.push(drop.urls[i]);
+                        if (files.length && root.controller.canAttach) {
+                            root.controller.attachFiles(files);
+                            drop.accepted = true;
+                        } else drop.accepted = false;
+                    }
+                }
+                Rectangle {
+                    objectName: "composerDropRing"
+                    anchors.fill: parent; anchors.margins: 2; radius: 8; z: 5
+                    color: "transparent"; border.width: 2; border.color: root.colors.accent
+                    visible: composerDropArea.containsDrag && composerDropArea.externalFiles
+                }
                 ColumnLayout {
                     id: composerInputColumn
                     // Padded composer column: message-composer.ui.tsx:2040
@@ -7305,6 +7503,7 @@ ApplicationWindow {
                         + replyTabStrip.height
                         + (replyNotice.visible ? replyNotice.height : 0)
                         + editAttachmentStrip.height
+                        + uploadCardStrip.height
                     spacing: 4
                     RowLayout {
                         Layout.fillWidth: true
@@ -7549,7 +7748,11 @@ ApplicationWindow {
                                             return;
                                         }
                                         const editing = root.controller.editingMessageId.length > 0;
-                                        if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
+                                        if (event.key === Qt.Key_V && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+                                            && !(event.modifiers & (Qt.AltModifier | Qt.GroupSwitchModifier))
+                                            && root.controller.pasteAttachments()) {
+                                            event.accepted = true;
+                                        } else if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
                                             composerMentionPopup.close();
                                             event.accepted = true;
@@ -7599,6 +7802,9 @@ ApplicationWindow {
                                                     text = nextText;
                                                 select(nextCaret, nextCaret);
                                             }
+                                            event.accepted = true;
+                                        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                            && !(event.modifiers & Qt.ShiftModifier) && !inputMethodComposing && root.controller.uploadPending) {
                                             event.accepted = true;
                                         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && !root.controller.busy && !inputMethodComposing) {
                                             if (editing) {

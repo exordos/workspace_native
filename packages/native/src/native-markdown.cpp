@@ -358,7 +358,28 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     // GFM HTML instead so soft/hard breaks remain <br>, as in the source UI.
     // Both resource denials are installed before importing any generated HTML.
     QByteArray generated;
-    const auto input = markdown.toUtf8();
+    // The web composer emits standalone attachment images separated by single
+    // newlines. Qt imports those as one paragraph, while our media renderer
+    // admits image-only paragraphs. Split only verified root-level image lines
+    // for display; the stored and transmitted Markdown stays unchanged.
+    auto displayMarkdown = markdown;
+    if (markdown.contains(QStringLiteral("urn:image:"))) {
+        const auto tokens = editAttachmentTokens(markdown);
+        for (auto it = tokens.crbegin(); it != tokens.crend(); ++it) {
+            const auto value = it->toMap();
+            if (!value.value("standalone").toBool() || !value.value("imageSyntax").toBool()
+                || value.value("kind").toString() != QLatin1String("image")) continue;
+            const auto offset = value.value("offset").toLongLong();
+            const auto first = offset > 0 ? markdown.lastIndexOf('\n', offset - 1) + 1 : 0;
+            auto last = markdown.indexOf('\n', offset); if (last < 0) last = markdown.size();
+            if (markdown.mid(first, last - first).trimmed() != value.value("markdown").toString()) continue;
+            if (last < markdown.size() && last + 1 < markdown.size() && markdown[last + 1] != QLatin1Char('\n'))
+                displayMarkdown.insert(last, QLatin1Char('\n'));
+            if (first > 0 && first > 1 && markdown[first - 2] != QLatin1Char('\n'))
+                displayMarkdown.insert(first, QLatin1Char('\n'));
+        }
+    }
+    const auto input = displayMarkdown.toUtf8();
     const auto append = [](const MD_CHAR *text, MD_SIZE size, void *output) {
         static_cast<QByteArray *>(output)->append(text, size);
     };
@@ -498,7 +519,28 @@ QVariantList NativeMarkdown::mediaReferences(const QString &markdown) const
     if (markdown.isEmpty() || !withinMessageDisplayLimit(markdown))
         return result;
     QByteArray generated;
-    const auto input = markdown.toUtf8();
+    // The web composer emits standalone attachment images separated by single
+    // newlines. Qt imports those as one paragraph, while our media renderer
+    // admits image-only paragraphs. Split only verified root-level image lines
+    // for display; the stored and transmitted Markdown stays unchanged.
+    auto displayMarkdown = markdown;
+    if (markdown.contains(QStringLiteral("urn:image:"))) {
+        const auto tokens = editAttachmentTokens(markdown);
+        for (auto it = tokens.crbegin(); it != tokens.crend(); ++it) {
+            const auto value = it->toMap();
+            if (!value.value("standalone").toBool() || !value.value("imageSyntax").toBool()
+                || value.value("kind").toString() != QLatin1String("image")) continue;
+            const auto offset = value.value("offset").toLongLong();
+            const auto first = offset > 0 ? markdown.lastIndexOf('\n', offset - 1) + 1 : 0;
+            auto last = markdown.indexOf('\n', offset); if (last < 0) last = markdown.size();
+            if (markdown.mid(first, last - first).trimmed() != value.value("markdown").toString()) continue;
+            if (last < markdown.size() && last + 1 < markdown.size() && markdown[last + 1] != QLatin1Char('\n'))
+                displayMarkdown.insert(last, QLatin1Char('\n'));
+            if (first > 0 && first > 1 && markdown[first - 2] != QLatin1Char('\n'))
+                displayMarkdown.insert(first, QLatin1Char('\n'));
+        }
+    }
+    const auto input = displayMarkdown.toUtf8();
     const auto append = [](const MD_CHAR *text, MD_SIZE size, void *output) {
         static_cast<QByteArray *>(output)->append(text, size);
     };

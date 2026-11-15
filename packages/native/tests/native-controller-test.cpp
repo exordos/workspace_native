@@ -10796,6 +10796,10 @@ private slots:
         QCOMPARE(uploads, 0);
         QVERIFY(fixture.controller.error().contains("image file type does not match"));
         QCOMPARE(fixture.controller.draft(), QString("Keep this draft"));
+        QVERIFY(!fixture.controller.canSend());
+        const auto rows = fixture.controller.uploadEntries(); QCOMPARE(rows.size(), 1);
+        QVERIFY(!rows.first().toMap().value("retryable").toBool());
+        fixture.controller.removeUpload(rows.first().toMap().value("id").toString());
         QVERIFY(fixture.controller.canSend());
     }
 
@@ -10816,7 +10820,7 @@ private slots:
         QVERIFY(fixture.start());
         fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
         QTRY_VERIFY(!fixture.controller.fileBusy());
-        QVERIFY(fixture.controller.notice().contains("ready"));
+        QCOMPARE(fixture.controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
         fixture.files = [&](const Request &request) {
             if (request.target.path().endsWith("/actions/download"))
                 return Response{QJsonObject{}}; // Actual body is the two bytes "{}".
@@ -10841,8 +10845,9 @@ private slots:
         for (int i = 0; i < 2048; ++i) selection.append(QUrl::fromLocalFile("/nonexistent/cassi-native-attachment"));
         const auto before = fixture.server.requests.size();
         fixture.controller.attachFiles(selection);
-        QVERIFY(!fixture.controller.fileBusy());
-        QVERIFY(fixture.controller.canSend());
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QVERIFY(!fixture.controller.canSend());
+        QCOMPARE(fixture.controller.uploadEntries().size(), 2048);
         QCOMPARE(fixture.controller.draft(), "Still sendable");
         QCOMPARE(fixture.server.requests.size(), before);
     }
@@ -10879,7 +10884,9 @@ private slots:
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QCOMPARE(started, 11);
         QCOMPARE(maximumActive, 5);
-        QCOMPARE(fixture.controller.draft().count("urn:file:"), 11);
+        QCOMPARE(fixture.controller.draft(), QString("Message"));
+        QCOMPARE(fixture.controller.uploadEntries().size(), 11);
+        for (const auto &row : fixture.controller.uploadEntries()) QCOMPARE(row.toMap().value("status").toString(), QString("ready"));
         QVERIFY(fixture.controller.canSend());
     }
 
@@ -10940,7 +10947,9 @@ private slots:
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QTRY_COMPARE(foreignCompletions, 1);
         QVERIFY(foreignOk);
-        QCOMPARE(fixture.controller.draft().count("urn:file:"), 1);
+        QCOMPARE(fixture.controller.draft(), QString("Original draft"));
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        QCOMPARE(fixture.controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
         QCOMPARE(started, 3);
     }
 
@@ -10975,16 +10984,21 @@ private slots:
         const QString mime = kind == "image" ? "image/png" : kind == "video" ? "video/mp4" : "text/plain";
         const QString firstId = returnedId, secondId = "99999999-9999-4999-8999-999999999994";
         const auto linkFor = [&](const QString &id) {
-            const auto prefix = kind == "file" ? QString{} : QString("!");
+            const auto prefix = kind == "image" ? QString("!") : QString{};
             return prefix + '[' + name + "](<urn:" + kind + ':' + id + "?name=" + name
                 + "&content_type=" + QString::fromLatin1(QUrl::toPercentEncoding(mime))
                 + "&size=" + QString::number(bytes.size()) + ">)";
         };
-        const auto expected = expectedPattern.replace("@FIRST@", linkFor(firstId)).replace("@SECOND@", linkFor(secondId));
+        Q_UNUSED(expectedPattern);
+        QString wire; int sends = 0;
         int uploads = 0, unexpected = 0;
         bool headersOkay = true;
         Fixture fixture;
         FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++sends; wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         QFile input(directory.filePath(name)); QVERIFY(input.open(QIODevice::WriteOnly));
         QCOMPARE(input.write(bytes), qint64(bytes.size())); input.close();
@@ -11016,7 +11030,8 @@ private slots:
         QTRY_COMPARE(uploads, 1); QTRY_VERIFY(!fixture.controller.fileBusy());
         QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
         QVERIFY(headersOkay); QCOMPARE(unexpected, 0);
-        QVERIFY(fixture.controller.draft().contains(linkFor(firstId)));
+        QCOMPARE(fixture.controller.draft(), initialDraft);
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
         // Public draft input, after a real first upload. No completion signal,
         // private state or fabricated upload result is injected.
         if (!typedAfterFirst.isEmpty()) fixture.controller.setDraft(fixture.controller.draft() + typedAfterFirst);
@@ -11025,20 +11040,18 @@ private slots:
             QVERIFY(fixture.controller.fileBusy()); QVERIFY(!fixture.controller.canSend());
             QTRY_COMPARE(uploads, 2); QTRY_VERIFY(!fixture.controller.fileBusy());
             QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
-            QVERIFY(fixture.controller.draft().contains(linkFor(secondId)));
+            QCOMPARE(fixture.controller.uploadEntries().size(), 2);
         }
         QCOMPARE(uploads, secondImage ? 2 : 1); QVERIFY(headersOkay); QCOMPARE(unexpected, 0);
         QCOMPARE(fixture.controller.selectedStream(), streamId); QCOMPARE(fixture.controller.selectedTopic(), topicId);
         QVERIFY(fixture.controller.canSend());
-        qInfo().noquote() << "IMAGE_UPLOAD_BOUNDARY" << QJsonDocument(QJsonObject{
-            {"row", QString::fromLatin1(QTest::currentDataTag())}, {"uploads", uploads},
-            {"headersOkay", headersOkay}, {"actualDraft", fixture.controller.draft()}, {"expectedDraft", expected}
-        }).toJson(QJsonDocument::Compact);
-        // Image rows discriminate occupied-side blank paragraphs. File/video
-        // rows assert their old serialized bytes, including the video ! prefix.
-        QCOMPARE(fixture.controller.draft(), expected);
+        const auto visible = initialDraft + typedAfterFirst;
+        QCOMPARE(fixture.controller.draft(), visible);
+        const auto links = linkFor(firstId) + (secondImage ? "\n" + linkFor(secondId) : QString{});
+        const auto expected = links + (visible.trimmed().isEmpty() ? QString{} : "\n" + visible.trimmed());
+        fixture.controller.send(); QTRY_COMPARE(sends, 1); QCOMPARE(wire, expected);
         NativeMarkdown markdown;
-        const auto parts = markdown.render(fixture.controller.draft()).value("parts").toList();
+        const auto parts = markdown.render(wire).value("parts").toList();
         QStringList imageIds;
         for (const auto &part : parts)
             if (part.toMap().value("kind") == "image") imageIds.append(part.toMap().value("id").toString());
@@ -11096,8 +11109,9 @@ private slots:
         complete(); complete = {};
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QVERIFY2(fixture.controller.error().isEmpty(), qPrintable(fixture.controller.error()));
-        const QString expected = "[report\\[one\\].txt](<urn:file:" + returnedId + "?name=report%5Bone%5D.txt&content_type=text%2Fplain&size=7>)\n\nText typed while uploading";
-        QCOMPARE(fixture.controller.draft(), expected);
+        const QString expected = "[report\\[one\\].txt](<urn:file:" + returnedId + "?name=report%5Bone%5D.txt&content_type=text%2Fplain&size=7>)\nText typed while uploading";
+        QCOMPARE(fixture.controller.draft(), QString("Text typed while uploading"));
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
         if (durable) QCOMPARE(drafts.text(streamId, topicId), originalDraft);
         fixture.controller.submitEditMessage();
         QTRY_COMPARE(puts, 1);
@@ -11140,8 +11154,12 @@ private slots:
         QCOMPARE(puts, 0);
         complete(); complete = {};
         QTRY_VERIFY(!fixture.controller.fileBusy());
-        QVERIFY(fixture.controller.canSaveEdit());
+        QVERIFY(!fixture.controller.canSaveEdit());
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        QCOMPARE(fixture.controller.uploadEntries().first().toMap().value("status").toString(), QString("error"));
         QVERIFY(fixture.controller.error().contains("could not be uploaded"));
+        fixture.controller.removeUpload(fixture.controller.uploadEntries().first().toMap().value("id").toString());
+        QVERIFY(fixture.controller.canSaveEdit());
         QCOMPARE(fixture.controller.draft(), QString("Edited body"));
         fixture.controller.cancelEditMessage();
         QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
@@ -11245,10 +11263,11 @@ private slots:
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QCOMPARE(fixture.controller.draft(), QString("Second answer typed while uploading"));
         QVERIFY(fixture.controller.selectReplyTab(tabs[0].toMap().value("id").toString()));
-        QCOMPARE(fixture.controller.draft(), "[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n\nfirst answer");
+        QCOMPARE(fixture.controller.draft(), QString("first answer"));
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
         fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 1);
-        QCOMPARE(saved, "[First](urn:quote:" + messageId + ")\n\n[report.txt](<urn:file:" + returnedId
-            + "?name=report.txt&content_type=text%2Fplain&size=7>)\n\nfirst answer\n\n[Second](urn:quote:"
+        QCOMPARE(saved, "[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n[First](urn:quote:" + messageId
+            + ")\n\nfirst answer\n\n[Second](urn:quote:"
             + otherId + ")\n\nSecond answer typed while uploading");
         QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
         QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
@@ -11274,16 +11293,17 @@ private slots:
         fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
         QTRY_COMPARE(completions.size(), 1);
         QVERIFY(fixture.controller.beginEditMessage(messageId));
-        QVERIFY(fixture.controller.canSaveEdit()); // the ordinary draft upload is unrelated
+        QVERIFY(fixture.controller.canSaveEdit()); // entering edit discarded the ordinary upload
         fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
         QTRY_COMPARE(completions.size(), 2);
         QVERIFY(!fixture.controller.canSaveEdit()); // this edit now has its own pending upload
         fixture.controller.cancelEditMessage();
-        QVERIFY(fixture.controller.fileBusy()); // the pre-edit upload is still alive
+        QVERIFY(!fixture.controller.fileBusy()); // both composer sessions were discarded
         QCOMPARE(fixture.controller.draft(), QString("Ordinary draft"));
         completions[1](); completions[0](); completions.clear();
         QTRY_VERIFY(!fixture.controller.fileBusy());
-        QCOMPARE(fixture.controller.draft(), "Ordinary draft\n[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n");
+        QCOMPARE(fixture.controller.draft(), QString("Ordinary draft"));
+        QVERIFY(fixture.controller.uploadEntries().isEmpty());
     }
 
     void inlineEditExtractsExistingAttachmentsBeforeEditing()
@@ -11433,7 +11453,7 @@ private slots:
         complete(); complete = {}; QTRY_VERIFY(!fixture.controller.fileBusy()); QVERIFY(fixture.controller.canSaveEdit());
         const auto uploaded = "[new.txt](<urn:file:" + returnedId + "?name=new.txt&content_type=text%2Fplain&size=7>)";
         fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
-        QCOMPARE(saved, photo + "\n" + uploaded + "\n\n" + body);
+        QCOMPARE(saved, uploaded + "\n" + photo + "\n" + body);
         QVERIFY(!saved.contains(file)); QCOMPARE(saved.count(inlinePhoto), 1); QCOMPARE(saved.count(uploaded), 1);
     }
 
@@ -13911,6 +13931,336 @@ private slots:
         QVERIFY(!fixture.controller.notice().isEmpty());
     }
 
+    void attachmentCardsExposeIndependentPendingFiles()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile first(directory.filePath("first.txt"));
+        QFile second(directory.filePath("second.txt"));
+        QVERIFY(first.open(QIODevice::WriteOnly)); first.write("first"); first.close();
+        QVERIFY(second.open(QIODevice::WriteOnly)); second.write("second"); second.close();
+        QList<std::function<void()>> completions;
+        fixture.files = [&](const Request &) {
+            Response result{QJsonObject{}, 503};
+            result.defer = [&](auto send) { completions.append(std::move(send)); };
+            return result;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.setDraft("Keep editing");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(first.fileName()), QUrl::fromLocalFile(second.fileName())});
+        QTRY_COMPARE(completions.size(), 2);
+        const auto cards = fixture.controller.property("uploadEntries").toList();
+        QCOMPARE(cards.size(), 2);
+        QCOMPARE(cards.at(0).toMap().value("name").toString(), QString("first.txt"));
+        QCOMPARE(cards.at(1).toMap().value("name").toString(), QString("second.txt"));
+        QVERIFY(!fixture.controller.canSend());
+        fixture.controller.setDraft("Still editing");
+        QCOMPARE(fixture.controller.draft(), QString("Still editing"));
+        for (auto &complete : completions) complete();
+    }
+
+    void attachmentCardsCancelRetryAndRemoveIndividually()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile first(directory.filePath("one.txt")); QFile second(directory.filePath("two.txt"));
+        QVERIFY(first.open(QIODevice::WriteOnly)); first.write("one"); first.close();
+        QVERIFY(second.open(QIODevice::WriteOnly)); second.write("two"); second.close();
+        std::function<void()> held; int requests = 0;
+        fixture.files = [&](const Request &) {
+            ++requests;
+            if (requests == 1) {
+                Response response{QJsonObject{}, 503}; response.defer = [&](auto send) { held = std::move(send); };
+                return response;
+            }
+            if (requests == 2) return Response{QJsonObject{}, 503};
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId},
+                {"name", "two.txt"}, {"content_type", "text/plain"}, {"size_bytes", 3},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("two", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Keep this text");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(first.fileName()), QUrl::fromLocalFile(second.fileName())});
+        QTRY_COMPARE(requests, 2); QTRY_VERIFY(bool(held));
+        const auto entries = [&] { return fixture.controller.property("uploadEntries").toList(); };
+        QTRY_COMPARE(entries().size(), 2);
+        QTRY_COMPARE(entries().at(1).toMap().value("status").toString(), QString("error"));
+        const auto firstId = entries().at(0).toMap().value("id").toString();
+        const auto secondId = entries().at(1).toMap().value("id").toString();
+        QVERIFY(!fixture.controller.canSend());
+        fixture.controller.removeUpload(firstId);
+        QCOMPARE(entries().size(), 1); QCOMPARE(entries().first().toMap().value("id").toString(), secondId);
+        QVERIFY(!fixture.controller.canSend()); // An error must be retried or removed before sending.
+        held(); held = {};
+        fixture.controller.retryUpload(secondId);
+        QTRY_COMPARE(requests, 3);
+        QTRY_COMPARE(entries().first().toMap().value("status").toString(), QString("ready"));
+        QCOMPARE(fixture.controller.draft(), QString("Keep this text"));
+        fixture.controller.removeUpload(secondId);
+        QVERIFY(entries().isEmpty());
+        QVERIFY(!fixture.controller.draft().contains("urn:file:" + returnedId));
+        QVERIFY(fixture.controller.draft().contains("Keep this text"));
+    }
+
+    void referenceReadyAttachmentDoesNotChangeVisibleDraft()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close();
+        fixture.files = [&](const Request &) { return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId},
+            {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Caption");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(fixture.controller.draft(), QString("Caption"));
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        QCOMPARE(fixture.controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
+    }
+
+    void removingAnUnsentReadyUploadDeletesOnlyThatFile()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close();
+        int deletes = 0; QString deletedPath;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { deletedPath = request.target.path(); ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 6},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Caption");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        fixture.controller.removeUpload(fixture.controller.uploadEntries().first().toMap().value("id").toString());
+        QTRY_COMPARE(deletes, 1); QCOMPARE(deletedPath, QString("/api/workspace/v1/messenger/files/") + returnedId);
+        QCOMPARE(fixture.controller.draft(), QString("Caption"));
+    }
+
+    void changingConversationDiscardsOnlyUnsentUpload()
+    {
+        Fixture fixture; fixture.extraTopic = true; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close();
+        int deletes = 0;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 6},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Original text");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
+        QTRY_COMPARE(deletes, 1);
+        QVERIFY(fixture.controller.uploadEntries().isEmpty());
+        fixture.controller.selectTopic(topicId); QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(fixture.controller.draft(), QString("Original text")); QVERIFY(fixture.controller.uploadEntries().isEmpty());
+    }
+
+    void uploadCleanupRejectsChangedGeneration()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("report.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close();
+        int deletes = 0;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 6},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        const auto id = fixture.controller.uploadEntries().first().toMap().value("id").toString();
+        fixture.api.setAccessToken("replacement-token");
+        fixture.controller.removeUpload(id);
+        QTest::qWait(100); QCOMPARE(deletes, 0);
+    }
+
+    void inlineImageAliasStaysOutOfPersistentDraftAndSurvivesUncertainSend()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.controller.useDrafts(&drafts); FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        const auto path = directory.filePath("diagram.png"); QImage image(8, 8, QImage::Format_ARGB32);
+        image.fill(Qt::red); QVERIFY(image.save(path)); QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly));
+        const auto bytes = input.readAll(); input.close();
+        int deletes = 0; QString wire;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") { wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId)); fixture.controller.setDraft("Before after");
+        fixture.controller.attachFiles({QUrl::fromLocalFile(path)}); QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto row = fixture.controller.uploadEntries().first().toMap();
+        QCOMPARE(row.value("alias").toString(), QString("![diagram.png]"));
+        fixture.controller.setDraft("Before ![diagram.png] after");
+        QCOMPARE(fixture.controller.draft(), QString("Before ![diagram.png] after"));
+        QCOMPARE(drafts.text(streamId, topicId), QString("Before  after"));
+        QVERIFY(fixture.controller.uploadEntries().first().toMap().value("inText").toBool());
+        fixture.controller.removeUploadFromText(row.value("id").toString());
+        QCOMPARE(fixture.controller.draft(), QString("Before  after")); QCOMPARE(deletes, 0);
+        fixture.controller.setDraft("Before ![diagram.png] after");
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
+        QCOMPARE(wire.count("urn:image:" + returnedId), 1); QVERIFY(wire.startsWith("Before ![diagram.png]("));
+        QVERIFY(wire.endsWith(" after")); QCOMPARE(deletes, 0);
+        const auto owner = drafts.owner(); bool flushed = false; drafts.flush(this, [&](bool ok) { flushed = ok; }); QTRY_VERIFY(flushed);
+        storage.shutdown(); QTRY_VERIFY(storage.stopped()); NativeDraftStore store(directory.filePath("drafts"));
+        QCOMPARE(store.open(owner), NativeDraftService::Failure::None);
+        QCOMPARE(store.outgoing().rows.first().payload.value("content").toString(), wire);
+        QVERIFY(!store.latest(streamId, topicId).record->text.contains("![diagram.png]"));
+    }
+
+    void removingFirstOfTwoSameNamedImagesKeepsSecondInline()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        const QString secondId = "99999999-9999-4999-8999-999999999994"; int uploads = 0; QString wire;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") return Response{QJsonObject{}, 204};
+            const auto id = ++uploads == 1 ? returnedId : secondId;
+            return Response{QJsonObject{{"uuid", id}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") { wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(path), QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 2);
+        const auto first = fixture.controller.uploadEntries().first().toMap().value("id").toString();
+        QCOMPARE(fixture.controller.uploadEntries().last().toMap().value("alias").toString(), QString("![diagram.png (2)]"));
+        fixture.controller.setDraft("Before ![diagram.png (2)] after"); fixture.controller.removeUpload(first);
+        QVERIFY(fixture.controller.uploadEntries().first().toMap().value("inText").toBool());
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
+        QVERIFY(wire.startsWith("Before ![diagram.png](")); QVERIFY(wire.contains("urn:image:" + secondId));
+        QVERIFY(!wire.contains("![diagram.png (2)]"));
+    }
+
+    void inlineImageInEditedMessageIsSerializedOnce()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        fixture.files = [&](const Request &) {
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        auto note = message("Original message"); QString wire;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") {
+                wire = request.body.value("payload").toObject().value("content").toString();
+                note["payload"] = request.body.value("payload"); return Response{note};
+            }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{note}} : Response{note};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Unrelated draft");
+        QVERIFY(fixture.controller.beginEditMessage(messageId)); fixture.controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); fixture.controller.setDraft("Before ![diagram.png] after");
+        QVERIFY(fixture.controller.canSaveEdit()); fixture.controller.submitEditMessage(); QTRY_VERIFY(!wire.isEmpty());
+        QCOMPARE(wire.count("urn:image:" + returnedId), 1); QVERIFY(wire.startsWith("Before ![diagram.png]("));
+        QVERIFY(wire.endsWith(" after")); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
+    }
+
+    void retryInlineImageKeepsClientIdentityWithoutDurableStore()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        fixture.files = [&](const Request &) {
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QStringList ids;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") { ids.append(request.body.value("uuid").toString()); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); fixture.controller.setDraft("Caption ![diagram.png]");
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_COMPARE(ids.size(), 1);
+        QTRY_VERIFY(!fixture.controller.busy()); QTRY_VERIFY(fixture.controller.canSend());
+        fixture.controller.send(); QTRY_COMPARE(ids.size(), 2); QCOMPARE(ids[0], ids[1]);
+    }
+
+    void confirmedInlineImageDoesNotLeaveAStaleMemoryDraft()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
+        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
+        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        fixture.files = [&](const Request &) {
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+                {"content_type", "image/png"}, {"size_bytes", bytes.size()},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        QJsonObject saved;
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") {
+                const auto id = request.body.value("uuid").toString();
+                const auto placement = QUuid::createUuidV5(QUuid(topicId), id.toUtf8()).toString(QUuid::WithoutBraces);
+                saved = message(request.body.value("payload").toObject().value("content").toString(), placement);
+                return Response{saved};
+            }
+            if (!saved.isEmpty() && request.target.path().endsWith(saved.value("uuid").toString())) return Response{saved};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); fixture.controller.setDraft("Caption ![diagram.png]");
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send();
+        QTRY_VERIFY(!saved.isEmpty()); QTRY_VERIFY(!fixture.controller.busy());
+        QTRY_VERIFY(fixture.controller.uploadEntries().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString{});
+    }
+
+    void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
+    {
+        QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);
+        Fixture fixture; fixture.extraTopic = true; fixture.controller.useDrafts(&drafts);
+        FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QFile input(directory.filePath("report.txt")); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("report"); input.close();
+        int deletes = 0, posts = 0; QString wire;
+        fixture.files = [&](const Request &request) {
+            if (request.method == "DELETE") { ++deletes; return Response{QJsonObject{}, 204}; }
+            return Response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+                {"content_type", "text/plain"}, {"size_bytes", 6},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201};
+        };
+        fixture.messages = [&](const Request &request) {
+            if (request.method == "POST") { ++posts; wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start()); QTRY_VERIFY(drafts.ready(streamId, topicId));
+        fixture.controller.setDraft("Caption"); fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.draft(), QString("Caption"));
+        QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_COMPARE(posts, 1);
+        QVERIFY(wire.startsWith("[report.txt]")); QVERIFY(wire.contains("urn:file:" + returnedId)); QVERIFY(wire.endsWith("Caption"));
+        QTRY_VERIFY(!fixture.controller.busy()); fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(deletes, 0);
+        const auto owner = drafts.owner(); bool flushed = false; drafts.flush(this, [&](bool ok) { flushed = ok; }); QTRY_VERIFY(flushed);
+        storage.shutdown(); QTRY_VERIFY(storage.stopped());
+        NativeDraftStore store(directory.filePath("drafts")); QCOMPARE(store.open(owner), NativeDraftService::Failure::None);
+        const auto pending = store.outgoing(); QCOMPARE(pending.failure, NativeDraftService::Failure::None); QCOMPARE(pending.rows.size(), 1);
+        QCOMPARE(pending.rows.first().payload.value("content").toString(), wire);
+    }
+
     void attachmentUploadKeepsItsConversationAndEscapesMarkdown()
     {
         QTemporaryDir draftDirectory;
@@ -13944,16 +14294,26 @@ private slots:
         QTRY_VERIFY(!fixture.controller.fileBusy());
         QCOMPARE(fixture.controller.draft(), "Second draft");
         fixture.controller.selectTopic(topicId);
-        QVERIFY(fixture.controller.draft().startsWith("Initial text\n[report\\[one\\](two).txt](<urn:file:"));
+        QCOMPARE(fixture.controller.draft(), QString("Initial text"));
+        QVERIFY(fixture.controller.uploadEntries().isEmpty());
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())});
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(fixture.controller.uploadEntries().size(), 1);
+        QString wire;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
+            return Response{QJsonArray{}};
+        };
+        fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
+        QVERIFY(wire.startsWith("[report\\[one\\](two).txt](<urn:file:"));
         NativeMarkdown markdown;
-        const auto rendered = markdown.render(fixture.controller.draft());
+        const auto rendered = markdown.render(wire);
         QVERIFY(rendered.value("html").toString().contains("urn:file:" + returnedId));
         QVERIFY(rendered.value("plain").toString().contains("report[one](two).txt"));
-        QVERIFY(fixture.controller.canSend());
         bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
         draftStorage.shutdown(); QTRY_VERIFY(draftStorage.stopped());
         NativeDraftStore store(draftDirectory.path()); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
-        QVERIFY(store.latest(streamId, topicId).record->text.contains("urn:file:" + returnedId));
+        QCOMPARE(store.latest(streamId, topicId).record->text, QString("Initial text"));
     }
 
     void lateOrdinaryUploadDoesNotReplaceAnEncryptedMemoryDraft()
@@ -13977,7 +14337,8 @@ private slots:
             || fixture.controller.streams().first().toMap().value("encryption").toBool());
         fixture.controller.setDraft("Encrypted memory input"); complete(); complete = {};
         QTRY_VERIFY(!fixture.controller.fileBusy());
-        QVERIFY(fixture.controller.draft().startsWith("Encrypted memory input\n[attachment.txt]"));
+        QCOMPARE(fixture.controller.draft(), QString("Encrypted memory input"));
+        QVERIFY(fixture.controller.uploadEntries().isEmpty()); // encrypted send cannot carry an ordinary upload
         bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
         storage.shutdown(); QTRY_VERIFY(storage.stopped());
         NativeDraftStore store(directory.filePath("drafts")); QCOMPARE(store.open(drafts.owner()), NativeDraftService::Failure::None);
@@ -15210,10 +15571,11 @@ private slots:
         for (int i = 0; i < 140; ++i) {
             fixture.controller.selectTopic(topicFor(i)); QTRY_VERIFY(drafts.ready(streamId, topicFor(i)));
         }
-        QVERIFY(drafts.retained(streamId, topicId)); complete(); complete = {};
+        complete(); complete = {};
         QTRY_VERIFY(!fixture.controller.fileBusy());
         fixture.controller.selectTopic(topicId); QTRY_VERIFY(drafts.ready(streamId, topicId));
-        QVERIFY(fixture.controller.draft().startsWith("Newer caption\n[fixture.txt]"));
+        QCOMPARE(fixture.controller.draft(), QString("Newer caption"));
+        QVERIFY(fixture.controller.uploadEntries().isEmpty());
         bool done = false; drafts.flush(this, [&](bool okay) { done = okay; }); QTRY_VERIFY(done);
     }
 
