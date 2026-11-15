@@ -10868,6 +10868,298 @@ private slots:
         QCOMPARE(fixture.controller.draft(), "Ordinary draft\n[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n");
     }
 
+    void inlineEditExtractsExistingAttachmentsBeforeEditing()
+    {
+        const QString file = "[report.txt](<urn:file:99999999-9999-4999-8999-999999999999?name=report.txt&content_type=text%2Fplain&size=7>)";
+        const QString photo = "![photo.png](<urn:image:99999999-9999-4999-8999-999999999998?name=photo.png&content_type=image%2Fpng&size=7>)";
+        Fixture fixture;
+        const auto row = message(file + "\n" + photo + "\nA caption", returnedId);
+        fixture.messages = [&](const Request &) -> Response { return {QJsonArray{row}}; };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), QString("A caption"));
+        QCOMPARE(fixture.controller.property("editAttachments").toList().size(), 2);
+    }
+
+    void inlineEditAttachmentRemovalKeepsVerbatimLinesAndCode()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt&size=7>)";
+        const QString image = "![photo](<urn:image:" + messageId + "?name=photo.png>)";
+        const QString body = "Before " + image + " after\n\n```md\n" + image + "\n```";
+        Fixture fixture; QString saved;
+        auto row = message(file + "\n" + body, returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), body);
+        const auto cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 2);
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, cards[1].toMap()["id"].toString())));
+        QCOMPARE(fixture.controller.draft(), "Before  after\n\n```md\n" + image + "\n```");
+        QCOMPARE(fixture.controller.property("editAttachments").toList().size(), 1);
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, file + "\nBefore  after\n\n```md\n" + image + "\n```");
+    }
+
+    void inlineEditAttachmentOnlyAndSessionReset()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        Fixture fixture; fixture.extraTopic = true; QString saved;
+        auto row = message(file, returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Stored draft");
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QVERIFY(fixture.controller.draft().isEmpty()); QVERIFY(fixture.controller.canSaveEdit());
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty()); QCOMPARE(saved, file);
+        QVERIFY(fixture.controller.property("editAttachments").toList().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("Stored draft"));
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto old = fixture.controller.property("editAttachments").toList()[0].toMap()["id"].toString();
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, old)));
+        auto cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 1);
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, cards[0].toMap()["id"].toString())));
+        QVERIFY(!fixture.controller.canSaveEdit());
+        fixture.controller.cancelEditMessage(); QCOMPARE(fixture.controller.draft(), QString("Stored draft"));
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
+        QVERIFY(fixture.controller.property("editAttachments").toList().isEmpty());
+    }
+
+    void inlineEditAttachmentRemovalDuringSaveRetainsTheNewRevision()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        Fixture fixture; QString saved; std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        auto row = message(file + "\nBody", returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") {
+                saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"];
+                Response response{row}; response.defer = [&](auto send) { complete = std::move(send); }; return response;
+            }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto id = fixture.controller.property("editAttachments").toList().value(0).toMap()["id"].toString(); QVERIFY(!id.isEmpty());
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(bool(complete));
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, id)));
+        complete(); complete = {}; QTRY_VERIFY(fixture.controller.canSaveEdit());
+        QCOMPARE(fixture.controller.editingMessageId(), returnedId); QCOMPARE(fixture.controller.draft(), QString("Body"));
+        QVERIFY(fixture.controller.property("editAttachments").toList().isEmpty());
+        QCOMPARE(saved, file + "\nBody");
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(bool(complete));
+        complete(); complete = {}; QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty()); QCOMPARE(saved, QString("Body"));
+    }
+
+    void inlineEditAttachmentsStayWithRestoredReplyAnswers()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        const QString image = "![photo](<urn:image:" + messageId + "?name=photo.png>)";
+        const QString secondId = "7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b";
+        const QString quote1 = "[One](urn:quote:" + messageId + ")", quote2 = "[Two](urn:quote:" + secondId + ")";
+        Fixture fixture; QString saved;
+        auto row = message(quote1 + "\n\n" + file + "\nFirst\n\n" + quote2 + "\n\n" + image + "\nSecond", returnedId);
+        const auto one = message("Origin one", messageId), two = message("Origin two", secondId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            if (request.target.path().endsWith("/messages/")) return {QJsonArray{one, two, row}};
+            return {request.target.path().endsWith(messageId) ? one : request.target.path().endsWith(secondId) ? two : row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), QString("First"));
+        const auto tabs = fixture.controller.replyTabs(); QCOMPARE(tabs.size(), 2);
+        auto cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 1);
+        QCOMPARE(cards[0].toMap()["markdown"].toString(), file);
+        QVERIFY(fixture.controller.selectReplyTab(tabs[1].toMap()["id"].toString()));
+        QCOMPARE(fixture.controller.draft(), QString("Second"));
+        cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 1);
+        QCOMPARE(cards[0].toMap()["markdown"].toString(), image);
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, cards[0].toMap()["id"].toString())));
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, quote1 + "\n\n" + file + "\nFirst\n\n" + quote2 + "\n\nSecond");
+    }
+
+    void inlineEditRetainedAndNewAttachmentsSerializeExactlyOnce()
+    {
+        const QString file = "[old.txt](<urn:file:" + messageId + "?name=old.txt>)";
+        const QString photo = "![photo](<urn:image:" + returnedId + "?name=photo.png>)";
+        const QString inlinePhoto = "![inline](<urn:image:" + secondTopicId + "?name=inline.png>)";
+        const QString body = "Before " + inlinePhoto + " after";
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("new.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("fixture"); input.close();
+        auto row = message(file + "\n" + photo + "\n" + body, returnedId); QString saved;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.files = [&](const Request &) {
+            Response response{QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId},
+                {"name", "new.txt"}, {"content_type", "text/plain"}, {"size_bytes", 7},
+                {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}, 201};
+            response.defer = [&](auto send) { complete = std::move(send); }; return response;
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), body);
+        const auto cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 3);
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, cards[0].toMap()["id"].toString())));
+        fixture.controller.attachFiles({QUrl::fromLocalFile(input.fileName())}); QTRY_VERIFY(bool(complete));
+        QVERIFY(!fixture.controller.canSaveEdit());
+        complete(); complete = {}; QTRY_VERIFY(!fixture.controller.fileBusy()); QVERIFY(fixture.controller.canSaveEdit());
+        const auto uploaded = "[new.txt](<urn:file:" + returnedId + "?name=new.txt&content_type=text%2Fplain&size=7>)";
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, photo + "\n" + uploaded + "\n\n" + body);
+        QVERIFY(!saved.contains(file)); QCOMPARE(saved.count(inlinePhoto), 1); QCOMPARE(saved.count(uploaded), 1);
+    }
+
+    void inlineEditDismissingRestoredQuotesKeepsTheActiveAttachments_data()
+    {
+        QTest::addColumn<bool>("removeLast");
+        QTest::newRow("cancel-reply") << false;
+        QTest::newRow("remove-last-tab") << true;
+    }
+    void inlineEditDismissingRestoredQuotesKeepsTheActiveAttachments()
+    {
+        QFETCH(bool, removeLast);
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        Fixture fixture; QString saved;
+        auto row = message("[Origin](urn:quote:" + messageId + ")\n\n" + file + "\nAnswer", returnedId);
+        const auto origin = message("Original", messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            if (request.target.path().endsWith("/messages/")) return {QJsonArray{origin, row}};
+            return {request.target.path().endsWith(messageId) ? origin : row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), QString("Answer"));
+        if (removeLast) fixture.controller.removeReplyTab(fixture.controller.replyTabs()[0].toMap()["id"].toString());
+        else fixture.controller.cancelReply();
+        QVERIFY(fixture.controller.replyTabs().isEmpty());
+        QCOMPARE(fixture.controller.property("editAttachments").toList().size(), 1);
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, file + "\nAnswer");
+    }
+
+    void inlineEditReferenceStyleImageHasARemovableCard()
+    {
+        const QString urn = "urn:image:" + returnedId + "?name=photo.png";
+        const QString body = "Before ![photo][asset] after\n\n[asset]: " + urn;
+        NativeMarkdown parser;
+        QCOMPARE(parser.mediaReferences(body).size(), 1); // existing renderer already recognises it
+        Fixture fixture; QString saved; auto row = message(body, returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.draft(), body);
+        const auto cards = fixture.controller.property("editAttachments").toList(); QCOMPARE(cards.size(), 1);
+        QCOMPARE(cards[0].toMap()["reference"].toString(), urn);
+        QCOMPARE(cards[0].toMap()["markdown"].toString(), QString("![photo][asset]"));
+        QVERIFY(QMetaObject::invokeMethod(&fixture.controller, "removeEditAttachment", Q_ARG(QString, cards[0].toMap()["id"].toString())));
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, "Before  after\n\n[asset]: " + urn);
+    }
+
+    void inlineEditSaveUsesCurrentParsedAttachments_data()
+    {
+        QTest::addColumn<QString>("original"); QTest::addColumn<QString>("edited"); QTest::addColumn<QString>("expected");
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        const QString image = "![photo](<urn:image:" + messageId + "?name=photo.png>)";
+        const QString changed = "![other](<urn:image:" + secondTopicId + "?name=other.png>)";
+        const QString code = "Example:\n\n```md\n" + file + "\n```";
+        QTest::newRow("retained-trailing-file-and-code") << code + "\n\n" + file << code << file + "\n" + code;
+        QTest::newRow("retained-trailing-image-and-code-span") << "`" + image + "`\n\n" + image
+            << "`" + image + "`" << image + "\n`" + image + "`";
+        QTest::newRow("retained-trailing-file-and-escape") << "\\" + file + "\n\n" + file
+            << "\\" + file << file + "\n\\" + file;
+        QTest::newRow("deleted-inline") << file + "\nBefore " + image + " after" << QString("Before  after")
+            << file + "\nBefore  after";
+        QTest::newRow("changed-inline") << file + "\nBefore " + image + " after" << "Before " + changed + " after"
+            << file + "\nBefore " + changed + " after";
+        QTest::newRow("inline-changed-to-code") << "Before " + image + " after" << "Before `" + image + "` after"
+            << "Before `" + image + "` after";
+        QTest::newRow("reference-use-deleted") << "Before ![photo][asset] after\n\n[asset]: urn:image:" + messageId
+            << "Before  after\n\n[asset]: urn:image:" + messageId << "Before  after\n\n[asset]: urn:image:" + messageId;
+        QTest::newRow("reference-definition-deleted") << "Before ![photo][asset] after\n\n[asset]: urn:image:" + messageId
+            << QString("Before ![photo][asset] after") << QString("Before ![photo][asset] after");
+    }
+    void inlineEditSaveUsesCurrentParsedAttachments()
+    {
+        QFETCH(QString, original); QFETCH(QString, edited); QFETCH(QString, expected);
+        Fixture fixture; QString saved; auto row = message(original, returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        fixture.controller.setDraft(edited); fixture.controller.submitEditMessage();
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, expected); // real outgoing PUT, not a parser-only assertion
+    }
+
+    void inlineEditReferenceCardTracksItsCurrentDefinition()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        const QString prefix = "Before ![photo][asset] after\n\n[asset]: ";
+        const QString oldReference = "urn:image:" + messageId + "?name=old.png";
+        const QString newReference = "urn:image:" + secondTopicId + "?name=new.png";
+        Fixture fixture; QString saved; auto row = message(file + "\n" + prefix + oldReference, returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            return request.target.path().endsWith("/messages/") ? Response{QJsonArray{row}} : Response{row};
+        };
+        QVERIFY(fixture.start()); QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto before = fixture.controller.editAttachments(); QCOMPARE(before.size(), 2);
+        fixture.controller.setDraft(prefix + newReference);
+        const auto after = fixture.controller.editAttachments(); QCOMPARE(after.size(), 2);
+        QCOMPARE(after[0].toMap()["id"], before[0].toMap()["id"]); // unrelated retained card stays stable
+        QCOMPARE(after[1].toMap()["reference"].toString(), newReference);
+        QVERIFY(after[1].toMap()["id"] != before[1].toMap()["id"]);
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, file + "\n" + prefix + newReference);
+    }
+
+    void inlineEditTypingInReplyTabsKeepsTheirOwnAttachmentCards()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        const QString image = "![photo](<urn:image:" + messageId + "?name=photo.png>)";
+        const QString secondId = "7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b";
+        const QString quote1 = "[One](urn:quote:" + messageId + ")", quote2 = "[Two](urn:quote:" + secondId + ")";
+        Fixture fixture; QString saved;
+        auto row = message(quote1 + "\n\n" + file + "\nFirst " + image + " answer\n\n" + quote2 + "\n\n" + file + "\nSecond " + image + " answer", returnedId);
+        const auto one = message("Origin one", messageId), two = message("Origin two", secondId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") { saved = request.body["payload"].toObject()["content"].toString(); row["payload"] = request.body["payload"]; }
+            if (request.target.path().endsWith("/messages/")) return {QJsonArray{one, two, row}};
+            return {request.target.path().endsWith(messageId) ? one : request.target.path().endsWith(secondId) ? two : row};
+        };
+        QVERIFY(fixture.start()); fixture.controller.setDraft("Stored draft");
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto firstCards = fixture.controller.editAttachments(); QCOMPARE(firstCards.size(), 2);
+        const auto tabs = fixture.controller.replyTabs(); QCOMPARE(tabs.size(), 2);
+        QVERIFY(fixture.controller.selectReplyTab(tabs[1].toMap()["id"].toString()));
+        const auto secondCards = fixture.controller.editAttachments(); QCOMPARE(secondCards.size(), 2);
+        fixture.controller.setDraft("Second edited answer");
+        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QCOMPARE(fixture.controller.editAttachments()[0].toMap()["id"], secondCards[0].toMap()["id"]);
+        QVERIFY(fixture.controller.selectReplyTab(tabs[0].toMap()["id"].toString()));
+        QCOMPARE(fixture.controller.editAttachments(), firstCards);
+        fixture.controller.submitEditMessage(); QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, quote1 + "\n\n" + file + "\nFirst " + image + " answer\n\n" + quote2 + "\n\n" + file + "\nSecond edited answer");
+        QCOMPARE(fixture.controller.draft(), QString("Stored draft"));
+        QVERIFY(fixture.controller.beginEditMessage(returnedId)); fixture.controller.setDraft("Cancelled body");
+        fixture.controller.cancelEditMessage(); QVERIFY(fixture.controller.editAttachments().isEmpty());
+        QCOMPARE(fixture.controller.draft(), QString("Stored draft"));
+    }
+
     void inlineEditSessionKeepsTheStoredDraftAndClosesOnAConfirmedSave()
     {
         QTemporaryDir draftDirectory;

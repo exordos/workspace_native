@@ -13,6 +13,8 @@ Item {
     property real hintWidth: 0
     property real hintHeight: 0
     property bool bodyActive: true
+    property int imageFillMode: Image.PreserveAspectFit
+    property real imageCornerRadius: 4
     property bool initialized: false
     property var leaseState: null
     property int refreshTicket: 0
@@ -122,7 +124,7 @@ Item {
         asynchronous: true
         cache: false
         smooth: true
-        fillMode: Image.PreserveAspectFit
+        fillMode: photo.imageFillMode
         visible: photo.imageUrl.length > 0
         readonly property bool maskingSupported: GraphicsInfo.api !== GraphicsInfo.Software
             && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown && GraphicsInfo.api !== GraphicsInfo.Null
@@ -137,7 +139,7 @@ Item {
     Rectangle {
         id: roundedMask
         width: image.width; height: image.height
-        radius: 4
+        radius: photo.imageCornerRadius
         color: "white"
         visible: false
         layer.enabled: image.layer.enabled

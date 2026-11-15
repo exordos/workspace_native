@@ -57,6 +57,10 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>File</source><translation>Файл</translation></message>
+        <message><source>Image</source><translation>Изображение</translation></message>
+        <message><source>Video</source><translation>Видео</translation></message>
+        <message><source>Remove %1</source><translation>Удалить %1</translation></message>
         <message>
             <source>Call</source>
             <translation>Позвонить</translation>

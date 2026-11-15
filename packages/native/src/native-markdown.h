@@ -22,6 +22,11 @@ public:
     // Workspace image/video references found in a message body in document
     // order (media gallery collection, docs/NATIVE_DESKTOP_MEDIA_VIEWER_VIDEO.md).
     QVariantList mediaReferences(const QString &markdown) const;
+    // Session-local edit inventory; verbatim source survives extraction/save.
+    QVariantMap editContent(const QString &markdown) const;
+    QString removeEditAttachment(const QString &markdown, const QString &attachment) const;
+    static QVariantList updateEditAttachments(const QString &markdown, const QVariantList &attachments);
+    static QString prependEditAttachments(const QString &markdown, const QVariantList &attachments);
 
 private:
     QHash<QString, QVariantMap> m_cache;

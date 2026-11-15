@@ -12,6 +12,114 @@ using namespace workspace::test;
 class NativeMarkdownTest final : public QObject {
     Q_OBJECT
 private slots:
+    void editAttachmentExtractionUsesParsedMarkdown_data()
+    {
+        QTest::addColumn<QString>("body"); QTest::addColumn<QString>("editable"); QTest::addColumn<int>("cards");
+        const QString file = "[report.txt](<urn:file:" + messageId + "?name=report.txt>)";
+        const QString image = "![photo.png](<urn:image:" + returnedId + "?name=photo.png>)";
+        const QString other = "[other.txt](<urn:file:" + returnedId + "?name=other.txt>)";
+        QTest::newRow("empty") << QString() << QString() << 0;
+        QTest::newRow("plain") << QString("Ordinary **text**") << QString("Ordinary **text**") << 0;
+        QTest::newRow("leading-and-inline") << file + "\n" + other + "\nBefore " + image + " after"
+            << "Before " + image + " after" << 3;
+        QTest::newRow("trailing") << "Body\n\n" + file + "\n" + image + "\n\n" << QString("Body") << 2;
+        QTest::newRow("only") << file + "\n" + image << QString() << 2;
+        QTest::newRow("duplicates") << file + "\nBody " + file << file + "\nBody " + file << 1;
+        QTest::newRow("inline-file") << "Body " + file << "Body " + file << 0;
+        QTest::newRow("fenced") << "```md\n" + file + "\n" + image + "\n```" << "```md\n" + file + "\n" + image + "\n```" << 0;
+        QTest::newRow("unterminated-fence") << "~~~\n" + image << "~~~\n" + image << 0;
+        QTest::newRow("code-span") << "`" + image + "`" << "`" + image + "`" << 0;
+        QTest::newRow("indented-code") << "    " + image << "    " + image << 0;
+        QTest::newRow("escaped") << "\\" + image << "\\" + image << 0;
+        QTest::newRow("nested") << "**" + image + "**" << "**" + image + "**" << 0;
+        QTest::newRow("blockquote") << "> " + image << "> " + image << 0;
+        QTest::newRow("external") << QString("[outside](https://example.com/file.png)") << QString("[outside](https://example.com/file.png)") << 0;
+        QTest::newRow("malformed") << QString("![bad](urn:image:invalid)") << QString("![bad](urn:image:invalid)") << 0;
+        QTest::newRow("empty-alt") << QString("Before ![](<urn:image:") + returnedId + ">) after"
+            << QString("Before ![](<urn:image:") + returnedId + ">) after" << 1;
+        QTest::newRow("unicode-and-escaped-label") << QString("[отчёт\\].txt](<urn:file:") + returnedId + "?name=report.txt>)\nТекст"
+            << QString("Текст") << 1;
+    }
+    void editAttachmentExtractionUsesParsedMarkdown()
+    {
+        QFETCH(QString, body); QFETCH(QString, editable); QFETCH(int, cards);
+        const auto result = NativeMarkdown().editContent(body);
+        QCOMPARE(result.value("markdown").toString(), editable);
+        QCOMPARE(result.value("attachments").toList().size(), cards);
+        // Keeping the cards never duplicates references still present inline.
+        const auto saved = NativeMarkdown::prependEditAttachments(editable, result.value("attachments").toList());
+        const auto repeated = NativeMarkdown::prependEditAttachments(saved, result.value("attachments").toList());
+        QCOMPARE(saved, repeated);
+    }
+
+    void removingInlineAttachmentLeavesMatchingCodeAndEscapesUntouched()
+    {
+        const QString image = "![photo](<urn:image:" + messageId + ">)";
+        const auto body = "Before " + image + " after\n\n`" + image + "`\n\n```\n" + image + "\n```\n\n\\" + image;
+        QCOMPARE(NativeMarkdown().removeEditAttachment(body, image),
+            "Before  after\n\n`" + image + "`\n\n```\n" + image + "\n```\n\n\\" + image);
+    }
+
+    void referenceStyleEditImagesUseResolvedMarkdown_data()
+    {
+        QTest::addColumn<QString>("image"); QTest::addColumn<QString>("definition");
+        QTest::newRow("full") << QString("![photo][asset]") << QString("asset");
+        QTest::newRow("collapsed") << QString("![photo][]") << QString("photo");
+        QTest::newRow("shortcut") << QString("![photo]") << QString("photo");
+        QTest::newRow("unicode") << QString("![Фото][фото]") << QString("фото");
+        QTest::newRow("empty-alt") << QString("![][asset]") << QString("asset");
+    }
+    void referenceStyleEditImagesUseResolvedMarkdown()
+    {
+        QFETCH(QString, image); QFETCH(QString, definition);
+        const QString urn = "urn:image:" + returnedId + "?name=photo.png";
+        const auto suffix = "\n\n[" + definition + "]: " + urn;
+        const auto body = "Before " + image + " after\n\n`" + image + "`\n\n\\" + image + suffix;
+        NativeMarkdown parser;
+        const auto result = parser.editContent(body);
+        QCOMPARE(result.value("markdown").toString(), body);
+        const auto cards = result.value("attachments").toList();
+        QCOMPARE(cards.size(), 1);
+        QCOMPARE(cards[0].toMap().value("reference").toString(), urn);
+        QCOMPARE(cards[0].toMap().value("markdown").toString(), image);
+        QCOMPARE(NativeMarkdown::prependEditAttachments(body, cards), body);
+        QCOMPARE(parser.removeEditAttachment(body, image), "Before  after\n\n`" + image + "`\n\n\\" + image + suffix);
+        // The pinned extractor leaves reference-style boundary images with the
+        // definitions they require, instead of stripping them like direct URNs.
+        const auto standalone = image + suffix;
+        QCOMPARE(parser.editContent(standalone).value("markdown").toString(), standalone);
+        QCOMPARE(parser.editContent(standalone).value("attachments").toList().size(), 1);
+        const auto unresolved = "![photo][missing]" + suffix;
+        QCOMPARE(parser.editContent(unresolved).value("attachments").toList().size(), 0);
+    }
+
+    void duplicatedBoundaryAttachmentKeepsItsRetainedRole()
+    {
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt>)";
+        const auto result = NativeMarkdown().editContent(file + "\nBefore " + file + " after\n\n" + file);
+        QCOMPARE(result["attachments"].toList().size(), 1);
+        // The leading duplicate stays editable, but the trailing line was
+        // extracted. Editing the former must not silently discard the latter.
+        const auto cards = NativeMarkdown::updateEditAttachments("Edited text", result["attachments"].toList());
+        QCOMPARE(NativeMarkdown::prependEditAttachments("Edited text", cards), file + "\nEdited text");
+    }
+
+    void inlineCardsFollowParsedTextAndKeepUnchangedIds()
+    {
+        const QString first = "![first](<urn:image:" + messageId + "?name=first.png>)";
+        const QString second = "![second](<urn:image:" + returnedId + "?name=second.png>)";
+        const auto result = NativeMarkdown().editContent("Before " + first + " and " + second + " after");
+        auto cards = result["attachments"].toList(); QCOMPARE(cards.size(), 2);
+        auto value = cards[0].toMap(); value["id"] = "first-card"; cards[0] = value;
+        value = cards[1].toMap(); value["id"] = "second-card"; cards[1] = value;
+        auto updated = NativeMarkdown::updateEditAttachments("Changed " + second + " text", cards);
+        QCOMPARE(updated.size(), 1); QCOMPARE(updated[0].toMap()["id"].toString(), QString("second-card"));
+        QVERIFY(NativeMarkdown::updateEditAttachments("`" + first + "`\n\n\\" + second, cards).isEmpty());
+        updated = NativeMarkdown::updateEditAttachments("New " + first + " text", {});
+        QCOMPARE(updated.size(), 1); QVERIFY(!updated[0].toMap()["retained"].toBool());
+        QCOMPARE(NativeMarkdown::prependEditAttachments("Deleted again", updated), QString("Deleted again"));
+    }
+
     void messageDisplayLimitCountsUnicodeCodePoints_data()
     {
         QTest::addColumn<QString>("markdown");

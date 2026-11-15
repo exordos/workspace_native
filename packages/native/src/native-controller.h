@@ -153,6 +153,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
+    Q_PROPERTY(QVariantList editAttachments READ editAttachments NOTIFY editSessionChanged)
     Q_PROPERTY(QString replyMessageId READ replyMessageId NOTIFY replySessionChanged)
     Q_PROPERTY(QVariantList replyTabs READ replyTabs NOTIFY replySessionChanged)
     Q_PROPERTY(QString replyAuthor READ replyAuthor NOTIFY replySessionChanged)
@@ -577,6 +578,8 @@ public:
     Q_INVOKABLE bool beginEditMessage(const QString &id);
     Q_INVOKABLE void cancelEditMessage();
     Q_INVOKABLE void submitEditMessage();
+    Q_INVOKABLE void removeEditAttachment(const QString &id);
+    QVariantList editAttachments() const;
     Q_INVOKABLE void editLastMessage();
     QString editingMessageId() const { return m_editingMessage; }
     QString editSessionKey() const { return m_editingMessage.isEmpty() ? QString{} : QString::number(m_editSession); }
@@ -1531,6 +1534,8 @@ private:
     // Inline edit session (docs/NATIVE_DESKTOP_INLINE_EDIT.md): the buffer stands in for
     // the composer draft; m_editRoute is the conversationKey() the session belongs to.
     QString m_editingMessage, m_editBuffer, m_editRoute;
+    QHash<QString, QVariantList> m_editAttachments; // empty key or restored reply tab id
+    QString editAnswer(const QString &text, const QString &tabId = {}) const;
     // Save-race guards (issue #115): m_editSession names the open session (bumped on every
     // begin), m_editRevision tracks the edit buffer (bumped whenever the buffer is replaced).
     // A save completion may only close the exact (session, revision) it submitted.

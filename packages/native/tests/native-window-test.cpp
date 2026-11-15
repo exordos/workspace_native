@@ -13781,6 +13781,129 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "userInput"));
         window->close();
     }
+    void existingEditAttachmentCardsLoadFailAndRemove_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("failed"); QTest::addColumn<bool>("typeRemoval");
+        for (const QString locale : {QString("en"), QString("ru")})
+            for (const QString mode : {QString("light"), QString("dark")})
+                for (bool failed : {false, true})
+                    for (bool typeRemoval : {false, true})
+                        QTest::newRow(qPrintable(locale + "-" + mode + (failed ? "-failed" : "-ready")
+                            + (typeRemoval ? "-typing" : "-button"))) << locale << mode << failed << typeRemoval;
+    }
+    void existingEditAttachmentCardsLoadFailAndRemove()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode); QFETCH(bool, failed); QFETCH(bool, typeRemoval);
+        QTest::failOnWarning(); WindowChannelFixture fixture;
+        const QString fileId = "99999999-9999-4999-8999-999999999989";
+        const auto png = avatarProbePng(false);
+        const QString file = "[report.txt](<urn:file:" + returnedId + "?name=report.txt&size=7>)";
+        const QString image = "![photo.png](<urn:image:" + fileId + "?name=photo.png&content_type=image%2Fpng>)";
+        const QString body = "Before " + image + " after";
+        auto note = message(file + "\n" + body);
+        QString saved; int puts = 0, downloads = 0; std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/files/" + fileId) {
+                auto metadata = avatarProbeMetadata(fileId, png); metadata["stream_uuid"] = streamId; metadata["name"] = "photo.png";
+                return {metadata};
+            }
+            if (path == "/api/workspace/v1/messenger/files/" + fileId + "/actions/download") {
+                ++downloads; Response response;
+                if (failed) { response = Response{QJsonObject{{"detail", "synthetic preview failure"}}, 503}; }
+                else { response.rawBody = png; response.rawContentType = "image/png"; }
+                response.defer = [&](auto send) { complete = std::move(send); }; return response;
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") return {QJsonArray{note}};
+            if (path.endsWith("/messages/" + messageId)) {
+                if (request.method == "PUT") { ++puts; saved = request.body["payload"].toObject()["content"].toString(); note["payload"] = request.body["payload"]; }
+                return {note};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files); NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Edit cards teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-edit-cards", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty()); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1); if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        controller.setDraft("Unrelated draft");
+        auto *content = window->contentItem();
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {}, bubble->mapToScene(QPointF(bubble->width()/2, bubble->height()/2)).toPoint());
+        auto *action = qobject_cast<QQuickItem *>(window->findChild<QObject *>("editMessageAction")); QVERIFY(action); click(window, action);
+        QTRY_COMPARE(controller.editingMessageId(), messageId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.property("editAttachments").toList().size(), 2, 1500);
+        const auto cards = controller.property("editAttachments").toList();
+        const auto fileCardId = cards[0].toMap()["id"].toString(), imageCardId = cards[1].toMap()["id"].toString();
+        QTRY_VERIFY(item(content, "editAttachment-" + fileCardId));
+        auto *card = item(content, "editAttachment-" + fileCardId); QVERIFY(card->isVisible()); QCOMPARE(card->height(), 58.0); QCOMPARE(card->width(), 240.0);
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer); QTRY_COMPARE(composer->property("text").toString(), body);
+        QTRY_VERIFY(bool(complete)); QCOMPARE(downloads, 1);
+        auto *preview = item(content, "editAttachmentPreview-" + imageCardId); QVERIFY(preview);
+        auto *icon = item(content, "editAttachmentFallback-" + imageCardId); QVERIFY(icon);
+        QVERIFY(preview->property("imageUrl").toString().isEmpty()); QVERIFY(icon->isVisible());
+        const auto capture = [&](const QString &state) {
+            const auto path = qEnvironmentVariable("CASSI_NATIVE_EDIT_CARDS_CAPTURE_DIR");
+            if (!path.isEmpty()) {
+                QDir().mkpath(path);
+                window->grabWindow().save(path + '/' + locale + '-' + mode + '-' + (failed ? "failure-" : "ready-") + state + ".png");
+            }
+        };
+        QTest::qWait(80); capture("loading");
+        if (mode == "dark") {
+            // The reference icon uses text-muted. SVG currentColor alone would
+            // paint black on this dark fallback, making the file icon unreadable.
+            const auto pixels = window->grabWindow(); QVERIFY(!pixels.isNull());
+            const auto at = icon->mapToScene(QPointF(11, 11)); const auto scale = window->devicePixelRatio();
+            int brightest = 0;
+            for (int y = 0; y < 18; ++y) for (int x = 0; x < 18; ++x) {
+                const auto color = pixels.pixelColor(qRound((at.x() + x) * scale), qRound((at.y() + y) * scale));
+                brightest = std::max(brightest, qGray(color.rgb()));
+            }
+            const QColor background(window->property("colors").toMap().value("bg").toString());
+            QVERIFY2(brightest > qGray(background.rgb()) + 15, "The fallback icon must paint visible muted ink on the dark card");
+        }
+        complete(); complete = {};
+        if (failed) { QTRY_VERIFY(preview->property("failed").toBool()); QVERIFY(icon->isVisible()); }
+        else { QTRY_VERIFY(!preview->property("imageUrl").toString().isEmpty()); QTRY_VERIFY(!icon->isVisible()); }
+        QTest::qWait(80); capture("settled");
+        auto *remove = item(content, "editAttachmentRemove-" + imageCardId); QVERIFY(remove);
+        QCOMPARE(remove->property("help").toString(), locale == "ru" ? QString("Удалить photo.png") : QString("Remove photo.png"));
+        if (typeRemoval) {
+            composer->forceActiveFocus(Qt::MouseFocusReason);
+            QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            for (const auto character : QString("Before  after")) {
+                QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+                QKeyEvent releaseKey(QEvent::KeyRelease, 0, Qt::NoModifier, QString(character));
+                QCoreApplication::sendEvent(window->focusObject(), &press);
+                QCoreApplication::sendEvent(window->focusObject(), &releaseKey);
+            }
+        } else {
+            remove->forceActiveFocus(Qt::TabFocusReason); QTest::keyClick(window, Qt::Key_Space);
+        }
+        QTRY_COMPARE(controller.property("editAttachments").toList().size(), 1); QTRY_COMPARE(composer->property("text").toString(), QString("Before  after"));
+        QCOMPARE(controller.editAttachments()[0].toMap()["id"].toString(), fileCardId);
+        QTRY_VERIFY(!item(content, "editAttachment-" + imageCardId));
+        click(window, item(content, "saveEditButton")); QTRY_COMPARE(puts, 1);
+        QCOMPARE(saved, file + "\nBefore  after"); QTRY_VERIFY(controller.editingMessageId().isEmpty());
+        QTRY_COMPARE(composer->property("text").toString(), QString("Unrelated draft"));
+        QTRY_COMPARE(images.stats().leases, 0);
+        QVERIFY(controller.beginEditMessage(messageId));
+        QTRY_COMPARE(controller.property("editAttachments").toList().size(), 1);
+        controller.cancelEditMessage(); QTRY_VERIFY(controller.property("editAttachments").toList().isEmpty());
+    }
+
     void inlineEditPickerUploadAppearsInTheEditAndPreservesTheDraft()
     {
         QTest::failOnWarning();

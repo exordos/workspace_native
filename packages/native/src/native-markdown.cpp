@@ -14,6 +14,8 @@
 #include <QTextImageFormat>
 #include <QUrl>
 #include <md4c-html.h>
+#include <QSet>
+#include <utility>
 
 namespace workspace {
 namespace {
@@ -118,6 +120,210 @@ bool withinMessageDisplayLimit(const QString &markdown)
     }
     return bounded;
 }
+}
+
+namespace {
+// Source ranges are needed only for editing. MD4C decides whether a candidate
+// actually is a root-paragraph link/image; regex alone must never admit code,
+// escaped markup, nested links or raw HTML. Unrecognised syntax stays editable.
+QVariantList editAttachmentTokens(const QString &markdown)
+{
+    struct Candidate { qsizetype first, last, labelFirst, labelLast; bool image, explicitLink; QVariantMap value; };
+    struct Scan {
+        QByteArray source; QList<Candidate> candidates; QVariantList result;
+        QList<MD_BLOCKTYPE> blocks; int spans = 0; qsizetype cursor = 0, label = -1, after = 0;
+        bool active = false, image = false; QString target;
+    } scan;
+    if (!withinMessageDisplayLimit(markdown)) return {};
+    scan.source = markdown.toUtf8();
+    static const QRegularExpression token(QStringLiteral(
+        R"re((!?)\[((?:\\.|[^\]\\\n])*)\](?:\((<[^>\n]+>|[^\s()]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?[ \t]*\)|\[(?:\\.|[^\]\\\n])*\])?)re"));
+    auto matches = token.globalMatch(markdown);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        auto target = match.captured(3);
+        if (target.startsWith('<') && target.endsWith('>')) target = target.mid(1, target.size() - 2);
+        const bool explicitLink = match.capturedStart(3) >= 0;
+        const bool image = !match.captured(1).isEmpty();
+        QVariantMap value;
+        if (explicitLink) {
+            const auto parsed = parseWorkspaceReference(target, match.captured(2));
+            if (!parsed || (parsed->kind != WorkspaceReferenceKind::File
+                && parsed->kind != WorkspaceReferenceKind::Image && parsed->kind != WorkspaceReferenceKind::Video)) continue;
+            value = parsed->toVariantMap(); value.insert("reference", target);
+        } else if (!image) continue;
+        // Reference-style images resolve through MD4C, but cannot be stripped as
+        // standalone lines: their definitions belong to the editable body.
+        value.insert("standalone", explicitLink);
+        value.insert("markdown", match.captured()); value.insert("offset", match.capturedStart());
+        value.insert("length", match.capturedLength()); value.insert("imageSyntax", !match.captured(1).isEmpty());
+        scan.candidates.append({markdown.left(match.capturedStart()).toUtf8().size(),
+            markdown.left(match.capturedEnd()).toUtf8().size(), markdown.left(match.capturedStart(2)).toUtf8().size(),
+            markdown.left(match.capturedEnd(2)).toUtf8().size(), image, explicitLink, value});
+    }
+    MD_PARSER parser{}; parser.flags = MD_DIALECT_GITHUB | MD_FLAG_NOHTML | MD_FLAG_HARD_SOFT_BREAKS;
+    parser.enter_block = [](MD_BLOCKTYPE type, void *, void *data) {
+        static_cast<Scan *>(data)->blocks.append(type); return 0;
+    };
+    parser.leave_block = [](MD_BLOCKTYPE, void *, void *data) {
+        static_cast<Scan *>(data)->blocks.removeLast(); return 0;
+    };
+    parser.enter_span = [](MD_SPANTYPE type, void *detail, void *data) {
+        auto &state = *static_cast<Scan *>(data);
+        if (state.spans++ == 0 && state.blocks == QList<MD_BLOCKTYPE>{MD_BLOCK_DOC, MD_BLOCK_P}
+            && (type == MD_SPAN_IMG || type == MD_SPAN_A)) {
+            const auto attribute = type == MD_SPAN_IMG ? static_cast<MD_SPAN_IMG_DETAIL *>(detail)->src
+                : static_cast<MD_SPAN_A_DETAIL *>(detail)->href;
+            state.active = true; state.image = type == MD_SPAN_IMG;
+            state.target = QString::fromUtf8(attribute.text, attribute.size);
+            state.after = state.cursor; state.label = -1;
+        }
+        return 0;
+    };
+    parser.text = [](MD_TEXTTYPE, const MD_CHAR *text, MD_SIZE size, void *data) {
+        auto &state = *static_cast<Scan *>(data);
+        // Some parser text (e.g. a synthesized soft break) is not source-backed.
+        const auto address = reinterpret_cast<quintptr>(text), first = reinterpret_cast<quintptr>(state.source.constData());
+        if (address >= first && address + size <= first + quintptr(state.source.size())) {
+            const auto offset = qsizetype(address - first);
+            if (state.active && state.label < 0) state.label = offset;
+            state.cursor = offset + size;
+        }
+        return 0;
+    };
+    parser.leave_span = [](MD_SPANTYPE, void *, void *data) {
+        auto &state = *static_cast<Scan *>(data);
+        if (--state.spans == 0 && state.active) {
+            for (const auto &candidate : std::as_const(state.candidates)) {
+                if (candidate.image != state.image || (candidate.explicitLink
+                    && candidate.value.value("reference").toString() != state.target)) continue;
+                const bool atLabel = state.label >= candidate.labelFirst && state.label < candidate.labelLast;
+                const bool emptyLabel = state.label < 0 && candidate.labelFirst == candidate.labelLast && candidate.first >= state.after;
+                if (!atLabel && !emptyLabel) continue;
+                auto value = candidate.value;
+                if (!candidate.explicitLink) {
+                    const auto label = QString::fromUtf8(state.source.mid(candidate.labelFirst, candidate.labelLast - candidate.labelFirst));
+                    const auto parsed = parseWorkspaceReference(state.target, label);
+                    if (!parsed || parsed->kind != WorkspaceReferenceKind::Image) continue;
+                    value.insert(parsed->toVariantMap()); value.insert("reference", state.target);
+                }
+                state.result.append(value); state.cursor = candidate.last; break;
+            }
+            state.active = false;
+        }
+        return 0;
+    };
+    if (md_parse(scan.source.constData(), MD_SIZE(scan.source.size()), &parser, &scan) != 0) return {};
+    return scan.result;
+}
+}
+
+QVariantMap NativeMarkdown::editContent(const QString &markdown) const
+{
+    const auto tokens = editAttachmentTokens(markdown);
+    const auto lines = markdown.split('\n');
+    QMap<qsizetype, QVariantMap> attachmentLines;
+    for (const auto &entry : tokens) {
+        auto value = entry.toMap();
+        if (!value.value("standalone").toBool()) continue;
+        const auto offset = value.value("offset").toLongLong();
+        const auto first = offset > 0 ? markdown.lastIndexOf('\n', offset - 1) + 1 : 0;
+        auto last = markdown.indexOf('\n', offset); if (last < 0) last = markdown.size();
+        const auto line = markdown.mid(first, last - first);
+        if (line.trimmed() != value.value("markdown").toString()) continue;
+        value.insert("markdown", line); attachmentLines.insert(markdown.left(first).count('\n'), value);
+    }
+    QVariantList leading, trailing; qsizetype first = 0;
+    while (first < lines.size() && attachmentLines.contains(first)) leading.append(attachmentLines.value(first++));
+    const auto remaining = lines.mid(first).join('\n');
+    for (const auto &entry : leading) if (remaining.contains(entry.toMap().value("markdown").toString())) { first = 0; break; }
+    auto last = lines.size() - 1;
+    while (last >= 0 && lines[last].trimmed().isEmpty()) --last;
+    auto end = lines.size();
+    while (last >= first && attachmentLines.contains(last)) { trailing.prepend(attachmentLines.value(last)); end = last--; }
+    auto text = lines.mid(first, end - first).join('\n');
+    if (!trailing.isEmpty()) while (text.endsWith('\n')) text.chop(1);
+    QVariantList ordered;
+    for (const auto &entry : leading) {
+        auto value = entry.toMap(); value.insert("retained", first > 0); ordered.append(value);
+    }
+    for (const auto &entry : editAttachmentTokens(text)) {
+        const auto value = entry.toMap();
+        if (value.value("imageSyntax").toBool() && value.value("kind") == "image") ordered.append(value);
+    }
+    for (const auto &entry : trailing) {
+        auto value = entry.toMap(); value.insert("retained", true); ordered.append(value);
+    }
+    QHash<QString, qsizetype> positions; QVariantList attachments;
+    for (const auto &entry : ordered) {
+        auto value = entry.toMap(); const auto raw = value.value("markdown").toString();
+        if (positions.contains(raw)) {
+            if (value.value("retained").toBool()) {
+                auto card = attachments[positions.value(raw)].toMap(); card.insert("retained", true);
+                attachments[positions.value(raw)] = card;
+            }
+            continue;
+        }
+        positions.insert(raw, attachments.size());
+        value.remove("offset"); value.remove("length"); value.remove("imageSyntax"); value.remove("standalone");
+        attachments.append(value);
+    }
+    return {{"markdown", text}, {"attachments", attachments}};
+}
+
+QString NativeMarkdown::removeEditAttachment(const QString &markdown, const QString &attachment) const
+{
+    auto result = markdown; const auto tokens = editAttachmentTokens(markdown);
+    for (auto it = tokens.crbegin(); it != tokens.crend(); ++it) {
+        const auto value = it->toMap();
+        if (value.value("markdown").toString() == attachment.trimmed())
+            result.remove(value.value("offset").toLongLong(), value.value("length").toLongLong());
+    }
+    return result;
+}
+
+QVariantList NativeMarkdown::updateEditAttachments(const QString &markdown, const QVariantList &attachments)
+{
+    QVariantList result; QSet<QString> seen;
+    for (const auto &entry : attachments) {
+        const auto value = entry.toMap();
+        if (!value.value("retained").toBool()) continue;
+        result.append(value); seen.insert(value.value("markdown").toString().trimmed());
+    }
+    for (const auto &entry : editAttachmentTokens(markdown)) {
+        auto value = entry.toMap(); const auto raw = value.value("markdown").toString();
+        if (seen.contains(raw)) continue;
+        QVariantMap previous;
+        for (const auto &old : attachments) {
+            const auto card = old.toMap();
+            if (!card.value("retained").toBool() && card.value("markdown").toString().trimmed() == raw
+                && card.value("reference") == value.value("reference")) { previous = card; break; }
+        }
+        // Existing boundary-file cards can remain inline after the extractor's
+        // duplicate fallback. Newly typed inline files stay ordinary Markdown.
+        if (previous.isEmpty() && !(value.value("imageSyntax").toBool() && value.value("kind") == "image")) continue;
+        value.remove("offset"); value.remove("length"); value.remove("imageSyntax"); value.remove("standalone");
+        if (!previous.isEmpty()) value.insert("id", previous.value("id"));
+        result.append(value); seen.insert(raw);
+    }
+    return result;
+}
+
+QString NativeMarkdown::prependEditAttachments(const QString &markdown, const QVariantList &attachments)
+{
+    QSet<QString> present;
+    for (const auto &entry : editAttachmentTokens(markdown))
+        present.insert(entry.toMap().value("markdown").toString());
+    QStringList lines;
+    for (const auto &entry : attachments) {
+        const auto card = entry.toMap();
+        if (!card.value("retained").toBool()) continue;
+        const auto line = card.value("markdown").toString();
+        if (!line.isEmpty() && !lines.contains(line) && !present.contains(line.trimmed())) lines.append(line);
+    }
+    if (lines.isEmpty()) return markdown;
+    if (markdown.isEmpty()) return lines.join('\n');
+    return lines.join('\n') + '\n' + markdown;
 }
 
 QVariantMap NativeMarkdown::reference(const QString &target) const
