@@ -6814,6 +6814,97 @@ private slots:
         for (auto &send : *releases) send();
     }
 
+    // Issue #298: the automatic recovery scan keeps a stage snapshot while its
+    // canonical GET is in flight; the informed discard is the terminal
+    // authority and completes synchronously underneath that GET. A definitive
+    // 404 answered after the discard must never run the missing-evidence
+    // update against a record that no longer exists: the late bookkeeping is a
+    // pure no-op (no crash, no resurrection, no mis-accounting), the scan
+    // machinery keeps working for surviving stages, and the create budget
+    // stays intact.
+    void encryptedChannelCreateStageDiscardDuringRecoveryScanMakesLateFourOhFourNoOp()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, QByteArray(32, char('u')),
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        seed.dispatchAttempted = true; // its POST may still land: the scan GETs it
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        // A second dispatch-attempted stage survives: its own 404 must still
+        // advance evidence normally, proving the scan and the bookkeeping are
+        // unaffected around the fenced one.
+        const auto nextAttempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto nextKey = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        NativeChatKeyVault::CreateStage next{nextAttempt, nextKey, QByteArray(32, char('v')),
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        next.dispatchAttempted = true;
+        QCOMPARE(keys.putCreateStage(keys.lease(), next), NativeChatKeyVault::Failure::None);
+        next.clearSecrets();
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        int scanGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &nextAttempt,
+            &scanGets, hold, releases](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto base = QStringLiteral("/api/workspace/v1/messenger/streams/");
+            if (request.method == "GET" && (path == base + attempt || path == base + nextAttempt)) {
+                ++scanGets;
+                Response response{QJsonObject{}, 404}; // definitive absence
+                if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 1; }, 5000),
+            "the automatic recovery pass never scanned the seeded stages");
+        // The informed discard runs while a stage GET is still in flight and
+        // settles immediately: the scan holds no user-facing resolve marker.
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.discardChannelCreateStage(attempt, true);
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+            "the confirmed discard during the in-flight recovery scan never settled");
+        QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("discarded"));
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+        // Now let the captured answers arrive: whichever stage's 404 lands
+        // after the discard, its evidence update must be a no-op. The scan
+        // chains its GETs one at a time, so releasing in arrival order drives
+        // the whole pass without sleeping.
+        (*releases)[0]();
+        QVERIFY2(QTest::qWaitFor([&] { return releases->size() >= 2 || scanGets >= 2; }, 5000),
+            "the recovery pass never continued to the surviving stage");
+        if (releases->size() >= 2) (*releases)[1]();
+        // The surviving stage's absence evidence still advances exactly as
+        // before (this also flushes both 404 callbacks).
+        QVERIFY2(QTest::qWaitFor([&] {
+            const auto stored = keys.readCreateStage(keys.lease(), nextAttempt);
+            return stored.failure == NativeChatKeyVault::Failure::None && stored.value->missingEvidence >= 1;
+        }, 5000), "the surviving stage's missing evidence never advanced");
+        // The discarded stage stays gone: no resurrection, no torn record, and
+        // the list stays clean and decodable.
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+        QVERIFY(keys.read(keys.lease(), {attempt, keyUuid}).value.bytes.isEmpty()); // key never committed
+        auto listed = keys.createStages(keys.lease());
+        QCOMPARE(listed.failure, NativeChatKeyVault::Failure::None);
+        QCOMPARE(listed.values.size(), 1);
+        QCOMPARE(listed.values.first().attempt, nextAttempt);
+        // Budget accounting intact: the discarded slot is free for new work.
+        NativeChatKeyVault::CreateStage fresh{QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(),
+            QUuid::createUuid().toString(QUuid::WithoutBraces).toLower(), QByteArray(32, char('w')),
+            QDateTime::currentMSecsSinceEpoch()};
+        QCOMPARE(keys.putCreateStage(keys.lease(), fresh), NativeChatKeyVault::Failure::None);
+        fresh.clearSecrets();
+    }
+
     // Issue #293: the automatic recovery pass excluded the API generation
     // from its once-per-owner/vault token, so after a token renewal retired
     // the in-flight stage GET, neither the dropped callback nor the unchanged
