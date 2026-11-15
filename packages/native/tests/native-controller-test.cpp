@@ -6269,6 +6269,304 @@ private slots:
         QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
     }
 
+    // Issue #293: a user-invokable check holds its attempt in the transient
+    // resolving set before dispatching the canonical GET. A normal same-owner
+    // token renewal replaces the access token, which bumps the API generation
+    // and aborts the in-flight GET; the shared request wrapper then drops the
+    // response callback, so nothing ever settled the marker. Pre-fix: the check
+    // stays "running" forever — a later Check silently returns and the only
+    // way out was an application restart. The renewal must instead settle the
+    // interrupted check as unresolved (durable stage and key untouched), the
+    // retry must dispatch again, and a stale completion from the retired
+    // generation must not disturb the newer check (operation tickets).
+    void encryptedChannelCreateStageCheckRenewalInterruptRetryAndStaleCompletion()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('r'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto visible = std::make_shared<std::atomic<bool>>(false);
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        int stageGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &keyUuid, &stageGets,
+            visible, hold, releases](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                ++stageGets;
+                Response response{QJsonObject{}, 404}; // not found yet
+                if (visible->load()) {
+                    auto row = creationChannel(attempt); // the late commit landed
+                    row["encryption"] = true;
+                    row["current_encryption_key_uuid"] = keyUuid;
+                    response = Response{row, 200};
+                }
+                if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 1; }, 5000),
+            "the automatic recovery pass never scanned the seeded stage");
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 2; }, 5000),
+            "the user check never dispatched its GET");
+        QCOMPARE(done.size(), 0); // the deferred GET keeps the check running
+        // A normal same-owner renewal: the access token is replaced (the
+        // account and vault lease are untouched), retiring every request
+        // dispatched under the old generation.
+        test.fixture.api.setAccessToken("synthetic-renewed-access-token");
+        // AC1: the interrupted check settles as unresolved, naming the
+        // interruption, and the durable stage/key survive byte-for-byte.
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+            "a check interrupted by token renewal never settled");
+        QCOMPARE(done.at(0).at(0).toString(), attempt);
+        QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        QVERIFY2(done.at(0).at(2).toString().contains("interrupt", Qt::CaseInsensitive),
+            qPrintable(done.at(0).at(2).toString()));
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY(kept.value.has_value());
+        QCOMPARE(kept.value->groupKey.size(), 32);
+        kept.value->clearSecrets();
+        // AC4 (operation identity): keep the stale sockets undelivered, retry
+        // the check under the new generation, then deliver only the retired
+        // completions while the newer check is still running.
+        const auto staleSends = releases->size(); // responses captured pre-renewal
+        const auto getsBeforeRetry = stageGets;
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= getsBeforeRetry + 1; }, 5000),
+            "the check could not be retried after the token renewal");
+        for (size_t i = 0; i < staleSends; ++i) (*releases)[i](); // retired-generation answers
+        QTest::qWait(300); // no retired callback may settle or re-open anything
+        QCOMPARE(done.size(), 1); // only the interrupted settle so far
+        const auto getsWhileNewerRuns = stageGets;
+        controller.resolveChannelCreateStage(attempt); // still running: silently ignored
+        QTest::qWait(200);
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(stageGets, getsWhileNewerRuns); // the newer check's marker survived
+        // The retry's own (current-generation) answer then settles it.
+        hold->store(false);
+        for (size_t i = staleSends; i < releases->size(); ++i) (*releases)[i]();
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 2; }, 5000),
+            "the retried check never settled");
+        QCOMPARE(done.at(1).at(0).toString(), attempt);
+        QCOMPARE(done.at(1).at(1).toString(), QStringLiteral("unresolved"));
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::None);
+    }
+
+    // Issue #293: the confirmed informed discard refused with "a check is
+    // already running" while the cancelled check's transient marker lingered
+    // after a token renewal — even though no request remained in flight. The
+    // renewal retires the running marker, so the user's explicit discard
+    // proceeds; the durable key stays retained until that discard acts.
+    void encryptedChannelCreateStageDiscardNotBlockedByCancelledCheck()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('s'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        int stageGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &stageGets,
+            hold, releases](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                ++stageGets;
+                Response response{QJsonObject{}, 404};
+                if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 1; }, 5000),
+            "the automatic recovery pass never scanned the seeded stage");
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 2; }, 5000),
+            "the user check never dispatched its GET");
+        test.fixture.api.setAccessToken("synthetic-renewed-access-token");
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+            "a check interrupted by token renewal never settled");
+        // Durable retention: cancellation touched nothing in the vault.
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY(kept.value.has_value());
+        QCOMPARE(kept.value->groupKey, groupKey);
+        kept.value->clearSecrets();
+        // AC2: the explicit informed discard is NOT blocked by the cancelled
+        // check; it removes the record and frees the slot as ordered.
+        controller.discardChannelCreateStage(attempt, true);
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 2; }, 5000),
+            "the confirmed discard after a cancelled check never settled");
+        QCOMPARE(done.at(1).at(0).toString(), attempt);
+        QCOMPARE(done.at(1).at(1).toString(), QStringLiteral("discarded"));
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+        hold->store(false);
+        for (auto &send : *releases) send();
+    }
+
+    // Issue #293: the automatic recovery pass excluded the API generation
+    // from its once-per-owner/vault token, so after a token renewal retired
+    // the in-flight stage GET, neither the dropped callback nor the unchanged
+    // token ever re-armed the pass — recovery went silent for the rest of the
+    // vault session and a channel that appeared later was never adopted. The
+    // abandoned pass must resume once the same owner is ready again.
+    void encryptedChannelCreateStageRecoveryResumesAfterTokenRenewal()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('t'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto visible = std::make_shared<std::atomic<bool>>(false);
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        int stageGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &keyUuid, &stageGets,
+            visible, hold, releases](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                ++stageGets;
+                Response response{QJsonObject{}, 404};
+                if (visible->load()) {
+                    auto row = creationChannel(attempt); // the late commit landed
+                    row["encryption"] = true;
+                    row["current_encryption_key_uuid"] = keyUuid;
+                    response = Response{row, 200};
+                }
+                if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 1; }, 5000),
+            "the automatic recovery pass never scanned the seeded stage");
+        // The renewal interrupts the in-flight recovery GET. Pre-fix no
+        // further scan was ever armed for this owner/vault lease.
+        test.fixture.api.setAccessToken("synthetic-renewed-access-token");
+        hold->store(false);
+        for (auto &send : *releases) send(); // the interrupted response lands on a retired generation
+        // AC3: without any restart, recovery resumes and adopts the channel
+        // that only now appears — the key commits and the stage clears.
+        visible->store(true);
+        QVERIFY2(QTest::qWaitFor([&] {
+            auto stored = keys.read(keys.lease(), {attempt, keyUuid});
+            const bool ok = stored.failure == NativeChatKeyVault::Failure::None && stored.value.bytes == groupKey;
+            stored.value.bytes.fill('\0');
+            return ok && keys.readCreateStage(keys.lease(), attempt).failure != NativeChatKeyVault::Failure::None;
+        }, 20000), "recovery interrupted by token renewal never resumed to adopt the verified channel");
+    }
+
+    // Issue #293: the same stranding across sign-out/re-login: the check
+    // interrupted by logout must settle (clearSession bumps the generation),
+    // and after the same owner signs in again the check must dispatch and
+    // settle normally again instead of returning as "already running".
+    void encryptedChannelCreateStageCheckSurvivesSignOutAndReLogin()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        const auto attempt = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const auto keyUuid = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+        const QByteArray groupKey(32, char('u'));
+        NativeChatKeyVault::CreateStage seed{attempt, keyUuid, groupKey,
+            QDateTime::currentMSecsSinceEpoch() - 3600000};
+        QCOMPARE(keys.putCreateStage(keys.lease(), seed), NativeChatKeyVault::Failure::None);
+        QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), attempt), NativeChatKeyVault::Failure::None);
+        seed.clearSecrets();
+        auto visible = std::make_shared<std::atomic<bool>>(false);
+        auto hold = std::make_shared<std::atomic<bool>>(true);
+        auto releases = std::make_shared<std::vector<std::function<void()>>>();
+        int stageGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempt, &keyUuid, &stageGets,
+            visible, hold, releases](const Request &request) -> Response {
+            const auto target = QStringLiteral("/api/workspace/v1/messenger/streams/") + attempt;
+            if (request.method == "GET" && request.target.path() == target) {
+                ++stageGets;
+                Response response{QJsonObject{}, 404};
+                if (visible->load()) {
+                    auto row = creationChannel(attempt);
+                    row["encryption"] = true;
+                    row["current_encryption_key_uuid"] = keyUuid;
+                    response = Response{row, 200};
+                }
+                if (hold->load()) response.defer = [releases](std::function<void()> send) { releases->push_back(std::move(send)); };
+                return response;
+            }
+            return inner(request);
+        };
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 1; }, 5000),
+            "the automatic recovery pass never scanned the seeded stage");
+        QSignalSpy done(&controller, &NativeController::channelCreateStageResolved);
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets >= 2; }, 5000),
+            "the user check never dispatched its GET");
+        controller.logout(); // clearSession bumps the API generation too
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 1; }, 5000),
+            "a check interrupted by sign-out never settled");
+        QCOMPARE(done.at(0).at(1).toString(), QStringLiteral("unresolved"));
+        auto kept = keys.readCreateStage(keys.lease(), attempt);
+        QVERIFY(kept.value.has_value());
+        kept.value->clearSecrets();
+        // Sign back in as the same owner; the check must work again.
+        QVERIFY2(test.fixture.start(), "the synthetic re-login failed");
+        hold->store(false);
+        for (auto &send : *releases) send();
+        const auto getsBeforeRetry = stageGets;
+        controller.resolveChannelCreateStage(attempt);
+        QVERIFY2(QTest::qWaitFor([&] { return stageGets > getsBeforeRetry; }, 5000),
+            "the check was still considered running after sign-out/re-login");
+        QVERIFY2(QTest::qWaitFor([&] { return done.size() == 2; }, 5000),
+            "the check after re-login never settled");
+        QCOMPARE(done.at(1).at(1).toString(), QStringLiteral("unresolved"));
+        QVERIFY(keys.readCreateStage(keys.lease(), attempt).value.has_value());
+    }
+
     // Review finding 4576938727 fix half (b): because no check can ever prove
     // a negative, stopping to await a late channel is a human decision with a
     // named consequence: the channel may still appear later and would then be
