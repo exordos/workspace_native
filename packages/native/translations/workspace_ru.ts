@@ -190,6 +190,10 @@
             <translation>Копировать текст</translation>
         </message>
         <message>
+            <source>Copy image</source>
+            <translation>Копировать изображение</translation>
+        </message>
+        <message>
             <source>Copy link</source>
             <translation>Копировать ссылку</translation>
         </message>
@@ -2820,6 +2824,10 @@
         <message>
             <source>Download</source>
             <translation>Скачать</translation>
+        </message>
+        <message>
+            <source>Copy image</source>
+            <translation>Копировать изображение</translation>
         </message>
         <message>
             <source>Close</source>
