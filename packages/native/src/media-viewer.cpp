@@ -173,7 +173,10 @@ bool MediaViewerModel::copyCurrentImage()
     QFile file(url.toLocalFile());
     if (!file.open(QIODevice::ReadOnly))
         return false;
-    return NativeController::clipboardImageBytes(file.readAll());
+    // Fix round R1 (cid=4577117373): read through the shared bounded helper so
+    // a staged slot file over the clipboard cap is rejected without ever being
+    // loaded whole into memory.
+    return NativeController::clipboardImageBytes(NativeController::readClipboardBounded(file));
 }
 
 void MediaViewerModel::markSlotDisplayError(int index)

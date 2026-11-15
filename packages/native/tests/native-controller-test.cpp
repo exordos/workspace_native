@@ -16462,6 +16462,30 @@ private slots:
         return {};
     }
 
+    // Fix round R1 observable: reset the process peak-RSS high-water mark
+    // (writing 5 to /proc/self/clear_refs) so a copy path that pulls an
+    // oversized file whole into memory shows up as a measurable jump.
+    static void resetPeakResidentMemory()
+    {
+        QFile clear(QStringLiteral("/proc/self/clear_refs"));
+        if (clear.open(QIODevice::WriteOnly)) {
+            clear.write("5");
+            clear.close();
+        }
+    }
+
+    static qint64 peakResidentBytes()
+    {
+        QFile status(QStringLiteral("/proc/self/status"));
+        if (!status.open(QIODevice::ReadOnly))
+            return 0;
+        const auto lines = QString::fromLatin1(status.readAll()).split(QLatin1Char('\n'));
+        for (const auto &line : lines)
+            if (line.startsWith(QLatin1String("VmHWM:")))
+                return line.sliced(6).trimmed().split(QLatin1Char(' ')).first().toLongLong() * 1024;
+        return 0;
+    }
+
     void copyMessageImageWritesImageBytesToClipboard()
     {
         Fixture fixture;
@@ -16574,6 +16598,45 @@ private slots:
         QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
     }
 
+    // Fix round R1 (cid=4577117364, cid=4577117373): the shared bounded reader
+    // behind both copy paths hands over at most cap + 1 bytes no matter how
+    // much the source could still deliver.
+    void clipboardBoundedReadStopsAtCapPlusOne()
+    {
+        class CountingDevice final : public QIODevice {
+        public:
+            explicit CountingDevice(qint64 total) : m_total(total) { open(QIODevice::ReadOnly); }
+            qint64 provided() const { return m_provided; }
+        protected:
+            qint64 readData(char *data, qint64 maxLength) override
+            {
+                const qint64 count = qMin(maxLength, m_total - m_position);
+                for (qint64 i = 0; i < count; ++i)
+                    data[i] = '\x7f';
+                m_position += count;
+                m_provided += count;
+                return count;
+            }
+            qint64 writeData(const char *, qint64 maxLength) override { return maxLength; }
+            qint64 size() const override { return m_total; }
+        private:
+            qint64 m_total = 0, m_position = 0, m_provided = 0;
+        };
+        setClipboardImageSentinel();
+        CountingDevice oversized(NativeController::ClipboardImageBytesLimit * 3);
+        const auto bytes = NativeController::readClipboardBounded(oversized);
+        QCOMPARE(bytes.size(), NativeController::ClipboardImageBytesLimit + 1);
+        QCOMPARE(oversized.provided(), NativeController::ClipboardImageBytesLimit + 1);
+        // The over-cap source is rejected by the shared write path having
+        // cost only the cap plus one byte; the clipboard stays intact.
+        QVERIFY(!NativeController::clipboardImageBytes(bytes));
+        QVERIFY(clipboardSentinelIntact());
+        // A payload exactly at the cap is handed over whole and untouched.
+        CountingDevice exactlyAtCap(NativeController::ClipboardImageBytesLimit);
+        QCOMPARE(NativeController::readClipboardBounded(exactlyAtCap).size(), NativeController::ClipboardImageBytesLimit);
+        QCOMPARE(exactlyAtCap.provided(), NativeController::ClipboardImageBytesLimit);
+    }
+
     void mediaViewerCopyWritesStagedImageBytes()
     {
         Fixture fixture;
@@ -16626,6 +16689,135 @@ private slots:
         QVERIFY(!viewer->copyCurrentImage());
         QVERIFY(clipboardSentinelIntact());
         viewer->close();
+    }
+
+    // Fix round R1 (cid=4577117364, cid=4577117373): the copy paths must bound
+    // the bytes they read. A staged file over the 64 MiB clipboard cap is
+    // rejected quietly, but reading it with readAll() first materialises the
+    // whole payload - the test grows the staged slot file into a 200 MiB sparse
+    // file (near-zero disk cost) and asserts peak RSS stays bounded, which an
+    // unbounded readAll() cannot pass.
+    void mediaViewerCopyRejectsOversizedStagedFileWithoutLoadingItWhole()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray png = clipboardCopyFixturePng();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = png;
+                result.rawContentType = "image/png";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"), 4000);
+        const auto staged = QUrl(viewer->items().at(0).toMap().value("url").toString()).toLocalFile();
+        {
+            QFile file(staged);
+            QVERIFY(file.open(QIODevice::ReadWrite));
+            QVERIFY(file.resize(200 * 1024 * 1024));
+        }
+        setClipboardImageSentinel();
+        resetPeakResidentMemory();
+        const auto baseline = peakResidentBytes();
+        // Over the cap: rejected silently, clipboard untouched, and the read is
+        // bounded - the whole 200 MiB must never be loaded.
+        QVERIFY(!viewer->copyCurrentImage());
+        const auto growth = peakResidentBytes() - baseline;
+        // The bound itself: a correct copy reads at most 64 MiB + 1 byte, so a
+        // generous 96 MiB growth ceiling separates it from a 200 MiB readAll().
+        QVERIFY2(growth < 96LL * 1024 * 1024,
+            qPrintable(QStringLiteral("peak RSS grew by %1 MiB").arg(growth / (1024 * 1024))));
+        QVERIFY(clipboardSentinelIntact());
+        QVERIFY(fixture.controller.error().isEmpty());
+        viewer->close();
+    }
+
+    // Fix round R1 (cid=4577117378): the download completion is bound to the
+    // session that started it. A completion that lands after the identity is
+    // switched must be discarded; it may not put the old session's image on the
+    // system clipboard. The switch goes through Session::selectProject (the
+    // same-token account-switch boundary), so the in-flight download still
+    // completes after the identity moved on.
+    void copyMessageImageCompletionAfterSessionEndIsDiscarded()
+    {
+        const QString otherProject = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        bool secondProject = false;
+        Fixture fixture;
+        fixture.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (request.target.path() == "/api/core/v1/iam/projects/")
+                response.data = QJsonArray{QJsonObject{{"uuid", projectId}, {"name", "First project"}, {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", otherProject}, {"name", "Second project"}, {"status", "ACTIVE"}}};
+            if (secondProject && request.target.path().endsWith("/actions/introspect")) {
+                auto raw = response.data.toObject();
+                raw["project_id"] = otherProject;
+                response.data = raw;
+            }
+            return response;
+        };
+        fixture.streams = [&](const Request &) {
+            if (secondProject) return Response{QJsonArray{}};
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}}};
+        };
+        fixture.topics = [&](const Request &) {
+            if (secondProject) return Response{QJsonArray{}};
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray png = clipboardCopyFixturePng();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        int downloadRequests = 0;
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                ++downloadRequests;
+                Response result;
+                result.rawBody = png;
+                result.rawContentType = "image/png";
+                result.delay = 500; // the completion lands after the identity switch
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "m1.png"},
+                {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        const auto body = QStringLiteral("Head\n\n![m1.png](urn:image:%1?name=m1.png&content_type=image%2Fpng&size=%2)\n\nTail")
+            .arg(mvFileA).arg(png.size());
+        const auto note = message(body, messageId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "GET") return {QJsonArray{note}};
+            return {message("answer", returnedId), 201};
+        };
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.projects().size(), 2, 2000);
+        fixture.controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.streams().size() == 1, 2000);
+        fixture.controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.topics().isEmpty(), 2000);
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.busy(), 2000);
+        setClipboardImageSentinel();
+        QVERIFY(fixture.controller.copyMessageImage(messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(downloadRequests >= 1, 4000);
+        secondProject = true;
+        fixture.session.selectProject(otherProject);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.authenticated(), 2000);
+        // Let the delayed completion fire; it belongs to the retired identity.
+        QTest::qWait(1500);
+        // A stale completion must not put the previous session's image on the system clipboard.
+        QVERIFY(clipboardSentinelIntact());
     }
 
     // The controller-side half of docs/NATIVE_DESKTOP_AUTO_PAGING.md: a fetched
