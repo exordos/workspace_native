@@ -196,6 +196,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
+    Q_PROPERTY(QVariantMap conversationOpening READ conversationOpening NOTIFY stateChanged)
 public:
     explicit NativeController(ApiClient *api, Session *session, QObject *parent = nullptr);
     ~NativeController() override;
@@ -359,6 +360,7 @@ public:
     QString selectedStream() const { return m_stream; }
     QString selectedTopic() const { return m_topic; }
     QString anchorMessageId() const { return m_anchorMessage; }
+    QVariantMap conversationOpening() const;
     QString draft() const;
     void setDraft(const QString &text);
     bool canCompose() const;
@@ -466,6 +468,9 @@ public:
     Q_INVOKABLE void resolveDraft(const QString &id, const QString &action);
     Q_INVOKABLE void loadOlder();
     Q_INVOKABLE void loadNewer();
+    Q_INVOKABLE void prepareConversationOpening(const QString &savedAnchor = {});
+    Q_INVOKABLE void cancelConversationOpening();
+    Q_INVOKABLE void loadLatestMessages();
     // Issue #156 (docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md): the view reports
     // user-attributed scroll geometry and the controller owns the reserve
     // policy for prefetching the next older page, so the trigger threshold,
@@ -693,6 +698,7 @@ signals:
     // sees it (stateChanged alone does not name this transition).
     void ownAvatarErrorChanged();
     void anchorChanged();
+    void conversationMarkedRead(const QString &streamUuid, const QString &topicUuid);
     void savedAccountsChanged();
     void sessionSwitcherChanged();
     void authGuardActiveChanged();
@@ -1277,7 +1283,12 @@ private:
     // Notification metadata backfill: topics of background streams are not in
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);
-    void loadMessages(bool older = false);
+    void loadMessages(bool older = false, bool latest = false);
+    void retireConversationOpening();
+    void resolveOpeningUnread(quint64 ticket, int attempt = 0);
+    void resolveOpeningSaved(quint64 ticket, const QString &savedAnchor, int attempt = 0);
+    void openConversationAnchor(const Message &message);
+    void finishConversationOpening(const QString &id = {}, bool failed = false);
     void loadAroundAnchor();
     void loadNewerPage(const QByteArray &marker);
     void historyPage(bool older, quint64 selection, quint64 revision,
@@ -1704,6 +1715,15 @@ private:
     QString m_pendingAnchorTopic;
     int m_anchorBudget = 0;
     bool m_anchorAroundTried = false;
+    struct ConversationOpening {
+        quint64 selection = 0, generation = 0, ticket = 0;
+        bool prepared = false, pending = false, automaticAnchor = false, failed = false;
+        QString target;
+        int unreadAttempt = -1;
+        QString savedAnchor;
+        int savedAttempt = 0;
+    } m_conversationOpening;
+    quint64 m_nextConversationOpening = 0;
     QTimer m_anchorHighlight;
     QString m_error;
     QString m_loginStep = QStringLiteral("organization");

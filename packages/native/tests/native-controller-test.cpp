@@ -15321,6 +15321,178 @@ private slots:
         return row;
     }
 
+    void conversationOpeningResolvesServerBoundary_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"unread", "saved", "latest", "latest-failed", "cancel-lookup", "cancel-around",
+                 "session-around", "read-lookup", "read-around", "saved-read-around", "saved-history-around", "malformed", "foreign", "empty", "inconsistent-empty", "inconsistent-later"})
+            QTest::newRow(scenario) << QString(scenario);
+    }
+
+    void conversationOpeningResolvesServerBoundary()
+    {
+        QFETCH(QString, scenario);
+        Fixture fixture; fixture.aggregateMessages = true;
+        const auto row = [](int number) { auto value = anchoredHistoryRow(number); value["read"] = false; return value; };
+        const auto id = [&](int number) { return row(number).value("uuid").toString(); };
+        int lookups = 0, aroundPages = 0, latestPages = 0;
+        bool held = false, queryContract = true;
+        std::vector<std::function<void()>> release;
+        fixture.messages = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.hasQueryItem("uuid")) { auto saved = row(20); saved["read"] = true; return {QJsonArray{saved}}; }
+            if (query.queryItemValue("read") == "false") {
+                ++lookups;
+                queryContract = queryContract && query.queryItemValue("sort_dir") == "asc"
+                    && query.queryItemValue("page_limit") == "1";
+                QJsonArray rows{row(scenario.startsWith("read-") && lookups > 1 ? 21 : 20)};
+                if (lookups == 1 && scenario == "inconsistent-empty") rows = {};
+                if (lookups == 1 && scenario == "inconsistent-later") rows = {row(119)};
+                if (scenario == "malformed") rows.append(row(21));
+                if (scenario == "foreign") { auto value = row(20); value["project_id"] = secondTopicId; rows = {value}; }
+                if (scenario == "empty") rows = {};
+                Response response{rows};
+                if (!held && (scenario == "cancel-lookup" || scenario == "read-lookup")) {
+                    held = true; response.defer = [&](std::function<void()> deliver) { release.push_back(std::move(deliver)); };
+                }
+                return response;
+            }
+            const auto marker = query.queryItemValue("page_marker");
+            if (!marker.isEmpty()) {
+                ++aroundPages;
+                const bool newer = query.queryItemValue("sort_dir") == "asc";
+                Response response{QJsonArray{row(newer ? 22 : 19)}};
+                if (newer) response.headers["X-Pagination-Marker"] = id(22).toUtf8();
+                if (!held && (scenario == "cancel-around" || scenario == "session-around" || scenario == "read-around"
+                    || scenario == "saved-read-around" || scenario == "saved-history-around")) {
+                    // Hold both pages until the test retires this opening.
+                    response.defer = [&](std::function<void()> deliver) { release.push_back(std::move(deliver)); };
+                }
+                return response;
+            }
+            ++latestPages;
+            if (scenario == "latest-failed" && latestPages > 2) return {QJsonObject{}, 503};
+            auto latest = row(119), previous = row(118);
+            if (scenario == "empty") { latest["read"] = true; previous["read"] = true; }
+            return {QJsonArray{latest, previous}, 200, 0, {{"X-Pagination-Marker", id(118).toUtf8()}}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.prepareConversationOpening(scenario.startsWith("saved") ? id(20) : QString{});
+        if (scenario.startsWith("cancel-") || scenario.startsWith("read-") || scenario == "session-around"
+            || scenario == "saved-read-around" || scenario == "saved-history-around") {
+            QTRY_COMPARE(release.size(), scenario.endsWith("around") ? size_t(2) : size_t(1));
+            QVERIFY(fixture.controller.conversationOpening().value("pending").toBool());
+            if (scenario.startsWith("cancel-")) fixture.controller.cancelConversationOpening();
+            else if (scenario == "session-around") fixture.api.setAccessToken("replacement-synthetic-token");
+            else QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("messages.read",
+                QJsonObject{{"project_id", projectId}, {"message_uuids", QJsonArray{id(scenario == "saved-history-around" ? 119 : 20)}}})));
+            held = true;
+            const auto pending = std::move(release);
+            for (const auto &deliver : pending) deliver();
+            if (scenario.startsWith("cancel-") || scenario == "session-around") {
+                QTest::qWait(150);
+                QCOMPARE(fixture.controller.messages().size(), 2);
+                QVERIFY(!fixture.controller.busy());
+                QVERIFY(!fixture.controller.conversationOpening().value("pending").toBool());
+                return;
+            }
+        }
+        if (scenario == "malformed" || scenario == "foreign") {
+            QTRY_VERIFY(fixture.controller.conversationOpening().value("failed").toBool());
+            QVERIFY(!fixture.controller.conversationOpening().value("ready").toBool());
+            QCOMPARE(fixture.controller.messages().size(), 2); QCOMPARE(aroundPages, 0);
+            return;
+        }
+        QTRY_VERIFY(fixture.controller.conversationOpening().value("ready").toBool());
+        QCOMPARE(fixture.controller.conversationOpening().value("messageId").toString(),
+            scenario == "empty" ? QString{} : id(scenario.startsWith("read-") ? 21 : 20));
+        QVERIFY(queryContract);
+        QVERIFY(fixture.controller.anchorMessageId().isEmpty()); // Opening never flashes an explicit-link highlight.
+        if (scenario == "empty") { QCOMPARE(aroundPages, 0); return; }
+        QVERIFY(modelMessage(fixture.controller, id(119)).isEmpty());
+        QVERIFY(fixture.controller.canLoadNewer());
+        if (scenario.startsWith("saved")) { QCOMPARE(lookups, 0); QVERIFY(modelMessage(fixture.controller, id(20)).value("read").toBool()); }
+        if (scenario.startsWith("latest")) {
+            fixture.controller.loadLatestMessages();
+            QTRY_VERIFY(!fixture.controller.busy());
+            if (scenario == "latest") {
+                QCOMPARE(fixture.controller.messages().size(), 2);
+                QVERIFY(!modelMessage(fixture.controller, id(119)).isEmpty());
+                QVERIFY(!fixture.controller.canLoadNewer());
+            } else {
+                QVERIFY(!modelMessage(fixture.controller, id(20)).isEmpty());
+                QVERIFY(fixture.controller.canLoadNewer());
+            }
+        }
+    }
+
+    void savedAnchorRetryKeepsDeletionAndLifecycleBounds_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *scenario : {"deleted", "foreign", "churn", "cancel", "session"})
+            QTest::newRow(scenario) << QString(scenario);
+    }
+    void savedAnchorRetryKeepsDeletionAndLifecycleBounds()
+    {
+        QFETCH(QString, scenario);
+        Fixture fixture; fixture.aggregateMessages = true;
+        const auto row = [](int number) { auto value = anchoredHistoryRow(number); value["read"] = true; return value; };
+        const auto id = [&](int number) { return row(number)["uuid"].toString(); };
+        int exactLookups = 0, unreadLookups = 0, aroundPages = 0;
+        std::vector<std::function<void()>> release;
+        const auto cleanup = qScopeGuard([&] { for (const auto &deliver : release) deliver(); });
+        fixture.messages = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.hasQueryItem("uuid")) {
+                ++exactLookups;
+                if (exactLookups > 1 && scenario == "deleted") return {QJsonObject{}, 404};
+                auto saved = row(20);
+                if (exactLookups > 1 && scenario == "foreign") saved["project_id"] = secondTopicId;
+                return {QJsonArray{saved}};
+            }
+            if (query.queryItemValue("read") == "false") {
+                ++unreadLookups; auto unread = row(21); unread["read"] = false;
+                return {QJsonArray{unread}};
+            }
+            if (!query.queryItemValue("page_marker").isEmpty()) {
+                ++aroundPages;
+                Response response{QJsonArray{row(query.queryItemValue("sort_dir") == "asc" ? 22 : 19)}};
+                if (aroundPages <= 2 || ((scenario == "churn" || scenario == "cancel" || scenario == "session") && aroundPages <= 4))
+                    response.defer = [&](auto deliver) { release.push_back(std::move(deliver)); };
+                return response;
+            }
+            return {QJsonArray{row(119)}, 200, 0, {{"X-Pagination-Marker", id(119).toUtf8()}}};
+        };
+        QVERIFY(fixture.start()); fixture.controller.prepareConversationOpening(id(20));
+        QTRY_COMPARE(release.size(), size_t(2));
+        const auto historyChange = [&] {
+            return fixture.controller.applyRealtimeEvent(controllerEvent("messages.read",
+                QJsonObject{{"project_id", projectId}, {"message_uuids", QJsonArray{id(119)}}}));
+        };
+        const auto deliver = [&] { auto pending = std::move(release); release.clear(); for (const auto &send : pending) send(); };
+        QVERIFY(historyChange()); deliver();
+        if (scenario == "churn" || scenario == "cancel" || scenario == "session") {
+            QTRY_COMPARE(release.size(), size_t(2));
+            if (scenario == "churn") QVERIFY(historyChange());
+            else if (scenario == "cancel") fixture.controller.cancelConversationOpening();
+            else fixture.api.setAccessToken("replacement-synthetic-token");
+            deliver();
+        }
+        QTRY_VERIFY(!fixture.controller.busy());
+        QTRY_VERIFY(!fixture.controller.conversationOpening().value("pending").toBool());
+        QCOMPARE(exactLookups, 2);
+        QCOMPARE(unreadLookups, scenario == "deleted" ? 1 : 0);
+        if (scenario == "deleted") {
+            QVERIFY(fixture.controller.conversationOpening().value("ready").toBool());
+            QCOMPARE(fixture.controller.conversationOpening().value("messageId").toString(), id(21));
+        } else {
+            QVERIFY(!modelMessage(fixture.controller, id(119)).isEmpty());
+            QVERIFY(modelMessage(fixture.controller, id(20)).isEmpty());
+            if (scenario == "foreign" || scenario == "churn")
+                QVERIFY(fixture.controller.conversationOpening().value("failed").toBool());
+        }
+    }
+
     // A deep-link anchor below the bounded older walk's reach opens the reference's
     // around-anchor window (desc + asc pages at page_marker=<anchor>, see
     // workspace_ui 61dacef7 messenger-messages.api.test.ts:169-246): the anchor sits

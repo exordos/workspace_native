@@ -48,6 +48,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QQmlIncubator>
 #include <QQmlExpression>
 #include <QQmlIncubator>
 #include <QJSValue>
@@ -877,6 +878,26 @@ static bool closeObservedTestWindow(QQuickWindow *window)
 {
     const QPointer<QQuickWindow> guard(window);
     if(!guard) return true;
+    // isActive() includes the parent/transient family. A still-open PiP or
+    // popup can therefore keep a hidden parent active indefinitely. Close
+    // only this window's transient surfaces, deepest first, before waiting
+    // for the parent's existing focus-before-surface acknowledgement.
+    QList<QPointer<QWindow>> transients;
+    for (auto *other : QGuiApplication::topLevelWindows())
+        if (other != guard.data() && guard->isAncestorOf(other, QWindow::IncludeTransients))
+            transients.append(other);
+    const auto depth = [](const QPointer<QWindow> &entry) {
+        int result = 0;
+        for (auto *ancestor = entry.data(); ancestor; ancestor = ancestor->parent(QWindow::IncludeTransients))
+            ++result;
+        return result;
+    };
+    std::stable_sort(transients.begin(), transients.end(), [&](const auto &left, const auto &right) {
+        return depth(left) > depth(right);
+    });
+    for (const auto &transient : transients)
+        if (transient && !transient->close()) return false;
+    if (!guard) return false;
     guard->hide();
     // Public focus acknowledgement, not a sleep or protocol-roundtrip claim.
     const bool inactive=QTest::qWaitFor([guard] {
@@ -6026,6 +6047,43 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void testWindowTeardownClosesOnlyItsTransientFamily()
+    {
+        WindowFocusLifecycleProbe probe;
+        QQuickWindow unrelated;
+        unrelated.setGeometry(40, 40, 160, 120);
+        unrelated.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&unrelated));
+        QQuickWindow window;
+        probe.watch(&window);
+        window.setGeometry(240, 40, 240, 180);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QQuickWindow tool;
+        tool.setFlags(Qt::Tool);
+        tool.setTransientParent(&window);
+        tool.setGeometry(260, 60, 160, 120);
+        tool.show();
+        const auto cleanup = qScopeGuard([&] {
+            tool.close(); window.close(); unrelated.close();
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(&tool));
+        tool.requestActivate();
+        QTRY_COMPARE(QGuiApplication::focusWindow(), &tool);
+        QVERIFY(window.isActive()); // Qt includes the focused transient child.
+        probe.arm(window.winId());
+        QVERIFY(closeObservedTestWindow(&window));
+        QVERIFY(!tool.isVisible());
+        QVERIFY(!tool.isExposed());
+        QVERIFY(!window.isVisible());
+        QVERIFY(!window.isExposed());
+        QVERIFY(unrelated.isVisible());
+        QVERIFY(unrelated.isExposed());
+        QVERIFY(probe.surfaceOrder() > 0);
+        QVERIFY2(probe.focusLostBeforeSurface(),
+            "The entire transient family loses focus before the parent native surface is destroyed");
+    }
+
     void focusedTextWindowLosesFocusBeforeNativeSurfaceIsDestroyed()
     {
         QTemporaryDir directory; NativePreferences preferences(directory.filePath("focus-lifecycle.ini"));
@@ -9486,7 +9544,6 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
-        controller.setRealtimeMode(true);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -9505,15 +9562,25 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_VERIFY(session.ready());
-        controller.reloadSnapshot();
         QTRY_COMPARE(controller.streams().size(), 1);
-        if (readScenario) controller.selectStream(streamId);
+        // Complete the ordinary bootstrap before stopping polling. A synthetic
+        // realtime mode has no synchronizer to release a reload barrier.
+        controller.setRealtimeMode(true);
+        if (readScenario) {
+            controller.selectStream(streamId);
+            // This scenario explicitly loads and positions a 400-row viewport
+            // to test per-topic visible reads. Give that manual navigation
+            // ownership before history arrives; automatic unread placement has
+            // its own real-window regressions.
+            controller.cancelConversationOpening();
+        }
         else click(window, item(window->contentItem(), "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), 3);
         // This was the first actual UI RED: stream selection had no source
         // topic-choice footer and retained the disabled composer frame instead.
         QTRY_VERIFY(visibleItem("streamTopicPrompt"));
         QTRY_COMPARE(controller.messages().size(), readScenario ? 50 : size);
+        QTRY_VERIFY(controller.messageHistoryReady());
         QCOMPARE(controller.property("conversationKind").toString(), QString("stream"));
         QVERIFY(controller.property("hasConversation").toBool());
         QVERIFY(aggregateGets > 0);
@@ -11002,6 +11069,219 @@ mv -Tf "$root/.current-new" "$root/current"
         other.close();
     }
 
+    void conversationOpeningShowsUnreadBeforeTheTail_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto *scenario : {"unread", "all-read", "divider", "divider-group", "divider-stable", "divider-passed", "tail-button", "outside-window", "return-position", "bulk-read", "bulk-stream", "outside-tail", "return-outside", "return-tail"})
+            for (const auto *locale : {"en", "ru"})
+                for (const auto *mode : {"light", "dark"})
+                    QTest::newRow(qPrintable(QString("%1-%2-%3").arg(scenario, locale, mode)))
+                        << QString(scenario) << QString(locale) << QString(mode);
+    }
+
+    void conversationOpeningShowsUnreadBeforeTheTail()
+    {
+        QFETCH(QString, scenario); QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("unread.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        MockServer server;
+        const bool paged = scenario.startsWith("outside-") || scenario == "return-outside";
+        const int total = paged ? 120 : 50;
+        const auto uuid = [](int i) { return QString("85000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')); };
+        QJsonArray history;
+        for (int i = 0; i < total; ++i) {
+            auto row = message(QString("Unread navigation message %1 with a stable visible body").arg(i), uuid(i));
+            row["is_own"] = false; row["author_uuid"] = channelPeer;
+            row["read"] = scenario == "all-read" || scenario.startsWith("return-") || scenario.startsWith("bulk-") || i < 20;
+            row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(i).toString(Qt::ISODateWithMs);
+            // The first unread row starts an author group. A separate same-group
+            // case below checks the divider's group placement after opening.
+            if (i < (scenario == "divider-group" ? 18 : 20)) row["author_uuid"] = userId;
+            history.append(row);
+        }
+        QStringList anchors;
+        const auto unread = [&] {
+            int count = 0; for (const auto &row : history) count += !row.toObject().value("read").toBool(); return count;
+        };
+        const auto stream = [&] { return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Unread navigation"},
+            {"encryption", false}, {"unread_count", unread()}, {"active_unread_count", unread()},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
+        const auto topic = [&] { return QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "First unread"}, {"unread_count", unread()}, {"active_unread_count", unread()},
+            {"passive_unread_count", 0}, {"last_message_uuid", history.last().toObject().value("uuid")}}; };
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return {QJsonArray{stream()}};
+            if (path.endsWith("/streams/" + streamId)) return {stream()};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return {QJsonArray{topic()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return {topic()};
+            if (path.endsWith("/messages/")) {
+                if (!paged) return {history};
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("read") == "false") {
+                    for (const auto &value : history) if (!value.toObject().value("read").toBool()) return {QJsonArray{value}};
+                    return {QJsonArray{}};
+                }
+                const auto marker = query.queryItemValue("page_marker");
+                if (query.hasQueryItem("uuid")) return {QJsonArray{history[query.queryItemValue("uuid").right(12).toInt()]}};
+                const int anchor = marker.isEmpty() ? total : marker.right(12).toInt();
+                const bool newer = query.queryItemValue("sort_dir") == "asc";
+                QJsonArray page;
+                const int begin = newer ? anchor + 1 : qMax(0, anchor - 50);
+                const int end = newer ? qMin(total, anchor + 51) : anchor;
+                for (int i = begin; i < end; ++i) page.append(history[i]);
+                Response response{page};
+                if (newer ? end < total : begin > 0)
+                    response.headers["X-Pagination-Marker"] = uuid(newer ? end - 1 : begin).toUtf8();
+                return response;
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4); const auto boundary = id.right(12).toInt();
+                anchors.append(id);
+                for (int i = 0; i <= boundary; ++i) { auto row = history[i].toObject(); row["read"] = true; history[i] = row; }
+                return {history[boundary]};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Unread navigation window did not settle before teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        QQuickWindow other; other.resize(300, 200); other.show(); other.requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(&other));
+        session.login(server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId); QTRY_VERIFY(session.ready());
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(!controller.busy());
+        controller.setRealtimeMode(true); // Stop polling after the ordinary verified bootstrap.
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.messages().size() >= 50);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTRY_VERIFY(controller.messageHistoryReady());
+        if (list->property("openingApplied").isValid()) QTRY_VERIFY(list->property("openingApplied").toBool());
+        QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+        QTest::qWait(350); QVERIFY(anchors.isEmpty());
+        const auto messageCenter = [&](int i) {
+            auto *body = item(window->contentItem(), "message-" + uuid(i));
+            return body ? body->mapToItem(list, QPointF(0, body->height() / 2)).y() : -10000.;
+        };
+        if (scenario == "unread" || scenario.startsWith("outside-")) {
+            QTRY_VERIFY_WITH_TIMEOUT(qAbs(messageCenter(20) - list->height() / 2) < 45, 2000);
+            QVERIFY(messageCenter(total - 1) > list->height() || messageCenter(total - 1) < 0);
+            other.hide(); window->raise(); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+            QTRY_VERIFY(!anchors.isEmpty());
+            QVERIFY(anchors.first() != uuid(total - 1));
+            QTRY_COMPARE(controller.topics().first().toMap().value("unread").toInt(), unread());
+            QTRY_COMPARE(controller.streams().first().toMap().value("unread").toInt(), unread());
+            QVERIFY(unread() > 0);
+            if (scenario == "outside-tail") {
+                auto *button = visibleItem(window->contentItem(), "scrollToBottomButton"); QVERIFY(button);
+                click(window, button);
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(119) >= 0 && messageCenter(119) <= list->height(), 3000);
+                QTRY_COMPARE(unread(), 0);
+                QVERIFY(!controller.canLoadNewer());
+            }
+            const auto captures = qEnvironmentVariable("CASSI_NATIVE_UNREAD_SCREENSHOT_DIRECTORY");
+            if (!captures.isEmpty() && scenario == "unread") {
+                QDir().mkpath(captures);
+                QVERIFY(window->grabWindow().save(QDir(captures).filePath("unread-" + locale + '-' + mode + ".png")));
+            }
+        } else if (scenario.startsWith("return-") || scenario.startsWith("bulk-")) {
+            if (scenario == "return-outside") {
+                controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 100);
+                QTRY_VERIFY(!controller.busy());
+                controller.loadOlder(); QTRY_COMPARE(controller.messages().size(), 120);
+                QTRY_VERIFY(!list->property("positioning").toBool());
+            }
+            if (scenario != "return-tail") {
+                QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+                QTRY_VERIFY(messageCenter(0) >= 0 && messageCenter(0) <= list->height());
+            }
+            const qreal offset = messageCenter(0);
+            if (scenario.startsWith("bulk-")) {
+                auto payload = scenario == "bulk-stream" ? stream() : topic();
+                payload["kind"] = scenario == "bulk-stream" ? "stream.read" : "topic.read";
+                QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                    {"uuid", returnedId}, {"payload", payload}}));
+                QTRY_VERIFY(!list->property("positioning").toBool());
+                QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+                window->update();
+                QTRY_VERIFY(!frame.isEmpty() && engine.incubationController()->incubatingObjectCount() == 0);
+                QVERIFY(qAbs(messageCenter(0) - offset) < 2);
+            }
+            controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+            QTRY_VERIFY(!controller.busy());
+            if (scenario == "return-tail") {
+                auto next = history.last().toObject(); next["uuid"] = uuid(50); next["read"] = false;
+                next["created_at"] = "2026-01-02T10:00:50.000Z"; history.append(next);
+            }
+            controller.selectTopic(topicId); QTRY_VERIFY(controller.messages().size() >= 50);
+            if (list->property("openingApplied").isValid()) QTRY_VERIFY(list->property("openingApplied").toBool());
+            QTRY_VERIFY(!list->property("positioning").toBool());
+            QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+            if (scenario == "return-tail") {
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(50) >= 0 && messageCenter(50) <= list->height(), 2000);
+                QVERIFY(anchors.isEmpty());
+            } else if (scenario.startsWith("bulk-"))
+                QTRY_VERIFY_WITH_TIMEOUT(messageCenter(49) >= 0 && messageCenter(49) <= list->height(), 2000);
+            else QTRY_VERIFY_WITH_TIMEOUT(qAbs(messageCenter(0) - offset) < 2, 2000);
+        } else if (scenario == "all-read") {
+            QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+            QVERIFY(!visibleItem(window->contentItem(), "unreadDivider"));
+        } else if (scenario.startsWith("divider")) {
+            QTRY_VERIFY(visibleItem(window->contentItem(), "unreadDivider"));
+            auto *divider = visibleItem(window->contentItem(), "unreadDivider");
+            QCOMPARE(divider->property("text").toString(), locale == "ru" ? QString::fromUtf8("Непрочитанные сообщения • 30") : QString("Unread messages • 30"));
+            QVERIFY(divider->mapToItem(list, QPointF()).y() < messageCenter(scenario == "divider-group" ? 18 : 20));
+            if (scenario == "divider-stable") {
+                const auto originalY = divider->mapToItem(list, QPointF()).y();
+                QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                    {"uuid", returnedId}, {"payload", QJsonObject{{"kind", "messages.read"},
+                        {"project_id", projectId}, {"message_uuids", QJsonArray{uuid(20)}}}}}));
+                QTRY_VERIFY(!list->property("positioning").toBool());
+                QTRY_VERIFY(visibleItem(window->contentItem(), "unreadDivider"));
+                divider = visibleItem(window->contentItem(), "unreadDivider");
+                QVERIFY(qAbs(divider->mapToItem(list, QPointF()).y() - originalY) < 2);
+                QVERIFY(divider->property("text").toString().endsWith("29"));
+            } else if (scenario == "divider-passed") {
+                const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, -120000),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+                QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+                QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+                window->update(); QTRY_VERIFY(!frame.isEmpty());
+                QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, 20), Q_ARG(int, 0)));
+                QTRY_VERIFY(messageCenter(20) >= 0 && messageCenter(20) <= list->height());
+                QVERIFY(!visibleItem(window->contentItem(), "unreadDivider"));
+            }
+        } else {
+            // Give this action its own RED, independent of opening placement.
+            QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+            QTRY_VERIFY(visibleItem(window->contentItem(), "scrollToBottomButton"));
+            auto *button = visibleItem(window->contentItem(), "scrollToBottomButton");
+            QCOMPARE(button->size(), QSizeF(40, 40));
+            other.hide(); window->raise(); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+            click(window, button);
+            QTRY_VERIFY(messageCenter(49) >= 0 && messageCenter(49) <= list->height());
+            QTRY_COMPARE(unread(), 0);
+            QTRY_COMPARE(controller.topics().first().toMap().value("unread").toInt(), 0);
+            QTRY_VERIFY(!visibleItem(window->contentItem(), "scrollToBottomButton"));
+        }
+        QTRY_VERIFY(!engine.incubationController() || engine.incubationController()->incubatingObjectCount() == 0);
+        other.close();
+    }
+
     void onlyTheActiveVisibleViewportAdvancesTheReadBoundary()
     {
         QTemporaryDir preferencesDirectory;
@@ -11060,7 +11340,6 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
-        controller.setRealtimeMode(true);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -11072,8 +11351,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_VERIFY(session.ready());
-        controller.reloadSnapshot();
         QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(!controller.busy());
+        controller.setRealtimeMode(true);
         // Both stream and topic now load real history. Keep the other window
         // active before either selection, so this checks inactive loading.
         // Load the history while a separate real native window owns focus.
@@ -11087,6 +11367,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 1);
         controller.selectTopic(topicId);
         QTRY_COMPARE(controller.messages().size(), 40);
+        QTRY_VERIFY(controller.messageHistoryReady());
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
         // Model delivery precedes the initial measured tail placement. The
@@ -11289,7 +11570,18 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topic()};
             if (aggregate && path.endsWith("/stream_topics/" + secondTopicId)) return Response{topic(secondTopicId)};
             if (path.endsWith("/messages/") && request.method == "GET") {
-                const auto marker = QUrlQuery(request.target).queryItemValue("page_marker");
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("read") == "false") {
+                    // Opening now asks for the first unread before admitting
+                    // visible reads. This fixture starts with read history.
+                    for (const auto &entry : history)
+                        if (!entry.value("read").toBool()
+                            && (query.queryItemValue("topic_uuid").isEmpty()
+                                || entry.value("topic_uuid").toString() == query.queryItemValue("topic_uuid")))
+                            return Response{QJsonArray{entry}};
+                    return Response{QJsonArray{}};
+                }
+                const auto marker = query.queryItemValue("page_marker");
                 const auto boundary = marker.isEmpty() ? 1000 : marker.right(12).toInt();
                 QJsonArray page;
                 bool more = false;
@@ -11540,6 +11832,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
+                if (query.queryItemValue("read") == "false") return Response{QJsonArray{}};
                 const auto marker = query.queryItemValue("page_marker");
                 if (query.queryItemValue("topic_uuid") == topicId)
                     pageGets.append({marker, query.queryItemValue("sort_dir")});
@@ -11702,6 +11995,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
+                if (query.queryItemValue("read") == "false") return Response{QJsonArray{}};
                 const auto marker = query.queryItemValue("page_marker");
                 if (query.queryItemValue("topic_uuid") == topicId)
                     pageGets.append({marker, query.queryItemValue("sort_dir")});
@@ -14932,7 +15226,14 @@ mv -Tf "$root/.current-new" "$root/current"
         QQuickItem *pill = nullptr;
         for (int pass = 0; pass < 40 && !pill; ++pass) { QTest::qWait(50); pill = findItemUnder("replyTab-" + firstTab); }
         QVERIFY(pill);
-        click(window, pill);
+        // The close control owns the rightmost 32 px. With a short author,
+        // rounding the whole pill's centre lands on that hit-region boundary.
+        // Click the author region; the close control was exercised above.
+        QTest::qWait(50);
+        QVERIFY(pill->width() > 32);
+        QTest::mouseClick(window, Qt::LeftButton, {},
+            pill->mapToScene(QPointF((pill->width() - 32) / 2, pill->height() / 2)).toPoint());
+        QCOMPARE(controller.replyTabs().size(), 2);
         QTRY_COMPARE(controller.replyMessageId(), messageId);
         QVERIFY(controller.draft().isEmpty());
     }
@@ -15075,7 +15376,6 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
         MessageImages images(&api, &session, &files);
         NativeController controller(&api, &session); controller.useFiles(&files);
-        controller.setRealtimeMode(true);
         NativePreferences preferences(directory.filePath("media-isolation.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
         QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
@@ -15089,10 +15389,14 @@ mv -Tf "$root/.current-new" "$root/current"
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         session.login(fixture.server.origin(), "synthetic", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
-        QTRY_VERIFY(session.ready()); controller.reloadSnapshot();
+        QTRY_VERIFY(session.ready());
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        // Synthetic realtime has no synchronizer to release a reload barrier.
+        // Finish a verified bootstrap before suppressing background polling.
+        controller.setRealtimeMode(true);
         controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
         controller.selectTopic(topicId); QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_VERIFY(controller.messageHistoryReady());
         auto *content = window->contentItem();
         auto *composer = item(content, "messageComposer"); QVERIFY(composer);
         auto *list = item(content, "messageList"); QVERIFY(list);

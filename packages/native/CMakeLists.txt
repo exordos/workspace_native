@@ -344,7 +344,10 @@ if(BUILD_TESTING)
             # out with no case failed at the kill point (issue #331). 750s =
             # worst measured runtime plus suite-load headroom (#16/#103: never
             # tune a ceiling to single-digit margins of one host's runtime).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 750)
+            # Issue #1 adds 56 visible opening/position rows (~154s). The
+            # enlarged group reached 900s before completing the late profile
+            # cases. Retain every assertion and allow the complete group to run.
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1200)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
