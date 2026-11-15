@@ -455,6 +455,8 @@ if(BUILD_TESTING)
         uiEncryptedChatInfoGateKeepsOrdinaryInfo
         uiEncryptedChatKeyScreenInventoryAndDetails
         uiEncryptedChatKeyScreenDeleteConfirmation
+        uiEncryptedChatDeleteConfirmationLeavesNoDebugProbes
+        uiEncryptedChatKeyScreenRotationStageDiscard
         uiEncryptedChatKeyScreenSourceGeometry)
     # The explicit UI list measured 310s green and 548s when failing QTRY waits
     # added time on the GPU-less reference stand (llvmpipe, bare Xvnc 1440x900
