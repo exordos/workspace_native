@@ -5433,6 +5433,120 @@ private slots:
         uncommitted.value.bytes.fill('\\0');
     }
 
+    // Review finding 4575672241/4575672242 residual hole: a crash AFTER the
+    // durable dispatch-attempted marker but BEFORE the POST left the process
+    // leaves a dispatch-attempted stage whose stream answers 404 to every
+    // recovery GET forever. Retention-only can never remove it, so a bounded
+    // run of such crashes permanently exhausts the vault's 32-stage create
+    // budget. Recovery must be able to reclaim such stages from durable
+    // evidence: K consecutive definitive 404 answers observed across SEPARATE
+    // scan cycles plus a minimum stage age.
+    void encryptedChannelCreationDispatchAttemptedStagesWithConclusiveMissingEvidenceAreReclaimed()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        QSet<QString> attempts;
+        int recoveryGets = 0;
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, &attempts, &recoveryGets](const Request &request) -> Response {
+            const auto prefix = QStringLiteral("/api/workspace/v1/messenger/streams/");
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.startsWith(prefix) && path.size() > prefix.size()
+                && attempts.contains(path.mid(prefix.size()))) {
+                ++recoveryGets; // every recovery GET for these attempts answers a conclusive 404 forever
+                return {QJsonObject{}, 404};
+            }
+            return inner(request);
+        };
+        // Simulate the maximum run of crashes inside the mark-to-socket window:
+        // every victim is durably dispatch-attempted, and every stage has aged
+        // past any plausible delayed server-side commit of its POST.
+        for (int i = 0; i < int(NativeChatKeyVault::MaximumCreateStages); ++i) {
+            NativeChatKeyVault::CreateStage stage{QUuid::createUuid().toString(QUuid::WithoutBraces),
+                QUuid::createUuid().toString(QUuid::WithoutBraces), QByteArray(32, char('a' + i)),
+                1700000000000 + i};
+            QCOMPARE(keys.putCreateStage(keys.lease(), stage), NativeChatKeyVault::Failure::None);
+            QCOMPARE(keys.markCreateStageDispatchAttempted(keys.lease(), stage.attempt), NativeChatKeyVault::Failure::None);
+            attempts.insert(stage.attempt.toLower());
+            stage.clearSecrets();
+        }
+        // A fresh authenticated controller scans the durable stages; cycles
+        // separated by the recovery retry interval accumulate the absence
+        // evidence, then the conclusively-missing stages are retired.
+        auto &controller = test.fixture.controller;
+        controller.useChatKeys(&keys);
+        QVERIFY2(QTest::qWaitFor([&] { return keys.createStages(keys.lease()).values.isEmpty(); }, 30000),
+            "dispatch-attempted stages conclusively missing forever were never reclaimed; the create-stage budget stays exhausted");
+        // Reclaim was evidence-based across separate scan cycles, never a
+        // single-shot delete: every stage needed at least two 404 observations.
+        QVERIFY(recoveryGets >= 2 * int(NativeChatKeyVault::MaximumCreateStages));
+        // The reclaimed budget proves the starvation is gone: an encrypted
+        // create can stage its key and complete again.
+        QSignalSpy complete(&controller, &NativeController::channelCreated);
+        controller.createChannel("After evidence reclaim", "", false, false, {}, true);
+        QVERIFY2(QTest::qWaitFor([&] { return controller.channelCreationPhase() == "ready"; }, 8000),
+            qPrintable(controller.channelCreationPhase() + ": " + controller.channelCreationError()));
+        QCOMPARE(test.posts, 1);
+        QCOMPARE(complete.size(), 1);
+        QVERIFY(keys.createStages(keys.lease()).values.isEmpty());
+    }
+
+    // Review finding 4575117269: a vault/server failure that lasts longer
+    // than the bounded fast rescan window must not make recovery for the
+    // lease go permanently silent until the next restart. After the fast
+    // window is exhausted recovery stays armed with a bounded backoff re-arm
+    // so a later-recovered server still commits pending stages in-session.
+    void encryptedChannelCreationRecoveryReArmsAfterFastRetryWindowEnds()
+    {
+        ControllerMemorySecrets secrets; QTemporaryDir vaultDir; QVERIFY(vaultDir.isValid());
+        NativeChatKeyVault keys(vaultDir.filePath("vault"), &secrets);
+        bool opened = false;
+        keys.open(QUrl("https://channel-creation.invalid"), projectId, userId, "synthetic device",
+            [&](NativeChatKeyVault::Failure value) { opened = value == NativeChatKeyVault::Failure::None; });
+        QVERIFY(QTest::qWaitFor([&opened] { return opened; }, 2000));
+        auto release = std::make_shared<std::function<void()>>();
+        EncryptedChannelCreationFixture test; QVERIFY(test.fixture.start());
+        test.fixture.server.handler = [inner = test.fixture.server.handler, release](const Request &request) -> Response {
+            auto response = inner(request);
+            if (request.method == "POST" && request.target.path() == "/api/workspace/v1/messenger/streams/")
+                response.defer = [release](std::function<void()> send) { *release = std::move(send); };
+            return response;
+        };
+        auto *first = new NativeController(&test.fixture.api, &test.fixture.session);
+        QPointer<NativeController> firstGuard(first), restartGuard;
+        const auto cleanup = qScopeGuard([&] { delete firstGuard.data(); delete restartGuard.data(); });
+        first->useChatKeys(&keys);
+        first->refresh(); QTRY_COMPARE(first->streams().size(), 1);
+        first->createChannel("Outage past the window", "", false, false, {}, true);
+        QTRY_COMPARE(test.posts, 1);
+        delete first;
+        if (*release) (*release)(); *release = {};
+        test.getStatus = 500; // the outage outlives the whole fast retry window
+        auto *restarted = new NativeController(&test.fixture.api, &test.fixture.session);
+        restartGuard = restarted;
+        restarted->useChatKeys(&keys);
+        // Initial scan plus the 5 bounded fast retries: after this the fast
+        // window is exhausted while the failure is still in effect.
+        QVERIFY2(QTest::qWaitFor([&] { return test.gets >= 6; }, 20000),
+            "the bounded fast rescan window did not run its course");
+        test.getStatus = 200; // the outage ends only after the window expired
+        const auto streamUuid = test.created.value("uuid").toString();
+        const auto keyUuid = test.streamBodies.first().value("current_encryption_key_uuid").toString();
+        QVERIFY2(QTest::qWaitFor([&] {
+            auto stored = keys.read(keys.lease(), {streamUuid, keyUuid});
+            const bool ok = stored.failure == NativeChatKeyVault::Failure::None && stored.value.bytes.size() == 32;
+            stored.value.bytes.fill('\\0');
+            return ok;
+        }, 20000), "recovery stayed permanently silent after the fast retry window expired");
+        const auto attempt = test.streamBodies.first().value("uuid").toString();
+        QCOMPARE(keys.readCreateStage(keys.lease(), attempt).failure, NativeChatKeyVault::Failure::MissingKey);
+        delete restarted; restartGuard = nullptr;
+    }
+
     void channelMemberRecoveryPreservesTheConfirmedStreamAndFrozenSet_data()
     {
         QTest::addColumn<QString>("outcome");
