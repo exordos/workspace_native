@@ -730,6 +730,9 @@ signals:
 
 private:
     void applyDeepLink(const QString &url);
+    void applyStreamRoute(const QString &org, const QString &project,
+                          const QString &stream, const std::optional<QString> &topic);
+    void resolveDeepLinkTopic();
     void flushPendingDeepLink(bool settle = true);
     // Mention suggestion sources for mentionSuggestions()/send serialization.
     QVariantList mentionCandidates() const;
@@ -1658,6 +1661,11 @@ private:
     QString m_topic;
     QString m_anchorMessage;
     QString m_pendingDeepLink;
+    struct DeepLinkTopic {
+        QString stream, name, owner;
+        quint64 selection = 0, generation = 0;
+    } m_deepLinkTopic;
+    quint64 m_deepLinkSerial = 0;
     bool m_deepLinkFlushScheduled = false;
     QString m_pendingAnchorMessage;
     std::optional<Message> m_pendingAnchorParsed;

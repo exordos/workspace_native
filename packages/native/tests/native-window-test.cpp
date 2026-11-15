@@ -9943,6 +9943,68 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed=closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void externalStreamTopicLinkShowsDestinationConversation_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"})
+            for (const auto *mode : {"light", "dark"})
+                QTest::newRow(qPrintable(QString(locale) + '-' + mode)) << QString(locale) << QString(mode);
+    }
+
+    void externalStreamTopicLinkShowsDestinationConversation()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        MockServer server;
+        const QString destination = QString::fromUtf8("План #1? + 50%");
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return {QJsonArray{windowChannel(streamId, "Product team")}};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Initial conversation"),
+                                   windowChannelTopic(secondTopicId, streamId, destination)}};
+            if (path.endsWith("/messages/")) {
+                const bool target = QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId;
+                auto row = message(target ? "External link destination body" : "Initial conversation body");
+                row["uuid"] = target ? returnedId : messageId;
+                row["topic_uuid"] = target ? secondTopicId : topicId;
+                return {QJsonArray{row}};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto cleanup = qScopeGuard([guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeObservedTestWindow(guard.data()))
+                QTest::qFail("Window did not release focus before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 2);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(item(window->contentItem(), "message-" + messageId));
+        const QString route = "ew://open/org/127.0.0.1-" + QString::number(server.origin().port())
+            + "/project/" + projectId + "/stream/" + streamId;
+        controller.openMessageLink(route + "/topic/" + QString::fromUtf8(QUrl::toPercentEncoding(destination)));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), secondTopicId, 2500);
+        QTRY_VERIFY(item(window->contentItem(), "message-" + returnedId));
+        QTRY_VERIFY(item(window->contentItem(), "message-" + returnedId)->isVisible());
+        QVERIFY(!item(window->contentItem(), "message-" + messageId));
+        QVERIFY(!controller.inboxVisible());
+        controller.openMessageLink(route);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.selectedTopic().isEmpty(), 2500);
+        QTRY_VERIFY(item(window->contentItem(), "message-" + messageId));
+        const bool closed = closeObservedTestWindow(window); cleanup.dismiss(); QVERIFY(closed);
+    }
+
     void visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker_data()
     {
         QTest::addColumn<QString>("scenario");

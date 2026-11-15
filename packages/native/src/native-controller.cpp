@@ -6103,6 +6103,7 @@ NativeController::MentionCollection &NativeController::mentionCollection(const Q
 
 void NativeController::closeOtherContentPages(ContentPage keep)
 {
+    m_deepLinkTopic = {}; // A page visit retires a pending named-topic navigation.
     if (keep != ContentPage::Drafts)
         closeDrafts();
     if (keep != ContentPage::Mentions)
@@ -11581,6 +11582,8 @@ void NativeController::loadTopics()
             if (!target.isEmpty()) selectTopic(target);
             else emit stateChanged();
         }
+        if (authoritative) resolveDeepLinkTopic();
+        if (!guard) return true;
         notifyTrustChanged();
         return true;
     }, m_topicSeedUnverified, [this, selection, topicRequest] {
@@ -12400,10 +12403,14 @@ bool NativeController::copyMessageImage(const QString &id)
 
 void NativeController::openMessageLink(const QString &url)
 {
+    if (!workspace::parseExternalDeepLink(url)) return;
+    ++m_deepLinkSerial;
+    m_deepLinkTopic = {};
     if (!authenticated() || busy()) {
         m_pendingDeepLink = url;
         return;
     }
+    m_pendingDeepLink.clear();
     applyDeepLink(url);
 }
 
@@ -12411,6 +12418,16 @@ void NativeController::applyDeepLink(const QString &url)
 {
     const auto route = workspace::parseExternalDeepLink(url);
     if (!route.has_value()) return;
+    ++m_deepLinkSerial;
+    m_deepLinkTopic = {};
+    static const QRegularExpression streamRoutePattern(
+        "^/org/([^/?#]+)/project/([^/?#]+)/stream/([^/?#]+)(?:/topic/([^/?#]+))?/?(?:[?#].*)?$");
+    if (const auto match = streamRoutePattern.match(*route); match.hasMatch()) {
+        applyStreamRoute(match.captured(1), match.captured(2), match.captured(3),
+            match.capturedStart(4) < 0 ? std::optional<QString>{}
+                : std::optional<QString>{QUrl::fromPercentEncoding(match.captured(4).toUtf8())});
+        return;
+    }
     // The reference navigates its inbox page for /inbox (inbox-page.ui.tsx
     // route, docs/NATIVE_DESKTOP_INBOX.md); the org/project guard matches
     // the one applyMessageRoute applies to message anchors.
@@ -12427,22 +12444,83 @@ void NativeController::applyDeepLink(const QString &url)
     applyMessageRoute(message->org, message->project, message->message);
 }
 
+void NativeController::applyStreamRoute(const QString &org, const QString &project,
+                                        const QString &stream, const std::optional<QString> &topic)
+{
+    const auto id = stream.toLower();
+    if (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
+        || project.compare(m_session->project(), Qt::CaseInsensitive) != 0
+        || std::none_of(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &row) { return row.uuid == id; })) {
+        clearAnchor(deepLinkUnavailableNotice());
+        return;
+    }
+    const QPointer<NativeController> guard(this);
+    const auto serial = m_deepLinkSerial, selection = m_selection, generation = m_api->generation();
+    const auto owner = creationOwnerKey();
+    clearAnchor();
+    if (!guard || serial != m_deepLinkSerial || selection != m_selection
+        || generation != m_api->generation() || owner != creationOwnerKey()) return;
+    closeInbox();
+    if (!guard || serial != m_deepLinkSerial || selection != m_selection
+        || generation != m_api->generation() || owner != creationOwnerKey()) return;
+    selectStream(id);
+    if (!guard || serial != m_deepLinkSerial || m_selection != selection + 1 || m_stream != id
+        || generation != m_api->generation() || owner != creationOwnerKey() || !topic) return;
+    m_deepLinkTopic = {id, *topic, owner, m_selection, generation};
+    resolveDeepLinkTopic(); // A fresh owned cache may have published synchronously.
+}
+
+void NativeController::resolveDeepLinkTopic()
+{
+    if (m_deepLinkTopic.stream.isEmpty()) return;
+    const auto intent = m_deepLinkTopic;
+    if (!authenticated() || intent.owner != creationOwnerKey() || intent.generation != m_api->generation()
+        || intent.selection != m_selection || intent.stream != m_stream
+        || m_inboxVisible || m_mentionsVisible || m_draftsVisible) {
+        m_deepLinkTopic = {};
+        return;
+    }
+    if (!m_topicsVerified) return;
+    m_deepLinkTopic = {}; // Retire before selection emits outward signals.
+    QString target;
+    for (const auto &row : std::as_const(m_topics))
+        if (row.uuid.compare(intent.name, Qt::CaseInsensitive) == 0) { target = row.uuid; break; }
+    if (target.isEmpty()) {
+        QString name = intent.name.trimmed();
+        const auto lower = name.toLower();
+        const bool defaultTopic = name.isEmpty() || name == QLatin1String("__empty__")
+            || lower == QLatin1String("general chat") || lower == QString::fromUtf8("общий чат")
+            || lower == QLatin1String("(no topic)");
+        if (name == QLatin1String("~__empty__")) name = QStringLiteral("__empty__");
+        for (const auto &row : std::as_const(m_topics)) {
+            if (defaultTopic ? !row.isDefault : row.name.trimmed() != name) continue;
+            if (!target.isEmpty()) { target.clear(); break; } // Never guess between duplicate names.
+            target = row.uuid;
+        }
+    }
+    if (target.isEmpty()) clearAnchor(deepLinkUnavailableNotice());
+    else selectTopic(target);
+}
+
 void NativeController::flushPendingDeepLink(bool settle)
 {
     // Wait until the session and the default conversation restore have
     // settled; otherwise a selection storm would trample the anchor.
     if (m_pendingDeepLink.isEmpty() || !authenticated() || busy()
         || m_session->project().isEmpty() || streams().isEmpty() || m_stream.isEmpty()
-        || m_topic.isEmpty() || !m_conversationRestore.isEmpty())
+        || !m_conversationRestore.isEmpty())
         return;
-    if (settle && !m_deepLinkFlushScheduled) {
-        // Settle first: cold-start arguments arrive long before the resume
-        // flow finishes its own navigation bursts.
-        m_deepLinkFlushScheduled = true;
-        QTimer::singleShot(750, this, [this] {
-            m_deepLinkFlushScheduled = false;
-            flushPendingDeepLink(false);
-        });
+    if (settle) {
+        // All startup publications wait for the same settling timer; a second
+        // stateChanged must not apply the link while default restore still runs.
+        if (!m_deepLinkFlushScheduled) {
+            m_deepLinkFlushScheduled = true;
+            QTimer::singleShot(750, this, [this] {
+                m_deepLinkFlushScheduled = false;
+                flushPendingDeepLink(false);
+            });
+        }
         return;
     }
     const auto url = m_pendingDeepLink;
