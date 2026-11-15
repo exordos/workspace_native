@@ -13518,6 +13518,24 @@ void NativeController::markVisibleMessagesRead(const QVariantList &ids)
 
 void NativeController::markMessagesReadUpTo(const QString &id)
 {
+    enqueueReadBoundary(id, false);
+}
+
+void NativeController::markTopicReadAtBottom()
+{
+    if (m_topic.isEmpty() || !m_topicsVerified || !m_after.isEmpty() || m_readPending)
+        return;
+    const auto topic = std::find_if(m_topics.cbegin(), m_topics.cend(), [this](const Topic &row) {
+        return row.uuid == m_topic && row.stream == m_stream;
+    });
+    if (topic == m_topics.cend() || topic->unread <= 0 || topic->lastMessage.isEmpty()
+        || m_confirmedReadIds.contains(topic->lastMessage))
+        return;
+    enqueueReadBoundary(topic->lastMessage, true);
+}
+
+void NativeController::enqueueReadBoundary(const QString &id, bool allowReadAnchor)
+{
     if (!authoritativeRoute() || m_loading || m_snapshotActive || m_failedReadAnchors.contains(id))
         return;
     const auto *anchor = findMessage(id);
@@ -13526,7 +13544,7 @@ void NativeController::markMessagesReadUpTo(const QString &id)
     const auto unread = std::any_of(m_messages.cbegin(), m_messages.cend(), [anchor](const Message &message) {
         return !message.read && message.stream == anchor->stream && message.topic == anchor->topic && throughBoundary(message, *anchor);
     });
-    if (!unread)
+    if (!unread && !allowReadAnchor)
         return;
     if (m_readPending) {
         if (anchor->topic == m_readBoundary->topic && throughBoundary(*anchor, *m_readBoundary)) return;

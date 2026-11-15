@@ -4229,6 +4229,8 @@ ApplicationWindow {
                     }
                     if (ids.length)
                         root.controller.markVisibleMessagesRead(ids);
+                    if (atYEnd && !anchorJumpPending && !root.controller.canLoadNewer)
+                        root.controller.markTopicReadAtBottom();
                 }
                 function avatarPlacement(row, index) {
                     // One rail avatar follows the visible end of a peer group.

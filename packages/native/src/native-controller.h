@@ -607,6 +607,7 @@ public:
     QVariantList replyTabs() const;
     Q_INVOKABLE void markMessagesReadUpTo(const QString &id);
     Q_INVOKABLE void markVisibleMessagesRead(const QVariantList &ids);
+    Q_INVOKABLE void markTopicReadAtBottom();
     Q_INVOKABLE void toggleReaction(const QString &id, const QString &emoji);
     // ---- Issue #214 polls foundation (docs/NATIVE_DESKTOP_POLLS_FOUNDATION.md) ----
     // REST action surface of the poll contract; #215/#216 render them. Failures
@@ -1199,6 +1200,7 @@ private:
     void finishUpload(const UploadTask &task, quint64 generation, quint64 epoch,
                       const FileResult &result);
     void resetReadState();
+    void enqueueReadBoundary(const QString &id, bool allowReadAnchor);
     void sendReadRequest(bool confirmation);
     void finishReadRequest(bool success);
     void refreshReadCounters(const Message &boundary);
