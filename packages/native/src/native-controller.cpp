@@ -9355,8 +9355,12 @@ void NativeController::loadFolders()
     };
     // One page like the reference default page size; folder lists beyond the
     // limit are a tracked follow-up (the rail is small by design).
+    // Bypasses request() on purpose: the folder rail is not one of the
+    // snapshot request families the connection banner tracks
+    // (layout-connection-banner.lib.ts via observeTransport), so a folder
+    // response must never flip transport health in either direction.
     QUrlQuery query; query.addQueryItem("page_limit", "200");
-    request("GET", messenger + QStringLiteral("/folders/"), {}, query,
+    m_api->request("GET", messenger + QStringLiteral("/folders/"), {}, query,
         [this, guard, synthesize](const ApiResult &result) {
         if (!guard()) return;
         if (!result.ok() || !result.data.isArray())
