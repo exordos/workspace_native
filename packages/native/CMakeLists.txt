@@ -321,8 +321,12 @@ if(BUILD_TESTING)
             # then held until the encrypted-create and power-state cases (#234, #78) pushed
             # the solo runtime past it: tip e7ced18 printed 1136 PASS lines and was killed at
             # 780.01s with zero failures, reproducible solo and under -j8 (issue #296).
-            # 900s = worst measured runtime plus the usual headroom (#16/#103).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 900)
+            # The token-renewal deferred-response cases (#293, #294) plus the platform-store
+            # function set pushed the solo runtime past 900s as well: head 507f067 was killed
+            # at 900.01s with zero failures, and the same run passed 100% in 923.39s once the
+            # ceiling was lifted (issue #339).
+            # 1050s = worst measured runtime plus the usual headroom (#16/#103).
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1050)
         elseif(test STREQUAL "native-cache")
             # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
             # across solo runs, and the suite-context run was killed at the old 90s
