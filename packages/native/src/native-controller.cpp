@@ -11378,6 +11378,16 @@ bool NativeController::clipboardImageBytes(const QByteArray &bytes)
     return true;
 }
 
+// Fix round R1 (cid=4577117364, cid=4577117373): bounded streaming read for
+// both copy paths. Reading at most ClipboardImageBytesLimit + 1 bytes keeps
+// the cap check decidable ("the extra byte means over the cap") while an
+// oversized staged file is never materialised whole; clipboardImageBytes
+// rejects such a buffer and the clipboard stays untouched.
+QByteArray NativeController::readClipboardBounded(QIODevice &source)
+{
+    return source.read(ClipboardImageBytesLimit + 1);
+}
+
 // Context-menu Copy for image messages (workspace-message-bubble-menu.ui.tsx:335-349):
 // resolve the message's image file, fetch the bytes through the authenticated
 // file pipeline like onLoadWorkspaceFilePreview does, then hand them to the
@@ -11410,15 +11420,23 @@ bool NativeController::copyMessageImage(const QString &id)
     if (!staging->isValid())
         return false;
     const QPointer<NativeController> self(this);
+    // Fix round R1 (cid=4577117378): bind the pending operation to the session
+    // that dispatched it (same owner-identity fence the realtime and refresh
+    // callbacks use, e.g. the conversation-restore guard). A completion that
+    // lands after sign-out or an account switch belongs to a retired
+    // identity and is discarded before it can touch the clipboard.
+    const auto sessionOwner = creationOwnerKey();
     const auto destination = staging->filePath(QStringLiteral("clipboard-image"));
-    m_files->download(uuid, destination, [self, staging](const FileResult &result) {
+    m_files->download(uuid, destination, [self, staging, sessionOwner](const FileResult &result) {
         if (!self)
+            return;
+        if (!self->authenticated() || self->creationOwnerKey() != sessionOwner)
             return;
         QByteArray bytes;
         if (result.ok()) {
             QFile file(result.path);
             if (file.open(QIODevice::ReadOnly))
-                bytes = file.readAll();
+                bytes = readClipboardBounded(file);
         }
         // Silent by contract: a failed fetch or decode leaves the clipboard as it is.
         self->clipboardImageBytes(bytes);

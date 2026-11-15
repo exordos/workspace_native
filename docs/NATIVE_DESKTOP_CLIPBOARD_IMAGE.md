@@ -54,10 +54,15 @@ Measured at `workspace_ui` sha `61dacef78dab2f5d0be76f283bebf49fe29b84af`:
   pipeline (the counterpart of `onLoadWorkspaceFilePreview`), and hand them to
   `clipboardImageBytes` when the download completes. Like the reference the
   caller ignores the result; failures leave the clipboard unchanged and raise
-  no toast.
+  no toast. The staged file is read back through the bounded helper
+  `readClipboardBounded` (at most the cap plus one byte), and the completion
+  is bound to the owner identity of the session that dispatched it: after
+  sign-out or an account switch the completion is discarded and the clipboard
+  is left untouched.
 - `MediaViewerModel::copyCurrentImage()` is the viewer toolbar action: for the
   current image slot it feeds the staged full-size bytes to
-  `clipboardImageBytes`. This is the deliberate deviation below.
+  `clipboardImageBytes`, read back through the same bounded helper so a
+  staged file over the cap is rejected without being loaded whole.
 - QML: a `copyMessageImageAction` `MessageMenuAction` is inserted before
   `copyMessageLinkAction`, visible when the menu message is readable and its
   body resolves to an image reference first (`mediaPreviewReference(...).kind

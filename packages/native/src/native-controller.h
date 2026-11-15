@@ -18,6 +18,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QLocale>
+#include <QIODevice>
 #include <QSet>
 #include <QStringList>
 #include <QQueue>
@@ -515,6 +516,12 @@ public:
     // Electron clipboard:writeImage handler (main.ts:1054-1067, cap main.ts:50).
     static constexpr qint64 ClipboardImageBytesLimit = 64 * 1024 * 1024;
     static bool clipboardImageBytes(const QByteArray &bytes);
+    // Fix round R1 (cid=4577117364, cid=4577117373): both copy paths stage the
+    // payload to a file first, so the write path reads it back through this
+    // bounded helper - at most ClipboardImageBytesLimit + 1 bytes - and an
+    // oversized file is rejected by clipboardImageBytes without ever being
+    // materialised whole in memory.
+    static QByteArray readClipboardBounded(QIODevice &source);
     Q_INVOKABLE bool copyMessageImage(const QString &id);
     Q_INVOKABLE void openMessageLink(const QString &url);
     Q_INVOKABLE void starMessage(const QString &id);
