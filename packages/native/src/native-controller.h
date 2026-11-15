@@ -29,6 +29,7 @@ class MediaViewerModel;
 class NativePreferences;
 class NativeAuthGuard;
 class RealtimeClient;
+class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
 struct FileResult;
@@ -188,6 +189,13 @@ public:
     ~NativeController() override;
     void setRealtimeMode(bool enabled) { m_realtimeMode = enabled; if (enabled) m_poll.stop(); }
     void useRealtime(RealtimeClient *client);
+    // Power state (issue #78, docs/NATIVE_DESKTOP_POWER_STATE.md): resume
+    // reconnects the realtime link immediately and a battery source widens
+    // the presence heartbeat cadence.
+    void setPowerWatcher(PowerWatcher *watcher);
+    void setOnBattery(bool onBattery);
+    bool isOnBattery() const { return m_onBattery; }
+    int presenceHeartbeatIntervalMs() const;
     void useFiles(FileClient *client);
     void useCache(NativeCacheService *cache);
     void useDrafts(NativeDrafts *drafts);
@@ -1111,6 +1119,13 @@ private:
     int m_activeUploads = 0;
     bool m_drainingUploads = false;
     QTimer m_poll;
+    // Presence heartbeat timer (issue #78): the reference cadence lives in
+    // user-workspace-presence-reporter.lib.ts, mirrored below.
+    void reportPresenceHeartbeat();
+    QTimer m_presenceHeartbeat;
+    QPointer<RealtimeClient> m_realtime;
+    QPointer<PowerWatcher> m_powerWatcher;
+    bool m_onBattery = false;
     QVector<Stream> m_streams;
     // Issue #132 channel info drawer state for the selected stream. The
     // binding rows belong to m_channelInfoStreamId; a projection read with a

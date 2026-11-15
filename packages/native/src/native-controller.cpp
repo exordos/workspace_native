@@ -10,6 +10,7 @@
 #include "native-chat-crypto.h"
 #include <openssl/crypto.h>
 #include "realtime-client.h"
+#include "power-watcher.h"
 #include "file-client.h"
 
 #include <QClipboard>
@@ -2611,6 +2612,55 @@ void NativeController::saveOwnStatus(const QString &text, const QString &emoji, 
     if (!guard) return;
     if (current() && m_ownStatusPending) m_ownStatusRequest = handle;
     else m_api->cancelRequest(handle);
+}
+
+namespace {
+// Reference cadence (user-workspace-presence-reporter.lib.ts:20-25). The
+// hidden tier (300000 * factor) needs a window-hidden signal the native
+// shell does not project yet; docs/NATIVE_DESKTOP_POWER_STATE.md.
+constexpr int PresenceActiveMs = 30000;             // WORKSPACE_PRESENCE_REPORT_INTERVAL_MS
+constexpr int PresenceUnfocusedMs = 120000;         // WORKSPACE_PRESENCE_UNFOCUSED_INTERVAL_MS
+constexpr int PresenceUnfocusedBatteryMs = 160000;  // ..._UNFOCUSED_BATTERY_...
+constexpr int PresenceBatteryMultiplier = 2;        // WORKSPACE_PRESENCE_BATTERY_MULTIPLIER
+} // namespace
+
+int NativeController::presenceHeartbeatIntervalMs() const
+{
+    const auto factor = m_onBattery ? PresenceBatteryMultiplier : 1;
+    if (m_windowFocused) return PresenceActiveMs * factor;
+    return m_onBattery ? PresenceUnfocusedBatteryMs : PresenceUnfocusedMs;
+}
+
+void NativeController::setOnBattery(bool onBattery)
+{
+    if (m_onBattery == onBattery) return;
+    m_onBattery = onBattery;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+}
+
+void NativeController::setPowerWatcher(PowerWatcher *watcher)
+{
+    m_powerWatcher = watcher;
+    if (!watcher) return;
+    // The reference layout hook reconnects every manager with no delay on
+    // resume; suspend is informational here because the OS freezes the whole
+    // process anyway.
+    connect(watcher, &PowerWatcher::resumed, this, [this] {
+        if (m_realtime) m_realtime->reconnectNow("power_resume");
+    });
+    connect(watcher, &PowerWatcher::batteryChanged, this, &NativeController::setOnBattery);
+}
+
+void NativeController::reportPresenceHeartbeat()
+{
+    if (!authenticated()) return;
+    const auto user = m_session->user();
+    if (!isUuid(user)) return;
+    // A beat may only claim what the manual status allows: a user who set
+    // away/DND must never be typed back to active by the heartbeat.
+    if (ownStatus().value("away").toBool()) return;
+    request("POST", "/api/workspace/v1/users/" + user + "/actions/presence/invoke",
+        QJsonObject{{"status", "active"}}, {}, [](const ApiResult &) {});
 }
 
 QString NativeController::viewerDisplayName() const
@@ -6471,6 +6521,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_topicChanging = false;
         ++m_topicMutation;
         m_recoveringMarker = m_resumeOlder = false;
+        m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+        m_presenceHeartbeat.start();
         if (!m_realtimeMode) {
             refresh();
             m_poll.start();
@@ -6488,6 +6540,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (QGuiApplication::applicationState() == Qt::ApplicationActive)
             loadMessages();
     });
+    // Presence heartbeat (issue #78): first beat after one full interval, so
+    // logging in never adds a request to the bootstrap round itself.
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+    connect(&m_presenceHeartbeat, &QTimer::timeout, this, [this] { reportPresenceHeartbeat(); });
 }
 
 NativeController::~NativeController()
@@ -6703,6 +6759,7 @@ void NativeController::downloadFile(const QString &id, const QUrl &destination)
 void NativeController::useRealtime(RealtimeClient *client)
 {
     Q_ASSERT(client && !m_realtimeMode);
+    m_realtime = client;
     setRealtimeMode(true);
     connect(client, &RealtimeClient::snapshotRequired, this, &NativeController::reloadSnapshot);
     connect(this, &NativeController::snapshotReloaded, client, &RealtimeClient::acknowledgeSnapshot);
@@ -7393,6 +7450,7 @@ void NativeController::reset()
     ++m_catalog;
     ++m_topicRequest;
     m_poll.stop();
+    m_presenceHeartbeat.stop();
     m_streams.clear();
     m_archiveOperations.clear();
     m_topics.clear();
@@ -9215,6 +9273,7 @@ void NativeController::offerNotificationCandidate(const Message &message)
 void NativeController::setWindowFocused(bool focused)
 {
     m_windowFocused = focused;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
     m_notifications.setWindowFocused(focused);
 }
 
