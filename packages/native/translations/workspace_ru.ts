@@ -1461,6 +1461,18 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>All chats</source>
+            <translation>Все</translation>
+        </message>
+        <message>
+            <source>Personal</source>
+            <translation>Личные</translation>
+        </message>
+        <message>
+            <source>Channels</source>
+            <translation>Каналы</translation>
+        </message>
+        <message>
             <source>Call could not be started.</source>
             <translation>Не удалось начать звонок.</translation>
         </message>

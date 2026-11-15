@@ -35,6 +35,11 @@
 namespace workspace {
 
 static const QString messenger = "/api/workspace/v1/messenger";
+// Issue #83: reference fixed system folder UUIDs
+// (workspace_ui 61dacef7 entities/messenger/messenger-folder-system-type.lib.ts).
+static const QString allChatsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000000");
+static const QString personalFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000001");
+static const QString channelsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000002");
 
 namespace {
 void wipeChatBytes(QByteArray &value)
@@ -6797,6 +6802,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // Issue #83: the folder-scoped sidebar projection follows the catalog too;
+    // one notification path keeps QML bindings single-sourced.
+    connect(this, &NativeController::streamsChanged, this,
+        [this] { emit sidebarStreamsChanged(); });
     // #162: the call window shell follows the single-active-call store. An
     // active call opens the shell; closing the shell (close button or
     // readyToClose) ends the stored call exactly like the reference onClose.
@@ -7996,6 +8005,9 @@ void NativeController::reset()
     m_poll.stop();
     m_presenceHeartbeat.stop();
     m_streams.clear();
+    // Issue #83: the rail is per-owner state too; the next bootstrap re-reads it.
+    m_folders.clear();
+    m_selectedFolder.clear();
     m_archiveOperations.clear();
     m_topics.clear();
     m_messages.clear();
@@ -9287,6 +9299,215 @@ QVariantList NativeController::streams() const
     return result;
 }
 
+// Issue #83 (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md): the reference normalizes
+// system type from the fixed UUIDs first; a reported "all" on any other UUID
+// is dropped, and a missing type on the legacy first slot means "all".
+static QString folderRailSystemType(const QString &uuid, const QString &reported, int index)
+{
+    if (uuid == allChatsFolderUuid) return QStringLiteral("all");
+    if (uuid == personalFolderUuid) return QStringLiteral("personal");
+    if (uuid == channelsFolderUuid) return QStringLiteral("channels");
+    if (reported == QStringLiteral("personal") || reported == QStringLiteral("channels")
+        || reported == QStringLiteral("created"))
+        return reported;
+    return index == 0 && reported.isEmpty() ? QStringLiteral("all") : QStringLiteral("created");
+}
+
+static QString folderRailKey(const QString &systemType, const QString &uuid)
+{
+    if (systemType == QStringLiteral("all")) return QStringLiteral("all");
+    if (systemType == QStringLiteral("personal")) return QStringLiteral("personal");
+    if (systemType == QStringLiteral("channels")) return QStringLiteral("channels");
+    return uuid;
+}
+
+void NativeController::loadFolders()
+{
+    if (!authenticated())
+        return;
+    const auto catalog = m_catalog;
+    const auto guard = [this, catalog] { return catalog == m_catalog && authenticated(); };
+    const auto synthesize = [this] {
+        // Reference fixed system slots; used when the server has no row for a
+        // system folder. Synthesized slots never scope the sidebar.
+        struct Slot { QString uuid; QString type; QString title; };
+        const QVector<Slot> railSlots = {
+            { allChatsFolderUuid, QStringLiteral("all"), tr("All chats") },
+            { personalFolderUuid, QStringLiteral("personal"), tr("Personal") },
+            { channelsFolderUuid, QStringLiteral("channels"), tr("Channels") },
+        };
+        for (const auto &slot : railSlots)
+        {
+            if (std::any_of(m_folders.cbegin(), m_folders.cend(),
+                    [&](const FolderRow &row) { return row.systemType == slot.type; }))
+                continue;
+            FolderRow row;
+            row.uuid = slot.uuid;
+            row.systemType = slot.type;
+            row.title = slot.title;
+            row.synthesized = true;
+            m_folders.append(row);
+        }
+        // Keep All pinned first even in the synthesized-only case.
+        std::stable_sort(m_folders.begin(), m_folders.end(), [](const FolderRow &a, const FolderRow &b) {
+            return a.systemType == QStringLiteral("all") && b.systemType != QStringLiteral("all");
+        });
+    };
+    // One page like the reference default page size; folder lists beyond the
+    // limit are a tracked follow-up (the rail is small by design).
+    QUrlQuery query; query.addQueryItem("page_limit", "200");
+    request("GET", messenger + QStringLiteral("/folders/"), {}, query,
+        [this, guard, synthesize](const ApiResult &result) {
+        if (!guard()) return;
+        if (!result.ok() || !result.data.isArray())
+        {
+            // A failed folder read keeps whatever is shown; only the very
+            // first load falls back to the synthesized trio so the rail never
+            // renders empty. Staying quiet mirrors the reference, which keeps
+            // the rail on its last known folders instead of an error toast.
+            if (m_folders.isEmpty())
+            {
+                m_folders.clear();
+                synthesize();
+                for (auto &row : m_folders) row.key = folderRailKey(row.systemType, row.uuid);
+                emit foldersChanged();
+                emit sidebarStreamsChanged();
+            }
+            return;
+        }
+        QVector<FolderRow> serverRows;
+        QSet<QString> ids;
+        int index = -1;
+        for (const auto &value : result.data.toArray())
+        {
+            const auto raw = value.toObject();
+            const auto uuid = raw.value("uuid").toString();
+            if (raw.isEmpty() || uuid.isEmpty() || ids.contains(uuid)) continue;
+            ++index;
+            ids.insert(uuid);
+            FolderRow row;
+            row.uuid = uuid;
+            row.title = raw.value("title").toString();
+            const auto reported = (raw.contains("systemType")
+                ? raw.value("systemType") : raw.value("system_type")).toString();
+            row.systemType = folderRailSystemType(uuid, reported, index);
+            const auto color = raw.contains("backgroundColorValue")
+                ? raw.value("backgroundColorValue") : raw.value("background_color_value");
+            row.color = quint32(color.toDouble()) & 0x00ffffffu;
+            row.unread = qMax(0, (raw.contains("unreadCount")
+                ? raw.value("unreadCount") : raw.value("unread_count")).toInt());
+            const auto items = raw.contains("folderItems")
+                ? raw.value("folderItems").toArray() : raw.value("folder_items").toArray();
+            for (const auto &item : items)
+            {
+                const auto stream = item.toObject().value("stream_uuid").toString();
+                if (!stream.isEmpty() && !row.streamIds.contains(stream))
+                    row.streamIds.append(stream);
+            }
+            serverRows.append(row);
+        }
+        // orderedIndexedFoldersForRail port: All first, server order kept for
+        // the rest. Missing system slots are synthesized directly after All.
+        m_folders.clear();
+        int allPosition = -1;
+        for (int i = 0; i < serverRows.size(); ++i)
+            if (serverRows.at(i).systemType == QStringLiteral("all")) { allPosition = i; break; }
+        if (allPosition >= 0)
+        {
+            m_folders.append(serverRows.takeAt(allPosition));
+        }
+        else
+        {
+            FolderRow all;
+            all.uuid = allChatsFolderUuid;
+            all.systemType = QStringLiteral("all");
+            all.title = tr("All chats");
+            all.synthesized = true;
+            m_folders.append(all);
+        }
+        for (const auto *slot : {&personalFolderUuid, &channelsFolderUuid})
+        {
+            const auto wanted = *slot == personalFolderUuid
+                ? QStringLiteral("personal") : QStringLiteral("channels");
+            int position = -1;
+            for (int i = 0; i < serverRows.size(); ++i)
+                if (serverRows.at(i).systemType == wanted) { position = i; break; }
+            if (position >= 0)
+            {
+                m_folders.append(serverRows.takeAt(position));
+                continue;
+            }
+            FolderRow slotRow;
+            slotRow.uuid = *slot;
+            slotRow.systemType = wanted;
+            slotRow.title = wanted == QStringLiteral("personal") ? tr("Personal") : tr("Channels");
+            slotRow.synthesized = true;
+            m_folders.append(slotRow);
+        }
+        for (const auto &row : serverRows) m_folders.append(row);
+        for (auto &row : m_folders) row.key = folderRailKey(row.systemType, row.uuid);
+        emit foldersChanged();
+        emit sidebarStreamsChanged();
+    });
+}
+
+QVariantList NativeController::folders() const
+{
+    QVariantList result;
+    for (const auto &row : m_folders)
+        result.append(QVariantMap{{"key", row.key}, {"id", row.uuid}, {"title", row.title},
+            {"systemType", row.systemType}, {"color", row.color}, {"unreadCount", row.unread},
+            {"streamIds", row.streamIds}, {"synthesized", row.synthesized}});
+    return result;
+}
+
+QString NativeController::selectedFolder() const
+{
+    // Effective folder (sidebar-shell.ui.tsx:110-116): the selection while it
+    // is still present, else the All folder, else the first row.
+    for (const auto &row : m_folders)
+        if (row.uuid == m_selectedFolder) return m_selectedFolder;
+    for (const auto &row : m_folders)
+        if (row.systemType == QStringLiteral("all")) return row.uuid;
+    return m_folders.isEmpty() ? QString{} : m_folders.first().uuid;
+}
+
+void NativeController::selectFolder(const QString &key)
+{
+    for (const auto &row : m_folders)
+    {
+        if (row.key != key && row.uuid != key) continue;
+        if (selectedFolder() == row.uuid) return; // re-selecting the effective slot is a no-op
+        m_selectedFolder = row.uuid;
+        emit foldersChanged();
+        emit sidebarStreamsChanged();
+        emit folderSelected();
+        return;
+    }
+}
+
+void NativeController::requestAddFolder()
+{
+    emit folderAddRequested();
+}
+
+QVariantList NativeController::sidebarStreams() const
+{
+    const auto all = streams();
+    const auto effective = selectedFolder();
+    for (const auto &row : m_folders)
+    {
+        if (row.uuid != effective) continue;
+        // All and synthesized slots carry no server membership: no filter.
+        if (row.synthesized || row.systemType == QStringLiteral("all")) return all;
+        QVariantList scoped;
+        for (const auto &value : all)
+            if (row.streamIds.contains(value.toMap().value("id").toString())) scoped.append(value);
+        return scoped;
+    }
+    return all;
+}
+
 QVariantList NativeController::topics() const
 {
     QHash<QString, qint64> timestamps;
@@ -10424,6 +10645,10 @@ void NativeController::reloadSnapshot()
     m_snapshotCatalog = catalog;
     m_snapshotSelection = m_selection;
     m_recoveringMarker = m_resumeOlder = false;
+    // Issue #83: the folder rail rides the same bootstrap but is not a
+    // snapshot part: a missing /folders/ answer degrades to system slots
+    // instead of gating the conversation projection.
+    loadFolders();
     notifyTrustChanged();
     const auto chatAccess = m_chatAccessRevision;
     const auto chatOwner = ownerKey();

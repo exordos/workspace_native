@@ -133,9 +133,9 @@ active `bg-accent/20`, selected `bg-accent/10`, else hover.
   `folder_items`. On request failure the synthesized trio remains, so the rail
   never goes empty and the sidebar is never filtered by a phantom folder.
 - Order: All first (`orderedIndexedFoldersForRail` port), server order kept
-  for the rest; synthesized system slots append Personal then Channels after
-  the server rows that do contain a custom set, and directly after All when
-  the server only returned All.
+  for the rest; synthesized Personal/Channels slots are inserted directly
+  after All, above the server's custom rows, so the system group stays
+  together in the degraded case exactly like the old static rail showed it.
 
 ### Selection and sidebar scoping
 
