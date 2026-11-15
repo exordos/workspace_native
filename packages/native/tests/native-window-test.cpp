@@ -14127,6 +14127,212 @@ mv -Tf "$root/.current-new" "$root/current"
     // Geometry assertions cite the measured reference at workspace_ui
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af through the design-doc table.
 
+    void mediaViewerIsolatesCoveredChat_data()
+    {
+        QTest::addColumn<bool>("loading");
+        QTest::addColumn<bool>("editing");
+        QTest::addColumn<bool>("checkReads");
+        QTest::addColumn<bool>("checkCalls");
+        QTest::newRow("loading-draft") << true << false << false << false;
+        QTest::newRow("ready-draft") << false << false << false << false;
+        QTest::newRow("loading-edit") << true << true << false << false;
+        QTest::newRow("ready-edit") << false << true << false << false;
+        QTest::newRow("loading-visible-reads") << true << false << true << false;
+        QTest::newRow("ready-visible-reads") << false << false << true << false;
+        QTest::newRow("loading-incoming-call") << true << false << false << true;
+        QTest::newRow("ready-incoming-call") << false << false << false << true;
+    }
+
+    void mediaViewerIsolatesCoveredChat()
+    {
+        QFETCH(bool, loading); QFETCH(bool, editing); QFETCH(bool, checkReads); QFETCH(bool, checkCalls);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        std::function<void()> releaseDownload;
+        bool holdDownload = false;
+        int messageWrites = 0;
+        QStringList readAnchors;
+        auto picture = mediaViewerRow(first, fileA, png.size());
+        picture["read"] = true;
+        auto own = message("Own message to edit", second);
+        own["read"] = true; own["created_at"] = "2026-01-02T10:00:01.000Z";
+        QJsonArray history{picture, own};
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path == file) {
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path == file + "/actions/download") {
+                Response result; result.rawBody = png; result.rawContentType = "image/png";
+                if (holdDownload)
+                    result.defer = [&](std::function<void()> send) { releaseDownload = std::move(send); };
+                return result;
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{history};
+            if (path.contains("/messages/") && (request.method == "POST" || request.method == "PUT")
+                && !path.endsWith("/actions/read_up_to/invoke")) {
+                ++messageWrites;
+                return Response{QJsonObject{}, 400};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto anchor = path.section('/', -4, -4);
+                readAnchors.append(anchor);
+                for (int i = 0; i < history.size(); ++i) {
+                    auto row = history[i].toObject(); row["read"] = true; history[i] = row;
+                    if (row.value("uuid").toString() == anchor) return Response{row};
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        controller.setRealtimeMode(true);
+        NativePreferences preferences(directory.filePath("media-isolation.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, &releaseDownload, guard = QPointer<QQuickWindow>(window)] {
+            if (releaseDownload) { auto release = std::move(releaseDownload); release(); }
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media isolation window did not settle before teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready()); controller.reloadSnapshot();
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId); QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        auto *list = item(content, "messageList"); QVERIFY(list);
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
+        // Finish the inline thumbnail request before holding the viewer's separate download.
+        QTRY_VERIFY(images.stats().previewBytes > 0);
+        holdDownload = loading;
+        controller.setDraft("draft preserved under media");
+        composer->forceActiveFocus(Qt::OtherFocusReason);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        if (editing) {
+            QVERIFY(controller.beginEditMessage(second));
+            QTRY_COMPARE(controller.editingMessageId(), second);
+            controller.setDraft("unsaved edit preserved under media");
+            QTRY_VERIFY(controller.canSaveEdit());
+        }
+        const auto draft = controller.draft();
+        const auto composerText = composer->property("text").toString();
+        QTRY_VERIFY(composer->hasActiveFocus());
+        click(window, visibleItem(content, "inline-image-" + first));
+        auto *viewer = controller.mediaViewer(); QTRY_VERIFY(viewer->open());
+        if (loading) {
+            QTRY_VERIFY(bool(releaseDownload));
+            QCOMPARE(viewer->items().first().toMap().value("state").toString(), QString("loading"));
+        } else {
+            QTRY_VERIFY(visibleItem(content, "mediaViewer-image"));
+        }
+        if (checkCalls) {
+            controller.incomingCall()->setAutoDeclineMs(600000);
+            controller.incomingCall()->setRingIntervalMs(600000);
+            controller.calls()->ingestIncomingInvite(windowInvite());
+            QTRY_VERIFY(controller.incomingCall()->visible());
+            auto *toggle = visibleItem(content, "incomingCallVideoToggle"); QVERIFY(toggle);
+            // Click the rendered control: finding the item alone would also
+            // succeed when the modal media popup obscures the incoming call.
+            click(window, toggle);
+            QVERIFY2(controller.incomingCall()->videoEnabled(windowInvite().value("messageId").toString()),
+                "The media viewer intercepted the incoming call's video toggle");
+            click(window, visibleItem(content, "incomingCallAcceptButton"));
+            QTRY_VERIFY(controller.calls()->hasActiveCall());
+            QTRY_COMPARE(controller.callWindow()->mode(), int(JitsiCallWindowController::Expanded));
+            QTRY_VERIFY(visibleItem(content, "callWindowCloseButton"));
+            click(window, visibleItem(content, "callWindowCloseButton"));
+            QTRY_VERIFY(!controller.calls()->hasActiveCall());
+            QVERIFY2(viewer->open(), "Answering and closing a call discarded the open media gallery");
+            QCOMPARE(controller.draft(), draft);
+            QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!viewer->open());
+            return;
+        }
+        if (checkReads) {
+            QTest::qWait(400); readAnchors.clear();
+            auto incoming = message("Unread message covered by the media viewer", returnedId);
+            incoming["author_uuid"] = channelPeer; incoming["is_own"] = false;
+            incoming["read"] = false; incoming["created_at"] = "2026-01-02T11:00:00.000Z";
+            history.append(incoming); incoming["kind"] = "message.created";
+            QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+                {"uuid", "84000000-0000-4000-8000-000000000185"}, {"payload", incoming}}));
+            QTRY_COMPARE(controller.messages().size(), 3);
+            // Longer than the real 250 ms visible-read batching interval.
+            QTest::qWait(500);
+            QVERIFY2(readAnchors.isEmpty(), "The covered incoming message was marked read");
+            QVERIFY(!controller.messages().last().toMap().value("read").toBool());
+            QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!viewer->open());
+            QTRY_COMPARE_WITH_TIMEOUT(readAnchors, QStringList{returnedId}, 2000);
+            QTRY_VERIFY(controller.messages().last().toMap().value("read").toBool());
+            return;
+        }
+        QTest::keyClick(window, Qt::Key_X);
+        QCOMPARE(controller.draft(), draft);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::keyClick(window, Qt::Key_Return, Qt::ShiftModifier);
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTest::qWait(300);
+        QCOMPARE(messageWrites, 0);
+        QCOMPARE(controller.draft(), draft);
+        QCOMPARE(composer->property("text").toString(), composerText);
+        QCOMPARE(controller.editingMessageId(), editing ? second : QString{});
+        QVERIFY(!composer->hasActiveFocus());
+        auto *overlay = visibleItem(content, "mediaViewer-overlay"); QVERIFY(overlay);
+        const auto focusInViewer = [&] {
+            auto *focused = window->activeFocusItem();
+            return focused && (focused == overlay || overlay->isAncestorOf(focused));
+        };
+        QVERIFY(focusInViewer());
+        for (int i = 0; i < 12; ++i) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY2(focusInViewer(), "Tab moved keyboard focus behind the media viewer");
+            QTest::keyClick(window, Qt::Key_Backtab);
+            QVERIFY2(focusInViewer(), "Backtab moved keyboard focus behind the media viewer");
+        }
+        if (!loading && !editing) {
+            auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+            QVERIFY(saveDialog->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
+            click(window, visibleItem(content, "mediaViewer-download"));
+            QTRY_VERIFY(saveDialog->property("visible").toBool());
+            QTRY_VERIFY(visibleItem("fileNameTextField"));
+            auto *filename = visibleItem("fileNameTextField");
+            click(filename->window(), filename);
+            QTest::keySequence(filename->window(), QKeySequence::SelectAll);
+            for (const auto character : QByteArray("media-copy.png"))
+                QTest::keyClick(filename->window(), character);
+            QCOMPARE(filename->property("text").toString(), QString("media-copy.png"));
+            QTest::keyClick(filename->window(), Qt::Key_Escape);
+            QTRY_VERIFY(!saveDialog->property("visible").toBool());
+            QVERIFY2(viewer->open(), "Escape in the save dialog closed the media viewer");
+            QTRY_VERIFY(focusInViewer());
+            QCOMPARE(controller.draft(), draft);
+        }
+        QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!viewer->open());
+        QTRY_VERIFY(composer->hasActiveFocus());
+        QCOMPARE(controller.draft(), draft);
+        QCOMPARE(composer->property("text").toString(), composerText);
+        QCOMPARE(controller.editingMessageId(), editing ? second : QString{});
+        QTest::keyClick(window, Qt::Key_Y);
+        QVERIFY(controller.draft() != draft);
+    }
+
     void mediaViewerOpensNavigatesAndClosesLikeTheReference()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
@@ -14187,7 +14393,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem(content, "inline-image-" + second));
         auto *viewer = controller.mediaViewer();
         QVERIFY(viewer && !viewer->open());
-        QVERIFY(!item(content, "mediaViewer-overlay")->isVisible());
+        QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
         click(window, visibleItem(content, "inline-image-" + first));
         QTRY_VERIFY(viewer->open());
@@ -14251,7 +14457,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // Escape closes (media-viewer-backdrop.ui.tsx:27-51).
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
-        QVERIFY(!item(content, "mediaViewer-overlay")->isVisible());
+        QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
         // A thumbnail navigates; a backdrop click closes the overlay.
         click(window, visibleItem(content, "inline-image-" + second));
