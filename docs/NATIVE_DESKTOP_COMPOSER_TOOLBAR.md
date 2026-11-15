@@ -29,6 +29,19 @@ from that tree with `git show <sha>:<path>`.
   client has no Write/Preview mode tabs yet (sibling issue), so the
   preview-mode disable rule is recorded but not native-testable today.
 
+The composer shell reserves the toolbar's preferred height and the column gap
+while the row is visible. Without that space, an empty or one-line draft left
+the shell 57px high and placed its 32px controls at y=896..928 in a 1440x900
+window. The collapsed input height and the separate edit/reply notice additions
+keep their existing calculations.
+
+`expandedComposerToolbarStaysInsideTheWindow` renders empty and short drafts in
+both locales and themes, requires every complete button to fit inside the shell
+and window before pointer input, and checks typing/deleting a multiline draft,
+collapse/expansion and window resizing. Its real Bold click also checks draft
+mutation, restored editor focus/caret and absence of message sends. These are
+local Linux Qt Quick fixture checks, not live-service or other-platform acceptance.
+
 ## Actions and exact insert text (message-composer-toolbar.ui.tsx:40-320)
 
 Order in the expanded toolbar: toggle, separator, [link, bold, italic,
