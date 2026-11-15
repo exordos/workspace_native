@@ -8,14 +8,14 @@ import QtMultimedia
 // Every geometry and colour value below was measured from the React reference
 // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af; file citations name
 // the source line. Wheel zoom remains a follow-up recorded in the design docs.
-Item {
+Popup {
     id: viewerRoot
-    objectName: "mediaViewer-overlay"
+    objectName: "mediaViewer-popup"
     required property var viewer
     required property var colors
     signal requestDownload(string fileUuid)
 
-    readonly property var hostWindow: Window.window
+    readonly property var hostWindow: viewerSurface.Window.window
     readonly property var currentSlot: viewer.open && viewer.index < viewer.items.length
         ? viewer.items[viewer.index] || ({}) : ({})
     readonly property bool gallery: viewer.count > 1
@@ -24,9 +24,26 @@ Item {
     readonly property var stripModel: gallery
         ? Array.from({length: viewer.count}, (_, i) => i) : []
 
+    // The same full-window surface is modal even before media is ready.
+    // Popup owns keyboard/tab isolation and restores the previous focus item.
+    parent: Overlay.overlay
+    width: parent ? parent.width : 0
+    height: parent ? parent.height : 0
+    padding: 0
+    margins: 0
+    background: null
+    modal: true
+    dim: false
+    focus: true
+    closePolicy: Popup.NoAutoClose
     visible: viewer.open
-    Accessible.role: Accessible.Dialog
-    Accessible.name: qsTr("Media viewer")
+    contentItem: FocusScope {
+        id: viewerSurface
+        objectName: "mediaViewer-overlay"
+        focus: true
+        Accessible.role: Accessible.Dialog
+        Accessible.name: qsTr("Media viewer")
+    }
 
     // Backdrop: fixed inset-0 z-modal bg-black/90 (media-viewer-backdrop.ui.tsx:56);
     // the root click closes (media-viewer-backdrop.ui.tsx:53-64).
@@ -419,17 +436,17 @@ Item {
     // Escape always closes; arrows navigate only with more than one item.
     Shortcut {
         sequence: "Escape"
-        enabled: viewerRoot.viewer.open
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus
         onActivated: viewerRoot.viewer.close()
     }
     Shortcut {
         sequence: "Left"
-        enabled: viewerRoot.viewer.open && viewerRoot.gallery
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.gallery
         onActivated: viewerRoot.viewer.prev()
     }
     Shortcut {
         sequence: "Right"
-        enabled: viewerRoot.viewer.open && viewerRoot.gallery
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.gallery
         onActivated: viewerRoot.viewer.next()
     }
 }

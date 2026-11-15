@@ -113,8 +113,8 @@ while it is open.
 
 ### QML: `qml/NativeMediaViewer.qml`
 
-A full-window overlay `Item` (sibling after all content, `visible:
-mediaViewer.open`) mirroring the measured table: backdrop
+A full-window modal `Popup` (`visible: mediaViewer.open`) with a focused
+content surface, mirroring the measured table: backdrop
 `#E6000000` with a closing `MouseArea`, media area padding 64/56/112 with
 `Image fillMode: PreserveAspectFit`, `Image` max height `window height - 192`,
 nav buttons 48x48 `#80000000` hover `#B3000000` with the bundled
@@ -123,10 +123,21 @@ nav buttons 48x48 `#80000000` hover `#B3000000` with the bundled
 0.4 when disabled) for download and close, and the bottom strip (counter
 `#B3FFFFFF` 12 px, 56x56 thumbnails radius 6 border 2 px `accent`/transparent
 + 0.7 opacity, background `#B3000000`, top border 1 px `#1AFFFFFF`).
-`window` here is the viewer's `Window.window`, keeping geometry relative to
-the app window instead of the viewport. Keyboard is handled with `Shortcut`
-elements enabled while the viewer is open: Escape closes, Left/Right navigate
-only when `count > 1`.
+`window` here is the content surface's `Window.window`, keeping geometry relative
+to the app window instead of the viewport. The popup uses the full window overlay,
+zero padding and no additional dimming, preserving the existing backdrop and media
+geometry. Qt owns modal pointer handling, Tab/Backtab containment and restoration
+of the previously focused item. Keyboard `Shortcut` elements are enabled only while
+the viewer itself has active focus: Escape closes, Left/Right navigate only when
+`count > 1`. A save dialog opened above the viewer therefore owns its own keyboard
+input and Escape, then returns focus to the viewer.
+
+While the viewer covers the conversation, the composer is read-only and its
+formatting/submit key handlers are gated. This also protects the edit buffer and
+prevents an edit-session update from stealing focus. The message list's existing
+`readActive` gate includes the viewer state: opening cancels the pending visible-read
+timer, and closing schedules the same geometry-checked read path again. No read
+markers are sent for incoming rows covered by loading or ready media (issue #185).
 
 Entry point: the inline image `onOpened` handler in `Main.qml` first calls
 `controller.mediaViewer.openFromMessages(controller.messages, reference.id)`
@@ -150,3 +161,20 @@ guard test enforces the catalog).
 
 Every geometry assertion in the window tests cites the reference file and
 line it was measured from in the table above.
+
+
+### Modal interaction regression (issue #185)
+
+`mediaViewerIsolatesCoveredChat` exercises the rendered application window with
+synthetic local HTTP data in six loading/ready draft, edit and incoming-read cases.
+It opens an inline image by mouse from a focused composer, sends real typing,
+Enter, Shift+Enter and formatting keys, checks both directions of the Tab loop and
+verifies the original text, edit mode and restored input focus after Escape. The
+ready draft case also types a filename in the nested save dialog and verifies that
+its Escape dismisses only that dialog. Incoming-message cases observe actual
+`read_up_to` requests, including the first request after the viewer closes.
+
+Before the fix all six cases failed: typing changed both draft and edit buffers,
+and incoming messages were marked read under both loading and ready slots. These
+checks use Qt's visible Linux window and fallback save dialog; production services,
+platform-native dialogs, Windows and macOS remain separate acceptance work.

@@ -3912,7 +3912,7 @@ ApplicationWindow {
                 // attribution.
                 property bool tailFollow: true
                 property var pendingViewport: null
-                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible
+                readonly property bool readActive: root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -6435,6 +6435,7 @@ ApplicationWindow {
                                 TextArea {
                                     id: composerText
                                     objectName: "messageComposer"
+                                    readOnly: root.controller.mediaViewer.open
                                     enabled: root.composerAvailable && !Boolean(root.encryptedPendingSend.busy)
                                     text: root.controller.draft
                                     onTextChanged: {
@@ -6457,7 +6458,7 @@ ApplicationWindow {
                                     rightPadding: 0
                                     background: null
                                     Accessible.name: qsTr("Message")
-                                    readonly property bool formattingAllowed: enabled && visible && activeFocus
+                                    readonly property bool formattingAllowed: enabled && !readOnly && visible && activeFocus
                                         && root.active && !inputMethodComposing
                                         && !ownStatusDialog.visible && !deleteDialog.visible
                                         && !createTopicDialog.visible && !createChatDialog.visible && !referenceNotice.visible
@@ -6625,11 +6626,15 @@ ApplicationWindow {
                                         // re-established even after direct typing broke it.
                                         function onEditSessionChanged() {
                                             composerText.text = Qt.binding(() => root.controller.draft);
-                                            if (root.controller.editingMessageId.length)
+                                            if (root.controller.editingMessageId.length && !composerText.readOnly)
                                                 composerText.forceActiveFocus();
                                         }
                                     }
                                     Keys.onPressed: event => {
+                                        if (readOnly) {
+                                            event.accepted = true;
+                                            return;
+                                        }
                                         const editing = root.controller.editingMessageId.length > 0;
                                         if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
@@ -9302,7 +9307,6 @@ ApplicationWindow {
         }
     }
     NativeMediaViewer {
-        anchors.fill: parent
         viewer: root.controller.mediaViewer
         colors: root.colors
         onRequestDownload: (uuid) => {
