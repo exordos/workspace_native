@@ -12,5 +12,6 @@ find_package(Qt6 6.10 REQUIRED COMPONENTS Core Test)
 enable_testing()
 add_executable(windows-file-staging-test windows-file-staging-test.cpp)
 target_link_libraries(windows-file-staging-test PRIVATE Qt6::Core Qt6::Test advapi32)
-add_test(NAME windows-file-staging COMMAND windows-file-staging-test)
+add_test(NAME windows-file-staging COMMAND windows-file-staging-test
+    -o "${CMAKE_CURRENT_BINARY_DIR}/windows-file-staging.txt,txt")
 set_tests_properties(windows-file-staging PROPERTIES TIMEOUT 60)
