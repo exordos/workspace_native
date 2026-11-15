@@ -14193,6 +14193,175 @@ private slots:
         QCOMPARE(modelMessage(c, row.value("uuid").toString()).value("content").toString(), QString("Newer live body"));
     }
 
+    static QString streamDeepLink(const Fixture &fixture, const QString &tail)
+    {
+        return "ew://open/org/127.0.0.1-" + QString::number(fixture.server.origin().port())
+            + "/project/" + projectId + "/stream/" + streamId + tail;
+    }
+
+    void deepLinkStreamAndTopicRoutes_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("segment");
+        QTest::addColumn<bool>("defaultTopic");
+        QTest::newRow("name") << QString("Second topic") << QString("Second%20topic") << false;
+        QTest::newRow("uuid") << QString("Second topic") << secondTopicId << false;
+        QTest::newRow("unicode-reserved") << QString::fromUtf8("План #1? + 50%")
+            << QString::fromUtf8(QUrl::toPercentEncoding(QString::fromUtf8("План #1? + 50%"))) << false;
+        QTest::newRow("decode-once") << QString("Percent%20name") << QString("Percent%2520name") << false;
+        QTest::newRow("default-token") << QString("General") << QString("__empty__") << true;
+        QTest::newRow("default-alias") << QString("General") << QString("General%20chat") << true;
+        QTest::newRow("literal-empty-token") << QString("__empty__") << QString("~__empty__") << false;
+    }
+
+    void deepLinkStreamAndTopicRoutes()
+    {
+        QFETCH(QString, name); QFETCH(QString, segment); QFETCH(bool, defaultTopic);
+        Fixture f; f.aggregateMessages = true;
+        f.topics = [&](const Request &) {
+            auto target = creationTopic(secondTopicId, streamId, name);
+            target["is_default"] = defaultTopic;
+            return Response{QJsonArray{creationTopic(topicId, streamId, "Native topic"), target}};
+        };
+        f.messages = [](const Request &request) {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            return Response{QJsonArray{message(topic.isEmpty() ? "Aggregate" : topic, messageId,
+                                               topic.isEmpty() ? topicId : topic)}};
+        };
+        QVERIFY(f.start());
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/" + segment + "?view=chat#latest"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedTopic(), secondTopicId, 2500);
+        QCOMPARE(f.controller.selectedStream(), streamId);
+        QTRY_COMPARE(modelMessage(f.controller, messageId).value("content").toString(), secondTopicId);
+        f.controller.openMessageLink(streamDeepLink(f, ""));
+        QTRY_VERIFY(f.controller.selectedTopic().isEmpty());
+        QTRY_COMPARE(modelMessage(f.controller, messageId).value("content").toString(), QString("Aggregate"));
+    }
+
+    void deepLinkStreamRouteRejectsForeignAndUnknownTargets_data()
+    {
+        QTest::addColumn<QString>("target");
+        for (const auto *name : {"organization", "project", "stream", "topic", "ambiguous"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void deepLinkStreamRouteRejectsForeignAndUnknownTargets()
+    {
+        QFETCH(QString, target);
+        Fixture f;
+        if (target == "ambiguous") f.topics = [](const Request &) {
+            return Response{QJsonArray{creationTopic(topicId, streamId, "Missing"),
+                                       creationTopic(secondTopicId, streamId, "Missing")}};
+        };
+        QVERIFY(f.start());
+        QString url = streamDeepLink(f, "/topic/Missing");
+        if (target == "organization") url.replace("/org/127.0.0.1-", "/org/foreign-");
+        else if (target == "project") url.replace(projectId, secondTopicId);
+        else if (target == "stream") url.replace(streamId, secondTopicId);
+        QVERIFY(f.controller.notice().isEmpty());
+        f.controller.openMessageLink(url);
+        QTRY_VERIFY_WITH_TIMEOUT(!f.controller.notice().isEmpty(), 2000);
+        QCOMPARE(f.controller.selectedStream(), streamId);
+        QCOMPARE(f.controller.selectedTopic(), (target == "topic" || target == "ambiguous") ? QString{} : topicId);
+    }
+
+    void deepLinkTopicBeforeLoginKeepsTheLatestRoute()
+    {
+        Fixture f; f.extraTopic = true;
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Native%20topic"));
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Second%20topic"));
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedTopic(), secondTopicId, 3500);
+    }
+
+    void deepLinkNewReadyRouteReplacesAnOlderQueuedRoute()
+    {
+        Fixture f; f.extraTopic = true;
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Native%20topic"));
+        QVERIFY(f.start());
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Second%20topic"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedTopic(), secondTopicId, 2000);
+        QTest::qWait(1000);
+        QCOMPARE(f.controller.selectedTopic(), secondTopicId);
+    }
+
+    void deepLinkSelectsTheNamedTopicInAnotherStream()
+    {
+        Fixture f;
+        const QString destination = "8f8f8f8f-8f8f-4f8f-8f8f-8f8f8f8f8f8f";
+        f.topics = [&](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            return Response{QJsonArray{creationTopic(stream == destination ? secondTopicId : topicId,
+                                                      stream, "Native topic")}};
+        };
+        QVERIFY(f.start());
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream.created", creationChannel(destination))));
+        QTRY_COMPARE(f.controller.streams().size(), 2);
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Native%20topic").replace(streamId, destination));
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedStream(), destination, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedTopic(), secondTopicId, 2000);
+    }
+
+    void deepLinkTopicWaitsForAnAggregateToFinishLoading()
+    {
+        Fixture f; f.extraTopic = true; f.aggregateMessages = true;
+        bool delayed = false;
+        f.messages = [&](const Request &) { return Response{QJsonArray{}, 200, delayed ? 300 : 0}; };
+        QVERIFY(f.start()); delayed = true;
+        f.controller.selectStream(streamId);
+        QVERIFY(f.controller.busy());
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Second%20topic"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.selectedTopic(), secondTopicId, 3500);
+    }
+
+    void deepLinkTopicListReentrantNavigationWins()
+    {
+        Fixture f; f.extraTopic = true; QVERIFY(f.start());
+        bool replaced = false;
+        connect(&f.controller, &NativeController::topicsChanged, &f.controller, [&] {
+            if (!replaced && f.controller.topics().size() == 2) {
+                replaced = true;
+                f.controller.showInbox();
+            }
+        });
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Second%20topic"));
+        QTRY_VERIFY(replaced);
+        QTest::qWait(100);
+        QVERIFY(f.controller.inboxVisible());
+        QVERIFY(f.controller.selectedTopic().isEmpty());
+    }
+
+    void deepLinkPendingTopicIsSupersededAndRetired_data()
+    {
+        QTest::addColumn<QString>("replacement");
+        for (const auto *name : {"link", "selection", "logout", "generation", "inbox", "inbox-roundtrip"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void deepLinkPendingTopicIsSupersededAndRetired()
+    {
+        QFETCH(QString, replacement);
+        Fixture f; int gets = 0; bool delay = false;
+        f.topics = [&](const Request &) {
+            ++gets;
+            return Response{QJsonArray{creationTopic(topicId, streamId, "Native topic"),
+                                       creationTopic(secondTopicId, streamId, "Second topic")}, 200, delay ? 600 : 0};
+        };
+        QVERIFY(f.start()); delay = true;
+        const int initial = gets;
+        f.controller.openMessageLink(streamDeepLink(f, "/topic/Second%20topic"));
+        QTRY_VERIFY_WITH_TIMEOUT(gets > initial, 2000);
+        if (replacement == "link") f.controller.openMessageLink(streamDeepLink(f, "/topic/Native%20topic"));
+        else if (replacement == "selection") f.controller.selectStream(streamId);
+        else if (replacement == "logout") f.controller.logout();
+        else if (replacement == "generation") f.api.setAccessToken("synthetic-replacement-token");
+        else if (replacement == "inbox-roundtrip") { f.controller.showInbox(); f.controller.closeInbox(); }
+        else f.controller.openMessageLink(streamDeepLink(f, "").section("/stream/", 0, 0) + "/inbox");
+        QTest::qWait(1000);
+        if (replacement == "link") QCOMPARE(f.controller.selectedTopic(), topicId);
+        else QVERIFY(f.controller.selectedTopic() != secondTopicId);
+    }
+
     void deepLinkCopyProducesTheCanonicalUrl()
     {
         Fixture fixture;

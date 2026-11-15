@@ -93,3 +93,48 @@ that a deployed backend resolves arbitrary deleted or merged UUIDs. The client
 does not invent an alias table, alternate endpoint or provider fallback. Browser
 back/forward history, message-anchor navigation and live service acceptance remain
 separate parity requirements.
+
+## External stream and topic links
+
+Issue #73 extends the existing validated `ew://open` dispatcher to
+`/org/{org}/project/{project}/stream/{uuid}[/topic/{topic}]`. The current
+server/project guard applies before selection; unavailable routes use the existing
+safe deep-link notice. A stream-only route selects the existing aggregate.
+
+The pinned Electron route validator and renderer delivery are in
+`workspace_ui` revision `61dacef78dab2f5d0be76f283bebf49fe29b84af`,
+`packages/electron/src/deeplink-route.lib.ts`. The pinned app route definitions
+name the final parameter `topicUuid`, while the legacy chat route context uses
+`decodeTopicFromRoute` from `topic-identity.lib.ts`. Preserve canonical UUID
+selection and the requested name compatibility: decode the path segment once,
+match a verified UUID first, otherwise match the decoded, trimmed topic name.
+The reference default aliases and `__empty__` token select the uniquely marked
+default topic; `~__empty__` denotes the literal `__empty__` name. Ambiguous or
+missing matches remain on the selected aggregate and show the unavailable notice.
+Query and fragment suffixes do not become part of the name.
+
+The implementation uses `selectStream`, its existing owned topic-list request,
+and `selectTopic`; it does not invent a name-detail API or a second cache. A
+pending topic name is tied to the selected route, account, and API generation.
+Only the authoritative topic list may resolve it. Later navigation, newer links,
+logout, or transport replacement retires the intent. The current last-link-wins
+cold-start queue continues to flush after authentication and default restoration.
+
+The unchanged production dispatcher failed both the controller route regression
+and the visible window scenario: the accepted destination link left the original
+topic selected. Focused local HTTP checks now cover encoded/default/UUID names,
+missing, ambiguous and foreign targets, deferred login, another stream, queued
+replacement, API-generation/logout retirement, and reentrant page navigation.
+The existing message-anchor and Inbox route controls remain included. All 33
+focused controller checks and six visible-window checks (English/Russian,
+light/dark plus initialization/cleanup) passed, as did the production build.
+
+The cold-start queue waits for its one settling timer even when several state
+publications arrive. A newer immediately usable link also removes an older queued
+link, and visiting another content page retires a pending topic intent even when
+the user returns before its response. Candidate regressions reproduced each late
+navigation before these corrections.
+
+These synthetic Linux Qt 6.10.2 checks do not establish live server,
+operating-system protocol registration, installed packages, Windows/macOS, or
+complete controller/window-suite acceptance.
