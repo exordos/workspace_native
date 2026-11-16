@@ -17519,6 +17519,18 @@ private slots:
                 "note the url https://intranet.example/x?sig=deadbeefcafe123"))},
             {18, withContent(18, QStringLiteral("x").repeated(74) + QStringLiteral(
                 " https://leak.example/p?token=supersecretvalue"))},
+            // Round 3 addendum (exo-review re-review at 75c589b): destinations
+            // with balanced parentheses - CommonMark keeps them inside the
+            // destination, and the old destination scan stopped at the first
+            // `(`, stranding the rest of the target as plain text.
+            {19, withContent(19, QStringLiteral(
+                "note [a](https://intranet.example/f(bar)) tail"))},
+            {20, withContent(20, QStringLiteral(
+                "[a](https://intranet.example/(x)?q=SECRET) tail"))},
+            {21, withContent(21, QStringLiteral(
+                "[x](https://intranet.example/y (note)) end"))},
+            {22, withContent(22, QStringLiteral(
+                "[v](https://intranet.example/((a)(b))/top?secret) end"))},
         });
         fixture.messages = [rows](const Request &request) {
             const QUrlQuery query(request.target);
@@ -17529,7 +17541,7 @@ private slots:
         QVERIFY(fixture.start());
         fixture.controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(
-            fixture.controller.feedPage().value("rows").toList().size() == 18, 4000);
+            fixture.controller.feedPage().value("rows").toList().size() == 22, 4000);
         const auto preview = [&](int number) {
             const auto list = fixture.controller.feedPage().value("rows").toList();
             return list.at(number - 1).toMap().value("preview").toString();
@@ -17540,7 +17552,35 @@ private slots:
         // not in full and not as a fragment cut by the clamp.
         QStringList leaked;
         const QString xTail(74, QLatin1Char('x'));
-        for (int number = 1; number <= 18; ++number) {
+        // Every row has an exact green value (row 15 excepted: its urn is
+        // dropped by the residue pass today and collapsing it to `Link` must
+        // not make it re-appear, so only the markers below pin it). The
+        // witness loop flags marker leaks AND deviations from the safe
+        // summary, so one run names every leak even when it ends in the
+        // clamp-cut `ht` fragment of row 18 that carries no marker.
+        QMap<int, QString> exact;
+        exact[1] = QStringLiteral("handbook");
+        exact[2] = QStringLiteral("Read report now");
+        exact[3] = QStringLiteral("see a]b ok");
+        exact[4] = QStringLiteral("Image");
+        exact[5] = QStringLiteral("open x tail");
+        exact[6] = head + QStringLiteral("...");
+        exact[7] = QStringLiteral("note a");
+        exact[8] = QStringLiteral("plain docs tail");
+        exact[9] = QStringLiteral("Link");
+        exact[10] = QStringLiteral("Read the doc at Link ok");
+        exact[11] = QStringLiteral("see www.example.com/leak now");
+        exact[12] = QStringLiteral("Link");
+        exact[13] = QStringLiteral("see doc Link now");
+        exact[14] = QStringLiteral("Link");
+        exact[16] = QStringLiteral("Link");
+        exact[17] = QStringLiteral("note the url Link");
+        exact[18] = xTail + QStringLiteral("...");
+        exact[19] = QStringLiteral("note a tail");
+        exact[20] = QStringLiteral("a tail");
+        exact[21] = QStringLiteral("x end");
+        exact[22] = QStringLiteral("v end");
+        for (int number = 1; number <= 22; ++number) {
             const auto value = preview(number);
             const auto lowered = value.toLower();
             bool suspect = lowered.contains(QStringLiteral("://"))
@@ -17549,16 +17589,15 @@ private slots:
                 || lowered.contains(QStringLiteral("intranet"))
                 || lowered.contains(QStringLiteral("leak.example"))
                 || lowered.contains(QStringLiteral("evil.invalid"))
-                || lowered.contains(QStringLiteral("secret-id"))
+                || lowered.contains(QStringLiteral("secret"))
                 || lowered.contains(QStringLiteral("public.example"))
                 || value.contains(QStringLiteral("EXAMPLE.EXAMPLE"))
                 || value.contains(QStringLiteral("!(")) || value.contains(QStringLiteral("]("));
-            // Row 18's clamp fragment (`...ht` of `https`) carries no marker:
-            // only the exact whole-token expectation proves it.
-            if (number == 18 && value != xTail + QStringLiteral("..."))
+            if (exact.contains(number) && value != exact.value(number))
                 suspect = true;
             if (suspect)
-                leaked << QStringLiteral("row %1: [%2]").arg(number).arg(value);
+                leaked << QStringLiteral("row %1: actual [%2] expected [%3]")
+                              .arg(number).arg(value, exact.value(number));
         }
         for (const auto &row : leaked)
             qWarning().noquote() << QStringLiteral("LEAK-WITNESS %1").arg(row);
