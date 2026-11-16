@@ -1060,6 +1060,8 @@ ApplicationWindow {
     readonly property bool reactionPickerAllowed: root.controller.authenticated && reactionOwner === root.controller.ownerKey && reactionStream === root.controller.selectedStream && reactionTopic === root.controller.selectedTopic && reactionTarget !== null && Boolean(reactionTarget.canReact) && !Boolean(reactionTarget.reactionBusy)
 
     function currentMessage(id) {
+        if (!id)
+            return null;
         const messages = root.controller.messages;
         for (let i = 0; i < messages.length; ++i) {
             if (messages[i].id === id)
@@ -7764,7 +7766,7 @@ ApplicationWindow {
                 id: cacheStatus
                 objectName: "cacheStatus"
                 Layout.fillWidth: true
-                text: root.controller.busy ? root.controller.messages.length > 0 ? qsTr("Showing saved messages · Updating…") : qsTr("Showing saved chats · Updating…") : root.controller.messages.length > 0 ? qsTr("Showing saved messages · Update failed") : qsTr("Showing saved chats · Update failed")
+                text: root.controller.busy ? messageList.messageSnapshot.length > 0 ? qsTr("Showing saved messages · Updating…") : qsTr("Showing saved chats · Updating…") : messageList.messageSnapshot.length > 0 ? qsTr("Showing saved messages · Update failed") : qsTr("Showing saved chats · Update failed")
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
                 font.pixelSize: 12
