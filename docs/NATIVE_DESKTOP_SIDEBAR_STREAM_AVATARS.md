@@ -42,7 +42,7 @@ color and the fallback token therefore both follow the active theme.
 ## Native state today
 
 - `qml/Main.qml` (sidebar stream delegate, `objectName: "stream-" + id`,
-  avatar `Rectangle` at ~line 3316): the circle is already `40x40` radius 20
+  avatar `Rectangle` at line 3310): the circle is already `40x40` radius 20
   with `border.color: border-subtle`, an encrypted row already shows the 24 px
   `chat_lock.svg` glyph in `text-primary`, and the initial letter already uses
   `text-primary`. The only gap: `color: root.colors.bg` is hardcoded, so the
