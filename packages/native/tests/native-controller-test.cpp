@@ -17940,6 +17940,51 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    // Issue #36: the top-bar section state switches chat/calendar exclusively,
+    // mirroring the reference router where /calendar is the calendar section
+    // and any conversation route maps back to chat (top-bar.lib.ts,
+    // getTopBarSectionNavItems + resolveTopBarActiveSection at workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af).
+    void sectionStateSwitchesChatAndCalendarExclusively()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QSignalSpy changes(&fixture.controller, &NativeController::stateChanged);
+        QVERIFY(changes.isValid());
+        fixture.controller.showSection(QStringLiteral("calendar"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        QVERIFY(changes.count() >= 1);
+        // Entering the calendar section closes the chat content pages.
+        fixture.controller.showInbox();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QVERIFY(fixture.controller.inboxVisible());
+        fixture.controller.showSection(QStringLiteral("calendar"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        QVERIFY(!fixture.controller.inboxVisible());
+        // Re-opening a chat content page exits the calendar section.
+        fixture.controller.showMentions();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QVERIFY(fixture.controller.mentionsVisible());
+        // Selecting a conversation is chat navigation.
+        fixture.controller.showSection(QStringLiteral("calendar"));
+        fixture.controller.selectStream(streamId);
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        // Calendar and mail hold the same slot: each chip takes it from the
+        // other, and switching closes the chat content pages.
+        fixture.controller.showSection(QStringLiteral("mail"));
+        fixture.controller.showSection(QStringLiteral("calendar"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        QVERIFY(!fixture.controller.draftsVisible() && !fixture.controller.mentionsVisible()
+            && !fixture.controller.inboxVisible());
+        // Sections the client cannot render yet are still ignored while
+        // calendar is active.
+        fixture.controller.showSection(QStringLiteral("calls"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        fixture.controller.showSection(QStringLiteral("chat"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+    }
+
     void loginWizardStartsOnOrganizationStep()
     {
         Fixture fixture;
