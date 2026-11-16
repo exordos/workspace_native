@@ -173,6 +173,47 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   markup; the native `Text` therefore pins `textFormat: Text.PlainText`
   (also for sender and pills) so attacker-controlled content can never load
   a remote image through automatic format detection.
+- Every Markdown destination form is summarized, not just `[label](target)`.
+  The summarize pass matches escaped/nested brackets in the label, `<...>`
+  destinations, `"title"`/`'title'`/`(title)` suffixes, the reference-style
+  `[label][ref]` usage and its `[ref]: target` definition line, and it
+  summarizes a link's own label recursively (a linked image contributes
+  `Image`, never its urn). A reference definition is dropped entirely - the
+  reference AST renders no text for it. A final residue pass collapses any
+  other `[...](...)`/`![...](...)` shape to its label and drops a leftover
+  `urn:` token, so no destination can survive as raw source; the 80-character
+  clamp also refuses to cut inside a target token (it drops the whole trailing
+  token instead of leaving a fragment). Kept deliberately at reference parity:
+  a link whose readable label IS its href (an autolink) and raw HTML typed as
+  text are printed verbatim by the reference too
+  (`summarizeLinkInline` fallback, `workspace-message-parse.lib.ts:747`
+  keeps raw HTML as text) - they are message text, not a link target.
+  Pinned by `feedPreviewSummarizesMarkdownWithoutRawUrls` and
+  `feedPreviewHidesUncommonMarkdownLinkTargets`.
+- The Feed page is an exclusive content page (issue #355). `Main.qml` hides the
+  whole `conversation` panel (`conversationPanel`: header, message list and
+  composer) while `controller.feedVisible`, exactly like the Drafts/Mentions/
+  Inbox pages, so the Feed owns the central content area at the normal and at
+  the minimum supported window width. Because the panel is hidden, its existing
+  gates also stop working while Feed is open: `messageList.readActive` requires
+  the effective visibility of its ancestors, so visible-message read reporting
+  and message-list keyboard interaction are suspended without extra code.
+  Opening a Feed row (or the close control) restores the conversation layout.
+  Pinned by `feedPageHidesConversationAndOwnsContentWidth`.
+- Interrupted Feed requests settle (issue #356). Replacing the access token -
+  a normal same-owner renewal - bumps the API generation, and the shared
+  request wrapper drops every callback of the retired generation. The
+  `ApiClient::sessionChanged` handler therefore retires the Feed request
+  identity (`interruptFeedRequest`): `inflight`, `loading` and `loadingMore`
+  are cleared, the accepted rows and the pagination marker are kept, and the
+  monotonic request version is bumped so a late answer of the retired page can
+  neither settle nor replace a newer request. `showFeed`, `loadMoreFeed` and
+  `retryFeed` may then dispatch a fresh GET under the renewed session;
+  `resetFeed` (sign-out/owner replacement) also bumps the version so the next
+  owner's request identity can never collide with the previous one. Pinned by
+  `feedSameOwnerRenewalSettlesFirstPageAndReopenReloads`,
+  `feedSameOwnerRenewalSettlesInterruptedOlderPage` and
+  `feedSignOutClearsFeedRequestIdentity`.
 - Time pill: `formatFeedRowTime` implements formatMessageTimeWithDate
   (same day HH:mm, else locale dated + HH:mm) against the preferences locale,
   same locale accessor as `rowPreviewFields`.
