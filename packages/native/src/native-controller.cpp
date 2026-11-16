@@ -6932,20 +6932,69 @@ static QString unescapeFeedMarkdownLabel(const QString &label)
     return rewriteFeedMatches(escape, label, 1);
 }
 
+// The feed preview privacy invariant (exo-review thread 4581966233, round 3):
+// after summarization and clamping a preview never carries a link destination
+// - not in full, not as a fragment, not in a scheme-case variant. A
+// URL-shaped token is any whitespace-delimited token carrying a `://`
+// marker (any scheme, any case), or an `urn:`/`mailto:` prefix (the two
+// scheme families the reference summary layer also treats as URL-only, see
+// URL_ONLY_PATTERN at workspace_ui 61dacef78dab
+// packages/web/src/shared/lib/workspace-message-render/workspace-message-summary.lib.ts:17).
+static const QRegularExpression &feedUrlShapedTokenSyntax()
+{
+    static const QRegularExpression regex(QStringLiteral(
+        "\\S*(?://|\\burn:|\\bmailto:)\\S*"),
+        QRegularExpression::CaseInsensitiveOption);
+    return regex;
+}
+
 // truncatePreview (workspace-message-summary.lib.ts:38-52) cuts at the limit.
-// A target can still legitimately sit in the summarized text - an autolink
-// whose readable label is its own href is printed verbatim by the reference -
-// so a cut that lands inside such a token drops the whole token instead of
-// leaving a fragment of the target behind.
+// A cut that lands inside a URL-shaped token would leave a partial destination
+// behind even when the rest of the token is gone - including the case where
+// the cut falls inside the token's first characters, before the `://` marker,
+// so the cut segment itself looks harmless. The whole straddling token is
+// dropped instead of trimmed.
 static QString clampFeedSummary(const QString &summary)
 {
     if (summary.size() <= 80)
         return summary;
     auto cut = 77;
     const auto boundary = summary.lastIndexOf(QLatin1Char(' '), cut);
-    if (boundary > 0 && summary.mid(boundary, cut - boundary).contains(QStringLiteral("://")))
-        cut = boundary;
+    if (boundary > 0) {
+        auto tokenEnd = summary.indexOf(QLatin1Char(' '), cut);
+        if (tokenEnd < 0)
+            tokenEnd = summary.size();
+        const auto token = summary.mid(boundary + 1, tokenEnd - boundary - 1);
+        if (feedUrlShapedTokenSyntax().match(token).hasMatch())
+            cut = boundary;
+    }
     return summary.left(cut).trimmed() + QStringLiteral("...");
+}
+
+// Collapses every URL-shaped token down to `safeForm`. The reference prints
+// autolinks (`[https://x](https://x)`), raw `<https://...>` forms and bare
+// URLs typed as message text verbatim (summarizeLinkInline fallback at
+// workspace-message-summary.lib.ts:97-112 keeps the child text, and text
+// inlines pass through unchanged) - for the feed preview the reviewer's
+// invariant wins instead and no destination survives at all. A match shorter
+// than the placeholder is left alone: a token that small cannot carry a real
+// destination, and the pass runs after the clamp so it must never make the
+// preview longer.
+static QString collapseFeedUrlTokens(const QString &text, const QString &safeForm)
+{
+    QString out;
+    auto last = 0;
+    auto iterator = feedUrlShapedTokenSyntax().globalMatch(text);
+    while (iterator.hasNext()) {
+        const auto match = iterator.next();
+        if (match.capturedLength() <= safeForm.size())
+            continue;
+        out += text.mid(last, int(match.capturedStart() - last));
+        out += safeForm;
+        last = int(match.capturedEnd());
+    }
+    out += text.mid(last);
+    return out;
 }
 
 QString NativeController::feedPreviewInlineLabel(const QString &bang, const QString &label,
@@ -7015,7 +7064,10 @@ QString NativeController::feedPreviewInlineLabel(const QString &bang, const QStr
     // summarizeLinkInline fallback: a readable label wins; the raw target is
     // only kept when it is the link's own readable text and a plain http(s)
     // or mailto URL (the autolink case the reference also renders verbatim).
-    // An unparseable urn-like target is dropped instead of leaked.
+    // An unparseable urn-like target is dropped instead of leaked. What
+    // survives this fallback is message text by the reference contract, yet
+    // it is still destination-shaped: collapseFeedUrlTokens collapses it to
+    // `Link` before the preview reaches the UI.
     static const QRegularExpression urlOnly(
         QStringLiteral("^(?:https?://|mailto:)\\S+$"), QRegularExpression::CaseInsensitiveOption);
     const auto normalized = readable;
@@ -7116,8 +7168,13 @@ QString NativeController::summarizeFeedMarkdown(const QString &content) const
             joined = tr("Quote: %1").arg(joined.simplified());
         blocks.append(joined);
     }
-    const auto summary = stripFeedMarkdownResidue(blocks.join(QLatin1Char(' '))).simplified();
-    return clampFeedSummary(summary);
+    auto summary = stripFeedMarkdownResidue(blocks.join(QLatin1Char(' '))).simplified();
+    summary = clampFeedSummary(summary);
+    // Final backstop for the no-destination invariant: anything that still
+    // looks like a URL after summarization (an autolink whose label is its
+    // href, a raw `<https://...>`, a URL typed as plain text, a scheme-case
+    // variant, a leftover urn/mailto token) collapses to a neutral label.
+    return collapseFeedUrlTokens(summary, tr("Link"));
 }
 
 // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
