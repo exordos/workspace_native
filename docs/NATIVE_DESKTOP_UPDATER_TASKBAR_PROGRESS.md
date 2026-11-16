@@ -145,9 +145,9 @@ Implementation (`src/native-updater-taskbar.cpp`, `UpdaterTaskbarProgress::publi
 - Fire-and-forget: with no launcher listening (bare WMs, headless X) the daemon
   simply has no receiver, so the documented Xvnc limitation below stays honest
   while real desktops render the bar. There is no delivery state worth
-  tracking; the libunity extra of re-publishing when the launcher bus name is
-  re-acquired is unnecessary here because every progress tick re-publishes
-  within milliseconds.
+  tracking. Late-listener delivery - the libunity "re-publish when the
+  launcher re-appears" extra in the shape real consumers need - is handled by
+  the two republish mechanisms documented in the next section.
 - app-uri: `application://com.exordos.workspace.native.preview.desktop` - the
   installed file name (`packages/native/CMakeLists.txt`,
   `install(FILES resources/workspace-native.desktop ... RENAME
@@ -176,16 +176,51 @@ Taskbar rendering is DE-side and optional:
   (`ITaskbarList3`; e.g. `KDE/elisa` `src/windows/taskbarmanager.{h,cpp}`),
   which confirms there is no X11-side standard to mirror today.
 
+## Late consumers: republish mechanisms (findings 4581477136, rounds 3 and 4)
+
 Signals are not replayed, so a launcher that starts - or restarts - while a
 download has stalled missed every earlier frame and would otherwise show
-nothing until new bytes move. The mirror therefore subscribes to
+nothing until new bytes move. Two complementary mechanisms close that gap.
+
+Round 3 - `NameOwnerChanged` republish. The mirror subscribes to
 `org.freedesktop.DBus` `NameOwnerChanged` on the session bus and, when the
 well-known `com.canonical.Unity.LauncherEntry` name gains a non-empty owner,
 republishes the current hint state (progress-visible + progress, or the
 clear) straight through `publish()`, bypassing the dedupe guard, so the late
-launcher receives the current state without waiting for fresh progress
-(finding 4581477136). While no hint has been pushed yet nothing is republished
-- the silent pre-download contract is unchanged.
+name-owning launcher receives the current state without waiting for fresh
+progress. While no hint has been pushed yet nothing is republished - the
+silent pre-download contract is unchanged.
+
+Round 4 - throttled periodic republish. The round-3 trigger only fires for
+consumers that request the well-known name. The protocol notes above describe
+the more common real consumer differently: a GNOME shell extension subscribes
+`signal_subscribe(null, 'com.canonical.Unity.LauncherEntry', 'Update', null,
+null)` (basskibo/linux_dynamic_island `sources/progress.js`) and never owns
+any name, so no `NameOwnerChanged` ever involves it. Such a consumer starting
+during a stalled download (no new `changed()` ticks, hence no new broadcast)
+would still miss the current progress. Therefore, while a progress hint is
+active, `UpdaterTaskbarProgress` re-broadcasts the current hint on a repeating
+`QTimer` (`startRepublishing()`/`stopRepublishing()` in
+`src/native-updater-taskbar.cpp`):
+
+- Interval: `kRepublishIntervalMs = 2000` ms. The interval is the worst-case
+  invisibility window for a consumer that appears mid-stall: at 2 s a late
+  GNOME extension shows the bar within 2 s of subscribing, which is already
+  perceived as immediate, while a shorter interval buys nothing visible (the
+  bar cannot move faster than progress ticks anyway) and multiplies idle
+  traffic; a longer one (5 s+) leaves a stalled late consumer visibly
+  uninformed for several seconds.
+- Bounded and quiet, not a broadcast storm: at most one small frame (fixed
+  app-uri plus two properties, a few dozen bytes) per 2 s - worst case 0.5
+  signals/s - and only while a visible hint is active. `downloaded`, `error`,
+  `cancel()`/idle clear the hint and stop the timer; the clear frame itself
+  is broadcast exactly once, because a consumer that subscribes after the
+  clear already renders the correct default of no bar. Before the first
+  hint and on headless sessions without a bus nothing is ever published, as
+  before.
+- The heartbeat calls `publish()` directly, bypassing the `setHint()` dedupe:
+  the wire value is unchanged, but the just-subscribed consumer has not
+  received it. This mirrors the same reasoning as the round-3 trigger.
 
 Consequently acceptance is asserted at the protocol layer in the existing
 `native-updater` CTest group against the existing fake update server - the
@@ -206,7 +241,7 @@ launcher on a private bus - never through pixel screenshots of a dock.
   (cleared).
 
 `downloadProgressReachesTheLauncherEntryChannel` (data rows `downloaded`,
-`error`, `cancel`, plus `late-launcher`) is the
+`error`, `cancel`, plus `late-launcher` and `late-listener`) is the
 protocol-level check for finding 4581288189. The case re-executes itself with
 `dbus-run-session` (the `native-controller-test` downloadedFileActions
 pattern) so the fake never shadows a live desktop bus, registers a fake
@@ -231,6 +266,23 @@ the wire frames themselves:
   with `progress-visible=true` and `progress` equal to the mirror's current
   hint. On the pre-fix code the late launcher records nothing and the row
   fails RED.
+- `late-listener` (finding 4581477136 round 4) is the nameless variant: the
+  fake consumer installs only a sender-agnostic, path-agnostic match rule for
+  `Update` (the `signal_subscribe(null, ...)` shape of the GNOME extension
+  cited above) and never requests the well-known name, so no
+  `NameOwnerChanged` involves it. After the same stall it subscribes and must
+  record the current hint with no new bytes (QTRY-bounded at 5 s, proving the
+  heartbeat interval is at most that); over a fixed 6 s window it may record
+  at most 4 further frames (proving a throttled republish, roughly 1.5 s or
+  slower on average, not a broadcast storm); after `cancel()` it records the
+  clear frame and then nothing for 4 s (proving the heartbeat stops on a
+  terminal state). On the pre-fix code the late listener records nothing and
+  the row fails RED.
+
+The bus case also gets a focused ctest entry,
+`native-updater-launcher-entry`, so `ctest -R '^native-updater'` gates it on
+its own; the full CI `^native-updater$` binary run keeps executing every row
+inside the main entry, so CI coverage is unchanged.
 
 With the property-only sink this case fails on every row (the fake records
 zero frames); it went RED before the publish implementation went GREEN.
