@@ -24719,6 +24719,308 @@ private slots:
         QTRY_VERIFY(!visibleItem("messageSelectionBar"));
         QTRY_VERIFY(visibleItem("message-" + fixture.echoUuid));
     }
+
+    // Review round 1, finding 1 (cid 4586012787): the reference never lets a
+    // plaintext forward snapshot reach an encrypted conversation - its sole
+    // submit route sendMessengerMessage throws on stream.encryption === true
+    // (workspace_ui 75bd21f37 entities/messenger/messenger-message-actions.lib.ts:309-311).
+    // The native forward route has no crypto submit path at all, so the
+    // picker omits encrypted conversations entirely (and the controller
+    // refuses them outright - see the controller suite).
+    void forwardModalPickerOmitsEncryptedConversations()
+    {
+        QTest::failOnWarning();
+        ForwardWindowFixture fixture;
+        const QString encryptedStream = QStringLiteral("d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4");
+        const auto inner = fixture.base.server.handler;
+        fixture.base.server.handler = [inner, encryptedStream](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                auto response = inner(request);
+                auto rows = response.data.toArray();
+                rows.append(QJsonObject{{"uuid", encryptedStream}, {"project_id", projectId},
+                    {"name", "Locked channel"}, {"encryption", true}});
+                return {rows};
+            }
+            return inner(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Forward encrypted picker teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-forward", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto qml = [window](const QString &name) { return window->findChild<QObject *>(name); };
+
+        // The encrypted stream really is part of the scene catalog.
+        bool sceneHasEncrypted = false;
+        for (const auto &row : controller.streams())
+            sceneHasEncrypted = sceneHasEncrypted || row.toMap().value("id").toString() == encryptedStream;
+        QVERIFY(sceneHasEncrypted);
+
+        // Enter selection mode and open the forward modal.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("messageMenu");
+        QTRY_VERIFY(menu && menu->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(window->findChild<QObject *>("selectMessageAction")));
+        QTRY_VERIFY(visibleItem("messageSelectionBar"));
+        click(window, visibleItem("selectionForwardButton"));
+        auto *dialog = window->findChild<QObject *>("forwardDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+
+        // The picker rows offered by the model never carry the encrypted
+        // conversation, while the plain channel stays forwardable.
+        QStringList rowIds;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            rowIds.clear();
+            for (const auto &row : dialog->property("streamRows").toList())
+                rowIds << row.toMap().value("id").toString();
+            return rowIds.contains(streamId);
+        })(), 3000);
+        QVERIFY(!rowIds.contains(encryptedStream));
+
+        // Rendered confirmation: the open combo offers the plain channel and
+        // no delegate for the encrypted one.
+        click(window, qobject_cast<QQuickItem *>(qml("forwardStreamCombo")));
+        auto *streamList = [&] {
+            auto *pop = qml("forwardStreamCombo")->property("popup").value<QObject *>();
+            return pop ? pop->property("contentItem").value<QObject *>() : nullptr;
+        }();
+        QTRY_VERIFY(streamList != nullptr);
+        QQuickItem *streamOption = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((streamOption = [&] {
+            QQuickItem *item = nullptr;
+            if (streamList)
+                QMetaObject::invokeMethod(streamList, "itemAtIndex",
+                    Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, 1));
+            return item;
+        }()) != nullptr, 3000);
+        QVERIFY(streamOption->isVisible());
+        // Walk the instantiated delegates: the plain channel is offered and
+        // the encrypted conversation has no row at all.
+        QStringList optionNames;
+        for (int index = 0; index < 8; ++index) {
+            QQuickItem *row = nullptr;
+            QMetaObject::invokeMethod(streamList, "itemAtIndex",
+                Q_RETURN_ARG(QQuickItem *, row), Q_ARG(int, index));
+            if (!row) break;
+            optionNames << row->property("objectName").toString();
+        }
+        QVERIFY(optionNames.contains("forwardStreamOption-" + streamId));
+        QVERIFY(!optionNames.contains("forwardStreamOption-" + encryptedStream));
+        click(window, streamOption);
+        QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
+    }
+
+    // Review round 1, finding 4 (cid 4586012837): the reference keeps every
+    // server message selectable and rejects the whole batch with a visible
+    // reason when a source cannot build a snapshot (workspace_ui 75bd21f37
+    // workspace-message-list.ui.tsx:503 + workspace-forward-message.lib.ts:78-84).
+    // A mixed markdown+poll selection therefore confirms into an alert, not
+    // into a silently-truncated forward.
+    void forwardModalRejectsMixedBatchWithUnsupportedSources()
+    {
+        QTest::failOnWarning();
+        ForwardWindowFixture fixture;
+        const QString pollMessageId = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
+        const QString questionUuid = QStringLiteral("a7a7a7a7-1111-4a7a-8a7a-a7a7a7a7a7a7");
+        const QString optionOne = QStringLiteral("b8b8b8b8-2222-4b8b-8b8b-b8b8b8b8b8b8");
+        const QString optionTwo = QStringLiteral("c9c9c9c9-3333-4c9c-8c9c-c9c9c9c9c9c9");
+        QJsonObject pollNote = message("Poll source", pollMessageId);
+        pollNote["is_own"] = false;
+        pollNote["payload"] = QJsonObject{{"kind", "poll"},
+            {"questions", QJsonArray{QJsonObject{{"uuid", questionUuid}, {"text", "When?"},
+                {"options", QJsonArray{QJsonObject{{"uuid", optionOne}, {"text", "First"}},
+                    QJsonObject{{"uuid", optionTwo}, {"text", "Second"}}}}}}},
+            {"multiple_answers", false}, {"is_anonymous", false}, {"allow_revote", false},
+            {"results_visibility", QStringLiteral("after_vote")}, {"allow_adding_options", false},
+            {"closes_at", QJsonValue::Null}, {"closed_at", QJsonValue::Null}};
+        pollNote["poll_state"] = QJsonObject{{"revision", 1}, {"is_closed", false},
+            {"voter_count", 0}, {"questions", QJsonArray{QJsonObject{{"question_uuid", questionUuid},
+                {"voter_count", 0}, {"option_counts", QJsonObject{{optionOne, 0}, {optionTwo, 0}}}}}},
+            {"my_votes", QJsonArray{}}};
+        const auto inner = fixture.base.server.handler;
+        fixture.base.server.handler = [inner, &fixture, pollNote](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{fixture.firstNote, pollNote}};
+            return inner(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Forward mixed batch teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-forward", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto qml = [window](const QString &name) { return window->findChild<QObject *>(name); };
+
+        // The reference admits every server row to selection, so the poll
+        // bubble carries a checkbox just like the text one.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("messageMenu");
+        QTRY_VERIFY(menu && menu->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(window->findChild<QObject *>("selectMessageAction")));
+        QTRY_VERIFY(visibleItem("messageSelectionBar"));
+        click(window, visibleItem("selectMessage-" + pollMessageId));
+        QTRY_COMPARE(visibleItem("messageSelectionCountText")->property("text").toString(),
+            QStringLiteral("Selected: 2"));
+
+        click(window, visibleItem("selectionForwardButton"));
+        auto *dialog = window->findChild<QObject *>("forwardDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto comboList = [&qml](const char *comboName) {
+            auto *pop = qml(comboName)->property("popup").value<QObject *>();
+            return pop ? pop->property("contentItem").value<QObject *>() : nullptr;
+        };
+        auto itemAt = [](QObject *list, int index) {
+            QQuickItem *item = nullptr;
+            if (list)
+                QMetaObject::invokeMethod(list, "itemAtIndex",
+                    Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, index));
+            return item;
+        };
+        click(window, qobject_cast<QQuickItem *>(qml("forwardStreamCombo")));
+        auto *streamList = comboList("forwardStreamCombo");
+        QTRY_VERIFY(streamList != nullptr);
+        QQuickItem *streamOption = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((streamOption = itemAt(streamList, 1)) != nullptr, 3000);
+        click(window, streamOption);
+        QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardTopicCombo")));
+        auto *topicList = comboList("forwardTopicCombo");
+        QTRY_VERIFY(topicList != nullptr);
+        QQuickItem *topicOption = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((topicOption = itemAt(topicList, 1)) != nullptr, 3000);
+        click(window, topicOption);
+        QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
+
+        // The mixed batch is rejected with a visible reason and never posts a
+        // silently-truncated snapshot; the dialog stays open for a retry.
+        QTRY_VERIFY_WITH_TIMEOUT(qml("forwardErrorAlert")->property("visible").toBool(), 5000);
+        QVERIFY(controller.forwardError().contains("Only text"));
+        QCOMPARE(fixture.posts, 0);
+        QVERIFY(dialog->property("opened").toBool());
+    }
+
+    // Review round 1, finding 5 (cid 4586012848): confirming an old ambiguous
+    // batch must settle exactly the selection it was submitted with; a newer
+    // selection made after the modal went away is preserved untouched.
+    void forwardModalCheckConfirmsOldBatchAndKeepsNewerSelection()
+    {
+        QTest::failOnWarning();
+        ForwardWindowFixture fixture;
+        fixture.serverKept = false;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Forward stale confirm teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-forward", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto qml = [window](const QString &name) { return window->findChild<QObject *>(name); };
+        auto comboList = [&qml](const char *comboName) {
+            auto *pop = qml(comboName)->property("popup").value<QObject *>();
+            return pop ? pop->property("contentItem").value<QObject *>() : nullptr;
+        };
+        auto itemAt = [](QObject *list, int index) {
+            QQuickItem *item = nullptr;
+            if (list)
+                QMetaObject::invokeMethod(list, "itemAtIndex",
+                    Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, index));
+            return item;
+        };
+
+        // Submit batch A (the first message) through the modal; the 5xx POST
+        // leaves it unconfirmed-pending.
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("messageMenu");
+        QTRY_VERIFY(menu && menu->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(window->findChild<QObject *>("selectMessageAction")));
+        QTRY_VERIFY(visibleItem("messageSelectionBar"));
+        click(window, visibleItem("selectionForwardButton"));
+        auto *dialog = window->findChild<QObject *>("forwardDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardStreamCombo")));
+        auto *streamList = comboList("forwardStreamCombo");
+        QTRY_VERIFY(streamList != nullptr);
+        QQuickItem *streamOption = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((streamOption = itemAt(streamList, 1)) != nullptr, 3000);
+        click(window, streamOption);
+        QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardTopicCombo")));
+        auto *topicList = comboList("forwardTopicCombo");
+        QTRY_VERIFY(topicList != nullptr);
+        QQuickItem *topicOption = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((topicOption = itemAt(topicList, 1)) != nullptr, 3000);
+        click(window, topicOption);
+        QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.forwardError().contains("Forwarding was not confirmed"), 5000);
+        QCOMPARE(fixture.posts, 1);
+
+        // The modal goes away while batch A still awaits its Check, and the
+        // user picks a different, newer batch: drop A, select the second
+        // message instead.
+        QMetaObject::invokeMethod(dialog, "close");
+        QTRY_VERIFY(!dialog->property("opened").toBool());
+        click(window, visibleItem("selectMessage-" + messageId));
+        QTRY_VERIFY(!visibleItem("messageSelectionBar"));
+        auto *secondBubble = item(content, "message-" + fixture.secondMessageId); QVERIFY(secondBubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            secondBubble->mapToScene(QPointF(secondBubble->width() / 2, secondBubble->height() / 2)).toPoint());
+        QTRY_VERIFY(menu && menu->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(window->findChild<QObject *>("selectMessageAction")));
+        QTRY_VERIFY(visibleItem("messageSelectionBar"));
+        QTRY_COMPARE(visibleItem("messageSelectionCountText")->property("text").toString(),
+            QStringLiteral("Selected: 1"));
+
+        // The server actually kept batch A: its Check confirms now - and only
+        // touches the batch it was submitted with. The newer selection stays.
+        fixture.serverKept = true;
+        controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.forwardPending()
+            && controller.forwardError().isEmpty(), 5000);
+        QVERIFY(visibleItem("messageSelectionBar"));
+        QVERIFY(item(content, "selectMessageCheck-" + fixture.secondMessageId)->property("visible").toBool());
+        QVERIFY(visibleItem("message-" + fixture.echoUuid));
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {
