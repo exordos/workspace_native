@@ -24090,6 +24090,133 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.selectedFolder(),folderFocus);
         QTRY_VERIFY(!controller.draftsVisible());
     }
+
+    // Issue #35: the top-bar Mail chip opens the unavailable-state section page
+    // measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
+    // (mail-page.ui.tsx fallback branch + top-bar.lib.ts:60-96): chip 48x48
+    // with 12 px radius and 32 px glyph, active = card-bg-active +
+    // border-subtle + icon-active; card = centered column gap 16 inside 24 px
+    // padding, glyph 64 px at opacity 0.5, heading 20 px Medium text-primary
+    // (i18n nav.mail), body 14 px wrapped at max 512 px text-muted
+    // (i18n app.webModeUnavailable).
+    void mailSectionUnavailableCardMatchesReferenceContract_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void mailSectionUnavailableCardMatchesReferenceContract()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        const bool dark = mode == QLatin1String("dark");
+        const QColor textPrimary = dark ? QColor("#ffffff") : QColor("#1b1b1d");
+        const QColor textMuted = dark ? QColor("#707070") : QColor("#989898");
+        const QColor iconActive = dark ? QColor("#ffffff") : QColor("#1b1b1d");
+        const QColor cardBgActive = dark ? QColor("#2c3747") : QColor("#cde6ff");
+        const QColor borderSubtle = dark ? QColor("#33384d") : QColor("#d8e4ef");
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        auto *chatButton = view("sectionChatButton"); QVERIFY(chatButton);
+        auto *mailButton = view("sectionMailButton"); QVERIFY(mailButton);
+        // Shared top-bar chip geometry (top-bar.lib.ts:64-70).
+        for (QQuickItem *chip : { chatButton, mailButton })
+        {
+            QCOMPARE(chip->width(), 48.0);
+            QCOMPARE(chip->height(), 48.0);
+            QCOMPARE(chip->property("cornerRadius").toInt(), 12);
+            QCOMPARE(chip->property("glyphSize").toInt(), 32);
+        }
+        // Idle chip: text-muted, unselected.
+        QVERIFY(mailButton->isEnabled());
+        QVERIFY(!mailButton->property("selected").toBool());
+        QCOMPARE(mailButton->property("iconColor").value<QColor>(), textMuted);
+        QVERIFY(chatButton->property("selected").toBool());
+        click(window, mailButton);
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
+        auto *page = view("mailSectionPage");
+        // Active chip: card-bg-active + border-subtle + icon-active; the Chat
+        // chip drops back to idle text-muted.
+        QVERIFY(mailButton->property("selected").toBool());
+        QCOMPARE(mailButton->property("iconColor").value<QColor>(), iconActive);
+        QCOMPARE(QQmlProperty::read(mailButton, "background.color").value<QColor>(), cardBgActive);
+        QCOMPARE(QQmlProperty::read(mailButton, "background.border.width").toReal(), 1.0);
+        QCOMPARE(QQmlProperty::read(mailButton, "background.border.color").value<QColor>(), borderSubtle);
+        QVERIFY(!chatButton->property("selected").toBool());
+        QCOMPARE(chatButton->property("iconColor").value<QColor>(), textMuted);
+        // The fallback card occupies the conversation slot.
+        QVERIFY(!view("messageComposer"));
+        auto *column = view("sectionUnavailableColumn"); QVERIFY(column);
+        auto *glyph = view("sectionUnavailableGlyph"); QVERIFY(glyph);
+        auto *heading = view("sectionUnavailableHeading"); QVERIFY(heading);
+        auto *body = view("sectionUnavailableBody"); QVERIFY(body);
+        // p-6 (24 px) padding box, centered gap-4 (16 px) column.
+        auto *padding = view("sectionUnavailablePadding"); QVERIFY(padding);
+        QCOMPARE(pos(padding).x() - pos(page).x(), 24.0);
+        QCOMPARE(pos(padding).y() - pos(page).y(), 24.0);
+        QCOMPARE(column->property("spacing").toInt(), 16);
+        // Icon name="mail" size={64} className="opacity-50" tinted text-muted.
+        QCOMPARE(glyph->width(), 64.0);
+        QCOMPARE(glyph->height(), 64.0);
+        QVERIFY(qAbs(glyph->property("opacity").toReal() - 0.5) < 0.001);
+        QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
+        QCOMPARE(pos(heading).y() - (pos(glyph).y() + glyph->height()), 16.0);
+        QCOMPARE(pos(body).y() - (pos(heading).y() + heading->height()), 16.0);
+        // h2 text-xl font-medium text-text-primary = i18n key nav.mail.
+        QCOMPARE(heading->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("Почта") : QString("Mail"));
+        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 20);
+        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::Medium);
+        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
+        // p max-w-lg text-center text-sm = i18n key app.webModeUnavailable.
+        QCOMPARE(body->property("text").toString(), locale == QLatin1String("ru")
+            ? QString::fromUtf8("Раздел временно недоступен в веб-режиме.")
+            : QString("This section is temporarily unavailable in web mode."));
+        QCOMPARE(body->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(body->property("wrapMode").toInt(), 4 /* QQuickText::Wrap at Qt 6.10 */);
+        QVERIFY(body->width() <= 512.0);
+        QCOMPARE(body->property("color").value<QColor>(), textMuted);
+        // The Chat button restores the conversation (reference navigates the
+        // section back to the chat root).
+        click(window, chatButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage") && view("messageComposer"), 5000);
+        // Mail and the chat content pages are mutually exclusive: Mail closes
+        // the Mentions page, and re-opening a chat page returns to the chat
+        // section.
+        controller.showMentions();
+        QVERIFY(controller.mentionsVisible());
+        click(window, mailButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.mentionsVisible() && view("mailSectionPage"), 5000);
+        controller.showMentions();
+        QVERIFY(controller.mentionsVisible());
+        QVERIFY(!view("mailSectionPage"));
+        click(window, chatButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.mentionsVisible(), 5000);
+        // Selecting a conversation from the sidebar is chat navigation.
+        click(window, mailButton);
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
+        auto *streamRow = view("stream-" + streamId); QVERIFY(streamRow);
+        click(window, streamRow);
+        // The stream root has no topic selected, so only the section switch
+        // (page dismissal) is asserted here; conversation restore via the Chat
+        // button is covered above.
+        QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage"), 5000);
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {
@@ -24277,6 +24404,7 @@ private slots:
             QFAIL("unknown freeze probe phase");
         }
     }
+
 };
 
 class NativeCacheWindowWorker final : public QObject {
