@@ -2775,6 +2775,119 @@ public:
 };
 
 
+// ---- Issue #176: sidebar stream-row avatar background from stream.color ----
+// Reference oracle: workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af:
+// sidebar-workspace.ui.tsx:417,421-428,512-519 (md 40 px circle, background
+// resolveAvatarBackgroundColor(stream.color) on every non-direct row, 24 px
+// chatLock glyph over the colored circle when encrypted), shared/lib/
+// avatar-color.lib.ts:2-7 (0..0xffffff -> #rrggbb, 0 -> #000000, null falls
+// back to the Avatar bg-bg token) and app.styles.css:298,303 (bg #e4ecf3,
+// text-primary #1b1b1d). docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md.
+class WindowStreamColorFixture : public WindowChannelFixture {
+public:
+    QString zeroStream = QStringLiteral("3e0d1760-0000-4000-8000-000000000002");
+    QString plainStream = QStringLiteral("3e0d1760-0000-4000-8000-000000000003");
+    QString lockStream = QStringLiteral("3e0d1760-0000-4000-8000-000000000004");
+    QString directStream = QStringLiteral("3e0d1760-0000-4000-8000-000000000005");
+    QJsonObject blueRow, zeroRow, plainRow, lockRow, directRow;
+    WindowStreamColorFixture()
+    {
+        blueRow = windowChannel(streamId, "Blue channel");
+        // Color oracle: resolveAvatarBackgroundColor(0x2563eb) -> #2563eb.
+        blueRow["color"] = 0x2563eb;
+        zeroRow = windowChannel(zeroStream, "Zero channel");
+        zeroRow["color"] = 0; // resolveAvatarBackgroundColor(0) -> #000000
+        plainRow = windowChannel(plainStream, "Plain channel"); // no color field
+        lockRow = windowChannel(lockStream, "Locked channel");
+        lockRow["encryption"] = true;
+        lockRow["color"] = 0x22c55e;
+        directRow = windowChannel(directStream, "Direct chat");
+        directRow["private"] = true;
+        directRow["direct_user_uuid"] = channelPeer;
+        // Direct rows never take the stream color (reference WorkspaceAvatar);
+        // the DTO carries one to prove the native row ignores it.
+        directRow["color"] = 0xff0000;
+        auto base = server.handler;
+        server.handler = [this, base](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/") && !path.contains("/messages/"))
+                return {QJsonArray{blueRow, zeroRow, plainRow, lockRow, directRow}};
+            return base(request);
+        };
+    }
+};
+
+struct WindowStreamColorScene {
+    WindowStreamColorFixture fixture;
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    ApiClient api{nullptr, true};
+    Session session;
+    NativeController controller;
+    QQmlApplicationEngine engine;
+    QPointer<QQuickWindow> window;
+    explicit WindowStreamColorScene()
+        : preferences(directory.filePath("stream-color.ini")), session(&api), controller(&api, &session)
+    {
+        QVERIFY(directory.isValid());
+        preferences.setLocale("en");
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 5, 5000);
+    }
+    ~WindowStreamColorScene()
+    {
+        if (window && !closeIncubatedTestWindow(engine, window))
+            QTest::qFail("stream color scene teardown", __FILE__, __LINE__);
+    }
+    QQuickItem *circle(const QString &stream)
+    {
+        auto *row = visibleItem("stream-" + stream);
+        return row ? avatarProbeCircle(row, 40) : nullptr;
+    }
+    // The initial letter (16 px) and chatLock glyph (24 px) cover the exact
+    // circle center, so the circle paint is sampled on the annulus between the
+    // glyph box and the circle edge (measured geometry in the design doc):
+    // radius 20 circle, samples 15 px away from the center on four axes.
+    QVector<QColor> ring(QQuickItem *target)
+    {
+        QVector<QColor> samples;
+        if (!target || !target->isVisible()) return samples;
+        const auto pixels = window->grabWindow();
+        if (pixels.isNull()) return samples;
+        const auto ratio = window->devicePixelRatio();
+        for (const auto &spot : {QPointF{20, 5}, QPointF{5, 20}, QPointF{35, 20}, QPointF{20, 35}}) {
+            const auto point = target->mapToScene(spot) * ratio;
+            const QPoint at(qRound(point.x()), qRound(point.y()));
+            samples.append(pixels.rect().contains(at) ? pixels.pixelColor(at) : QColor());
+        }
+        return samples;
+    }
+    static bool closeTo(const QColor &actual, const QColor &expected)
+    {
+        return actual.isValid() && qAbs(actual.red() - expected.red()) <= 3
+            && qAbs(actual.green() - expected.green()) <= 3
+            && qAbs(actual.blue() - expected.blue()) <= 3;
+    }
+    bool ringMatches(const QString &stream, const QColor &expected)
+    {
+        const auto samples = ring(circle(stream));
+        if (samples.size() != 4) return false;
+        for (const auto &sample : samples)
+            if (!closeTo(sample, expected)) return false;
+        return true;
+    }
+    QString bgToken() { return window->property("colors").toMap().value("bg").toString(); }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -26064,6 +26177,59 @@ private slots:
         QVERIFY(visibleItem("messageSelectionBar"));
         QVERIFY(item(content, "selectMessageCheck-" + fixture.secondMessageId)->property("visible").toBool());
         QVERIFY(visibleItem("message-" + fixture.echoUuid));
+    }
+
+    // Issue #176 acceptance: non-direct sidebar rows paint the 40 px avatar
+    // with resolveAvatarBackgroundColor(stream.color); 0 renders #000000; a
+    // missing color falls back to the bg-bg token (#e4ecf3 light); direct
+    // rows stay photo/letter on the plain token; an encrypted row shows the
+    // 24 px chatLock glyph over the stream-colored circle.
+    void windowSidebarStreamColorPaintsAvatarCircle()
+    {
+        WindowStreamColorScene scene;
+        auto *probe = scene.circle(streamId);
+        QVERIFY(probe);
+        QCOMPARE(probe->size(), QSizeF(40, 40));
+        QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(streamId, QColor("#2563eb")), 4000);
+    }
+
+    void windowSidebarZeroStreamColorRendersBlackCircle()
+    {
+        WindowStreamColorScene scene;
+        QVERIFY(scene.circle(scene.fixture.zeroStream));
+        QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.zeroStream, QColor("#000000")), 4000);
+    }
+
+    void windowSidebarNullStreamColorFallsBackToBgToken()
+    {
+        WindowStreamColorScene scene;
+        const auto fallback = QColor(scene.bgToken());
+        QVERIFY(fallback.isValid());
+        QVERIFY(scene.circle(scene.fixture.plainStream));
+        QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.plainStream, fallback), 4000);
+    }
+
+    void windowSidebarDirectRowKeepsPlainAvatarBackground()
+    {
+        WindowStreamColorScene scene;
+        auto *probe = scene.circle(scene.fixture.directStream);
+        QVERIFY(probe);
+        QCOMPARE(probe->size(), QSizeF(40, 40));
+        // The DTO carries 0xff0000; a direct row must ignore it (reference
+        // WorkspaceAvatar path) and keep the letter/photo fallback surface.
+        const auto fallback = QColor(scene.bgToken());
+        QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.directStream, fallback), 4000);
+        QVERIFY(!avatarProbeHasVisibleLock(scene.circle(scene.fixture.directStream)));
+    }
+
+    void windowSidebarEncryptedRowShowsLockOverStreamColor()
+    {
+        WindowStreamColorScene scene;
+        // Glyph over the colored circle: the annulus reads the stream color.
+        QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.lockStream, QColor("#22c55e")), 4000);
+        auto *probe = scene.circle(scene.fixture.lockStream);
+        QVERIFY(probe);
+        QVERIFY(avatarProbeHasVisibleLock(probe));
     }
 };
 
