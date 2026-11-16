@@ -1794,6 +1794,7 @@ ApplicationWindow {
                 onClicked: { root.controller.showSection("chat"); root.controller.closeDrafts(); root.sidebarQuery = ""; }
             }
             NativeIconButton {
+                objectName: "sectionCalendarButton"
                 colors: root.colors
                 asset: "calendar.svg"
                 help: qsTr("Calendar is not available in this native preview")
