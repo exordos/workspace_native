@@ -17208,6 +17208,154 @@ private slots:
         QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
     }
 
+    // Issue #356 AC1/AC2/AC5: a normal same-owner token renewal replaces the
+    // access token, which bumps the API generation and aborts the in-flight
+    // first page; the shared request wrapper then drops its callback, so
+    // nothing ever cleared feed inflight/loading and every later entry point
+    // (showFeed, loadMoreFeed, retryFeed) refused to load for the rest of the
+    // controller session. The renewal must settle the interrupted page, keep
+    // the accepted rows and marker, let a reopen dispatch a fresh GET, and the
+    // retired response must not settle or replace the newer request.
+    void feedSameOwnerRenewalSettlesFirstPageAndReopenReloads()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, feedMessage(1)}, {2, feedMessage(2)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto feedGets = std::make_shared<int>(0);
+        fixture.messages = [rows, gates, feedGets](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query)) {
+                ++*feedGets;
+                Response response{feedPageResponse(*rows, request)};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        QVERIFY(fixture.controller.feedPage().value("loading").toBool());
+        const int firstPageGets = *feedGets;
+        fixture.api.setAccessToken("synthetic-renewed-access-token");
+        // AC1: the interrupted page settles its transient state; the page is
+        // still open and shows no error card for an interrupted request.
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.feedPage().value("loading").toBool(), 4000);
+        QVERIFY(!fixture.controller.feedPage().value("loadingMore").toBool());
+        QVERIFY(!fixture.controller.feedPage().value("error").toBool());
+        QVERIFY(fixture.controller.feedVisible());
+        // AC2: reopening under the renewed session dispatches a fresh GET.
+        const auto staleSends = gates->size();
+        fixture.controller.closeFeed();
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(*feedGets >= firstPageGets + 1, 4000);
+        QVERIFY(fixture.controller.feedPage().value("loading").toBool());
+        // AC5: the retired first-page answers may not settle the newer request.
+        for (size_t i = 0; i < staleSends; ++i)
+            (*gates)[i]();
+        QTest::qWait(250); // give the retired callbacks a chance to misfire
+        QVERIFY(fixture.controller.feedPage().value("loading").toBool());
+        QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
+        // The newer request's own answer settles it and the feed stays usable.
+        for (size_t i = staleSends; i < gates->size(); ++i)
+            (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 2, 4000);
+        QVERIFY(!fixture.controller.feedPage().value("loading").toBool());
+    }
+
+    // Issue #356 AC1/AC3/AC4: the same generation bump interrupts an older-page
+    // (load-more) request. The pagination overlay must settle, the accepted
+    // newest page and its cursor survive, and load-more may run again.
+    void feedSameOwnerRenewalSettlesInterruptedOlderPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, feedMessage(n));
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto markerGets = std::make_shared<int>(0);
+        fixture.messages = [rows, gates, markerGets](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query) && query.hasQueryItem("page_marker")) {
+                ++*markerGets;
+                Response response{feedPageResponse(*rows, request)};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 50, 4000);
+        fixture.controller.loadMoreFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the older page is in flight
+        QVERIFY(fixture.controller.feedPage().value("loadingMore").toBool());
+        fixture.api.setAccessToken("synthetic-renewed-access-token");
+        // AC1: the interrupted older page settles; the overlay is gone.
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.feedPage().value("loadingMore").toBool(), 4000);
+        QVERIFY(!fixture.controller.feedPage().value("loading").toBool());
+        // AC3: the accepted newest page and its pagination marker are retained.
+        QCOMPARE(fixture.controller.feedPage().value("rows").toList().size(), 50);
+        QVERIFY(fixture.controller.feedPage().value("canLoadMore").toBool());
+        // AC2/AC4: a new older-page GET runs under the renewed session.
+        const auto staleSends = gates->size();
+        const int markerGetsBefore = *markerGets;
+        fixture.controller.loadMoreFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(*markerGets >= markerGetsBefore + 1, 4000);
+        for (size_t i = 0; i < staleSends; ++i)
+            (*gates)[i]();
+        QTest::qWait(250);
+        QCOMPARE(fixture.controller.feedPage().value("rows").toList().size(), 50);
+        for (size_t i = staleSends; i < gates->size(); ++i)
+            (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 60, 4000);
+        QVERIFY(!fixture.controller.feedPage().value("loadingMore").toBool());
+    }
+
+    // Issue #356 AC5: signing out (owner replacement) retires the Feed request
+    // identity: no loading state may outlive the owner, and the late answer of
+    // the retired page may not bring the previous owner's feed back.
+    void feedSignOutClearsFeedRequestIdentity()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, feedMessage(1)}, {2, feedMessage(2)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        fixture.messages = [rows, gates](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query)) {
+                Response response{feedPageResponse(*rows, request)};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        QVERIFY(fixture.controller.feedPage().value("loading").toBool());
+        fixture.controller.logout();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.authenticated(), 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.feedPage().value("loading").toBool(), 4000);
+        QVERIFY(!fixture.controller.feedPage().value("loadingMore").toBool());
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTest::qWait(250); // give the late response a chance to misfire
+        QVERIFY(!fixture.controller.feedVisible());
+        QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
+        QVERIFY(!fixture.controller.feedPage().value("loading").toBool());
+    }
+
     void feedErrorAndRetry()
     {
         Fixture fixture;
@@ -17301,6 +17449,85 @@ private slots:
         QVERIFY(!preview(1).contains(QStringLiteral("urn:")));
         QVERIFY(!preview(1).contains(QStringLiteral("11111111")));
         QVERIFY(!preview(3).contains(QStringLiteral("22222222")));
+    }
+
+    // exo-review round 2 (thread 4581966233): the summarize pass only matched
+    // the plain `[label](target)` shape, so every other Markdown link form kept
+    // its raw source - and with it its link target - in the preview. The
+    // reference parses the full AST (workspace-message-summary.lib.ts
+    // summarizeLinkInline/summarizeFileInline, with isReadableLinkLabel at
+    // lines 61-68) and prints only the readable label for all of these forms;
+    // reference-style definitions never render at all, and truncatePreview must
+    // never leave a target fragment behind.
+    void feedPreviewHidesUncommonMarkdownLinkTargets()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto withContent = [](int number, const QString &content) {
+            auto row = feedMessage(number);
+            auto payload = row.value("payload").toObject();
+            payload.insert("content", content);
+            row.insert("payload", payload);
+            return row;
+        };
+        const QString head(60, QLatin1Char('a'));
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, withContent(1, QStringLiteral(
+                "[handbook][1]\n\n[1]: https://intranet.example/private/doc"))},
+            {2, withContent(2, QStringLiteral(
+                "Read [report](https://intranet.example/x 'internal') now"))},
+            {3, withContent(3, QStringLiteral(
+                "see [a\\]b](https://intranet.example/leak) ok"))},
+            {4, withContent(4, QStringLiteral(
+                "[![shot](urn:image:44444444-4444-4444-9444-444444444444)]"
+                "(https://intranet.example/leak)"))},
+            {5, withContent(5, QStringLiteral(
+                "open [x](<https://intranet.example/a b>) tail"))},
+            {6, withContent(6, head + QStringLiteral(
+                " https://intranet.example/secret/token=abcdefghij"))},
+            {7, withContent(7, QStringLiteral(
+                "note [a][u]\n\n[u]: urn:file:55555555-5555-4555-8555-555555555555?name=secret.pdf"))},
+            {8, withContent(8, QStringLiteral(
+                "plain [docs](https://example.com/handbook) tail"))},
+        });
+        fixture.messages = [rows](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 8, 4000);
+        const auto preview = [&](int number) {
+            const auto list = fixture.controller.feedPage().value("rows").toList();
+            return list.at(number - 1).toMap().value("preview").toString();
+        };
+        // No row may carry a raw target, whatever Markdown shape carried it.
+        QStringList leaked;
+        for (int number = 1; number <= 8; ++number) {
+            const auto value = preview(number);
+            if (value.contains(QStringLiteral("intranet")) || value.contains(QStringLiteral("urn:"))
+                || value.contains(QStringLiteral("!(")) || value.contains(QStringLiteral("](")))
+                leaked << QStringLiteral("row %1: [%2]").arg(number).arg(value);
+        }
+        const QStringList expected;
+        QCOMPARE(leaked, expected);
+        QCOMPARE(preview(1), QStringLiteral("handbook"));
+        QCOMPARE(preview(2), QStringLiteral("Read report now"));
+        QCOMPARE(preview(3), QStringLiteral("see a]b ok"));
+        QCOMPARE(preview(4), QStringLiteral("Image"));
+        QCOMPARE(preview(5), QStringLiteral("open x tail"));
+        QCOMPARE(preview(7), QStringLiteral("note a"));
+        // The reference autolink/label contract is untouched for ordinary links.
+        QCOMPARE(preview(8), QStringLiteral("plain docs tail"));
+        // The clamp may never cut inside a target: dropping the trailing token
+        // is the only way to keep the "no raw target" invariant (truncatePreview,
+        // workspace-message-summary.lib.ts:38-52).
+        QVERIFY(!preview(6).contains(QStringLiteral("://")));
+        QVERIFY(preview(6).endsWith(QStringLiteral("...")));
+        QVERIFY(preview(6).startsWith(head));
     }
 
     void feedLoadingAndEmptyStates()

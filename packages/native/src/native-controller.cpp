@@ -6767,8 +6767,33 @@ QVariantMap NativeController::feedPage() const
 
 void NativeController::resetFeed()
 {
+    // Issue #356: the request identity is monotonic across a reset, so a late
+    // answer of the previous owner's page can never be mistaken for the newest
+    // request of the next one (which would otherwise restart at version 1).
+    const auto version = m_feed.version + 1;
     m_feedVisible = false;
     m_feed = FeedState{};
+    m_feed.version = version;
+}
+
+// Issue #356: replacing the access token bumps the API generation, the shared
+// request wrapper then drops every callback of the retired generation, and the
+// Feed page would keep inflight/loading (or the loadingMore overlay) forever -
+// showFeed, loadMoreFeed and retryFeed all refuse to load while inflight is
+// set, so the Feed stayed unusable until sign-out. Retiring the request
+// identity here settles the transient state: the accepted rows and the
+// pagination marker stay (the reference keeps the rendered list when a page
+// fails), and the bump fences any late answer of the retired page out of the
+// newer request.
+void NativeController::interruptFeedRequest()
+{
+    if (!m_feed.inflight && !m_feed.loading && !m_feed.loadingMore)
+        return;
+    ++m_feed.version;
+    m_feed.inflight = false;
+    m_feed.loading = false;
+    m_feed.loadingMore = false;
+    emit stateChanged();
 }
 
 QVariantList NativeController::feedRows() const
@@ -6834,8 +6859,97 @@ QString NativeController::feedRowPreview(const Message &message) const
     return summarizeFeedMarkdown(message.content);
 }
 
+// Markdown inline syntax that can carry a link target. A label may contain
+// backslash escapes and one nested bracket group (so a linked image
+// `[![alt](urn:image:...)](https://...)` is a single inline), and the
+// destination may be bare, wrapped in `<...>` or followed by a `"title"`,
+// `'title'` or `(title)` suffix; `[label][ref]` is the reference-style usage
+// whose destination lives in a definition line. These are the shapes
+// CommonMark/marked accept, and each of them used to fall through as raw source
+// and carry its target into the preview (exo-review thread 4581966233).
+static const QRegularExpression &feedInlineSyntax()
+{
+    static const QRegularExpression regex(QStringLiteral(
+        "(!)?\\[((?:[^\\[\\]\\\\]|\\\\.|\\[[^\\]]*\\])*)\\]"
+        "(?:\\(\\s*(?:<([^>]*)>|([^\\s)]+))"
+        "(?:\\s+(?:\"([^\"]*)\"|'([^']*)'|\\(([^)]*)\\)))?\\s*\\)"
+        "|\\[([^\\]]*)\\])"));
+    return regex;
+}
+
+// A link reference definition is not visible text in the reference AST, and its
+// whole payload is a destination: the line disappears instead of the target.
+static const QRegularExpression &feedLinkDefinitionSyntax()
+{
+    static const QRegularExpression regex(
+        QStringLiteral("^ {0,3}\\[[^\\]]+\\]:\\s*\\S.*"));
+    return regex;
+}
+
+// Rewrites the subject by walking the matches of `regex`, keeping capture group
+// `keep` in place of each match (nothing at all when keep is negative). This Qt
+// build has no QRegularExpression::replace, and the feed summary must not keep
+// any other part of a match that carried a link target.
+static QString rewriteFeedMatches(const QRegularExpression &regex, const QString &text, int keep)
+{
+    QString out;
+    auto last = 0;
+    auto iterator = regex.globalMatch(text);
+    while (iterator.hasNext()) {
+        const auto match = iterator.next();
+        out += text.mid(last, int(match.capturedStart() - last));
+        if (keep >= 0)
+            out += match.captured(keep);
+        last = int(match.capturedEnd());
+    }
+    out += text.mid(last);
+    return out;
+}
+
+// Backstop for any markdown link/media shape the syntax pass still misses: the
+// brackets collapse down to their label and the destination disappears with
+// them. A residual `urn:` token is dropped for the same reason - the reference
+// summary never prints one (summarizeFileInline, workspace-message-summary
+// .lib.ts:74-95).
+static QString stripFeedMarkdownResidue(const QString &text)
+{
+    static const QRegularExpression residue(QStringLiteral(
+        "!?\\[([^\\]]*)\\]\\s*(?:\\[[^\\]]*\\]|\\([^)]*\\))"));
+    static const QRegularExpression urnToken(QStringLiteral("urn:[^\\s)\\]]+"));
+    auto value = text;
+    // Two passes: a nested residue such as `[a [b]](u)` only collapses once the
+    // inner group is gone.
+    for (int pass = 0; pass < 2; ++pass)
+        value = rewriteFeedMatches(residue, value, 1);
+    return rewriteFeedMatches(urnToken, value, -1);
+}
+
+// CommonMark escapable punctuation: `[a\]b](x)` has the readable label `a]b`.
+static QString unescapeFeedMarkdownLabel(const QString &label)
+{
+    static const QRegularExpression escape(
+        QStringLiteral("\\\\([\\\\`*_{}\\[\\]()#+\\-.!~>|])"));
+    return rewriteFeedMatches(escape, label, 1);
+}
+
+// truncatePreview (workspace-message-summary.lib.ts:38-52) cuts at the limit.
+// A target can still legitimately sit in the summarized text - an autolink
+// whose readable label is its own href is printed verbatim by the reference -
+// so a cut that lands inside such a token drops the whole token instead of
+// leaving a fragment of the target behind.
+static QString clampFeedSummary(const QString &summary)
+{
+    if (summary.size() <= 80)
+        return summary;
+    auto cut = 77;
+    const auto boundary = summary.lastIndexOf(QLatin1Char(' '), cut);
+    if (boundary > 0 && summary.mid(boundary, cut - boundary).contains(QStringLiteral("://")))
+        cut = boundary;
+    return summary.left(cut).trimmed() + QStringLiteral("...");
+}
+
 QString NativeController::feedPreviewInlineLabel(const QString &bang, const QString &label,
-    const QString &target, const QString &title, bool &isMedia) const
+    const QString &target, const QString &title, bool &isMedia, int depth) const
 {
     // workspace_ui 61dacef workspace-message-summary.lib.ts: summarizeFileInline
     // (lines 74-95) renders media references as the media label and file
@@ -6844,6 +6958,14 @@ QString NativeController::feedPreviewInlineLabel(const QString &bang, const QStr
     // renders "@label" (or the bare label when silent). None of these paths
     // ever prints the urn/file url itself.
     isMedia = false;
+    // A link label is markdown itself: the reference summarizes the link's
+    // children before comparing them with the target (summarizeLinkInline ->
+    // summarizeInlineChildren), so a nested image or a second link inside a
+    // label contributes its own label and never its own target.
+    bool nestedMedia = false;
+    const auto readable = depth < 3
+        ? summarizeFeedInlineFlow(unescapeFeedMarkdownLabel(label), depth + 1, nestedMedia)
+        : stripFeedMarkdownResidue(unescapeFeedMarkdownLabel(label)).simplified();
     const bool silent = title.compare(QLatin1String("silent"), Qt::CaseInsensitive) == 0;
     const auto reference = parseWorkspaceReference(target, label, silent);
     if (reference) {
@@ -6869,9 +6991,9 @@ QString NativeController::feedPreviewInlineLabel(const QString &bang, const QStr
         case WorkspaceReferenceKind::Message:
         case WorkspaceReferenceKind::Stream:
         case WorkspaceReferenceKind::Topic:
-            return label.simplified();
+            return readable;
         case WorkspaceReferenceKind::External: {
-            const auto normalized = label.simplified();
+            const auto normalized = readable;
             if (!normalized.isEmpty() && normalized != target)
                 return normalized;
             return normalized.isEmpty() ? reference->url : normalized;
@@ -6896,7 +7018,7 @@ QString NativeController::feedPreviewInlineLabel(const QString &bang, const QStr
     // An unparseable urn-like target is dropped instead of leaked.
     static const QRegularExpression urlOnly(
         QStringLiteral("^(?:https?://|mailto:)\\S+$"), QRegularExpression::CaseInsensitiveOption);
-    const auto normalized = label.simplified();
+    const auto normalized = readable;
     if (!normalized.isEmpty()
         && (normalized != target || !urlOnly.match(normalized).hasMatch()))
         return normalized;
@@ -6908,19 +7030,67 @@ QString NativeController::feedPreviewInlineLabel(const QString &bang, const QStr
     return {};
 }
 
+QString NativeController::summarizeFeedInlineFlow(const QString &text, int depth,
+    bool &leadingMedia) const
+{
+    // summarizeParagraph (workspace-message-summary.lib.ts:162-181): every
+    // inline that can carry a target is replaced by its label first, and when
+    // the first non-blank part of the block is a media inline the block
+    // renders as "<media label>: <rest of the block>".
+    QList<QPair<QString, bool>> parts; // {text, isMedia}
+    auto last = 0;
+    auto iterator = QRegularExpressionMatchIterator(feedInlineSyntax().globalMatch(text));
+    while (iterator.hasNext()) {
+        const auto match = iterator.next();
+        const auto before = text.mid(last, int(match.capturedStart() - last));
+        if (!before.isEmpty())
+            parts.append({before, false});
+        auto target = match.hasCaptured(3) ? match.captured(3) : match.captured(4);
+        if (target.isEmpty() && match.hasCaptured(8))
+            target = QStringLiteral("reference:") + match.captured(8);
+        QString title;
+        for (const auto group : {5, 6, 7})
+            if (match.hasCaptured(group)) { title = match.captured(group); break; }
+        bool isMedia = false;
+        const auto label = feedPreviewInlineLabel(match.captured(1), match.captured(2),
+            target, title, isMedia, depth);
+        if (!label.isEmpty())
+            parts.append({label, isMedia});
+        last = int(match.capturedEnd());
+    }
+    if (last < text.size())
+        parts.append({text.mid(last), false});
+    int first = -1;
+    for (int i = 0; i < parts.size(); ++i)
+        if (!parts.at(i).first.simplified().isEmpty()) { first = i; break; }
+    QStringList texts;
+    for (const auto &part : parts)
+        texts.append(part.first);
+    auto joined = texts.join(QLatin1Char(' ')).simplified();
+    leadingMedia = first >= 0 && parts.at(first).second;
+    if (first >= 0 && parts.at(first).second) {
+        QStringList rest;
+        for (int i = first + 1; i < parts.size(); ++i)
+            rest.append(parts.at(i).first);
+        const auto restText = rest.join(QLatin1Char(' ')).simplified();
+        const auto media = parts.at(first).first;
+        joined = restText.isEmpty() ? media : media + QStringLiteral(": ") + restText;
+    }
+    return joined;
+}
+
 QString NativeController::summarizeFeedMarkdown(const QString &content) const
 {
     // The reference builds the feed summary from the full markdown AST
     // (summarizeWorkspaceMessageMarkdown, workspace-message-summary.lib.ts,
     // options feed-page.ui.tsx:64-69). This native path reproduces the
     // visible-output contract for the constructs that can carry a raw target
-    // or a block prefix: media/attachment inlines, markdown links, mentions
-    // and quote blocks - each replaced BEFORE the 80-character clamp. Block
-    // decorations without a security role (code/list prefixes) keep the
-    // shipped single-flow precedent documented in
-    // docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md.
-    static const QRegularExpression inlineSyntax(QStringLiteral(
-        "(!)?\\[([^\\]]*)\\]\\(\\s*([^)\\s]+)(?:\\s+\"([^\"]*)\")?\\s*\\)"));
+    // or a block prefix: media/attachment inlines in every destination form,
+    // markdown links, reference-style links and their definitions, mentions
+    // and quote blocks - each replaced BEFORE the 80-character clamp, so no
+    // target can be truncated into a visible fragment. Block decorations
+    // without a security role (code/list prefixes) keep the shipped single-flow
+    // precedent documented in docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md.
     QStringList blocks;
     for (const auto &paragraph : content.split(QRegularExpression(QStringLiteral("\\n\\s*\\n")))) {
         // summarizeBlock case "quote" (lines 206-213): with includeQuotePrefix
@@ -6933,52 +7103,21 @@ QString NativeController::summarizeFeedMarkdown(const QString &content) const
                 quoted = true;
                 trimmed = trimmed.mid(1).trimmed();
             }
+            // A link reference definition is pure destination: the reference
+            // renders no text for it, so it is dropped instead of leaked.
+            if (feedLinkDefinitionSyntax().match(trimmed).hasMatch())
+                continue;
             lines.append(trimmed);
         }
         const auto text = lines.join(QLatin1Char('\n'));
-        QList<QPair<QString, bool>> parts; // {text, isMedia}
-        auto last = 0;
-        auto iterator = QRegularExpressionMatchIterator(inlineSyntax.globalMatch(text));
-        while (iterator.hasNext()) {
-            const auto match = iterator.next();
-            const auto before = text.mid(last, int(match.capturedStart() - last));
-            if (!before.isEmpty())
-                parts.append({before, false});
-            bool isMedia = false;
-            const auto label = feedPreviewInlineLabel(match.captured(1), match.captured(2),
-                match.captured(3), match.captured(4), isMedia);
-            if (!label.isEmpty())
-                parts.append({label, isMedia});
-            last = int(match.capturedEnd());
-        }
-        if (last < text.size())
-            parts.append({text.mid(last), false});
-        // summarizeParagraph (lines 162-181): when the first non-blank part
-        // of the block is an image/video inline the block renders as
-        // "<media label>: <rest of the block>".
-        int first = -1;
-        for (int i = 0; i < parts.size(); ++i)
-            if (!parts.at(i).first.simplified().isEmpty()) { first = i; break; }
-        QStringList texts;
-        for (const auto &part : parts)
-            texts.append(part.first);
-        auto joined = texts.join(QLatin1Char(' ')).simplified();
-        if (first >= 0 && parts.at(first).second) {
-            QStringList rest;
-            for (int i = first + 1; i < parts.size(); ++i)
-                rest.append(parts.at(i).first);
-            const auto restText = rest.join(QLatin1Char(' ')).simplified();
-            const auto media = parts.at(first).first;
-            joined = restText.isEmpty() ? media : media + QStringLiteral(": ") + restText;
-        }
+        bool leadingMedia = false;
+        auto joined = summarizeFeedInlineFlow(text, 0, leadingMedia);
         if (quoted)
             joined = tr("Quote: %1").arg(joined.simplified());
         blocks.append(joined);
     }
-    auto summary = blocks.join(QLatin1Char(' ')).simplified();
-    if (summary.size() > 80)
-        summary = summary.left(77).trimmed() + QStringLiteral("...");
-    return summary;
+    const auto summary = stripFeedMarkdownResidue(blocks.join(QLatin1Char(' '))).simplified();
+    return clampFeedSummary(summary);
 }
 
 // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
@@ -8125,6 +8264,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // (durable rotation pins stay) so a later operation can proceed under
         // the renewed session.
         interruptChatRotationOperations();
+        // Issue #356: the same bump retires an outstanding Feed page (first or
+        // older page); settle its transient state so reopen/retry/load-more can
+        // dispatch again under the renewed session.
+        interruptFeedRequest();
         m_messageFields.clear();
         // Same-token renewals retain their transfers. A changed generation fences
         // both active operations and queued paths before resetting their UI state.

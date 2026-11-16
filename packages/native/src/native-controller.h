@@ -1830,14 +1830,16 @@ private:
     bool m_feedVisible = false;
     FeedState m_feed;
     void loadFeedPage(bool append);
+    void interruptFeedRequest();
     void resetFeed();
     QVariantList feedRows() const;
     QString feedRowTime(const QDateTime &created) const;
     QString feedRowContext(const Message &message) const;
     QString feedRowPreview(const Message &message) const;
     QString summarizeFeedMarkdown(const QString &content) const;
+    QString summarizeFeedInlineFlow(const QString &text, int depth, bool &leadingMedia) const;
     QString feedPreviewInlineLabel(const QString &bang, const QString &label,
-        const QString &target, const QString &title, bool &isMedia) const;
+        const QString &target, const QString &title, bool &isMedia, int depth = 0) const;
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
