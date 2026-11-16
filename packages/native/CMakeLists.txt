@@ -388,7 +388,7 @@ if(BUILD_TESTING)
         set_tests_properties(native-clipboard-lifecycle PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
         add_test(NAME native-clipboard-slow-ui COMMAND native-window-test confirmedSlowClipboardCopyRemainsVisibleAndCancellable)
-        set_tests_properties(native-clipboard-slow-ui PROPERTIES TIMEOUT 30
+        set_tests_properties(native-clipboard-slow-ui PROPERTIES TIMEOUT 30 LABELS "gui" RESOURCE_LOCK "xdisplay"
             ENVIRONMENT "CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
         add_test(NAME native-clipboard-consent COMMAND native-controller-test clipboardDoesNotReadBeforeConfirmation)
         set_tests_properties(native-clipboard-consent PROPERTIES TIMEOUT 20
@@ -399,6 +399,8 @@ if(BUILD_TESTING)
         set_tests_properties(native-clipboard-path-race PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_CLIPBOARD_PATH_RACE=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-path-race>")
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_test(NAME native-clipboard-gui-gate COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard-gui-gate.py" "${CMAKE_CURRENT_BINARY_DIR}")
         add_executable(native-updater-http2-recovery-driver tests/updater-http2/recovery.cpp src/native-updater.cpp src/native-updater.h)
         target_include_directories(native-updater-http2-recovery-driver PRIVATE src)
         target_link_libraries(native-updater-http2-recovery-driver PRIVATE Qt6::Core Qt6::Network OpenSSL::SSL)
