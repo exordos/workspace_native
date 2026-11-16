@@ -71,9 +71,10 @@ private:
     QTimer m_cursorFlush;
     QHash<QString, QPair<QString, quint64>> m_cursors;
     QString m_durableKey;
-    // Durable key whose delete has not landed yet: an invalidated row under
-    // this key must not be restored, and the delete keeps being retried.
-    QString m_pendingClearKey;
+    // Durable keys whose delete has not landed yet: an invalidated row under
+    // a pending key must not be restored, and every delete keeps being
+    // retried independently until it lands (finding 4585327340).
+    QSet<QString> m_pendingClearKeys;
     bool m_cursorDirty = false;
     QQueue<QJsonObject> m_events;
     QJsonObject m_pending;

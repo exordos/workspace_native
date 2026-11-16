@@ -116,7 +116,17 @@ durable queue storage.
   when it fires it flushes once for the still-current owner.
 - Immediate boundary flushes: `suspend()` (covers every retry/teardown path)
   and `stop()`. `resynchronize()` discards the pending write and deletes the
-  durable row instead of writing it.
+  durable row instead of writing it. A failed persist keeps the cursor dirty
+  and re-arms the coalescing window, and `resume()` re-arms it again when a
+  dirty cursor survived a suspend with no further events arriving, so a
+  transient storage outage self-heals without waiting for the next event.
+- A failed durable delete keeps its owner key fenced out of restore and
+  pending for retry; every owed key retries independently (a second failing
+  clear never replaces the first one's retry), and a successful save only
+  satisfies a pending clear when the key verifiably holds the replacement
+  cursor - a same-generation monotonic no-op save leaves the invalidated row
+  untouched, so the fence and the delete obligation stay in force until the
+  row is actually gone or replaced.
 - Justification: catch-up pages arrive in batches of up to 100 events
   (`page_limit=100` in `catchUp()`), so an fsync per acknowledge would
   serialize the GUI thread during exactly the bursts where responsiveness

@@ -995,6 +995,185 @@ private slots:
                 == QString("10"), 3000);
         fixture.client.stop();
     }
+
+    // Review #359 finding 4584028540 (reopened): a persist that failed while
+    // the owner was current must survive a suspend/resume with no further
+    // realtime events. The suspended coalescing timer is inert by design, so
+    // resume has to re-arm it for the retained dirty cursor.
+
+    void failedCursorSaveIsRetainedAndRetriedAfterSuspendResume()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        store.setFaultsForTest(true, false);
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        // The coalescing flush keeps failing while the owner stays current.
+        QTest::qWait(900);
+        QVERIFY(!store.read(key).has_value());
+        // The client suspends: the teardown flush fails and the re-armed
+        // timer fires inertly while suspended. Resuming brings the client
+        // back with no further realtime events at all.
+        fixture.client.stop();
+        QTest::qWait(900);
+        QVERIFY(!store.read(key).has_value());
+        fixture.client.start();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        // The resume kept using the retained cursor position.
+        QCOMPARE(QUrlQuery(fixture.sockets.last()->requestUrl()).queryItemValue("last_epoch_version"),
+                 QString("12"));
+        // Storage recovers while the stream stays idle: the retained cursor
+        // must be persisted after the resume without any new event.
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto current = store.read(key);
+            return current.has_value() && current->generation == QString("generation-a")
+                && current->epoch == quint64(12);
+        })(), 3000);
+        fixture.client.stop();
+    }
+
+    // Review #359 finding 4585327330: save() also returns true when a
+    // higher-epoch row of the same generation survives as a monotonic no-op,
+    // so a successful save must not release the invalidation fence until the
+    // key verifiably holds the replacement cursor.
+
+    void noopSaveKeepsInvalidationFenceAndNextConnectRebaselines()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        // The server prunes the position inside the same generation (the
+        // epoch endpoint answers with generation-a at the lower baseline
+        // epoch 10) and every delete fails: the durable row gen-a/12 stays
+        // as the invalidated row the client fences out of restore.
+        fixture.events.clear();
+        store.setFaultsForTest(false, true);
+        fixture.client.resynchronize();
+        QTRY_COMPARE(fixture.snapshots, 2);
+        QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(10));
+        // The post-resync save (gen-a/10) is a no-op against the surviving
+        // gen-a/12 row: it reports success without replacing anything.
+        QTest::qWait(900);
+        const auto stale = store.read(key);
+        QVERIFY(stale.has_value());
+        QCOMPARE(stale->generation, QString("generation-a"));
+        QCOMPARE(stale->epoch, quint64(12));
+        // Storage recovers. With the fence correctly held the owed delete
+        // keeps retrying and lands, so the invalidated future row is gone;
+        // releasing the fence on the no-op save dropped the delete instead.
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto current = store.read(key);
+            return !current.has_value() || current->epoch < quint64(12);
+        })(), 3000);
+        fixture.client.stop();
+        // The next connect therefore cannot restore the future-epoch row:
+        // a fresh client re-baselines instead of resuming pruned gen-a/12.
+        RealtimeClient resumed(&fixture.api, &fixture.session);
+        resumed.useCursorStore(&store);
+        QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
+        resumed.start();
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        resumed.stop();
+    }
+
+    // Review #359 finding 4585327340: a second failed owner clear must not
+    // overwrite the first owner's pending deletion. Every failed delete
+    // retries independently until it lands.
+
+    void secondFailedOwnerClearKeepsFirstOwnerClearPending()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        const QString projectB = "88888888-8888-4888-8888-888888888888";
+        const QString projectC = "77777777-7777-4777-8777-777777777777";
+        auto currentProject = QString(projectId);
+        fixture.sessionOverride = [&](const Request &request) -> std::optional<Response> {
+            if (request.target.path() == "/api/core/v1/iam/projects/")
+                return Response{QJsonArray{
+                    QJsonObject{{"uuid", projectId}, {"name", "Project A"}, {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", projectB}, {"name", "Project B"}, {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", projectC}, {"name", "Project C"}, {"status", "ACTIVE"}}},
+                    200, 0, {}};
+            if (request.target.path().endsWith("/actions/introspect"))
+                return Response{QJsonObject{{"user_info", QJsonObject{{"uuid", userId}}},
+                    {"project_id", currentProject}, {"otp_verified", true}, {"permissions", QJsonArray{}}},
+                    200, 0, {}};
+            return std::nullopt;
+        };
+        fixture.session.login(fixture.origin(), "synthetic-user", "synthetic-password");
+        QVERIFY(QTest::qWaitFor([&] { return fixture.session.projects().size() == 3; }, 2000));
+        fixture.session.selectProject(projectId);
+        QVERIFY(QTest::qWaitFor([&] { return fixture.session.ready(); }, 2000));
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto keyA = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(keyA).has_value(), 2000);
+        // Every owner clear now fails while the client walks A -> B -> C: the
+        // A delete must stay pending while the B delete also fails.
+        fixture.events.clear();
+        store.setFaultsForTest(false, true);
+        currentProject = projectB;
+        fixture.session.selectProject(projectB);
+        QVERIFY(QTest::qWaitFor([&] { return fixture.session.ready(); }, 2000));
+        QTRY_COMPARE(fixture.snapshots, 2);
+        currentProject = projectC;
+        fixture.session.selectProject(projectC);
+        QVERIFY(QTest::qWaitFor([&] { return fixture.session.ready(); }, 2000));
+        QTRY_COMPARE(fixture.snapshots, 3);
+        // Storage recovers: both owed deletes land independently, A's was
+        // not lost when B's clear failed afterwards.
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(!store.read(keyA).has_value(), 3000);
+        // Returning to A therefore re-baselines instead of restoring the
+        // row that was supposed to be wiped.
+        const auto snapshotsBeforeReturn = fixture.snapshots;
+        currentProject = projectId;
+        fixture.session.selectProject(projectId);
+        QVERIFY(QTest::qWaitFor([&] { return fixture.session.ready(); }, 2000));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.snapshots, snapshotsBeforeReturn + 1, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.sockets.size() >= 4 && fixture.sockets.last()
+            && QUrlQuery(fixture.sockets.last()->requestUrl()).queryItemValue("last_epoch_version")
+                == QString("10"), 3000);
+        fixture.client.stop();
+    }
 };
 
 QTEST_GUILESS_MAIN(RealtimeClientTest)

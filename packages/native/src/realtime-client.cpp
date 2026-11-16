@@ -192,9 +192,17 @@ void RealtimeClient::resume()
     // readable-but-write-rejecting store cannot resurrect it and keep the
     // 410 resynchronization spinning (findings 4584028530/4584028572).
     retryDurableClear();
+    // A persist that failed before the suspend kept its dirty cursor, and
+    // the coalescing timer is inert while suspended, so resume has to
+    // re-arm it: without this the retained cursor strands until the next
+    // acknowledged event even though storage may already be healthy
+    // (finding 4584028540).
+    if (m_cursorDirty && !m_cursorFlush.isActive() && m_cursorStore
+        && !m_durableKey.isEmpty() && !m_epochGeneration.isEmpty())
+        m_cursorFlush.start(CursorPersistDelayMs);
     auto saved = m_cursors.constFind(owner);
     if (saved == m_cursors.cend() && m_cursorStore && !m_durableKey.isEmpty()
-        && m_pendingClearKey != m_durableKey) {
+        && !m_pendingClearKeys.contains(m_durableKey)) {
         // Restore-on-connect: a valid persisted row continues through the
         // same catch-up path the in-memory reconnect uses. A missing, invalid
         // or unreachable row keeps the untouched baseline path.
@@ -458,10 +466,17 @@ void RealtimeClient::flushCursorPersist()
     }
     if (m_cursorStore->save(m_durableKey, {m_epochGeneration, m_epoch})) {
         m_cursorDirty = false;
-        // The write replaced the key regardless of what the failed delete
-        // left behind, so the pending clear is satisfied too.
-        if (m_pendingClearKey == m_durableKey)
-            m_pendingClearKey.clear();
+        if (m_pendingClearKeys.contains(m_durableKey)) {
+            // save() also returns true for a same-generation monotonic
+            // no-op, where the invalidated row survives untouched. Only
+            // release the fence once the key verifiably holds the
+            // replacement cursor; until then the delete keeps retrying
+            // (finding 4585327330).
+            const auto written = m_cursorStore->read(m_durableKey);
+            if (written.has_value() && written->generation == m_epochGeneration
+                && written->epoch == m_epoch)
+                m_pendingClearKeys.remove(m_durableKey);
+        }
     } else if (m_active) {
         // A transient save failure must not drop the pending cursor until
         // the next event: keep it dirty and retry while this owner is still
@@ -475,25 +490,27 @@ bool RealtimeClient::clearDurableCursor(const QString &key)
     if (!m_cursorStore || key.isEmpty())
         return true;
     if (m_cursorStore->clear(key)) {
-        if (m_pendingClearKey == key)
-            m_pendingClearKey.clear();
+        m_pendingClearKeys.remove(key);
         return true;
     }
     // The invalidated row stays readable: fence it out of restore and keep
     // the delete pending until it lands (findings 4584028530/4584028572).
-    m_pendingClearKey = key;
+    // Each owed owner's delete is tracked on its own so a second failed
+    // clear cannot overwrite the first one's retry (finding 4585327340).
+    m_pendingClearKeys.insert(key);
     return false;
 }
 
 void RealtimeClient::retryDurableClear()
 {
-    if (m_pendingClearKey.isEmpty() || !m_cursorStore)
+    if (m_pendingClearKeys.isEmpty() || !m_cursorStore)
         return;
-    if (m_cursorStore->clear(m_pendingClearKey)) {
-        m_pendingClearKey.clear();
-        return;
+    const auto owed = m_pendingClearKeys;
+    for (const auto &key : owed) {
+        if (m_cursorStore->clear(key))
+            m_pendingClearKeys.remove(key);
     }
-    if (m_active && !m_cursorFlush.isActive())
+    if (m_active && !m_pendingClearKeys.isEmpty() && !m_cursorFlush.isActive())
         m_cursorFlush.start(CursorPersistDelayMs);
 }
 
