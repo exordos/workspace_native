@@ -1,3 +1,12 @@
+# Workspace Native 0.30.0 - Linux development preview
+
+Sign-in gains its own one-time-code step, and the sidebar learns to browse several chats at once:
+
+- When the identity provider asks for a one-time code, the sign-in card now shows a dedicated code step instead of one crowded form: a rejected code stays on that step and can be retried, the retry stays bound to the original login attempt and server, and Back returns to the credentials with the fields preserved, exactly as in the reference client.
+- Chats in the sidebar now expand in place: open a chat's topics without leaving your current conversation, keep expanded chats per workspace session, and reveal unfinished and completed topics in stages behind show-more levels, matching the reference sidebar behaviour.
+
+---
+
 # Workspace Native 0.29.0 - Linux development preview
 
 Reading position survives restarts, forwarding becomes an honest batch, and the project feed gets its own page:
