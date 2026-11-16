@@ -17902,6 +17902,44 @@ private slots:
         QTRY_VERIFY(draftStorage.stopped());
     }
 
+    // Issue #35: the top-bar section state switches chat/mail exclusively,
+    // mirroring the reference router where /mail is the mail section and any
+    // conversation route maps back to chat (top-bar.lib.ts:17-29,
+    // getSectionFromPathname).
+    void sectionStateSwitchesChatAndMailExclusively()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QSignalSpy changes(&fixture.controller, &NativeController::stateChanged);
+        QVERIFY(changes.isValid());
+        fixture.controller.showSection(QStringLiteral("mail"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("mail"));
+        QVERIFY(changes.count() >= 1);
+        // Entering the mail section closes the chat content pages.
+        fixture.controller.showInbox();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QVERIFY(fixture.controller.inboxVisible());
+        fixture.controller.showSection(QStringLiteral("mail"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("mail"));
+        QVERIFY(!fixture.controller.inboxVisible());
+        // Re-opening a chat content page exits the mail section.
+        fixture.controller.showMentions();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QVERIFY(fixture.controller.mentionsVisible());
+        // Selecting a conversation is chat navigation.
+        fixture.controller.showSection(QStringLiteral("mail"));
+        fixture.controller.selectStream(streamId);
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        // Sections the client cannot render yet are ignored: the Calendar lane
+        // adopts this property without a behavioural surprise.
+        fixture.controller.showSection(QStringLiteral("mail"));
+        fixture.controller.showSection(QStringLiteral("calls"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("mail"));
+        fixture.controller.showSection(QStringLiteral("chat"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+    }
+
     void loginWizardStartsOnOrganizationStep()
     {
         Fixture fixture;
