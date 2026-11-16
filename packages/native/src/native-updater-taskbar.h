@@ -6,6 +6,7 @@
 #include <QtGlobal>
 
 class QWindow;
+class QTimer;
 
 namespace workspace {
 
@@ -43,6 +44,13 @@ private:
     void sync();
     void setHint(qreal hint);
     void publish(qreal hint);
+    // Throttled republish of the current progress hint (Linux only, no-op
+    // elsewhere): a consumer that only matches the Update signal (no well-known
+    // name) that appears while a download has stalled cannot be woken by
+    // NameOwnerChanged, so while a progress hint is active it is re-broadcast on
+    // a fixed interval; the timer stops with the hint.
+    void startRepublishing();
+    void stopRepublishing();
 
 private slots:
     // Session-bus org.freedesktop.DBus.NameOwnerChanged sink: a LauncherEntry
@@ -55,6 +63,7 @@ private slots:
 private:
     QPointer<QWindow> m_window;
     QPointer<NativeUpdater> m_updater;
+    QTimer *m_republishTimer = nullptr;
     qreal m_hint = -1;
     bool m_hasHint = false;
 };

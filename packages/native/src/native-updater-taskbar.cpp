@@ -10,6 +10,7 @@
 #ifdef Q_OS_LINUX
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QTimer>
 #endif
 
 namespace workspace {
@@ -48,6 +49,13 @@ const QString LauncherEntryPath = QStringLiteral("/com/canonical/Unity/LauncherE
 // "install(FILES resources/workspace-native.desktop ... RENAME ...)").
 const QString LauncherEntryAppUri =
     QStringLiteral("application://com.exordos.workspace.native.preview.desktop");
+// Republish interval of the throttled heartbeat (defended in
+// docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md): a consumer that only
+// matches the Update signal and appears while a download is stalled must see
+// the current hint within a few seconds, while the bus only ever carries one
+// small frame per interval (0.5 signals/s worst case, and only while a
+// progress hint is active).
+constexpr int kRepublishIntervalMs = 2000;
 #endif
 } // namespace
 
@@ -108,6 +116,36 @@ void UpdaterTaskbarProgress::setHint(qreal hint)
     m_hasHint = true;
     m_window->setProperty(kWindowProgressProperty, hint);
     publish(hint);
+    // A progress hint must stay reachable to consumers that appear late on
+    // match rules only (they own no bus name, so NameOwnerChanged cannot wake
+    // the mirror); run the throttled republish until the hint clears. A
+    // cleared hint (-1: downloaded/error/cancel/idle) ends the republish -
+    // a clear frame needs no repetition because a late consumer's default
+    // state already shows no bar.
+    if (hint >= 0.0) startRepublishing();
+    else stopRepublishing();
+}
+
+void UpdaterTaskbarProgress::startRepublishing()
+{
+#ifdef Q_OS_LINUX
+    if (!m_republishTimer) {
+        m_republishTimer = new QTimer(this);
+        m_republishTimer->setInterval(kRepublishIntervalMs);
+        // Bypass the setHint() dedupe on purpose: the wire value may be
+        // unchanged, but a consumer that only just subscribed has not
+        // received it. publish() is silent without a session bus.
+        connect(m_republishTimer, &QTimer::timeout, this, [this] { publish(m_hint); });
+    }
+    if (!m_republishTimer->isActive()) m_republishTimer->start();
+#endif
+}
+
+void UpdaterTaskbarProgress::stopRepublishing()
+{
+#ifdef Q_OS_LINUX
+    if (m_republishTimer) m_republishTimer->stop();
+#endif
 }
 
 void UpdaterTaskbarProgress::publish(qreal hint)
