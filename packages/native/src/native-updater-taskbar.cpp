@@ -54,6 +54,17 @@ const QString LauncherEntryAppUri =
 UpdaterTaskbarProgress::UpdaterTaskbarProgress(QObject *parent)
     : QObject(parent)
 {
+#ifdef Q_OS_LINUX
+    // The Update broadcast is not replayed: a launcher that starts - or
+    // restarts - while a download has stalled missed every earlier frame and
+    // receives nothing until new progress arrives. Watch for the LauncherEntry
+    // name (re)appearing on the session bus and republish the current hint
+    // then (reviewer finding 4581477136).
+    QDBusConnection::sessionBus().connect(QStringLiteral("org.freedesktop.DBus"),
+        QStringLiteral("/org/freedesktop/DBus"), QStringLiteral("org.freedesktop.DBus"),
+        QStringLiteral("NameOwnerChanged"), this,
+        SLOT(onLauncherNameOwnerChanged(QString, QString, QString)));
+#endif
 }
 
 qreal UpdaterTaskbarProgress::hintFor(qreal progress)
@@ -119,6 +130,26 @@ void UpdaterTaskbarProgress::publish(qreal hint)
     QDBusConnection::sessionBus().send(update);
 #else
     Q_UNUSED(hint); // macOS DockTile / Windows ITaskbarList3: out of scope (see docs).
+#endif
+}
+
+void UpdaterTaskbarProgress::onLauncherNameOwnerChanged(const QString &name,
+    const QString &oldOwner, const QString &newOwner)
+{
+    Q_UNUSED(oldOwner); // A lost-then-gained restart is two signals; the gain is the one that matters.
+#ifdef Q_OS_LINUX
+    // Non-empty new owner: the LauncherEntry side of the protocol just became
+    // the bus name its listeners address - a launcher that appeared or
+    // restarted and therefore never saw the frames already published. Call
+    // publish() directly instead of setHint() so the dedupe on m_hint cannot
+    // swallow the frame: the wire value is unchanged, but this listener has
+    // not received it. With no hint pushed yet there is nothing to say, so
+    // stay silent exactly as before the first updater state.
+    if (name != LauncherEntryInterface || newOwner.isEmpty() || !m_hasHint) return;
+    publish(m_hint); // progress-visible + progress, or the clear state.
+#else
+    Q_UNUSED(name);
+    Q_UNUSED(newOwner);
 #endif
 }
 
