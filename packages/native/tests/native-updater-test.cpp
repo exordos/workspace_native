@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 
 using namespace workspace;
@@ -856,7 +857,7 @@ void NativeUpdaterTest::downloadProgressMirrorsTheTaskbarHint()
 void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel_data()
 {
     QTest::addColumn<QString>("mode");
-    for (const auto *mode : {"downloaded", "error", "cancel"})
+    for (const auto *mode : {"downloaded", "error", "cancel", "late-launcher"})
         QTest::newRow(mode) << QString::fromLatin1(mode);
 }
 
@@ -898,19 +899,26 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
     // its own connection while the mirror publishes over the session bus.
     const auto busAddress = qEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS");
     QVERIFY2(!busAddress.isEmpty(), "dbus-run-session must provide DBUS_SESSION_BUS_ADDRESS");
-    auto launcherBus = QDBusConnection::connectToBus(busAddress, "workspace-native-launcher-entry-test");
-    QVERIFY2(launcherBus.isConnected(), "the fake launcher needs its own bus connection");
-    QVERIFY2(launcherBus.registerService("com.canonical.Unity.LauncherEntry"),
-        "the fake launcher may not already be running on this bus");
-    QVERIFY(launcherBus.registerObject("/com/canonical/Unity/LauncherEntry", &launcher,
-        QDBusConnection::ExportAllSlots));
-    QVERIFY(launcherBus.connect(QString(), QString(),
-        QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
-        &launcher, SLOT(Update(QString, QVariantMap))));
+    std::optional<QDBusConnection> launcherBus; // Appears when registerLauncher() below runs.
     auto releaseBus = qScopeGuard([&] {
-        launcherBus.unregisterObject("/com/canonical/Unity/LauncherEntry");
-        launcherBus.unregisterService("com.canonical.Unity.LauncherEntry");
+        if (launcherBus && launcherBus->isConnected()) {
+            launcherBus->unregisterObject("/com/canonical/Unity/LauncherEntry");
+            launcherBus->unregisterService("com.canonical.Unity.LauncherEntry");
+        }
     }); // The next data row registers its own fake on the same bus.
+    const auto registerLauncher = [&] {
+        if (!launcherBus || !launcherBus->isConnected())
+            launcherBus = QDBusConnection::connectToBus(busAddress, "workspace-native-launcher-entry-test");
+        QVERIFY2(launcherBus->isConnected(), "the fake launcher needs its own bus connection");
+        QVERIFY2(launcherBus->registerService("com.canonical.Unity.LauncherEntry"),
+            "the fake launcher may not already be running on this bus");
+        QVERIFY(launcherBus->registerObject("/com/canonical/Unity/LauncherEntry", &launcher,
+            QDBusConnection::ExportAllSlots));
+        QVERIFY(launcherBus->connect(QString(), QString(),
+            QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
+            &launcher, SLOT(Update(QString, QVariantMap))));
+    };
+    if (mode != QStringLiteral("late-launcher")) registerLauncher();
 
     Server server;
     QVERIFY(server.listening);
@@ -936,11 +944,35 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
     QTRY_COMPARE(server.requests.size(), 2);
     QTRY_VERIFY(updater.progress() > 0);
     // At least one bytes-moved frame must have crossed the bus before the
-    // terminal state, so the visible-true trajectory cannot be vacuous.
-    QTRY_VERIFY(std::any_of(launcher.calls.cbegin(), launcher.calls.cend(), [](const LauncherEntryRecorder::Call &call) {
-        return call.properties.value(QStringLiteral("progress-visible")).toBool()
-            && call.properties.value(QStringLiteral("progress")).toDouble() > 0;
-    }));
+    // terminal state, so the visible-true trajectory cannot be vacuous. In
+    // late-launcher mode nothing was published yet: no launcher existed to
+    // record the frames the daemon dropped.
+    if (mode != QStringLiteral("late-launcher"))
+        QTRY_VERIFY(std::any_of(launcher.calls.cbegin(), launcher.calls.cend(), [](const LauncherEntryRecorder::Call &call) {
+            return call.properties.value(QStringLiteral("progress-visible")).toBool()
+                && call.properties.value(QStringLiteral("progress")).toDouble() > 0;
+        }));
+    if (mode == QStringLiteral("late-launcher")) {
+        // Reviewer finding 4581477136: the download stalled at this progress
+        // with no launcher on the bus, so every Update frame so far was
+        // dropped - signals are not replayed. When the launcher name appears,
+        // the mirror must republish the current hint without waiting for more
+        // bytes to move.
+        QCOMPARE(launcher.calls.size(), 0);
+        const qreal stalled = updater.progress();
+        QVERIFY(stalled > 0.0);
+        registerLauncher(); // NameOwnerChanged: no owner -> fake launcher.
+        QTRY_VERIFY(!launcher.calls.isEmpty());
+        const auto &call = launcher.calls.last();
+        QCOMPARE(call.desktopEntry,
+            QStringLiteral("application://com.exordos.workspace.native.preview.desktop"));
+        QVERIFY(call.properties.value(QStringLiteral("progress-visible")).toBool());
+        // The republished frame carries the current hint, not a fresh value
+        // invented for the late launcher.
+        QCOMPARE(call.properties.value(QStringLiteral("progress")).toDouble(), mirror.hint());
+        QVERIFY(call.properties.value(QStringLiteral("progress")).toDouble() >= stalled);
+        return;
+    }
     if (mode == QStringLiteral("cancel")) {
         updater.cancel(); // No Electron counterpart, but a cancelled download must not stick.
     } else {
