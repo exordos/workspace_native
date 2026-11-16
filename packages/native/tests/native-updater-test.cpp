@@ -17,6 +17,7 @@
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -871,6 +872,9 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
 {
     QFETCH(QString, mode);
     if (!qEnvironmentVariableIsSet("CASSI_NATIVE_LAUNCHER_CHILD")) {
+        if (QStandardPaths::findExecutable("dbus-run-session").isEmpty())
+            QSKIP("dbus-run-session (package dbus-daemon) is not installed, so no private session bus "
+                  "can host the fake LauncherEntry launcher (secure-store-platform-test precedent)");
         QProcess child;
         auto environment = QProcessEnvironment::systemEnvironment();
         environment.insert("CASSI_NATIVE_LAUNCHER_CHILD", "1");
