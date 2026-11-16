@@ -49,6 +49,7 @@ add_library(workspace-native-core STATIC
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
+    src/native-realtime-cursor-store.cpp src/native-realtime-cursor-store.h
     src/power-watcher.cpp src/power-watcher.h
     src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp)
 target_include_directories(workspace-native-core PUBLIC src)

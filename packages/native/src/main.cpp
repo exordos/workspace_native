@@ -13,6 +13,7 @@
 #include "native-updater.h"
 #include "native-updater-taskbar.h"
 #include "native-preferences.h"
+#include "native-realtime-cursor-store.h"
 #include "realtime-client.h"
 #include "power-watcher.h"
 #include "session.h"
@@ -119,7 +120,9 @@ int main(int argc, char **argv)
     controller.useCache(&cache);
     controller.useDrafts(&drafts);
     controller.useFiles(&files);
+    workspace::RealtimeCursorStore realtimeCursors;
     workspace::RealtimeClient realtime(&api, &session);
+    realtime.useCursorStore(&realtimeCursors);
     controller.useRealtime(&realtime);
     // System-bus power observer: resume reconnects realtime at once, and a
     // battery source widens the presence heartbeat (issue #78). With no
