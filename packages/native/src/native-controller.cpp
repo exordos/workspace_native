@@ -6826,15 +6826,159 @@ QString NativeController::feedRowPreview(const Message &message) const
     // and the quote prefix kept inside the text (feed-page.ui.tsx:64-69); a
     // non-markdown payload renders the encrypted label
     // (features/encrypted-chat-message/encrypted-message-label.lib.ts). The
-    // shipped single-flow clamp of mentionPreview is reused deliberately: the
-    // previews stay textual and never expose raw file urls
-    // (feed-page.ui.test.tsx:280, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md).
+    // markdown summary runs BEFORE the clamp so a link target or attachment
+    // urn can never be truncated into a visible fragment
+    // (feed-page.ui.test.tsx:279-297: the summary never exposes raw file urls).
     if (message.kind != QLatin1String("markdown"))
         return tr("Encrypted message — key support is under development");
-    auto text = message.content.simplified();
-    if (text.size() > 80)
-        text = text.left(77).trimmed() + QStringLiteral("...");
-    return text;
+    return summarizeFeedMarkdown(message.content);
+}
+
+QString NativeController::feedPreviewInlineLabel(const QString &bang, const QString &label,
+    const QString &target, const QString &title, bool &isMedia) const
+{
+    // workspace_ui 61dacef workspace-message-summary.lib.ts: summarizeFileInline
+    // (lines 74-95) renders media references as the media label and file
+    // references as "Файл: name"/"Файл"; summarizeLinkInline (lines 97-112)
+    // prefers a readable link label over the raw target; the mention case
+    // renders "@label" (or the bare label when silent). None of these paths
+    // ever prints the urn/file url itself.
+    isMedia = false;
+    const bool silent = title.compare(QLatin1String("silent"), Qt::CaseInsensitive) == 0;
+    const auto reference = parseWorkspaceReference(target, label, silent);
+    if (reference) {
+        switch (reference->kind) {
+        case WorkspaceReferenceKind::Image:
+            isMedia = true;
+            return tr("Image");
+        case WorkspaceReferenceKind::Video:
+            isMedia = true;
+            return tr("Video");
+        case WorkspaceReferenceKind::File:
+            return reference->label.isEmpty() ? tr("File")
+                : tr("File: %1").arg(reference->label);
+        case WorkspaceReferenceKind::User:
+            if (reference->label.isEmpty())
+                return reference->id;
+            return reference->silent ? reference->label : QLatin1Char('@') + reference->label;
+        case WorkspaceReferenceKind::Quote:
+            return tr("Quote");
+        case WorkspaceReferenceKind::Forward:
+            return reference->sourceLabel.isEmpty() ? tr("Forwarded message")
+                : reference->sourceLabel;
+        case WorkspaceReferenceKind::Message:
+        case WorkspaceReferenceKind::Stream:
+        case WorkspaceReferenceKind::Topic:
+            return label.simplified();
+        case WorkspaceReferenceKind::External: {
+            const auto normalized = label.simplified();
+            if (!normalized.isEmpty() && normalized != target)
+                return normalized;
+            return normalized.isEmpty() ? reference->url : normalized;
+        }
+        case WorkspaceReferenceKind::Time:
+            return reference->utc.isEmpty() ? label.simplified() : reference->utc;
+        case WorkspaceReferenceKind::Secret:
+            return tr("Encrypted fragment");
+        }
+    }
+    if (!bang.isEmpty()) {
+        // Image syntax with a target the reference parser cannot classify:
+        // the reference still prints the media label for unsupported media
+        // (summarizeInline case "unsupported-media", lines 134-138), so the
+        // raw target never reaches the preview either way.
+        isMedia = true;
+        return tr("Image");
+    }
+    // summarizeLinkInline fallback: a readable label wins; the raw target is
+    // only kept when it is the link's own readable text and a plain http(s)
+    // or mailto URL (the autolink case the reference also renders verbatim).
+    // An unparseable urn-like target is dropped instead of leaked.
+    static const QRegularExpression urlOnly(
+        QStringLiteral("^(?:https?://|mailto:)\\S+$"), QRegularExpression::CaseInsensitiveOption);
+    const auto normalized = label.simplified();
+    if (!normalized.isEmpty()
+        && (normalized != target || !urlOnly.match(normalized).hasMatch()))
+        return normalized;
+    const QUrl url(target, QUrl::StrictMode);
+    if (url.isValid() && !url.isLocalFile() && !target.startsWith(QLatin1String("urn:"))
+        && (url.scheme() == QLatin1String("https") || url.scheme() == QLatin1String("http"))
+        && !url.host().isEmpty())
+        return target;
+    return {};
+}
+
+QString NativeController::summarizeFeedMarkdown(const QString &content) const
+{
+    // The reference builds the feed summary from the full markdown AST
+    // (summarizeWorkspaceMessageMarkdown, workspace-message-summary.lib.ts,
+    // options feed-page.ui.tsx:64-69). This native path reproduces the
+    // visible-output contract for the constructs that can carry a raw target
+    // or a block prefix: media/attachment inlines, markdown links, mentions
+    // and quote blocks - each replaced BEFORE the 80-character clamp. Block
+    // decorations without a security role (code/list prefixes) keep the
+    // shipped single-flow precedent documented in
+    // docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md.
+    static const QRegularExpression inlineSyntax(QStringLiteral(
+        "(!)?\\[([^\\]]*)\\]\\(\\s*([^)\\s]+)(?:\\s+\"([^\"]*)\")?\\s*\\)"));
+    QStringList blocks;
+    for (const auto &paragraph : content.split(QRegularExpression(QStringLiteral("\\n\\s*\\n")))) {
+        // summarizeBlock case "quote" (lines 206-213): with includeQuotePrefix
+        // the quoted block is rendered as "Цитата: <summary>".
+        bool quoted = false;
+        QStringList lines;
+        for (const auto &line : paragraph.split(QLatin1Char('\n'))) {
+            auto trimmed = line.trimmed();
+            while (trimmed.startsWith(QLatin1Char('>'))) {
+                quoted = true;
+                trimmed = trimmed.mid(1).trimmed();
+            }
+            lines.append(trimmed);
+        }
+        const auto text = lines.join(QLatin1Char('\n'));
+        QList<QPair<QString, bool>> parts; // {text, isMedia}
+        auto last = 0;
+        auto iterator = QRegularExpressionMatchIterator(inlineSyntax.globalMatch(text));
+        while (iterator.hasNext()) {
+            const auto match = iterator.next();
+            const auto before = text.mid(last, int(match.capturedStart() - last));
+            if (!before.isEmpty())
+                parts.append({before, false});
+            bool isMedia = false;
+            const auto label = feedPreviewInlineLabel(match.captured(1), match.captured(2),
+                match.captured(3), match.captured(4), isMedia);
+            if (!label.isEmpty())
+                parts.append({label, isMedia});
+            last = int(match.capturedEnd());
+        }
+        if (last < text.size())
+            parts.append({text.mid(last), false});
+        // summarizeParagraph (lines 162-181): when the first non-blank part
+        // of the block is an image/video inline the block renders as
+        // "<media label>: <rest of the block>".
+        int first = -1;
+        for (int i = 0; i < parts.size(); ++i)
+            if (!parts.at(i).first.simplified().isEmpty()) { first = i; break; }
+        QStringList texts;
+        for (const auto &part : parts)
+            texts.append(part.first);
+        auto joined = texts.join(QLatin1Char(' ')).simplified();
+        if (first >= 0 && parts.at(first).second) {
+            QStringList rest;
+            for (int i = first + 1; i < parts.size(); ++i)
+                rest.append(parts.at(i).first);
+            const auto restText = rest.join(QLatin1Char(' ')).simplified();
+            const auto media = parts.at(first).first;
+            joined = restText.isEmpty() ? media : media + QStringLiteral(": ") + restText;
+        }
+        if (quoted)
+            joined = tr("Quote: %1").arg(joined.simplified());
+        blocks.append(joined);
+    }
+    auto summary = blocks.join(QLatin1Char(' ')).simplified();
+    if (summary.size() > 80)
+        summary = summary.left(77).trimmed() + QStringLiteral("...");
+    return summary;
 }
 
 // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----

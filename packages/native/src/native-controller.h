@@ -1835,6 +1835,9 @@ private:
     QString feedRowTime(const QDateTime &created) const;
     QString feedRowContext(const Message &message) const;
     QString feedRowPreview(const Message &message) const;
+    QString summarizeFeedMarkdown(const QString &content) const;
+    QString feedPreviewInlineLabel(const QString &bang, const QString &label,
+        const QString &target, const QString &title, bool &isMedia) const;
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;

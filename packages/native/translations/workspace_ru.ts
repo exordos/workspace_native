@@ -1541,6 +1541,34 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Image</source>
+            <translation>Изображение</translation>
+        </message>
+        <message>
+            <source>Video</source>
+            <translation>Видео</translation>
+        </message>
+        <message>
+            <source>File</source>
+            <translation>Файл</translation>
+        </message>
+        <message>
+            <source>File: %1</source>
+            <translation>Файл: %1</translation>
+        </message>
+        <message>
+            <source>Quote: %1</source>
+            <translation>Цитата: %1</translation>
+        </message>
+        <message>
+            <source>Forwarded message</source>
+            <translation>Пересланное сообщение</translation>
+        </message>
+        <message>
+            <source>Encrypted fragment</source>
+            <translation>Зашифрованный фрагмент</translation>
+        </message>
+        <message>
             <source>The attachment download could not be started.</source>
             <translation>Не удалось начать загрузку вложения.</translation>
         </message>
@@ -3029,6 +3057,10 @@
         <message>
             <source>Failed to load messages</source>
             <translation>Не удалось загрузить сообщения</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
         </message>
         <message>
             <source>No messages yet</source>
