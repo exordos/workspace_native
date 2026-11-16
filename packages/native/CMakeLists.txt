@@ -387,6 +387,17 @@ if(BUILD_TESTING)
         add_test(NAME native-clipboard-lifecycle COMMAND native-controller-test destroyingControllerCancelsClipboardSnapshotPreparation)
         set_tests_properties(native-clipboard-lifecycle PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
+        add_test(NAME native-clipboard-slow-ui COMMAND native-window-test confirmedSlowClipboardCopyRemainsVisibleAndCancellable)
+        set_tests_properties(native-clipboard-slow-ui PROPERTIES TIMEOUT 30
+            ENVIRONMENT "CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
+        add_test(NAME native-clipboard-consent COMMAND native-controller-test clipboardDoesNotReadBeforeConfirmation)
+        set_tests_properties(native-clipboard-consent PROPERTIES TIMEOUT 20
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_PRECONFIRM_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
+        add_library(native-clipboard-path-race SHARED tests/clipboard-path-race.cpp)
+        target_link_libraries(native-clipboard-path-race PRIVATE ${CMAKE_DL_LIBS})
+        add_test(NAME native-clipboard-path-race COMMAND native-controller-test clipboardPathResolutionRaceCannotUploadAnotherFile)
+        set_tests_properties(native-clipboard-path-race PROPERTIES TIMEOUT 20
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_CLIPBOARD_PATH_RACE=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-path-race>")
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
         add_executable(native-updater-http2-recovery-driver tests/updater-http2/recovery.cpp src/native-updater.cpp src/native-updater.h)
         target_include_directories(native-updater-http2-recovery-driver PRIVATE src)

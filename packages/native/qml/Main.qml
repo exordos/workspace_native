@@ -8481,7 +8481,9 @@ ApplicationWindow {
         property string topic: ""
         property string editSession: ""
         function openForClipboard() {
-            if (!root.controller.prepareClipboardFiles()) return false;
+            const result = root.controller.prepareClipboardFiles();
+            if (result === 2) return true; // recognized files were rejected; consume the paste
+            if (result !== 1) return false;
             contextKey = root.controller.ownStatusContextKey;
             stream = root.controller.selectedStream; topic = root.controller.selectedTopic;
             editSession = root.controller.editSessionKey;
@@ -8514,12 +8516,16 @@ ApplicationWindow {
         footer: RowLayout {
             Item { Layout.fillWidth: true }
             Button { text: qsTr("Cancel"); onClicked: clipboardFilesDialog.reject() }
-            Button { objectName: "clipboardFilesConfirm"; text: qsTr("Upload"); enabled: !root.controller.clipboardFilesPreparing && root.controller.clipboardFilesPreview.length > 0; onClicked: clipboardFilesDialog.accept() }
+            Button {
+                objectName: "clipboardFilesConfirm"; text: qsTr("Upload")
+                enabled: !root.controller.clipboardFilesPreparing && root.controller.clipboardFilesPreview.length > 0
+                onClicked: {
+                    if (clipboardFilesDialog.contextMatches()) root.controller.attachClipboardFiles();
+                    else clipboardFilesDialog.reject();
+                }
+            }
         }
-        onAccepted: {
-            if (contextMatches()) root.controller.attachClipboardFiles();
-        }
-        onClosed: root.controller.cancelClipboardFiles()
+        onClosed: root.controller.dismissClipboardFiles()
         Connections {
             target: root.controller
             function onStateChanged() {

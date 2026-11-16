@@ -11174,6 +11174,8 @@ private slots:
     {
         QTest::addColumn<QString>("transition");
         QTest::newRow("cancel") << QString("cancel");
+        QTest::newRow("edit") << QString("edit");
+        QTest::newRow("edit-switch") << QString("edit-switch");
         QTest::newRow("reopen-same-message") << QString("reopen");
         QTest::newRow("replace-edit") << QString("replace");
         QTest::newRow("change-topic") << QString("topic");
@@ -14311,6 +14313,8 @@ private slots:
         QTest::newRow("destroy") << QString("destroy");
         QTest::newRow("logout") << QString("logout");
         QTest::newRow("cancel") << QString("cancel");
+        QTest::newRow("edit") << QString("edit");
+        QTest::newRow("edit-switch") << QString("edit-switch");
     }
 
     void destroyingControllerCancelsClipboardSnapshotPreparation()
@@ -14323,23 +14327,74 @@ private slots:
         if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
         const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
         auto fixture = std::make_unique<Fixture>(); auto files = std::make_unique<FileClient>(&fixture->api);
-        fixture->controller.useFiles(files.get()); QVERIFY(fixture->start());
+        fixture->controller.useFiles(files.get());
+        if (transition == "edit" || transition == "edit-switch") fixture->messages = [](const Request &) -> Response { return {QJsonArray{message()}}; };
+        QVERIFY(fixture->start());
+        if (transition == "edit") QVERIFY(fixture->controller.beginEditMessage(messageId));
         QList<QUrl> urls; for (int i = 0; i < 10; ++i) urls.append(QUrl::fromLocalFile(input.fileName()));
         auto *data = new QMimeData; data->setUrls(urls); clipboard->setMimeData(data);
+        QVERIFY(fixture->controller.prepareClipboardFiles());
+        QTRY_VERIFY(!fixture->controller.clipboardFilesPreparing());
+        QVERIFY(!fixture->controller.clipboardFilesPreview().isEmpty()); QTest::qWait(50);
         const QDir tasks("/proc/self/task");
         const auto ids = [&] { const auto list = tasks.entryList(QDir::Dirs | QDir::NoDotAndDotDot); return QSet<QString>(list.begin(), list.end()); };
         const auto before = ids();
-        QVERIFY(fixture->controller.prepareClipboardFiles());
+        fixture->controller.setDraft("Draft while copying");
+        fixture->controller.attachClipboardFiles();
+        if (transition == "edit") QVERIFY(!fixture->controller.canSaveEdit());
+        else QVERIFY(!fixture->controller.canSend());
         QSet<QString> started;
         QTRY_VERIFY(!(started = ids() - before).isEmpty());
         if (transition == "destroy") { fixture.reset(); files.reset(); }
         else if (transition == "logout") fixture->controller.logout();
+        else if (transition == "edit-switch") QVERIFY(fixture->controller.beginEditMessage(messageId));
         else fixture->controller.cancelClipboardFiles();
         QTRY_VERIFY_WITH_TIMEOUT((ids() & started).isEmpty(), 500);
         if (fixture) {
             QVERIFY(!fixture->controller.clipboardFilesPreparing());
             QVERIFY(fixture->controller.clipboardFilesPreview().isEmpty());
         }
+    }
+
+    void clipboardDoesNotReadBeforeConfirmation()
+    {
+        if (!qEnvironmentVariableIsSet("CASSI_PRECONFIRM_TEST")) QSKIP("Run by native-clipboard-consent with synthetic input");
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; const auto path = directory.filePath("cassi-preconfirm-synthetic.bin"), marker = directory.filePath("cassi-preconfirm-read.marker");
+        QFile input(path); QVERIFY(input.open(QIODevice::WriteOnly)); input.write("synthetic"); input.close();
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        QVERIFY(fixture.start()); auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(data);
+        QVERIFY(fixture.controller.prepareClipboardFiles()); QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(!fixture.controller.clipboardFilesPreview().isEmpty());
+        QVERIFY2(!QFileInfo::exists(marker), "The file content was read before the user confirmed its path");
+        fixture.controller.cancelClipboardFiles();
+    }
+
+    void clipboardPathResolutionRaceCannotUploadAnotherFile()
+    {
+        if (!qEnvironmentVariableIsSet("CASSI_CLIPBOARD_PATH_RACE")) QSKIP("Run by native-clipboard-path-race with synthetic path replacement");
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; const auto selected = directory.filePath("cassi-race-selected.bin"), secret = directory.filePath("cassi-race-secret.bin");
+        QFile input(selected), privateInput(secret);
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("benign-synthetic"); input.close();
+        QVERIFY(privateInput.open(QIODevice::WriteOnly)); privateInput.write("private-synthetic"); privateInput.close();
+        int posts = 0; QByteArray uploaded;
+        fixture.files = [&](const Request &request) { if (request.method == "POST") { ++posts; uploaded = request.rawBody; } return Response{QJsonObject{}, 503}; };
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        QVERIFY(fixture.start()); auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(selected)}); clipboard->setMimeData(data);
+        QVERIFY(fixture.controller.prepareClipboardFiles()); QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        const auto preview = fixture.controller.clipboardFilesPreview(); QVERIFY(!preview.isEmpty());
+        fixture.controller.attachClipboardFiles(); QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(QFileInfo(selected).isSymLink()); // the synthetic replacement actually happened
+        if (!fixture.controller.error().isEmpty()) { QCOMPARE(posts, 0); return; }
+        QTRY_COMPARE(posts, 1);
+        const auto displayedTarget = preview.first().toMap().value("target").toString();
+        QVERIFY2(!uploaded.contains("private-synthetic") || displayedTarget == secret,
+            "The uploaded bytes belong to a file that was not shown for confirmation");
     }
 
     void clipboardSnapshotRejectsOversizedSecondFileAndCleansUp()
@@ -14390,8 +14445,9 @@ private slots:
         auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(first.fileName()), QUrl::fromLocalFile(denied.fileName())}); clipboard->setMimeData(data);
         QVERIFY(fixture.controller.prepareClipboardFiles());
         QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
-        QVERIFY(fixture.controller.clipboardFilesPreview().isEmpty()); QVERIFY(!fixture.controller.error().isEmpty());
-        fixture.controller.attachClipboardFiles(); QVERIFY(fixture.controller.uploadEntries().isEmpty());
+        QVERIFY(!fixture.controller.clipboardFilesPreview().isEmpty());
+        fixture.controller.attachClipboardFiles(); QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(!fixture.controller.error().isEmpty()); QVERIFY(fixture.controller.uploadEntries().isEmpty());
 #ifdef Q_OS_LINUX
         QTRY_COMPARE(openAnonymousTemps(), initialTempFds);
 #endif
