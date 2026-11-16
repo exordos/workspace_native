@@ -196,6 +196,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool inboxVisible READ inboxVisible NOTIFY stateChanged)
     Q_PROPERTY(QString section READ section NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
+    Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
     Q_PROPERTY(QVariantMap conversationOpening READ conversationOpening NOTIFY stateChanged)
@@ -405,6 +407,10 @@ public:
     // (issues #35, #36).
     QString section() const { return m_section; }
     QVariantMap inboxPage() const;
+    // Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md): cross-chat
+    // "All messages" of the current project, marker-paginated.
+    bool feedVisible() const { return m_feedVisible; }
+    QVariantMap feedPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -472,6 +478,11 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
+    Q_INVOKABLE void showFeed();
+    Q_INVOKABLE void closeFeed();
+    Q_INVOKABLE void loadMoreFeed();
+    Q_INVOKABLE void retryFeed();
+    Q_INVOKABLE void openFeedRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void nextDraftPage();
     Q_INVOKABLE void previousDraftPage();
     Q_INVOKABLE void openDraft(const QString &id);
@@ -1751,7 +1762,7 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Mail, Calendar };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Mail, Calendar };
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
@@ -1804,6 +1815,26 @@ private:
     QSet<QString> m_inboxDeletedTopics;
     bool inboxSlotStreamRead(const QString &stream);
     void resetInbox();
+    // Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md). Rows are stored
+    // oldest-first exactly like the reference store (feed.model.ts:39-68:
+    // created_at asc, uuid asc tie break, deduped by uuid); an older page
+    // merges in front of the newer rows.
+    struct FeedState {
+        QVector<Message> rows;
+        QByteArray marker;
+        bool loading = false, loadingMore = false, error = false;
+        bool inflight = false;
+        quint64 version = 0;
+        bool hasMore() const { return !marker.isEmpty(); }
+    };
+    bool m_feedVisible = false;
+    FeedState m_feed;
+    void loadFeedPage(bool append);
+    void resetFeed();
+    QVariantList feedRows() const;
+    QString feedRowTime(const QDateTime &created) const;
+    QString feedRowContext(const Message &message) const;
+    QString feedRowPreview(const Message &message) const;
     bool durableDraftRoute() const;
     void synchronizeDrafts();
     QHash<QString, SendIntent> m_pendingSends;
