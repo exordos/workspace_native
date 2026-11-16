@@ -182,8 +182,11 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   reference AST renders no text for it. A final residue pass collapses any
   other `[...](...)`/`![...](...)` shape to its label (its destination tail is
   parenthesis-balanced, because CommonMark destinations may contain balanced
-  parentheses - `[a](https://host/(x)?q=1)` ends at the last `)`, and a scan
-  that stops at the first `(` strands the rest of the target as plain text)
+  parentheses - `[a](https://host/(x)?q=1)` ends at the parenthesis that
+  matches the opening `(`, and a scan that stops at the first `(` strands the
+  rest of the target as plain text while a run that backtracks to the LAST `)`
+  swallows a directly adjacent second link - `[a](u)[b](v)` would keep only
+  `a`; exo-review thread 4586950726, round 4)
   and drops a leftover `urn:` token, so no destination can survive as raw
   source; the 80-character clamp also refuses to cut inside a target
   token (it drops the whole
@@ -208,8 +211,10 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   inside a URL-shaped token drops the whole token instead). A plain `www.`
   host typed as a link label is not itself a destination and stays visible,
   matching the reference readable-label contract. Pinned by
-  `feedPreviewSummarizesMarkdownWithoutRawUrls` and
-  `feedPreviewHidesUncommonMarkdownLinkTargets` (hostile-row sweep).
+  `feedPreviewSummarizesMarkdownWithoutRawUrls`,
+  `feedPreviewHidesUncommonMarkdownLinkTargets` (hostile-row sweep) and
+  `feedPreviewKeepsAllAdjacentLinkLabels` (adjacent-link labels, exo-review
+  thread 4586950726).
 - The Feed page is an exclusive content page (issue #355). `Main.qml` hides the
   whole `conversation` panel (`conversationPanel`: header, message list and
   composer) while `controller.feedVisible`, exactly like the Drafts/Mentions/

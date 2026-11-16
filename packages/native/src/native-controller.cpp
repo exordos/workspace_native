@@ -6869,15 +6869,19 @@ QString NativeController::feedRowPreview(const Message &message) const
 // and carry its target into the preview (exo-review thread 4581966233).
 static const QRegularExpression &feedInlineSyntax()
 {
-    // The bare destination is the longest non-space run that still leaves the
-    // closing `)` (backtracking): a CommonMark destination may contain
-    // balanced parentheses (`[a](https://host/(x)?q=1)`) and the old
-    // `[^\s)]+` stop cut the destination at the first `(` and left the rest
-    // of it - scheme marker and all - as plain text (exo-review thread
-    // 4581966233, round 3).
+    // The bare destination is a CommonMark destination: a non-space run that
+    // counts nested parentheses (recursion through group `(?4)`), honors
+    // backslash escapes, and stops at its OWN matching `)`. Round 3 widened
+    // the old `[^\s)]+` stop to the longest non-space run left of a closing
+    // `)`, but backtracking then matched that run against the LAST `)` in the
+    // run, so a link followed directly by non-space text - an adjacent second
+    // link - was swallowed into one match and lost every later label
+    // (exo-review thread 4586950726, round 4). Balanced destinations such as
+    // `[a](https://host/(x)?q=1)` still stay consumed whole (exo-review
+    // thread 4581966233, round 3).
     static const QRegularExpression regex(QStringLiteral(
         "(!)?\\[((?:[^\\[\\]\\\\]|\\\\.|\\[[^\\]]*\\])*)\\]"
-        "(?:\\(\\s*(?:<([^>]*)>|([^\\s]+))"
+        "(?:\\(\\s*(?:<([^>]*)>|((?:[^\\s()\\\\]|\\\\.|\\((?4)?\\))+))"
         "(?:\\s+(?:\"([^\"]*)\"|'([^']*)'|\\(([^)]*)\\)))?\\s*\\)"
         "|\\[([^\\]]*)\\])"));
     return regex;

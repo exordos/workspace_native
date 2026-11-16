@@ -17639,6 +17639,71 @@ private slots:
         QCOMPARE(preview(18), xTail + QStringLiteral("..."));
     }
 
+    // exo-review round 4 (thread 4586950726): the bare destination was a
+    // greedy non-space run that backtracked to the LAST closing parenthesis,
+    // so a link immediately followed by more non-space text (an adjacent
+    // second link, with or without separators inside the run) was swallowed
+    // into one match and every label after the first disappeared. The
+    // destination must be parsed as a CommonMark balanced-parenthesis run
+    // that stops at its own matching `)`.
+    void feedPreviewKeepsAllAdjacentLinkLabels()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto withContent = [](int number, const QString &content) {
+            auto row = feedMessage(number);
+            auto payload = row.value("payload").toObject();
+            payload.insert("content", content);
+            row.insert("payload", payload);
+            return row;
+        };
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            // RED witnesses: nothing separates the two links' inline runs,
+            // so the old greedy capture ran from the first `(` to the last
+            // `)` and the second link's label was eaten.
+            {1, withContent(1, QStringLiteral(
+                "see [docs](https://example.com/a)and[handbook](https://example.com/b) now"))},
+            {2, withContent(2, QStringLiteral(
+                "see [docs](https://example.com/a)[handbook](https://example.com/b) now"))},
+            {3, withContent(3, QStringLiteral(
+                "[one](https://example.com/x)[two](https://example.com/z) end"))},
+            // Regression guards: the space-separated pair and the balanced
+            // destinations fixed in round 3 must keep their exact output,
+            // including a deeply nested destination on the SECOND link.
+            {4, withContent(4, QStringLiteral(
+                "open [x](https://example.com/a(b)) and [y](https://example.com/c(d(e))) tail"))},
+            {5, withContent(5, QStringLiteral(
+                "see [docs](https://example.com/a) and [handbook](https://example.com/b) now"))},
+            {6, withContent(6, QStringLiteral(
+                "open [x](https://example.com/a(b)) tail"))},
+        });
+        fixture.messages = [rows](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 6, 4000);
+        const auto preview = [&](int number) {
+            const auto list = fixture.controller.feedPage().value("rows").toList();
+            return list.at(number - 1).toMap().value("preview").toString();
+        };
+        // Each link contributes exactly its own label; CommonMark keeps the
+        // separator text that sits inside the old greedy run (`and`, `y`).
+        QCOMPARE(preview(1), QStringLiteral("see docs and handbook now"));
+        QCOMPARE(preview(2), QStringLiteral("see docs handbook now"));
+        QCOMPARE(preview(3), QStringLiteral("one two end"));
+        QCOMPARE(preview(4), QStringLiteral("open x and y tail"));
+        QCOMPARE(preview(5), QStringLiteral("see docs and handbook now"));
+        QCOMPARE(preview(6), QStringLiteral("open x tail"));
+        for (int number = 1; number <= 6; ++number)
+            QVERIFY2(!preview(number).contains(QStringLiteral("://")),
+                qPrintable(preview(number)));
+    }
+
     void feedLoadingAndEmptyStates()
     {
         Fixture fixture;
