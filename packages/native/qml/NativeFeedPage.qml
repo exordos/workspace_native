@@ -107,11 +107,16 @@ FocusScope {
     }
 
     // Same card geometry as the inbox page state cards (FEED_STATE_CARD_CLASS:
-    // m-3 rounded-xl border-subtle bg-elevated/50 px-4 py-3 text-sm).
+    // m-3 rounded-xl border-subtle bg-elevated/50 px-4 py-3 text-sm). The
+    // error card additionally offers the retry action (exo-review: the card
+    // displayed the failure but gave no way to recover through the UI).
     component FeedStateCard: Rectangle {
         id: stateCard
         required property string body
         required property string bodyColor
+        property string actionLabel: ""
+        property string actionName: ""
+        signal actionTriggered()
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: 12 // m-3
@@ -120,6 +125,7 @@ FocusScope {
         border.color: page.colors["border-subtle"]
         color: Qt.alpha(page.colors["bg-elevated"], 0.5)
         implicitHeight: stateLabel.implicitHeight + 24 // py-3
+            + (actionButton.visible ? actionButton.height + 8 : 0)
         Text {
             id: stateLabel
             anchors.left: parent.left
@@ -132,6 +138,19 @@ FocusScope {
             color: stateCard.bodyColor
             font.pixelSize: 14 // text-sm
             wrapMode: Text.WordWrap
+        }
+        NativeButton {
+            id: actionButton
+            objectName: stateCard.actionName
+            anchors.top: stateLabel.bottom
+            anchors.topMargin: 8
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            colors: page.colors
+            text: stateCard.actionLabel
+            visible: stateCard.actionLabel.length > 0
+            implicitHeight: 32
+            onClicked: stateCard.actionTriggered()
         }
     }
 
@@ -158,6 +177,7 @@ FocusScope {
             width: pill.maxWidth >= 0
                 ? Math.max(0, pill.maxWidth - 16) : undefined
             text: pill.body
+            textFormat: Text.PlainText
             color: pill.bodyColor
             font.pixelSize: 10 // text-[10px]
             font.weight: Font.Medium
@@ -209,6 +229,9 @@ FocusScope {
         anchors.top: header.bottom
         body: qsTr("Failed to load messages")
         bodyColor: page.colors["notice-base"]
+        actionLabel: qsTr("Retry")
+        actionName: "feedRetryButton"
+        onActionTriggered: page.controller.retryFeed()
     }
 
     FeedStateCard {
@@ -315,6 +338,12 @@ FocusScope {
                         topPadding: 4 // mt-1
                         width: rowColumn.width
                         text: String(feedRow.row.sender || "")
+                        // Sender, context and preview are attacker-controllable
+                        // message fields: never let automatic format detection
+                        // interpret them as rich text (exo-review finding on the
+                        // preview Text; the reference renders the clamped plain
+                        // summary text, never markdown/HTML).
+                        textFormat: Text.PlainText
                         color: page.colors["sidebar-sender"] // text-xs text-sidebar-sender
                         font.pixelSize: 12
                         elide: Text.ElideRight
@@ -325,17 +354,23 @@ FocusScope {
                     }
                     Rectangle {
                         id: summaryBlock
-                        objectName: "feed-summary-" + feedRow.rowId
                         width: rowColumn.width
                         radius: 8 // rounded-lg
                         color: Qt.alpha(page.colors["bg"], 0.7) // bg-bg/70
                         implicitHeight: summaryLabel.height + 16 // py-2
                         Text {
                             id: summaryLabel
+                            objectName: "feed-summary-" + feedRow.rowId
                             x: 10 // px-2.5
                             y: 8 // py-2
                             width: summaryBlock.width - 20
                             text: String(feedRow.row.preview || "")
+                            // The preview is attacker-controlled message
+                            // content: render it plain so automatic format
+                            // detection can never load a remote image or parse
+                            // markup from it (exo-review finding; the reference
+                            // feeds the same clamped plain summary text).
+                            textFormat: Text.PlainText
                             color: page.colors["text-primary"]
                             font.pixelSize: 14 // text-sm
                             lineHeight: 1.375 // leading-snug
