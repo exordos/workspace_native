@@ -318,8 +318,8 @@
             <translation>Чаты и каналы</translation>
         </message>
         <message>
-            <source>Calendar is not available in this native preview</source>
-            <translation>Календарь пока недоступен</translation>
+            <source>Calendar</source>
+            <translation>Календарь</translation>
         </message>
         <message>
             <source>Mail</source>
