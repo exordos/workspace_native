@@ -56,6 +56,10 @@ private:
     void scheduleCursorPersist();
     void flushCursorPersist();
     void discardCursorPersist();
+    // Deletes a durable row, keeping a failed delete pending for retry and
+    // fencing the invalidated key out of restore until the row is gone.
+    bool clearDurableCursor(const QString &key);
+    void retryDurableClear();
 
     ApiClient *m_api;
     Session *m_session;
@@ -67,6 +71,9 @@ private:
     QTimer m_cursorFlush;
     QHash<QString, QPair<QString, quint64>> m_cursors;
     QString m_durableKey;
+    // Durable key whose delete has not landed yet: an invalidated row under
+    // this key must not be restored, and the delete keeps being retried.
+    QString m_pendingClearKey;
     bool m_cursorDirty = false;
     QQueue<QJsonObject> m_events;
     QJsonObject m_pending;

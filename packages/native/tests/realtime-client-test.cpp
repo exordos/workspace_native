@@ -859,12 +859,22 @@ private slots:
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
         QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
-        // The pruned position is never used: the socket would have carried
-        // epoch 12/generation-a had the invalidated row been restored.
-        const auto lastEvents = std::find_if(fixture.requests.crbegin(), fixture.requests.crend(),
+        resumed.acknowledgeSnapshot();
+        // Catch-up continues from the fresh baseline only: the request stream
+        // settles on generation-b and stops, instead of repeating 410 rounds
+        // against the pruned generation-a position forever.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto lastEvents = std::find_if(fixture.requests.crbegin(), fixture.requests.crend(),
+                [](const Request &request) { return request.target.path().endsWith("/events/"); });
+            return lastEvents != fixture.requests.crend()
+                && QUrlQuery(lastEvents->target).queryItemValue("epoch_generation") == QString("generation-b");
+        })(), 3000);
+        const auto settledRequests = std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
             [](const Request &request) { return request.target.path().endsWith("/events/"); });
-        QVERIFY(lastEvents != fixture.requests.crend());
-        QCOMPARE(QUrlQuery(lastEvents->target).queryItemValue("epoch_generation"), QString("generation-b"));
+        QTest::qWait(600);
+        QCOMPARE(std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
+                   [](const Request &request) { return request.target.path().endsWith("/events/"); }),
+                 settledRequests);
         // A second restart with storage still rejecting writes must also
         // not resurrect the row: the fence is per resume, not per process.
         resumed.stop();
@@ -899,8 +909,9 @@ private slots:
         connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
             fixture.client.acknowledge(event.value("uuid").toString());
         });
-        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
         QVERIFY(fixture.login());
+        // The owner key needs the live server URL, so compute it after login.
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
         // Storage rejects writes from the first persist onward (deterministic).
         store.setFaultsForTest(true, false);
         fixture.client.start();
