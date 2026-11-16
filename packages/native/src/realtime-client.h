@@ -13,11 +13,16 @@ class QWebSocket;
 
 namespace workspace {
 
+class RealtimeCursorStore;
+
 class RealtimeClient final : public QObject {
     Q_OBJECT
 public:
     explicit RealtimeClient(ApiClient *api, Session *session, QObject *parent = nullptr);
     ~RealtimeClient() override;
+    // Attaches the durable cursor store (issue #15). The store must outlive
+    // this client. Without it cursors stay memory-only, as before the issue.
+    void useCursorStore(RealtimeCursorStore *store) { m_cursorStore = store; }
     void start();
     void stop();
     bool acknowledge(const QString &eventUuid);
@@ -48,14 +53,21 @@ private:
     void setState(const QString &state);
     bool current(quint64 run, quint64 generation) const;
     bool validEvent(const QJsonObject &event) const;
+    void scheduleCursorPersist();
+    void flushCursorPersist();
+    void discardCursorPersist();
 
     ApiClient *m_api;
     Session *m_session;
+    RealtimeCursorStore *m_cursorStore = nullptr;
     QPointer<QWebSocket> m_socket;
     QTimer m_reconnect;
     QTimer m_probe;
     QTimer m_handshake;
+    QTimer m_cursorFlush;
     QHash<QString, QPair<QString, quint64>> m_cursors;
+    QString m_durableKey;
+    bool m_cursorDirty = false;
     QQueue<QJsonObject> m_events;
     QJsonObject m_pending;
     QSet<QByteArray> m_markers;

@@ -1,6 +1,7 @@
 #include "realtime-client.h"
 
 #include "domain.h"
+#include "native-realtime-cursor-store.h"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -13,6 +14,13 @@ namespace workspace {
 namespace {
 constexpr quint64 MaxEpoch = 9007199254740991ULL;
 constexpr int MaxFrameBytes = 1024 * 1024;
+// Coalescing window for durable cursor writes. Catch-up delivers up to 100
+// events per page, so one SQLite transaction per acknowledged event would
+// serialize the GUI thread through every burst. Under-writing is always safe
+// (catch-up re-delivers events above the persisted epoch), so a lost trailing
+// window replays at most this much work. See
+// docs/NATIVE_DESKTOP_DURABLE_REALTIME_CURSORS.md.
+constexpr int CursorPersistDelayMs = 500;
 
 bool epochValue(const QJsonValue &value, quint64 *epoch)
 {
@@ -51,6 +59,13 @@ RealtimeClient::RealtimeClient(ApiClient *api, Session *session, QObject *parent
     m_handshake.setSingleShot(true);
     m_handshake.setInterval(30000);
     m_probe.setInterval(15000);
+    m_cursorFlush.setSingleShot(true);
+    connect(&m_cursorFlush, &QTimer::timeout, this, [this] {
+        if (m_active)
+            flushCursorPersist();
+        else
+            m_cursorDirty = false;
+    });
     connect(&m_reconnect, &QTimer::timeout, this, [this] {
         if (!m_active)
             return;
@@ -72,6 +87,11 @@ RealtimeClient::RealtimeClient(ApiClient *api, Session *session, QObject *parent
     });
     connect(session, &Session::signedOut, this, [this] {
         suspend();
+        // A signed-out owner's stream position must not survive anywhere:
+        // the next connect re-baselines instead of resuming it.
+        if (m_cursorStore && !m_durableKey.isEmpty())
+            m_cursorStore->clear(m_durableKey);
+        m_durableKey.clear();
         m_cursors.clear();
         m_owner.clear();
         m_epochGeneration.clear();
@@ -112,6 +132,11 @@ void RealtimeClient::stop()
 
 void RealtimeClient::suspend()
 {
+    // Flush the acknowledged cursor before every teardown (retry included)
+    // so a crash never loses more than the coalescing window.
+    m_cursorFlush.stop();
+    if (m_cursorDirty)
+        flushCursorPersist();
     ++m_run;
     m_active = false;
     m_reconnect.stop();
@@ -141,13 +166,33 @@ void RealtimeClient::resume()
     if (m_active && owner == m_owner && m_generation == m_api->generation())
         return;
     suspend();
-    if (owner != m_owner)
+    if (owner != m_owner) {
         m_refreshRequested = false;
+        // Owner replacement fence: the departed owner's durable cursor is
+        // deleted so it can never resume another owner's socket, and any
+        // pending throttled write is discarded rather than re-persisted.
+        if (m_cursorStore && !m_durableKey.isEmpty())
+            m_cursorStore->clear(m_durableKey);
+    }
     m_owner = owner;
     m_generation = m_api->generation();
     m_active = true;
     m_retries = 0;
-    const auto saved = m_cursors.constFind(owner);
+    // The durable key must be recomputed while the session identity is live
+    // (sign-out clears project/user before this client can react).
+    m_durableKey = m_cursorStore
+        ? RealtimeCursorStore::ownerKey(m_api->server(), m_session->project(), m_session->user())
+        : QString();
+    auto saved = m_cursors.constFind(owner);
+    if (saved == m_cursors.cend() && m_cursorStore && !m_durableKey.isEmpty()) {
+        // Restore-on-connect: a valid persisted row continues through the
+        // same catch-up path the in-memory reconnect uses. A missing, invalid
+        // or unreachable row keeps the untouched baseline path.
+        if (const auto restored = m_cursorStore->read(m_durableKey)) {
+            m_cursors.insert(owner, {restored->generation, restored->epoch});
+            saved = m_cursors.constFind(owner);
+        }
+    }
     if (saved == m_cursors.cend()) {
         m_epochGeneration.clear();
         m_epoch = 0;
@@ -199,6 +244,7 @@ void RealtimeClient::acknowledgeSnapshot()
         return;
     m_waitingSnapshot = false;
     m_cursors.insert(m_owner, {m_epochGeneration, m_epoch});
+    scheduleCursorPersist();
     catchUp();
 }
 
@@ -213,6 +259,14 @@ void RealtimeClient::resynchronize()
     if (!m_wanted || !m_session->ready())
         return;
     m_cursors.remove(m_owner);
+    // A pruned cursor must not survive either: discard the pending durable
+    // write and delete the row before re-baselining, so a restart between
+    // here and the next snapshot ack cannot resurrect the pruned position.
+    // The post-resync cursor is persisted only after the snapshot or the
+    // first event after it is acknowledged.
+    discardCursorPersist();
+    if (m_cursorStore && !m_durableKey.isEmpty())
+        m_cursorStore->clear(m_durableKey);
     suspend();
     resume();
 }
@@ -364,6 +418,7 @@ bool RealtimeClient::acknowledge(const QString &eventUuid)
         return false;
     m_epoch = quint64(m_pending.value("epoch_version").toInteger());
     m_cursors.insert(m_owner, {m_epochGeneration, m_epoch});
+    scheduleCursorPersist();
     m_pending = {};
     const auto run = m_run, generation = m_generation;
     QTimer::singleShot(0, this, [this, run, generation] {
@@ -371,6 +426,31 @@ bool RealtimeClient::acknowledge(const QString &eventUuid)
             dispatch();
     });
     return true;
+}
+
+void RealtimeClient::scheduleCursorPersist()
+{
+    if (!m_cursorStore || m_durableKey.isEmpty() || m_epochGeneration.isEmpty())
+        return;
+    m_cursorDirty = true;
+    if (!m_cursorFlush.isActive())
+        m_cursorFlush.start(CursorPersistDelayMs);
+}
+
+void RealtimeClient::flushCursorPersist()
+{
+    m_cursorFlush.stop();
+    if (!m_cursorDirty)
+        return;
+    m_cursorDirty = false;
+    if (m_cursorStore && !m_durableKey.isEmpty() && !m_epochGeneration.isEmpty())
+        m_cursorStore->save(m_durableKey, {m_epochGeneration, m_epoch});
+}
+
+void RealtimeClient::discardCursorPersist()
+{
+    m_cursorFlush.stop();
+    m_cursorDirty = false;
 }
 
 void RealtimeClient::connectSocket()
