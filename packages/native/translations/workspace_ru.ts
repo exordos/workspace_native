@@ -1541,6 +1541,10 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Link</source>
+            <translation>Ссылка</translation>
+        </message>
+        <message>
             <source>Image</source>
             <translation>Изображение</translation>
         </message>
