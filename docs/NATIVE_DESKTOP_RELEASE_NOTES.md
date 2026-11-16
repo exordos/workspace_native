@@ -1,3 +1,19 @@
+# Workspace Native 0.27.0 - Linux development preview
+
+Mail joins the top bar as a real section, and typing in busy conversations got cheaper:
+
+- The Mail button in the top bar is now active instead of a disabled
+  placeholder. Clicking it switches to the mail section as its own page,
+  rendered as the reference unavailable-state card: centered glyph, heading
+  and body text explaining that mail is not available in the packaged
+  desktop client, identical in both locales and both color modes. The chip
+  follows the reference idle, active and hover behavior down to the subtle
+  hover border on idle chips.
+- Typing in the composer no longer rebuilds the message list projections,
+  so open conversations stay responsive while you write.
+
+---
+
 # Workspace Native 0.26.0 - Linux development preview
 
 Four reference surfaces joined the client, plus a batch of fixes from the field:
