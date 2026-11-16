@@ -857,7 +857,7 @@ void NativeUpdaterTest::downloadProgressMirrorsTheTaskbarHint()
 void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel_data()
 {
     QTest::addColumn<QString>("mode");
-    for (const auto *mode : {"downloaded", "error", "cancel", "late-launcher"})
+    for (const auto *mode : {"downloaded", "error", "cancel", "late-launcher", "late-listener"})
         QTest::newRow(mode) << QString::fromLatin1(mode);
 }
 
@@ -918,7 +918,8 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
             QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
             &launcher, SLOT(Update(QString, QVariantMap))));
     };
-    if (mode != QStringLiteral("late-launcher")) registerLauncher();
+    if (mode != QStringLiteral("late-launcher") && mode != QStringLiteral("late-listener"))
+        registerLauncher();
 
     Server server;
     QVERIFY(server.listening);
@@ -945,9 +946,9 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
     QTRY_VERIFY(updater.progress() > 0);
     // At least one bytes-moved frame must have crossed the bus before the
     // terminal state, so the visible-true trajectory cannot be vacuous. In
-    // late-launcher mode nothing was published yet: no launcher existed to
-    // record the frames the daemon dropped.
-    if (mode != QStringLiteral("late-launcher"))
+    // late-launcher and late-listener mode nothing was published yet: no
+    // listener existed to record the frames the daemon dropped.
+    if (mode != QStringLiteral("late-launcher") && mode != QStringLiteral("late-listener"))
         QTRY_VERIFY(std::any_of(launcher.calls.cbegin(), launcher.calls.cend(), [](const LauncherEntryRecorder::Call &call) {
             return call.properties.value(QStringLiteral("progress-visible")).toBool()
                 && call.properties.value(QStringLiteral("progress")).toDouble() > 0;
@@ -971,6 +972,60 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
         // invented for the late launcher.
         QCOMPARE(call.properties.value(QStringLiteral("progress")).toDouble(), mirror.hint());
         QVERIFY(call.properties.value(QStringLiteral("progress")).toDouble() >= stalled);
+        return;
+    }
+    if (mode == QStringLiteral("late-listener")) {
+        // Reviewer finding 4581477136 round 4: real LauncherEntry consumers -
+        // GNOME shell extensions per docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md -
+        // never own the well-known name; they only install a sender-agnostic
+        // match rule for the Update signal, so a NameOwnerChanged-based
+        // republish cannot wake them. The download stalled at this progress
+        // with nobody listening; a consumer that appears now must be handed
+        // the current hint from a throttled periodic republish, with no new
+        // bytes moving.
+        QCOMPARE(launcher.calls.size(), 0);
+        const qreal stalled = updater.progress();
+        QVERIFY(stalled > 0.0);
+        LauncherEntryRecorder listener; // Match rule only: no service name, no object.
+        auto listenerBus = QDBusConnection::connectToBus(busAddress,
+            QStringLiteral("workspace-native-launcher-entry-late-listener"));
+        QVERIFY2(listenerBus.isConnected(), "the late listener needs its own bus connection");
+        auto releaseListenerBus = qScopeGuard([&listenerBus] {
+            if (listenerBus.isConnected())
+                QDBusConnection::disconnectFromBus(QStringLiteral("workspace-native-launcher-entry-late-listener"));
+        });
+        // The D-Bus equivalent of GNOME's signal_subscribe(null, interface,
+        // 'Update', null, null): empty service and path mean "every sender,
+        // every path" - exactly how a consumer that never owns the name listens.
+        QVERIFY(listenerBus.connect(QString(), QString(),
+            QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
+            &listener, SLOT(Update(QString, QVariantMap))));
+        // Bounded delivery: nothing writes to the socket from here on, so only
+        // a periodic republish of the current hint can arrive, within the
+        // QTRY window at worst.
+        QTRY_VERIFY(!listener.calls.isEmpty());
+        const auto &late = listener.calls.last();
+        QCOMPARE(late.desktopEntry,
+            QStringLiteral("application://com.exordos.workspace.native.preview.desktop"));
+        QVERIFY(late.properties.value(QStringLiteral("progress-visible")).toBool());
+        QCOMPARE(late.properties.value(QStringLiteral("progress")).toDouble(), mirror.hint());
+        QVERIFY(late.properties.value(QStringLiteral("progress")).toDouble() >= stalled);
+        // Quiet, not a broadcast storm: over a fixed 6 s window at most a few
+        // frames may arrive (this brackets the republish interval to roughly
+        // 1.5 s or slower on average; the QTRY above already bounded it to
+        // at most 5 s).
+        const auto framesAtWindowStart = listener.calls.size();
+        QTest::qWait(6000);
+        QVERIFY2(listener.calls.size() - framesAtWindowStart <= 4,
+            qPrintable(QStringLiteral("late listener took %1 extra frames in 6 s: not throttled")
+                .arg(listener.calls.size() - framesAtWindowStart)));
+        // Bounded lifetime: the terminal state must end the republish. The
+        // listener records the clear frame, then silence.
+        updater.cancel();
+        QTRY_VERIFY(!listener.calls.last().properties.value(QStringLiteral("progress-visible")).toBool());
+        const auto framesUntilClear = listener.calls.size();
+        QTest::qWait(4000);
+        QCOMPARE(listener.calls.size(), framesUntilClear);
         return;
     }
     if (mode == QStringLiteral("cancel")) {
