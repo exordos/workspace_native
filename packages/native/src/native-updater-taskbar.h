@@ -10,12 +10,17 @@ namespace workspace {
 
 class NativeUpdater;
 
-// Mirrors update download progress into the window's taskbar progress hint.
+// Mirrors update download progress into the OS taskbar progress hint.
 // See docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md for the measured
 // reference contract (workspace_ui 61dacef7 packages/electron/src/main.ts:712-719,
-// 1208-1211, 1363-1381). Qt 6.10 exposes no QWindow::setProgress, so the hint
-// value (0..1, -1 cleared) is stored as the window's "progress" property at
-// the single platform sink UpdaterTaskbarProgress::setHint().
+// 1208-1211, 1363-1381) and for the platform channel design.
+//
+// setHint() is the single platform sink: it stores the hint value (0..1, -1
+// cleared) as the window's "progress" property AND publishes it to the real
+// desktop channel. On Linux that channel is the com.canonical.Unity.LauncherEntry
+// Update signal (Unity7, GNOME Dash-to-Dock, Plank, Latte dock): the
+// documented wire protocol taskbar progress actually travels on, since EWMH
+// defines no progress hint and Qt 6.10 exposes no QWindow::setProgress.
 class UpdaterTaskbarProgress final : public QObject {
     Q_OBJECT
 
@@ -36,6 +41,7 @@ public:
 private:
     void sync();
     void setHint(qreal hint);
+    void publish(qreal hint);
 
     QPointer<QWindow> m_window;
     QPointer<NativeUpdater> m_updater;
