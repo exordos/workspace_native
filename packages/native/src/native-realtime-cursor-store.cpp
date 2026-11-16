@@ -111,6 +111,7 @@ bool RealtimeCursorStore::ensureOpen()
 bool RealtimeCursorStore::save(const QString &key, const Cursor &cursor)
 {
     if (!validOwnerKey(key) || !validCursor(cursor)) return false;
+    if (m_failWritesForTest) return false;
     if (!ensureOpen()) return false;
     if (!m_database.transaction()) return false;
     {
@@ -170,6 +171,7 @@ std::optional<RealtimeCursorStore::Cursor> RealtimeCursorStore::read(const QStri
 bool RealtimeCursorStore::clear(const QString &key)
 {
     if (!validOwnerKey(key)) return false;
+    if (m_failClearsForTest) return false;
     if (!ensureOpen()) return false;
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("DELETE FROM realtime_cursors WHERE owner_key = ?"));
