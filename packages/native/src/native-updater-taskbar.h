@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QString>
 #include <QtGlobal>
 
 class QWindow;
@@ -43,6 +44,15 @@ private:
     void setHint(qreal hint);
     void publish(qreal hint);
 
+private slots:
+    // Session-bus org.freedesktop.DBus.NameOwnerChanged sink: a LauncherEntry
+    // name (re)appearing means a launcher that missed the earlier broadcasts
+    // just started; republish the current hint to it (Linux only, no-op
+    // elsewhere).
+    void onLauncherNameOwnerChanged(const QString &name, const QString &oldOwner,
+        const QString &newOwner);
+
+private:
     QPointer<QWindow> m_window;
     QPointer<NativeUpdater> m_updater;
     qreal m_hint = -1;
