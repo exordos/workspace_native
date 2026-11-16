@@ -36,10 +36,20 @@ public:
     bool save(const QString &key, const Cursor &cursor);
     std::optional<Cursor> read(const QString &key);
     bool clear(const QString &key);
+    // Test-only deterministic fault seam: with a fault enabled the matching
+    // call returns false without touching the database while reads keep
+    // working - exactly what a readable-but-write-rejecting store looks like
+    // to callers. Production code never calls this.
+    void setFaultsForTest(bool failWrites, bool failClears)
+    {
+        m_failWritesForTest = failWrites;
+        m_failClearsForTest = failClears;
+    }
 
 private:
     bool ensureOpen();
     void close();
+    bool m_failWritesForTest = false, m_failClearsForTest = false;
     QString m_directory, m_path, m_connection;
     QSqlDatabase m_database;
     std::unique_ptr<QLockFile> m_lock;
