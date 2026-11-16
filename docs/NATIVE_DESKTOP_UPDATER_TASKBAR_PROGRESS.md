@@ -176,6 +176,17 @@ Taskbar rendering is DE-side and optional:
   (`ITaskbarList3`; e.g. `KDE/elisa` `src/windows/taskbarmanager.{h,cpp}`),
   which confirms there is no X11-side standard to mirror today.
 
+Signals are not replayed, so a launcher that starts - or restarts - while a
+download has stalled missed every earlier frame and would otherwise show
+nothing until new bytes move. The mirror therefore subscribes to
+`org.freedesktop.DBus` `NameOwnerChanged` on the session bus and, when the
+well-known `com.canonical.Unity.LauncherEntry` name gains a non-empty owner,
+republishes the current hint state (progress-visible + progress, or the
+clear) straight through `publish()`, bypassing the dedupe guard, so the late
+launcher receives the current state without waiting for fresh progress
+(finding 4581477136). While no hint has been pushed yet nothing is republished
+- the silent pre-download contract is unchanged.
+
 Consequently acceptance is asserted at the protocol layer in the existing
 `native-updater` CTest group against the existing fake update server - the
 window `progress` property plus the Update signals observed by a fake
@@ -194,7 +205,8 @@ launcher on a private bus - never through pixel screenshots of a dock.
 - on `downloaded`, on `error`, and on `cancel()` the property becomes `-1`
   (cleared).
 
-`downloadProgressReachesTheLauncherEntryChannel` (same data rows) is the
+`downloadProgressReachesTheLauncherEntryChannel` (data rows `downloaded`,
+`error`, `cancel`, plus `late-launcher`) is the
 protocol-level check for finding 4581288189. The case re-executes itself with
 `dbus-run-session` (the `native-controller-test` downloadedFileActions
 pattern) so the fake never shadows a live desktop bus, registers a fake
@@ -212,7 +224,13 @@ the wire frames themselves:
 - every frame's app-uri is
   `application://com.exordos.workspace.native.preview.desktop`;
 - the last frame on `downloaded`, `error` and `cancel()` is the clear:
-  `progress-visible=false` with no stale `progress` key.
+  `progress-visible=false` with no stale `progress` key;
+- `late-launcher` (finding 4581477136) stalls the download at `progress > 0`
+  with no launcher on the bus - every frame so far dropped - then registers
+  the fake launcher; without any new bytes it must record a republished frame
+  with `progress-visible=true` and `progress` equal to the mirror's current
+  hint. On the pre-fix code the late launcher records nothing and the row
+  fails RED.
 
 With the property-only sink this case fails on every row (the fake records
 zero frames); it went RED before the publish implementation went GREEN.
