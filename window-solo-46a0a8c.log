@@ -1,0 +1,713 @@
+********* Start testing of NativeWindowTest *********
+Config: Using QtTest library 6.10.2, Qt 6.10.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 15.2.0), ubuntu 26.04
+PASS   : NativeWindowTest::initTestCase()
+glx: failed to create dri3 screen
+failed to load driver: virtio_gpu
+QINFO  : NativeWindowTest::aboutDrawerPreservesTheActualPendingCheck(en-light) qt.multimedia.ffmpeg: Using Qt multimedia with FFmpeg version 8.0.1-3ubuntu2 GPL version 2 or later
+Failed to open VDPAU backend libvdpau_nvidia.so: cannot open shared object file: No such file or directory
+PASS   : NativeWindowTest::aboutDrawerPreservesTheActualPendingCheck(en-light)
+PASS   : NativeWindowTest::aboutDrawerPreservesTheActualPendingCheck(ru-dark)
+PASS   : NativeWindowTest::aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall(en-light)
+PASS   : NativeWindowTest::aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall(ru-dark)
+PASS   : NativeWindowTest::aboutInstallRestartsOnlyForTheExplicitMatchingAction(en-explicit)
+PASS   : NativeWindowTest::aboutInstallRestartsOnlyForTheExplicitMatchingAction(ru-explicit)
+PASS   : NativeWindowTest::aboutInstallRestartsOnlyForTheExplicitMatchingAction(en-external-install)
+PASS   : NativeWindowTest::aboutInstallRestartsOnlyForTheExplicitMatchingAction(ru-external-install)
+PASS   : NativeWindowTest::alreadyInstalledUpdateOffersExplicitRestart(en)
+PASS   : NativeWindowTest::alreadyInstalledUpdateOffersExplicitRestart(ru)
+PASS   : NativeWindowTest::updaterActualMainShowsAndExecutesTheDownloadAndInstallActions(en-light)
+PASS   : NativeWindowTest::updaterActualMainShowsAndExecutesTheDownloadAndInstallActions(ru-dark)
+QINFO  : NativeWindowTest::ownStatusClearKeepsItsRenderedInkWhileSaveIsPending(en-light) OWN_STATUS_CLEAR_PAINT  {"actualHeldPost":true,"beforeContrast":65621,"heldContrast":65621,"heldRatio":1,"inkPixels":369,"locale":"en","mode":"light","posts":1,"sameBox":true,"sameCaptionAndFont":true,"unhoveredUnfocusedBoth":true}
+PASS   : NativeWindowTest::ownStatusClearKeepsItsRenderedInkWhileSaveIsPending(en-light)
+QINFO  : NativeWindowTest::ownStatusClearKeepsItsRenderedInkWhileSaveIsPending(ru-dark) OWN_STATUS_CLEAR_PAINT  {"actualHeldPost":true,"beforeContrast":61858,"heldContrast":61858,"heldRatio":1,"inkPixels":444,"locale":"ru","mode":"dark","posts":1,"sameBox":true,"sameCaptionAndFont":true,"unhoveredUnfocusedBoth":true}
+PASS   : NativeWindowTest::ownStatusClearKeepsItsRenderedInkWhileSaveIsPending(ru-dark)
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-preview) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":528},"firstOracle":"preview","frameCount":1,"label":{"height":21,"width":142.390625,"x":574,"y":540},"locale":"en","mode":"light","phase":"default","picker":{"height":320,"width":404,"x":518,"y":266},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":515},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"What's your mood?","previewResolvedFamily":"Noto Color Emoji","previewText":"😊","roiHalfOpen":[520,517,584,583],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,527,580,572],"yellowCount":1545,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-preview) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":528},"firstOracle":"preview","frameCount":5,"label":{"height":21,"width":107.859375,"x":574,"y":540},"locale":"en","mode":"light","phase":"hover","picker":{"height":320,"width":404,"x":518,"y":266},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":515},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"grinning face","previewResolvedFamily":"Noto Color Emoji","previewText":"😀","roiHalfOpen":[520,517,584,583],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,527,580,572],"yellowCount":1361,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+PASS   : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-preview)
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-preview) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":538},"firstOracle":"preview","frameCount":1,"label":{"height":21,"width":142.390625,"x":574,"y":550},"locale":"ru","mode":"dark","phase":"default","picker":{"height":320,"width":404,"x":518,"y":276},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":525},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"What's your mood?","previewResolvedFamily":"Noto Color Emoji","previewText":"😊","roiHalfOpen":[520,527,584,593],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,537,580,582],"yellowCount":1547,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-preview) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":538},"firstOracle":"preview","frameCount":4,"label":{"height":21,"width":107.859375,"x":574,"y":550},"locale":"ru","mode":"dark","phase":"hover","picker":{"height":320,"width":404,"x":518,"y":276},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":525},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"grinning face","previewResolvedFamily":"Noto Color Emoji","previewText":"😀","roiHalfOpen":[520,527,584,593],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,537,580,582],"yellowCount":1364,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+PASS   : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-preview)
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-search) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":528},"firstOracle":"search","frameCount":1,"label":{"height":21,"width":142.390625,"x":574,"y":540},"locale":"en","mode":"light","phase":"default","picker":{"height":320,"width":404,"x":518,"y":266},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":515},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"What's your mood?","previewResolvedFamily":"Noto Color Emoji","previewText":"😊","roiHalfOpen":[520,517,584,583],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,527,580,572],"yellowCount":1545,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-search) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":528},"firstOracle":"search","frameCount":4,"label":{"height":21,"width":107.859375,"x":574,"y":540},"locale":"en","mode":"light","phase":"hover","picker":{"height":320,"width":404,"x":518,"y":266},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":515},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"grinning face","previewResolvedFamily":"Noto Color Emoji","previewText":"😀","roiHalfOpen":[520,517,584,583],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,527,580,572],"yellowCount":1361,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+PASS   : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(en-light-search)
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-search) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":538},"firstOracle":"search","frameCount":1,"label":{"height":21,"width":142.390625,"x":574,"y":550},"locale":"ru","mode":"dark","phase":"default","picker":{"height":320,"width":404,"x":518,"y":276},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":525},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"What's your mood?","previewResolvedFamily":"Noto Color Emoji","previewText":"😊","roiHalfOpen":[520,527,584,593],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,537,580,582],"yellowCount":1547,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+QINFO  : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-search) PICKER_RASTER_SEARCH {"chosen":0,"emojiBox":{"height":45,"width":45,"x":529,"y":538},"firstOracle":"search","frameCount":5,"label":{"height":21,"width":107.859375,"x":574,"y":550},"locale":"ru","mode":"dark","phase":"hover","picker":{"height":320,"width":404,"x":518,"y":276},"posts":0,"preview":{"height":70,"width":402,"x":519,"y":525},"previewFontPx":53,"previewImplicitWidth":55.25,"previewLabel":"grinning face","previewResolvedFamily":"Noto Color Emoji","previewText":"😀","roiHalfOpen":[520,527,584,593],"schema":"native-picker-raster-search-v1","searchFontPx":16,"searchResolvedFamily":"Arial","yellowBoundsHalfOpen":[533,537,580,582],"yellowCount":1364,"yellowHeight":45,"yellowMask":"A>0,R>=160,G>=80,B<=100,R-B>=80","yellowWidth":47}
+PASS   : NativeWindowTest::ownStatusPickerMatchesMeasuredSourcePreviewAndSearch(ru-dark-search)
+PASS   : NativeWindowTest::ownStatusPickerHoverAndArrowKeepFocusOnTheActualEmojiButton(en-light)
+PASS   : NativeWindowTest::ownStatusPickerHoverAndArrowKeepFocusOnTheActualEmojiButton(ru-dark)
+PASS   : NativeWindowTest::widenedPickerKeepsEveryEmojiBelowTheCategoryHeading(actual-old-status-width-408)
+PASS   : NativeWindowTest::widenedPickerKeepsEveryEmojiBelowTheCategoryHeading(matched-source-inner-width-404)
+PASS   : NativeWindowTest::widenedPickerKeyboardDownUsesTheActualNineColumnRow()
+PASS   : NativeWindowTest::optionalPickerPreviewMatchesSourceDefaultsAndRealHover(light)
+PASS   : NativeWindowTest::optionalPickerPreviewMatchesSourceDefaultsAndRealHover(dark)
+PASS   : NativeWindowTest::ownStatusPickerAcceptsImmediateTypingWithoutAnotherSearchClick(en-light)
+PASS   : NativeWindowTest::ownStatusPickerAcceptsImmediateTypingWithoutAnotherSearchClick(ru-dark)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(en-light-box)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(ru-dark-box)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(en-light-input)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(ru-dark-input)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(en-light-chooser)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(ru-dark-chooser)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(en-light-picker)
+PASS   : NativeWindowTest::ownStatusUsesMeasuredSourceGeometry(ru-dark-picker)
+PASS   : NativeWindowTest::ownStatusActualMainSavesOneHeldCanonicalResponse(en-light)
+PASS   : NativeWindowTest::ownStatusActualMainSavesOneHeldCanonicalResponse(ru-dark)
+PASS   : NativeWindowTest::ownStatusActualMainClearCancelPickerAndFailurePreserveTheDraft()
+PASS   : NativeWindowTest::ownStatusActualMainOwnerLossClosesThePendingEditor()
+PASS   : NativeWindowTest::ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor()
+QINFO  : NativeWindowTest::profileAndTopbarUseMeasuredThreeLineGeometry(height) PROFILE_GEOMETRY_OBSERVATION {"bar":{"baselineOffset":0,"clip":false,"height":76.5,"implicitHeight":0,"implicitWidth":0,"name":"topBar","present":true,"sceneX":0,"sceneY":0,"type":"QQuickRectangle_QML_11475","visible":true,"width":1440,"x":0,"y":0},"chevron":{"asset":"chevron-down.svg","availableHeight":16,"availableWidth":16,"baselineOffset":0,"bottomPadding":0,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":16,"implicitContentHeight":16,"implicitContentWidth":16,"implicitHeight":36,"implicitWidth":36,"leftPadding":0,"name":"","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1410,"sceneY":29.75,"text":"","topPadding":0,"type":"NativeIconButton_QMLTYPE_11244","visible":true,"width":16,"x":167.375,"y":15.75},"column":{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":115.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1286.625,"sceneY":14,"topPadding":0,"type":"QQuickColumn","visible":true,"width":115.375,"x":44,"y":0},"contentChildren":[{"baselineOffset":0,"clip":false,"height":36,"implicitHeight":0,"implicitWidth":0,"name":"profileAvatar","present":true,"sceneX":1242.625,"sceneY":19.75,"type":"QQuickRectangle","visible":true,"width":36,"x":0,"y":5.75},{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":115.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1286.625,"sceneY":14,"topPadding":0,"type":"QQuickColumn","visible":true,"width":115.375,"x":44,"y":0},{"asset":"chevron-down.svg","availableHeight":16,"availableWidth":16,"baselineOffset":0,"bottomPadding":0,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":16,"implicitContentHeight":16,"implicitContentWidth":16,"implicitHeight":36,"implicitWidth":36,"leftPadding":0,"name":"","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1410,"sceneY":29.75,"text":"","topPadding":0,"type":"NativeIconButton_QMLTYPE_11244","visible":true,"width":16,"x":167.375,"y":15.75}],"contentRow":{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":183.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1242.625,"sceneY":14,"topPadding":0,"type":"QQuickRow","visible":true,"width":183.375,"x":6,"y":6},"email":{"baselineOffset":11.75,"bottomPadding":0,"clip":false,"contentHeight":14.75,"contentWidth":115.375,"elide":"ElideRight","fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":11,"pointSize":8.25,"styleName":"Regular","weight":400},"height":13.75,"implicitHeight":14.75,"implicitWidth":115.375,"leftPadding":0,"lineHeight":13.75,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profileEmail","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":11,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1286.625,"sceneY":47.75,"text":"cassi@example.invalid","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":115.375,"x":0,"y":33.75},"firstOracle":"height","fontInfoScope":"QFontInfo resolved for each requested QFont; not per-glyph fallback or cross-platform raster acceptance","name":{"baselineOffset":14.953125,"bottomPadding":0,"clip":false,"contentHeight":20,"contentWidth":97.71875,"elide":"ElideRight","fontInfo":{"bold":true,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":500},"height":20,"implicitHeight":20,"implicitWidth":97.71875,"leftPadding":0,"lineHeight":20,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profileDisplayName","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":500},"rightPadding":0,"sceneX":1286.625,"sceneY":14,"text":"Cassi Synthetic","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":97.71875,"x":0,"y":0},"profile":{"availableHeight":47.5,"availableWidth":183.375,"baselineOffset":6,"bottomPadding":6,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":59.5,"implicitContentHeight":47.5,"implicitContentWidth":183.375,"implicitHeight":59.5,"implicitWidth":195.375,"leftPadding":6,"name":"accountMenuButton","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":6,"sceneX":1236.625,"sceneY":8,"text":"","topPadding":6,"type":"Button_QMLTYPE_11251_QML_11477","visible":true,"width":195.375,"x":0,"y":0},"stage":"before-first-source-height-oracle","status":{"baselineOffset":11.75,"bottomPadding":0,"clip":false,"contentHeight":14.75,"contentWidth":32.859375,"elide":"ElideRight","fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":11,"pointSize":8.25,"styleName":"Regular","weight":400},"height":13.75,"implicitHeight":14.75,"implicitWidth":32.859375,"leftPadding":0,"lineHeight":13.75,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profilePresenceStatus","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":11,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1286.625,"sceneY":34,"text":"offline","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":32.859375,"x":0,"y":20},"synthetic":true,"viewport":{"dpr":1,"height":900,"width":1440}}
+PASS   : NativeWindowTest::profileAndTopbarUseMeasuredThreeLineGeometry(height)
+QINFO  : NativeWindowTest::profileAndTopbarUseMeasuredThreeLineGeometry(email) PROFILE_GEOMETRY_OBSERVATION {"bar":{"baselineOffset":0,"clip":false,"height":76.5,"implicitHeight":0,"implicitWidth":0,"name":"topBar","present":true,"sceneX":0,"sceneY":0,"type":"QQuickRectangle_QML_11803","visible":true,"width":1440,"x":0,"y":0},"chevron":{"asset":"chevron-down.svg","availableHeight":16,"availableWidth":16,"baselineOffset":0,"bottomPadding":0,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":16,"implicitContentHeight":16,"implicitContentWidth":16,"implicitHeight":36,"implicitWidth":36,"leftPadding":0,"name":"","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1410,"sceneY":29.75,"text":"","topPadding":0,"type":"NativeIconButton_QMLTYPE_11572","visible":true,"width":16,"x":167.375,"y":15.75},"column":{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":115.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1286.625,"sceneY":14,"topPadding":0,"type":"QQuickColumn","visible":true,"width":115.375,"x":44,"y":0},"contentChildren":[{"baselineOffset":0,"clip":false,"height":36,"implicitHeight":0,"implicitWidth":0,"name":"profileAvatar","present":true,"sceneX":1242.625,"sceneY":19.75,"type":"QQuickRectangle","visible":true,"width":36,"x":0,"y":5.75},{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":115.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1286.625,"sceneY":14,"topPadding":0,"type":"QQuickColumn","visible":true,"width":115.375,"x":44,"y":0},{"asset":"chevron-down.svg","availableHeight":16,"availableWidth":16,"baselineOffset":0,"bottomPadding":0,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":16,"implicitContentHeight":16,"implicitContentWidth":16,"implicitHeight":36,"implicitWidth":36,"leftPadding":0,"name":"","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1410,"sceneY":29.75,"text":"","topPadding":0,"type":"NativeIconButton_QMLTYPE_11572","visible":true,"width":16,"x":167.375,"y":15.75}],"contentRow":{"baselineOffset":0,"bottomPadding":0,"clip":false,"height":47.5,"implicitHeight":47.5,"implicitWidth":183.375,"leftPadding":0,"name":"","present":true,"rightPadding":0,"sceneX":1242.625,"sceneY":14,"topPadding":0,"type":"QQuickRow","visible":true,"width":183.375,"x":6,"y":6},"email":{"baselineOffset":11.75,"bottomPadding":0,"clip":false,"contentHeight":14.75,"contentWidth":115.375,"elide":"ElideRight","fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":11,"pointSize":8.25,"styleName":"Regular","weight":400},"height":13.75,"implicitHeight":14.75,"implicitWidth":115.375,"leftPadding":0,"lineHeight":13.75,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profileEmail","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":11,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1286.625,"sceneY":47.75,"text":"cassi@example.invalid","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":115.375,"x":0,"y":33.75},"firstOracle":"email","fontInfoScope":"QFontInfo resolved for each requested QFont; not per-glyph fallback or cross-platform raster acceptance","name":{"baselineOffset":14.953125,"bottomPadding":0,"clip":false,"contentHeight":20,"contentWidth":97.71875,"elide":"ElideRight","fontInfo":{"bold":true,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":500},"height":20,"implicitHeight":20,"implicitWidth":97.71875,"leftPadding":0,"lineHeight":20,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profileDisplayName","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":500},"rightPadding":0,"sceneX":1286.625,"sceneY":14,"text":"Cassi Synthetic","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":97.71875,"x":0,"y":0},"profile":{"availableHeight":47.5,"availableWidth":183.375,"baselineOffset":6,"bottomPadding":6,"clip":false,"fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":14,"pointSize":10.5,"styleName":"Regular","weight":400},"height":59.5,"implicitContentHeight":47.5,"implicitContentWidth":183.375,"implicitHeight":59.5,"implicitWidth":195.375,"leftPadding":6,"name":"accountMenuButton","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":14,"pointSize":-1,"weight":400},"rightPadding":6,"sceneX":1236.625,"sceneY":8,"text":"","topPadding":6,"type":"Button_QMLTYPE_11579_QML_11805","visible":true,"width":195.375,"x":0,"y":0},"stage":"before-first-source-height-oracle","status":{"baselineOffset":11.75,"bottomPadding":0,"clip":false,"contentHeight":14.75,"contentWidth":32.859375,"elide":"ElideRight","fontInfo":{"bold":false,"exactMatch":false,"family":"Noto Sans","italic":false,"pixelSize":11,"pointSize":8.25,"styleName":"Regular","weight":400},"height":13.75,"implicitHeight":14.75,"implicitWidth":32.859375,"leftPadding":0,"lineHeight":13.75,"lineHeightMode":"FixedHeight","maximumLineCount":1,"name":"profilePresenceStatus","present":true,"requestedFont":{"bold":false,"family":"Sans","italic":false,"pixelSize":11,"pointSize":-1,"weight":400},"rightPadding":0,"sceneX":1286.625,"sceneY":34,"text":"offline","topPadding":0,"truncated":false,"type":"QQuickText","visible":true,"width":32.859375,"x":0,"y":20},"synthetic":true,"viewport":{"dpr":1,"height":900,"width":1440}}
+PASS   : NativeWindowTest::profileAndTopbarUseMeasuredThreeLineGeometry(email)
+PASS   : NativeWindowTest::actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos(en-light-direct)
+PASS   : NativeWindowTest::actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos(ru-dark-protected-direct)
+PASS   : NativeWindowTest::avatarHttpFailureKeepsFallbackAndRealtimeReplacementUpdatesPeerFaces()
+PASS   : NativeWindowTest::avatarComponentKeepsNestedScopeAndReferenceLease()
+PASS   : NativeWindowTest::messageImageComponentKeepsNestedScopeAndReferenceLease(image-url-scope-reference)
+PASS   : NativeWindowTest::messageImageComponentKeepsNestedScopeAndReferenceLease(refresh-ticket-scope-reference)
+PASS   : NativeWindowTest::uploadedAvatarsUseRealMainPixels(en-light-direct)
+PASS   : NativeWindowTest::uploadedAvatarsUseRealMainPixels(ru-dark-direct)
+PASS   : NativeWindowTest::uploadedAvatarsUseRealMainPixels(en-light-protected-direct)
+PASS   : NativeWindowTest::uploadedAvatarsUseRealMainPixels(ru-dark-protected-direct)
+PASS   : NativeWindowTest::durableComposerRestoresActualInputAcrossWindowAndControllerLifetimes()
+PASS   : NativeWindowTest::draftsActualMainPageRestoresExactCardAndKeepsSavingInputEditable(en-light)
+PASS   : NativeWindowTest::draftsActualMainPageRestoresExactCardAndKeepsSavingInputEditable(ru-dark)
+PASS   : NativeWindowTest::mentionsPageChipFilterAndCloseFlow()
+PASS   : NativeWindowTest::inboxPageChipRowsAndCloseFlow()
+PASS   : NativeWindowTest::draftsMentionsSidebarNavigationKeepsOnePageActive()
+PASS   : NativeWindowTest::draftsActualMainConflictButtonsUseConditionalOwnedActions(server)
+PASS   : NativeWindowTest::draftsActualMainConflictButtonsUseConditionalOwnedActions(local)
+PASS   : NativeWindowTest::draftsActualMainConflictButtonsUseConditionalOwnedActions(delete)
+PASS   : NativeWindowTest::composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown(bold)
+PASS   : NativeWindowTest::composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown(italic)
+PASS   : NativeWindowTest::composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown(code)
+PASS   : NativeWindowTest::composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown(strike)
+PASS   : NativeWindowTest::composerFormattingDefaultsRespectCompositionRepeatAndOtherTargets()
+PASS   : NativeWindowTest::composerFormattingDefaultsPreserveUtf16MultilineAndScroll()
+PASS   : NativeWindowTest::composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement(route)
+PASS   : NativeWindowTest::composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement(logout)
+PASS   : NativeWindowTest::composerEmojiAppendsUnicodeAndSendsFromTheActualMain(en-light)
+PASS   : NativeWindowTest::composerEmojiAppendsUnicodeAndSendsFromTheActualMain(ru-dark)
+PASS   : NativeWindowTest::composerEmojiKeepsHarmlessUsersButClosesOnRealRouteAndApiLifetime()
+PASS   : NativeWindowTest::canonicalUsersHttpNameAppearsInTheActualMainAuthorLabel()
+PASS   : NativeWindowTest::visibleGenericAuthorUsesSourceUnknownFallback(missing-user)
+PASS   : NativeWindowTest::visibleGenericAuthorUsesSourceUnknownFallback(known-name)
+PASS   : NativeWindowTest::visibleGenericAuthorUsesSourceUnknownFallback(null-optional-names)
+PASS   : NativeWindowTest::focusedTextWindowLosesFocusBeforeNativeSurfaceIsDestroyed()
+PASS   : NativeWindowTest::focusedTextWindowEngineDestructionReleasesFocusBeforeSurface()
+PASS   : NativeWindowTest::selectedDeletedTopicKeepsAnExplicitMainRouteUntilCanonicalOpening(selected-deletion-opens-owned-canonical-topic)
+PASS   : NativeWindowTest::selectedDeletedTopicKeepsAnExplicitMainRouteUntilCanonicalOpening(real-newer-sidebar-click-wins-over-held-alias)
+PASS   : NativeWindowTest::messageTopicReferenceUsesTheCanonicalRoute(known)
+PASS   : NativeWindowTest::messageTopicReferenceUsesTheCanonicalRoute(unknown-same)
+PASS   : NativeWindowTest::messageTopicReferenceUsesTheCanonicalRoute(cross-canonical)
+PASS   : NativeWindowTest::messageTopicReferenceUsesTheCanonicalRoute(lookup-error)
+PASS   : NativeWindowTest::messageTopicReferenceUsesTheCanonicalRoute(cancel-pending)
+PASS   : NativeWindowTest::directStreamCaptionRefreshesAfterDirectory(late-directory)
+PASS   : NativeWindowTest::directStreamCaptionRefreshesAfterDirectory(live-rename)
+QINFO  : NativeWindowTest::realMenuInputWaitsForSourceLayout() Controlled menu height at real press 46 QPointF(194,226)
+PASS   : NativeWindowTest::realMenuInputWaitsForSourceLayout()
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(empty-505) Production QML getter counts empty-505 QMap(("activeReads", QVariant(int, 0))("archiveReads", QVariant(int, 0))("encrypted", QVariant(bool, true))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(empty-505)
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(active-last-plain-505) Production QML getter counts active-last-plain-505 QMap(("activeReads", QVariant(int, 1))("archiveReads", QVariant(int, 0))("encrypted", QVariant(bool, false))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(active-last-plain-505)
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(active-last-encrypted-505) Production QML getter counts active-last-encrypted-505 QMap(("activeReads", QVariant(int, 1))("archiveReads", QVariant(int, 0))("encrypted", QVariant(bool, true))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(active-last-encrypted-505)
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(archive-last-plain-505) Production QML getter counts archive-last-plain-505 QMap(("activeReads", QVariant(int, 1))("archiveReads", QVariant(int, 1))("encrypted", QVariant(bool, false))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(archive-last-plain-505)
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(archive-last-encrypted-505) Production QML getter counts archive-last-encrypted-505 QMap(("activeReads", QVariant(int, 1))("archiveReads", QVariant(int, 1))("encrypted", QVariant(bool, true))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(archive-last-encrypted-505)
+QINFO  : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(unknown-505) Production QML getter counts unknown-505 QMap(("activeReads", QVariant(int, 1))("archiveReads", QVariant(int, 1))("encrypted", QVariant(bool, true))("selectionReads", QVariant(int, 1)))
+PASS   : NativeWindowTest::selectedStreamEncryptionProjectsEachNeededModelOnce(unknown-505)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(en-light) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":5,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":16,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":22,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(en-light)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(en-dark) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":5,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":17,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":22,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":22,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":23,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(en-dark)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":5,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":15,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-dark) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":6,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":16,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-dark)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light-700) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":4,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":350,"y":171.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":14,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":350,"y":171.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":19,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":350,"y":171.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":19,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":350,"y":171.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":19,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":350,"y":171.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light-700)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light-600) Synthetic archive input trace [{"activeFocus":true,"count":5,"enabled":true,"focusItem":"archiveChatSearch","frames":4,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":300,"y":167.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":15,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":300,"y":167.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":300,"y":167.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":300,"y":167.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":300,"y":167.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(ru-light-600)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(short) Synthetic archive input trace [{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":5,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":15,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":20,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":21,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(short)
+QINFO  : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(virtual) Synthetic archive input trace [{"activeFocus":true,"count":505,"enabled":true,"focusItem":"archiveChatSearch","frames":6,"phase":"initial-click","selectedText":"","tab":3,"text":"","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":false,"count":1,"enabled":true,"focusItem":"createChatTab-3","frames":24,"phase":"returned-to-archive","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":29,"phase":"replacement-click","selectedText":"","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":1,"enabled":true,"focusItem":"archiveChatSearch","frames":29,"phase":"select-all","selectedText":"  ALICE  ","tab":3,"text":"  ALICE  ","visible":true,"windowActive":true,"x":720,"y":321.421875},{"activeFocus":true,"count":0,"enabled":true,"focusItem":"archiveChatSearch","frames":42,"phase":"typed-replacement","selectedText":"","tab":3,"text":"zzzz-no-synthetic-chat","visible":true,"windowActive":true,"x":720,"y":321.421875}]
+PASS   : NativeWindowTest::archiveMatchesPinnedGeometryAndVirtualSearch(virtual)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-direct)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-channel)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-ordinary-topic)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-encrypted)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-encrypted-topic)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-provider)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(restore)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(error-retry)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(ambiguous)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(open-pending)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(late-error)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(ru-dark-error-retry)
+PASS   : NativeWindowTest::archiveUsesExactHistoryAndCanonicalRestore(ru-dark-open-pending)
+PASS   : NativeWindowTest::archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure(loading-empty)
+PASS   : NativeWindowTest::archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure(loading-retained)
+PASS   : NativeWindowTest::archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure(error-empty)
+PASS   : NativeWindowTest::archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure(error-retained)
+PASS   : NativeWindowTest::archiveDifferentRowFailuresUseTheCurrentViewAndCompletionOrder()
+PASS   : NativeWindowTest::archiveKeyboardAndOwnerLifetimeRemainScoped()
+PASS   : NativeWindowTest::archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling(light)
+PASS   : NativeWindowTest::archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling(dark)
+PASS   : NativeWindowTest::archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling(large)
+PASS   : NativeWindowTest::archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable()
+PASS   : NativeWindowTest::archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden(pending-light)
+PASS   : NativeWindowTest::archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden(pending-dark)
+PASS   : NativeWindowTest::archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden(loading-light)
+PASS   : NativeWindowTest::archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden(loading-dark)
+PASS   : NativeWindowTest::globalNewChatOffersTheSourceArchiveTab()
+PASS   : NativeWindowTest::globalNewChatOffersTheSourceTopicTab()
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(ordinary)
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(direct)
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(encrypted)
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(provider)
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(uncertain)
+PASS   : NativeWindowTest::globalTopicUsesTypedHttpForEveryMetadataKind(shared-sidebar)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(700-0)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(700-1)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(700-2)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(600-0)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(600-1)
+PASS   : NativeWindowTest::globalChatTabsUseSourceIntrinsicPressureAndBreakpoint(600-2)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(en-light)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(en-dark)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(ru-light)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(ru-dark)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(empty)
+PASS   : NativeWindowTest::globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions(virtual)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(rename)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(counter)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(role)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(delete)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(route)
+PASS   : NativeWindowTest::globalTopicLifetimeDistinguishesNamesFromAccessChanges(logout)
+PASS   : NativeWindowTest::globalTopicPreservesLocalStateAndDropdownBounds(draft)
+PASS   : NativeWindowTest::globalTopicPreservesLocalStateAndDropdownBounds(blur)
+PASS   : NativeWindowTest::globalTopicPreservesLocalStateAndDropdownBounds(viewport)
+QINFO  : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(closed) Chevron ink QRect(1122,349 15x8) expected source 15x8 centered at QPointF(1130,353)
+PASS   : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(closed)
+QINFO  : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(open) Chevron ink QRect(1123,349 15x8) expected source 15x8 centered at QPointF(1130,353)
+QINFO  : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(open) Check ink QRect(1121,397 14x10) expected source 14x10
+QINFO  : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(open) Dropdown shadow 229 252 255 source 235/251/255
+PASS   : NativeWindowTest::globalTopicSelectorKeepsSourceChevronAspect(open)
+PASS   : NativeWindowTest::globalNewChatStartsWithTheSourceDirectChatTab()
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(new)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(existing)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(applied503)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(not-applied503)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(encrypted)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(archived)
+PASS   : NativeWindowTest::directChatRowsNavigateOnlyAfterVerifiedHttp(403)
+PASS   : NativeWindowTest::existingEncryptedDirectFromNewChatOpensWithoutChangingThePair(known-current)
+PASS   : NativeWindowTest::existingEncryptedDirectFromNewChatOpensWithoutChangingThePair(null-current)
+PASS   : NativeWindowTest::directChatRecoveryRemainsInTheKeyboardFocusLoop()
+PASS   : NativeWindowTest::directAndChannelRecoveryRestoresTheLastViewedUnresolvedTab()
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(en-light)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(en-dark)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(ru-light)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(ru-dark)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(narrow)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(virtual)
+PASS   : NativeWindowTest::directChatRosterUsesSourceGeometrySearchAndVirtualRows(empty)
+PASS   : NativeWindowTest::directChatViewKeepsOnlyItsOwnAttemptAndContext(dismiss-pending)
+PASS   : NativeWindowTest::directChatViewKeepsOnlyItsOwnAttemptAndContext(logout)
+PASS   : NativeWindowTest::directChatViewKeepsOnlyItsOwnAttemptAndContext(route)
+PASS   : NativeWindowTest::directChatViewKeepsOnlyItsOwnAttemptAndContext(benign-metadata)
+PASS   : NativeWindowTest::directChatViewKeepsOnlyItsOwnAttemptAndContext(directory-unavailable)
+QINFO  : NativeWindowTest::savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions() Cache process phase seed: topic-history GETs=1, aggregate-history GETs=1, messenger mutations=0
+QINFO  : NativeWindowTest::savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions() Cache process phase restore: topic-history GETs=3, aggregate-history GETs=1, messenger mutations=0
+PASS   : NativeWindowTest::savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions()
+QINFO  : NativeWindowTest::startupDirectoryDoesNotPopulateHiddenPickers(cold) Startup directory (cold, 3000 users): window-exposed=168ms useful-content=718ms hydration-max-gap=171ms directory-publication=89ms publication-max-gap=55ms hidden-direct=0 hidden-members=0 hidden-add-members=0
+PASS   : NativeWindowTest::startupDirectoryDoesNotPopulateHiddenPickers(cold)
+QINFO  : NativeWindowTest::startupDirectoryDoesNotPopulateHiddenPickers(warm-cache) Startup directory (warm, 3000 users): window-exposed=171ms useful-content=881ms hydration-max-gap=226ms directory-publication=95ms publication-max-gap=59ms hidden-direct=0 hidden-members=0 hidden-add-members=0
+PASS   : NativeWindowTest::startupDirectoryDoesNotPopulateHiddenPickers(warm-cache)
+QINFO  : NativeWindowTest::warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests() Warm navigation: 4 topic selections, topic-history GETs=2; 2 stream selections, aggregate-history GETs=1, topic-list GETs=1; cache hits=4
+PASS   : NativeWindowTest::warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests()
+PASS   : NativeWindowTest::globalNewChatOffersOrdinaryChannelCreation()
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(empty)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(selected)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(filter)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(virtual)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(en-light)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(en-dark)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(ru-light)
+PASS   : NativeWindowTest::globalChannelCreationUsesVerifiedHttp(ru-dark)
+PASS   : NativeWindowTest::globalChannelEncryptedSwitchClearsAndDisablesExclusiveOptions()
+PASS   : NativeWindowTest::globalChannelEncryptedCreationNavigatesLikeTheOrdinaryPath()
+PASS   : NativeWindowTest::globalChannelEncryptedIntentSurvivesCloseReopenAndFailureKeepsDialogOpen()
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(cancel-pending)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(uncertain-stream)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(early404)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(members-failed)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(members-ambiguous-applied)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(members-ambiguous-missing)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(route)
+PASS   : NativeWindowTest::globalChannelCreationRecoversTheSameIntent(benign-updates)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(own-stream)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(own-default)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(own-bindings)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(access-loss)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(stream-deleted)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(default-deleted)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(newer-default)
+PASS   : NativeWindowTest::globalChannelRealtimeKeepsTheCorrectFormLifetime(logout-pending)
+PASS   : NativeWindowTest::globalChannelInputsUseUnicodeCodePoints(name-astral)
+PASS   : NativeWindowTest::globalChannelInputsUseUnicodeCodePoints(name-too-long)
+PASS   : NativeWindowTest::globalChannelInputsUseUnicodeCodePoints(description-astral)
+PASS   : NativeWindowTest::globalChannelInputsUseUnicodeCodePoints(description-too-long)
+PASS   : NativeWindowTest::globalChannelFormKeepsNarrowKeyboardFieldsVisible()
+PASS   : NativeWindowTest::sidebarRowsRenderPreviewAndTime()
+PASS   : NativeWindowTest::sidebarChannelOffersTopicCreationWithoutChangingSelection()
+QINFO  : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(selected) Topic dialog scenegraph API=3; software=1
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(selected)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(unselected)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(denied)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(uncertain)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(cancel-pending)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(route)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(logout)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(acl)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(acl-change)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(astral-128)
+PASS   : NativeWindowTest::sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery(too-long)
+PASS   : NativeWindowTest::oldTopicCompletionCannotCloseTheNextSameTargetForm(sidebar)
+PASS   : NativeWindowTest::oldTopicCompletionCannotCloseTheNextSameTargetForm(global)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-light) Topic label width 84.359 implicit 84.359 button 84.359
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-light) Shortcut label width 71.000 implicit 70.719 button 97.000
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-light)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-dark) Topic label width 84.359 implicit 84.359 button 84.359
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-dark) Shortcut label width 71.000 implicit 70.719 button 97.000
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(en-dark)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-light) Topic label width 84.359 implicit 84.359 button 84.359
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-light) Shortcut label width 71.000 implicit 70.719 button 97.000
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-light)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-dark) Topic label width 84.359 implicit 84.359 button 84.359
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-dark) Shortcut label width 71.000 implicit 70.719 button 97.000
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(ru-dark)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(identity-day) Topic label width 84.359 implicit 84.359 button 84.359
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(identity-day) Shortcut label width 126.000 implicit 125.141 button 152.000
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(identity-day)
+QINFO  : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(visible-reads) Aggregate viewport: loaded=400, instantiated=9, visible topics=2
+PASS   : NativeWindowTest::aggregateStreamUsesSourceGroupsAndTopicChoices(visible-reads)
+QINFO  : NativeWindowTest::realQuickWindowSignsInNavigatesAndSends() Source fixture measured native bubbles: peer 374.781x78.000, code 499.563x38.000, plain 398.875x38.000
+PASS   : NativeWindowTest::realQuickWindowSignsInNavigatesAndSends()
+PASS   : NativeWindowTest::profileFocusRingFollowsKeyboardRatherThanMouseFocus()
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(add-remove)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(uncertain-check)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(provider-remove)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(encrypted-metadata)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(picker-fences)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(picker-categories-skins)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(quick-capsule)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(quick-keyboard)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(picker-keyboard)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(participants)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(short-body)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(picker-parent-menu)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-source-light)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-source-dark)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-peer-actions)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-own-actions)
+QINFO  : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-emoji-ink) Menu thumbs-up colored ink 14.00x16.00 DIP (source14x16)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-emoji-ink)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-encrypted-actions)
+QINFO  : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(quick-capsule-ink) Corner capsule thumbs-up colored ink 23.00x25.00 DIP (source22x24)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(quick-capsule-ink)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-keyboard-reply)
+PASS   : NativeWindowTest::visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker(menu-no-extra-star)
+PASS   : NativeWindowTest::inlineMetadataRequiresTheActualTrailingParagraph()
+PASS   : NativeWindowTest::longCodeTraceAndUnbrokenTokenStayInsideTheBubble()
+PASS   : NativeWindowTest::sourcePickerGeometryAndHoverMatchPinnedComponent(geometry)
+PASS   : NativeWindowTest::sourcePickerGeometryAndHoverMatchPinnedComponent(hover)
+PASS   : NativeWindowTest::sourcePickerGeometryAndHoverMatchPinnedComponent(title-font)
+QINFO  : NativeWindowTest::sourcePickerGeometryAndHoverMatchPinnedComponent(glyph-ink) First emoji colored ink 32.00x31.00 DIP (source32x31)
+PASS   : NativeWindowTest::sourcePickerGeometryAndHoverMatchPinnedComponent(glyph-ink)
+PASS   : NativeWindowTest::sourcePickerSuggestedHistoryPersistsAndClearsBetweenOwners()
+PASS   : NativeWindowTest::onlyTheActiveVisibleViewportAdvancesTheReadBoundary()
+PASS   : NativeWindowTest::windowTeardownWaitsForVisibleIncubationBeforeHide()
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(incoming-away)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(own-incoming-away)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(prepend)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(prepend-day-boundary)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(incoming-bottom)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(own-send-away)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(aggregate-incoming-away)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(aggregate-own-incoming-away)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(aggregate-prepend-day-boundary)
+PASS   : NativeWindowTest::messageUpdatesRespectTheVisibleScrollPosition(aggregate-incoming-bottom)
+PASS   : NativeWindowTest::scrollNearTopAutoLoadsOlderPages()
+PASS   : NativeWindowTest::programmaticAnchorJumpDoesNotAutoPage()
+PASS   : NativeWindowTest::zeroVisibleWindowAutoAdvances(tail)
+PASS   : NativeWindowTest::zeroVisibleWindowAutoAdvances(anchor)
+PASS   : NativeWindowTest::resolvedTopicReopensThroughTheVisibleMenu(mouse)
+PASS   : NativeWindowTest::resolvedTopicReopensThroughTheVisibleMenu(keyboard)
+PASS   : NativeWindowTest::resolvedTopicReopensThroughTheVisibleMenu(unconfirmed)
+PASS   : NativeWindowTest::closedTopicPromptPreservesTheDraftThroughRealtimeReopen()
+PASS   : NativeWindowTest::sessionWarningDoesNotCancelVisibleSnapshotRecovery()
+PASS   : NativeWindowTest::lastConversationRestoresInANewActualMainAfterSettingsReopen()
+PASS   : NativeWindowTest::rememberedAccountResumesAndRemovesThroughVisibleQuickControls(manual-continue)
+PASS   : NativeWindowTest::rememberedAccountResumesAndRemovesThroughVisibleQuickControls(automatic-startup)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(container-origin)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(avatar-light)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(avatar-dark)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(topbar-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(sidebar-search-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(sidebar-topic-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(date-section-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(date-grouping-localization)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(folder-rail-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(header-no-extra-call)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(composer-full-frame)
+PASS   : NativeWindowTest::sourceConversationInsetsAndAvatarFallback(sidebar-stream-content-inset)
+PASS   : NativeWindowTest::cacheSettingsSeparateRequestedFromAppliedViewStates()
+PASS   : NativeWindowTest::appearanceAndSidebarRestoreAfterQuickWindowRecreation()
+QINFO  : NativeWindowTest::receivedStandaloneImagePaintsBetweenTextAndCaption() RECEIVED_IMAGE_PIXELS {"binaryGets":1,"bubble":{"height":188,"width":141,"x":447,"y":181},"canonicalLoaded":true,"dpr":1,"fileHeadersOkay":true,"fileWrites":0,"imagePixels":{"height":0,"width":0,"x":0,"y":0},"locale":"en","matchingPixels":0,"messagePosts":0,"metadataGets":1,"mode":"light","phase":"before-pixel-oracle","pixelOraclePassed":false,"servedHistory":1,"windowHeight":900,"windowWidth":1440}
+QINFO  : NativeWindowTest::receivedStandaloneImagePaintsBetweenTextAndCaption() RECEIVED_IMAGE_PIXELS {"binaryGets":1,"bubble":{"height":188,"width":141,"x":447,"y":181},"canonicalLoaded":true,"dpr":1,"fileHeadersOkay":true,"fileWrites":0,"imagePixels":{"height":64,"width":96,"x":460,"y":252},"locale":"en","matchingPixels":6140,"messagePosts":0,"metadataGets":1,"mode":"light","phase":"image-painted","pixelOraclePassed":true,"servedHistory":1,"windowHeight":900,"windowWidth":1440}
+QINFO  : NativeWindowTest::receivedStandaloneImagePaintsBetweenTextAndCaption() RECEIVED_IMAGE_WARM_CACHE {"binaryGets":1,"leases":1,"metadataGets":1,"pipelineJobs":0,"previewBytes":24576,"previews":1}
+PASS   : NativeWindowTest::receivedStandaloneImagePaintsBetweenTextAndCaption()
+QINFO  : NativeWindowTest::receivedBrokenImageKeepsItsAttachmentSaveAction() BROKEN_IMAGE_SAVE {"binaryGets":1,"canonicalLoaded":true,"dialogVisible":false,"failed":true,"fileHeadersOkay":true,"metadataGets":1,"opened":0,"outsideRetry":true,"phase":"before-one-pointer","point":[464,256],"urlEmpty":true}
+QINFO  : NativeWindowTest::receivedBrokenImageKeepsItsAttachmentSaveAction() BROKEN_IMAGE_SAVE {"binaryGets":1,"canonicalLoaded":true,"dialogVisible":false,"failed":true,"fileHeadersOkay":true,"metadataGets":1,"opened":1,"outsideRetry":true,"phase":"canceled-without-download","point":[464,256],"urlEmpty":true}
+PASS   : NativeWindowTest::receivedBrokenImageKeepsItsAttachmentSaveAction()
+QINFO  : NativeWindowTest::captionAndPickedImageSendThenPaintOwnInlinePixels() UPLOAD_MULTIPART_OBSERVER {"bodyEnd":376,"bytes":684,"contentType":"multipart/form-data; boundary=\"boundary_.oOo._4B1e/zuWiGMthUcFXOunQfAwJ0A+exR5\"","contractOkay":true,"fileAt":96,"fileHeaders":"--boundary_.oOo._4B1e/zuWiGMthUcFXOunQfAwJ0A+exR5\r\ncontent-disposition: form-data; name=\"file\"; filename=\"upload.png\"\r\ncontent-type: image/png","headerEnd":142,"selectedPngEqual":true}
+QINFO  : NativeWindowTest::captionAndPickedImageSendThenPaintOwnInlinePixels() UPLOADED_OWN_IMAGE {"binaryGets":1,"canonicalGets":1,"canonicalLoaded":true,"draftCleared":true,"imagePixels":[1270,232,96,64],"matchingPixels":5948,"messagePosts":1,"metadataGets":1,"phase":"before-pixel-oracle","uploadAccepted":true,"uploadedDraft":"Caption before upload\n\n![upload.png](<urn:image:99999999-9999-4999-8999-999999999993?name=upload.png&content_type=image%2Fpng&size=230>)\n\n"}
+QINFO  : NativeWindowTest::captionAndPickedImageSendThenPaintOwnInlinePixels() UPLOADED_OWN_IMAGE {"binaryGets":1,"canonicalGets":1,"canonicalLoaded":true,"draftCleared":true,"imagePixels":[1270,232,96,64],"matchingPixels":5948,"messagePosts":1,"metadataGets":1,"phase":"own-image-painted","uploadAccepted":true,"uploadedDraft":"Caption before upload\n\n![upload.png](<urn:image:99999999-9999-4999-8999-999999999993?name=upload.png&content_type=image%2Fpng&size=230>)\n\n"}
+PASS   : NativeWindowTest::captionAndPickedImageSendThenPaintOwnInlinePixels()
+PASS   : NativeWindowTest::quickFileDialogsUploadThenSaveAnAuthenticatedAttachment()
+PASS   : NativeWindowTest::maskedSecretFragmentNeverAppearsInAccessibleMessageName()
+PASS   : NativeWindowTest::loginCardMountsOrganizationStepOnly()
+PASS   : NativeWindowTest::loginCardRealmBlurStartsDiscovery()
+PASS   : NativeWindowTest::loginCardDiscoveryFailureKeepsCredentialsHidden()
+PASS   : NativeWindowTest::loginCardOffersPersistedOrganizationHistory()
+PASS   : NativeWindowTest::inlineEditPickerUploadAppearsInTheEditAndPreservesTheDraft()
+PASS   : NativeWindowTest::upToEditLastAndSaveUseTheComposerEditMode()
+PASS   : NativeWindowTest::measuredQuoteHeightIncludesNestedTextBeforeViewportRestore()
+PASS   : NativeWindowTest::replyBannerAndQuoteJumpUseTheComposer()
+PASS   : NativeWindowTest::replyAnswerTypedDuringSendRemainsInTheComposer(memory)
+PASS   : NativeWindowTest::replyAnswerTypedDuringSendRemainsInTheComposer(durable)
+PASS   : NativeWindowTest::quotedMediaMessageShowsAThumbnailInBothPreviewFrames()
+PASS   : NativeWindowTest::failedQuoteMediaPreviewRestoresTheTextOnlyLayout()
+PASS   : NativeWindowTest::mediaOnlyQuoteKeepsItsMediaDescriptionForAssistiveTechnology()
+PASS   : NativeWindowTest::replyTabStripShowsRowsAndCloseCancelsOnlyThatTab()
+PASS   : NativeWindowTest::replyMenuActionAppendsSecondTabWhenSessionIsOpen()
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(loading-draft)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(ready-draft)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(loading-edit)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(ready-edit)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(loading-visible-reads)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(ready-visible-reads)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(loading-incoming-call)
+PASS   : NativeWindowTest::mediaViewerIsolatesCoveredChat(ready-incoming-call)
+PASS   : NativeWindowTest::mediaViewerOpensNavigatesAndClosesLikeTheReference()
+PASS   : NativeWindowTest::mediaViewerBackdropClickClosesWhileSlotLoadsAndStaysOpenWhenReady()
+PASS   : NativeWindowTest::mediaViewerSingleImageHidesNavigationAndStrip()
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/ubuntu/.hermes/cache/scratch/native-window-test-tKllms/slot-1':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf63.1.101
+  Duration: 00:00:00.50, start: 0.000000, bitrate: 89 kb/s
+  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 96x64 [SAR 1:1 DAR 3:2], 10 kb/s, 10 fps, 10 tbr, 10240 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+      encoder         : Lavc63.1.101 libx264
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 50 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+[h264 @ 0x5b0c8dd6f800] Device does not support the VK_KHR_video_decode_queue extension!
+[h264 @ 0x5b0c8dd6f800] Failed setup for format vulkan: hwaccel initialisation returned error.
+PASS   : NativeWindowTest::mediaViewerVideoSlotPlaysAndTogglesInlineWithPlayBadge()
+PASS   : NativeWindowTest::mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales(en)
+PASS   : NativeWindowTest::mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales(ru)
+QWARN  : NativeWindowTest::mediaViewerVideoDisplayFailureShowsDedicatedLabel() qt.multimedia.ffmpeg.mediadataholder: Could not open media. FFmpeg error description: Invalid data found when processing input
+PASS   : NativeWindowTest::mediaViewerVideoDisplayFailureShowsDedicatedLabel()
+PASS   : NativeWindowTest::topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks()
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(en-light-empty)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(en-light-short)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(en-dark-empty)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(en-dark-short)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(ru-light-empty)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(ru-light-short)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(ru-dark-empty)
+PASS   : NativeWindowTest::expandedComposerToolbarStaysInsideTheWindow(ru-dark-short)
+PASS   : NativeWindowTest::composerFormattingToolbarExpansionPersistsAcrossRecreation()
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(bold-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(bold-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(italic-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(italic-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(inline-code-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(inline-code-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(strike-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(strike-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(spoiler-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(spoiler-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(quote-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(quote-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(quote-multiline)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(bulleted-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(bulleted-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(bulleted-multiline)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(numbered-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(numbered-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(numbered-multiline)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(code-block-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(code-block-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(link-selection)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(link-empty)
+PASS   : NativeWindowTest::composerToolbarInsertActionsProduceExactReferenceMarkers(link-label-contains-url)
+PASS   : NativeWindowTest::composerShiftEnterContinuesAndExitsMarkdownLists()
+PASS   : NativeWindowTest::rightDrawerShellMatchesReferenceGeometry(en-light)
+PASS   : NativeWindowTest::rightDrawerShellMatchesReferenceGeometry(ru-dark)
+PASS   : NativeWindowTest::rightDrawerHeaderKeepsCloseAlwaysAndBackOnlyForDeeperScreens(en-light)
+PASS   : NativeWindowTest::rightDrawerHeaderKeepsCloseAlwaysAndBackOnlyForDeeperScreens(ru-dark)
+PASS   : NativeWindowTest::rightDrawerPromotesExistingLayersInsteadOfDuplicating()
+PASS   : NativeWindowTest::rightDrawerBackPopsNestedScreensOnly()
+PASS   : NativeWindowTest::rightDrawerIgnoresDuplicateTopScreenPush()
+PASS   : NativeWindowTest::rightDrawerResetIsSkippedWithoutAuthenticatedSession()
+PASS   : NativeWindowTest::rightDrawerCollapsesWithoutDeletingHistory()
+PASS   : NativeWindowTest::rightDrawerConversationSwitchDropsNestedChatScreens()
+PASS   : NativeWindowTest::rightDrawerEscapeClosesTopLayerThenHidesDrawer()
+PASS   : NativeWindowTest::rightDrawerRootRequestSelectsAccountRootAfterPromotion()
+PASS   : NativeWindowTest::windowChannelInfoFetchesMembersOnlyWhenInfoScreenOpens()
+PASS   : NativeWindowTest::windowChannelInfoHeaderSummary()
+PASS   : NativeWindowTest::windowChannelInfoNotificationSwitchPersists()
+PASS   : NativeWindowTest::windowChannelInfoNotificationSwitchFailureKeepsError()
+PASS   : NativeWindowTest::windowChannelInfoMemberRowsAndSelfRemoval()
+PASS   : NativeWindowTest::windowChannelInfoAddMemberFlow()
+PASS   : NativeWindowTest::windowChannelInfoNonOwnerMemberGates()
+PASS   : NativeWindowTest::windowChannelInfoNotificationBusyRecoversOnStreamSwitch()
+PASS   : NativeWindowTest::windowChannelInfoAddBusyRecoversOnStreamSwitch()
+PASS   : NativeWindowTest::windowChannelInfoNotificationBusyIsPerStreamRequestScoped()
+PASS   : NativeWindowTest::windowChannelInfoAddBusyIsPerStreamRequestScoped()
+PASS   : NativeWindowTest::windowChannelInfoAddDialogClearsSelectionOnClose()
+PASS   : NativeWindowTest::windowChannelInfoStaleMembersLoadKeepsAddedMember()
+PASS   : NativeWindowTest::windowChannelInfoAddDialogClearsSelectionOnStreamSwitch()
+PASS   : NativeWindowTest::composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart()
+PASS   : NativeWindowTest::composerMentionPopupInsertsDisambiguatedDuplicateNames()
+PASS   : NativeWindowTest::windowProfileOwnScreenHeaderChipsAndDetails()
+PASS   : NativeWindowTest::windowProfileOtherUserMessageOpensDirectDefaultTopic(catalog-default)
+PASS   : NativeWindowTest::windowProfileOtherUserMessageOpensDirectDefaultTopic(verified-topics-fallback)
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::windowProfileCallChipOpensSeededDmCallOnce()
+PASS   : NativeWindowTest::windowProfileCallChipDisabledForEncryptedDmWithoutKeyReady()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::windowChannelInfoCallButtonGatedByDescriptor()
+PASS   : NativeWindowTest::windowProfileEditModeSavesDiffOnlyAndSyncsPreview()
+PASS   : NativeWindowTest::windowProfileAvatarDialogGeometryAndDisabledRemove()
+QWARN  : NativeWindowTest::windowProfileAvatarFileValidationReopensDialogWithError() qrc:/workspace/qml/NativeUserProfile.qml:409:25: QML QQuickImage: Error decoding: file:///home/ubuntu/.hermes/cache/scratch/native-window-test-ygpnCI/big.png: Unsupported image format
+QWARN  : NativeWindowTest::windowProfileAvatarFileValidationReopensDialogWithError() qrc:/workspace/qml/NativeUserProfile.qml:409:25: QML QQuickImage: Error decoding: file:///home/ubuntu/.hermes/cache/scratch/native-window-test-ygpnCI/photo.txt: Unsupported image format
+PASS   : NativeWindowTest::windowProfileAvatarFileValidationReopensDialogWithError()
+PASS   : NativeWindowTest::windowProfileAvatarResetCommittedOnSave()
+PASS   : NativeWindowTest::windowProfileSaveKeepsAvatarAfterDelayedRefresh(upload)
+PASS   : NativeWindowTest::windowProfileSaveKeepsAvatarAfterDelayedRefresh(remove)
+PASS   : NativeWindowTest::windowProfileShareCopiesLinkAndFlipsToCopied()
+PASS   : NativeWindowTest::windowProfileEditingWaitsForProfileLoadBeforeFields()
+PASS   : NativeWindowTest::windowProfileAvatarInitialHidesBehindAvatarAndPreview()
+PASS   : NativeWindowTest::windowProfileAboutMeFieldAcceptsMultilineDescription()
+PASS   : NativeWindowTest::windowProfileAboutMeIsVisibleAfterLoadAndSaveOnlyForItsOwner()
+FAIL!  : NativeWindowTest::prefetchLandsMidGestureKeepingAnchor() 'list->property("contentY").toReal() > atTop + 100' returned FALSE. ()
+   Loc: [/home/ubuntu/dev/lanes/244/packages/native/tests/native-window-test.cpp(17873)]
+PASS   : NativeWindowTest::prefetchRefetchesOnFirstScrollAfterRestore()
+PASS   : NativeWindowTest::workspaceCallHeaderButtonFollowsMeetHost(without-meet-host)
+PASS   : NativeWindowTest::workspaceCallHeaderButtonFollowsMeetHost(with-meet-host)
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::workspaceMeetingUrlMessageRendersCallCardAndJoins()
+PASS   : NativeWindowTest::editQuotedMessageShowsTheQuoteChipOverTheComposer()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowShellExpandsMinimizesAndRestoresPiP(en)
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowShellExpandsMinimizesAndRestoresPiP(ru)
+PASS   : NativeWindowTest::incomingCallLargeInviteMatchesReferenceGeometry(en)
+PASS   : NativeWindowTest::incomingCallLargeInviteMatchesReferenceGeometry(ru)
+PASS   : NativeWindowTest::incomingCallCompactInviteMatchesReferenceGeometry()
+PASS   : NativeWindowTest::incomingCallInviteAvatarPhotoReplacesFallbacks()
+PASS   : NativeWindowTest::incomingCallLargeButtonsFitNarrowViewport()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowEmbedHostIsCreatedWhileLoading()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowQmlLoadCallbackAdvancesShellToReady()
+PASS   : NativeWindowTest::callWindowLiveParticipantCountArrivesFromEmbedPageEvents()
+PASS   : NativeWindowTest::callWindowEmbedReadyEchoStaysBoundedForForeignReadyId()
+PASS   : NativeWindowTest::callWindowEmbedIgnoresTransportEventsFromChildFrames()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowFullscreenControlDrivesTheWindow()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowPipDefaultTracksWindowPosition()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callWindowKeepsOneEmbedSurfaceAcrossPiPToggles()
+Fontconfig error: Cannot load default config file: No such file: (null)
+PASS   : NativeWindowTest::callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady()
+QCRITICAL: NativeWindowTest::callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin() js: Permissions policy violation: microphone is not allowed in this document.
+[429845:429845:1115/200942.497435:ERROR:video_capture_service_impl.cc(195)] Bind context provider failed.
+PASS   : NativeWindowTest::callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin()
+Fontconfig error: Cannot load default config file: No such file: (null)
+FAIL!  : NativeWindowTest::callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl() Compared values are not the same
+   Actual   (controller.callWindow()->embedState())  : 3
+   Expected (int(JitsiCallWindowController::Loading)): 1
+   Loc: [/home/ubuntu/dev/lanes/244/packages/native/tests/native-window-test.cpp(19328)]
+PASS   : NativeWindowTest::windowRestoreKeepsTheConversationTailVisible()
+PASS   : NativeWindowTest::windowRestoreKeepsAnOlderHistoryReaderAnchored()
+QWARN  : NativeWindowTest::windowResizeHandOffReArmsForWheelAfterSendCapture() [253-sync] parkedY 1523 finalY 1523 finalDistance 655
+PASS   : NativeWindowTest::windowResizeHandOffReArmsForWheelAfterSendCapture()
+PASS   : NativeWindowTest::pollCreateDialogOpensWithOneQuestionAndDisabledCreate()
+PASS   : NativeWindowTest::pollCreateDialogDeadlineMustBeFuture()
+PASS   : NativeWindowTest::pollCreateDialogHiddenWhileEditingMessage()
+PASS   : NativeWindowTest::pollCreateDialogRetriesUncertainSendWithSameCanonicalUuids()
+PASS   : NativeWindowTest::pollCreateDialogSettlesInvalidatedSend(token-renewal)
+PASS   : NativeWindowTest::pollCreateDialogSettlesInvalidatedSend(sign-out)
+PASS   : NativeWindowTest::pollCreateDialogSettlesInvalidatedSend(reopened-form)
+PASS   : NativeWindowTest::pollCreateDialogErrorMapping(conflict)
+PASS   : NativeWindowTest::pollCreateDialogErrorMapping(invalid)
+PASS   : NativeWindowTest::pollCreateDialogCannotBeCancelledWhileSendPending()
+PASS   : NativeWindowTest::pollCreateDialogIgnoresUnrelatedMessageCompletion()
+PASS   : NativeWindowTest::pollCreateDialogEnforcesServerLimits()
+PASS   : NativeWindowTest::pollCreateDialogRevalidatesExpiredDeadlineOnSubmit()
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-initial-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-initial-paint)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-revisited-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-revisited-paint)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-image-update-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(peer-image-update-paint)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-initial-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-initial-paint)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-revisited-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-revisited-paint)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-image-update-click)
+PASS   : NativeWindowTest::quickReactionsPaintAndReceiveClicksAboveAdjacentMessages(own-image-update-paint)
+QINFO  : NativeWindowTest::quickReactionWheelStaysInsideCapsule(overflow) wheel inner 44 8 outer 1708 1708
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(overflow)
+QINFO  : NativeWindowTest::quickReactionWheelStaysInsideCapsule(top) wheel inner 0 0 outer 1708 1708
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(top)
+QINFO  : NativeWindowTest::quickReactionWheelStaysInsideCapsule(bottom) wheel inner 44 44 outer 1708 1708
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(bottom)
+QINFO  : NativeWindowTest::quickReactionWheelStaysInsideCapsule(fits) wheel inner 0 0 outer 1708 1708
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(fits)
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(precise)
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(precise-top)
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(precise-bottom)
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(precise-fits)
+QINFO  : NativeWindowTest::quickReactionWheelStaysInsideCapsule(border) wheel inner 44 8 outer 1708 1708
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(border)
+PASS   : NativeWindowTest::quickReactionWheelStaysInsideCapsule(fine-angle)
+PASS   : NativeWindowTest::wheelNotchScrollsMatchTheReferenceContract(message-list)
+PASS   : NativeWindowTest::wheelNotchScrollsMatchTheReferenceContract(sidebar-list)
+PASS   : NativeWindowTest::wheelDirectionReversalAndTouchpadStayPredictable(message-list)
+PASS   : NativeWindowTest::wheelDirectionReversalAndTouchpadStayPredictable(sidebar-list)
+PASS   : NativeWindowTest::wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove(message-list-at-bottom)
+PASS   : NativeWindowTest::wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove(sidebar-list-at-top)
+PASS   : NativeWindowTest::replyMenuQuotesTheDraggedBubbleFragment()
+PASS   : NativeWindowTest::replyMenuQuotesOnlyTheCurrentBubbleSelection()
+PASS   : NativeWindowTest::crossParagraphBubbleSelectionQuotesWithNewlines()
+PASS   : NativeWindowTest::pollBubbleCardGeometryAndStructure()
+PASS   : NativeWindowTest::pollBubbleVoteSendsOneInvokeAndLocksUntilResponse()
+PASS   : NativeWindowTest::pollBubbleInlineErrorKeepsCardOpenOnVoteConflict()
+PASS   : NativeWindowTest::pollBubbleSingleModeWithoutRevoteLocksAfterFirstAnswer()
+PASS   : NativeWindowTest::pollBubbleMultipleModeWithoutRevoteAddsButNeverRemoves()
+PASS   : NativeWindowTest::pollBubbleResultsHiddenUntilVote()
+PASS   : NativeWindowTest::pollBubbleResultsAlwaysVisibleBeforeVote()
+PASS   : NativeWindowTest::pollBubbleAnonymousShowsNoVoterPreviews()
+PASS   : NativeWindowTest::pollBubbleClosedShowsResultsAndNoControls()
+PASS   : NativeWindowTest::pollBubbleExpiredDeadlineTreatedAsClosed()
+PASS   : NativeWindowTest::pollBubbleReadOnlyChannelHasNoControls()
+PASS   : NativeWindowTest::pollBubbleQuizWrongVoteMarksCorrectAnswer()
+PASS   : NativeWindowTest::pollBubbleInlineAddOptionFlow()
+PASS   : NativeWindowTest::pollBubbleTwoQuestionsSummaryWaitsForBothAnswers()
+PASS   : NativeWindowTest::pollBubbleSummaryAndStatusFollowQuestions()
+PASS   : NativeWindowTest::pollBubbleUnrelatedRevisionKeepsInFlightVoteLock()
+PASS   : NativeWindowTest::pollBubbleUnrelatedRevisionKeepsAddOptionDraft()
+PASS   : NativeWindowTest::pollBubbleAddOptionRetryReusesClientUuid()
+PASS   : NativeWindowTest::pollBubbleOptionKeyboardActivation()
+PASS   : NativeWindowTest::pollBubbleNarrowCardKeepsContentInside()
+PASS   : NativeWindowTest::pollBubbleOtherQuestionsAddFailureKeepsInFlightVoteLock()
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open) freeze probe topic-open QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=topic-open settled=1 settleMs=670 unstable=1 lateMoves=0 ticks=786 maxRssKib=358620
+PASS   : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open)
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(aggregate-deeplink) freeze probe aggregate-deeplink QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=aggregate-deeplink settled=1 settleMs=784 unstable=3 lateMoves=0 ticks=790 maxRssKib=356888
+PASS   : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(aggregate-deeplink)
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(repeat-switch) freeze probe repeat-switch QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=repeat-switch settled=1 settleMs=1504 unstable=2 lateMoves=0 ticks=190 maxRssKib=357368
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(repeat-switch) freeze probe repeat-switch QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=repeat-switch settled=1 settleMs=1477 unstable=2 lateMoves=0 ticks=199 maxRssKib=363000
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(repeat-switch) freeze probe repeat-switch QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=repeat-switch settled=1 settleMs=1482 unstable=2 lateMoves=0 ticks=199 maxRssKib=363000
+PASS   : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(repeat-switch)
+FAIL!  : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(cache-restore) 'process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0' returned FALSE. (scenario=cache-restore freeze probe child exited abnormally (status 11, crash 1))
+   Loc: [/home/ubuntu/dev/lanes/244/packages/native/tests/native-window-test.cpp(22216)]
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open-wide) freeze probe topic-open-wide QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=topic-open-wide settled=1 settleMs=683 unstable=1 lateMoves=0 ticks=784 maxRssKib=377272
+PASS   : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open-wide)
+QDEBUG : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open-reported-size) freeze probe topic-open-reported-size QINFO  : NativeLivelockWindowWorker::livelockPhase() FREEZEPROBE phase=topic-open-reported-size settled=1 settleMs=696 unstable=1 lateMoves=0 ticks=785 maxRssKib=359528
+PASS   : NativeWindowTest::openingPopulatedTopicKeepsTheGuiResponsive(topic-open-reported-size)
+PASS   : NativeWindowTest::freezeProbeParentConsumesAllMonitorReports()
+PASS   : NativeWindowTest::folderRailRendersServerFoldersAndScopesTheSidebar()
+PASS   : NativeWindowTest::folderRailIconClickClosesDraftsAndSelectsTheFolder()
+PASS   : NativeWindowTest::cleanupTestCase()
+Totals: 525 passed, 3 failed, 0 skipped, 0 blacklisted, 644407ms
+********* Finished testing of NativeWindowTest *********
+Command exited with non-zero status 3
+	Command being timed: "./native-window-test"
+	User time (seconds): 399.18
+	System time (seconds): 27.75
+	Percent of CPU this job got: 66%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 10:44.56
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1183548
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 152
+	Minor (reclaiming a frame) page faults: 5974696
+	Voluntary context switches: 1396856
+	Involuntary context switches: 95110
+	Swaps: 0
+	File system inputs: 71720
+	File system outputs: 279704
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 3
