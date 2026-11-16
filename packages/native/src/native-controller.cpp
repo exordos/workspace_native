@@ -6869,9 +6869,15 @@ QString NativeController::feedRowPreview(const Message &message) const
 // and carry its target into the preview (exo-review thread 4581966233).
 static const QRegularExpression &feedInlineSyntax()
 {
+    // The bare destination is the longest non-space run that still leaves the
+    // closing `)` (backtracking): a CommonMark destination may contain
+    // balanced parentheses (`[a](https://host/(x)?q=1)`) and the old
+    // `[^\s)]+` stop cut the destination at the first `(` and left the rest
+    // of it - scheme marker and all - as plain text (exo-review thread
+    // 4581966233, round 3).
     static const QRegularExpression regex(QStringLiteral(
         "(!)?\\[((?:[^\\[\\]\\\\]|\\\\.|\\[[^\\]]*\\])*)\\]"
-        "(?:\\(\\s*(?:<([^>]*)>|([^\\s)]+))"
+        "(?:\\(\\s*(?:<([^>]*)>|([^\\s]+))"
         "(?:\\s+(?:\"([^\"]*)\"|'([^']*)'|\\(([^)]*)\\)))?\\s*\\)"
         "|\\[([^\\]]*)\\])"));
     return regex;
@@ -6913,8 +6919,12 @@ static QString rewriteFeedMatches(const QRegularExpression &regex, const QString
 // .lib.ts:74-95).
 static QString stripFeedMarkdownResidue(const QString &text)
 {
+    // The paren tail is parenthesis-balanced: `[a](https://host/f(b))` is a
+    // link whose destination ends at the LAST `)`, and a tail that stops at
+    // the first `)` strands the remainder as plain text.
     static const QRegularExpression residue(QStringLiteral(
-        "!?\\[([^\\]]*)\\]\\s*(?:\\[[^\\]]*\\]|\\([^)]*\\))"));
+        "!?\\[([^\\]]*)\\]\\s*(?:\\[[^\\]]*\\]|"
+        "\\((?:[^()]|\\([^()]*\\))*\\))"));
     static const QRegularExpression urnToken(QStringLiteral("urn:[^\\s)\\]]+"));
     auto value = text;
     // Two passes: a nested residue such as `[a [b]](u)` only collapses once the
