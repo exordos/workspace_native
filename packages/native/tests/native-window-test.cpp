@@ -2,6 +2,7 @@
 #include "native-app.h"
 #include "native-updater.h"
 #include "native-controller.h"
+#include "native-deeplink.h"
 #include "native-chat-crypto.h"
 #include "native-chat-key-vault.h"
 #include "native-markdown.h"
@@ -2709,6 +2710,71 @@ struct PollBubbleScene {
     }
 };
 
+// Issue #38 fixture: project feed pages served like the Workspace API
+class WindowFeedFixture final : public WindowChannelFixture {
+public:
+    QMap<int, QJsonObject> rows;
+    int feedPages = 0, feedMarkerPages = 0;
+    bool failFeed = false, emptyFeed = false;
+    std::shared_ptr<std::vector<std::function<void()>>> gates
+        = std::make_shared<std::vector<std::function<void()>>>();
+    bool gateMarker = false;
+    WindowFeedFixture()
+    {
+        sourceScene = true;
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QUrlQuery query(request.target);
+            if (path.endsWith("/messages/") && request.method == "GET"
+                && query.queryItemValue("page_limit") == "50"
+                && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid")
+                && !query.hasQueryItem("uuid")) {
+                ++feedPages;
+                if (query.hasQueryItem("page_marker"))
+                    ++feedMarkerPages;
+                if (failFeed)
+                    return Response{QJsonObject{{"detail", "synthetic outage"}}, 500, 0, {}};
+                if (emptyFeed)
+                    return Response{QJsonArray{}, 200, 0, {}};
+                const auto marker = query.queryItemValue("page_marker");
+                const int boundary = marker.isEmpty() ? std::numeric_limits<int>::max()
+                                                     : marker.right(12).toInt(nullptr, 16);
+                QJsonArray items;
+                bool more = false;
+                for (auto it = rows.cend(); it != rows.cbegin();) {
+                    --it;
+                    if (it.key() >= boundary)
+                        continue;
+                    if (items.size() == 50) { more = true; break; }
+                    items.append(it.value());
+                }
+                Response response{items, 200, 0, {}};
+                if (more)
+                    response.headers.insert("X-Pagination-Marker",
+                        items.last().toObject().value("uuid").toString().toUtf8());
+                if (gateMarker && query.hasQueryItem("page_marker")) {
+                    response.defer = [this](std::function<void()> send) { gates->push_back(std::move(send)); };
+                }
+                return response;
+                }
+                return fallback(request);
+        };
+    }
+    QJsonObject one(int n)
+    {
+        const auto id = QStringLiteral("78787878-7878-4878-8878-")
+            + QString("%1").arg(n, 12, 16, QLatin1Char('0'));
+        auto row = message(QStringLiteral("Feed row %1").arg(n), id, secondTopicId);
+        row["author_uuid"] = channelPeer;
+        row["is_own"] = false;
+        row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+            .addSecs(n).toString(Qt::ISODateWithMs);
+        return row;
+    }
+};
+
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -5258,6 +5324,141 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, view("inboxCloseButton"));
         QVERIFY(!controller.inboxVisible());
         QVERIFY(view("messageComposer"));
+    }
+
+    // Issue #38: the /feed route opens the project feed page, rows render with
+    // the measured reference layout, top pagination rides X-Pagination-Marker,
+    // open-in-chat reuses the topic navigation path and the forward button is
+    // gated until the forward flow ships. Geometry contract: workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af feed-page.ui.tsx.
+    void feedPageRouteOpensPageAndRendersRows()
+    {
+        WindowFeedFixture fixture;
+        fixture.rows = {{1, fixture.one(1)}, {2, fixture.one(2)}, {3, fixture.one(3)}};
+        const QString firstId = fixture.one(1).value("uuid").toString();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        // The feed route is the entry surface: the reference keeps the rail
+        // entry hidden (sidebar.lib.ts:80-98), so parity means the route only.
+        const auto link = QString("ew://open/org/%1/project/%2/feed")
+            .arg(workspace::orgRouteIdFromOrigin(fixture.server.origin()), projectId);
+        controller.openMessageLink(link);
+        QTRY_VERIFY(controller.feedVisible());
+        QVERIFY(view("nativeFeedPage"));
+        QVERIFY(hasVisibleText(window->contentItem(), "All messages"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + firstId)
+            && view("feed-row-" + fixture.one(3).value("uuid").toString()), 5000);
+        // Context pill: "${stream name} \u00b7 ${topic name}" with the scene names.
+        auto *context = view("feed-context-" + firstId); QVERIFY(context);
+        QCOMPARE(context->property("text").toString(), QString("Product team \u00b7 Planning"));
+        auto *sender = view("feed-sender-" + firstId); QVERIFY(sender);
+        QCOMPARE(sender->property("text").toString(), QString("Alice"));
+        QVERIFY(view("feed-summary-" + firstId));
+        // Row card geometry: rounded-xl (12 px) with a border (feed-page.ui.tsx:363-370).
+        auto *row = view("feed-row-" + firstId);
+        QCOMPARE(row->property("radius").toInt(), 12);
+        auto *rowBorder = qvariant_cast<QObject *>(row->property("border")); QVERIFY(rowBorder);
+        QCOMPARE(rowBorder->property("width").toInt(), 1);
+        // The forward button stays gated until issue #7 ships the flow.
+        auto *forward = view("feed-forward-" + firstId); QVERIFY(forward);
+        QVERIFY(!forward->property("enabled").toBool());
+        // Open-in-chat reuses the topic navigation path and unmounts the page.
+        click(window, view("feed-open-" + firstId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.feedVisible()
+            && controller.selectedTopic() == secondTopicId, 5000);
+        // Reopening and closing via the page chrome works.
+        controller.showFeed();
+        QTRY_VERIFY(controller.feedVisible() && view("nativeFeedPage"));
+        click(window, view("feedCloseButton"));
+        QVERIFY(!controller.feedVisible());
+    }
+
+    void feedPageTopPaginationAnchorsAndDoesNotDoubleRequest()
+    {
+        WindowFeedFixture fixture;
+        for (int n = 1; n <= 60; ++n)
+            fixture.rows.insert(n, fixture.one(n));
+        fixture.gateMarker = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *list = view("feedList"); QVERIFY(list);
+        // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
+        const auto atBottom = [list] {
+            return list->property("contentHeight").toReal()
+                - list->property("contentY").toReal()
+                - list->property("height").toReal() <= 1.0;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
+        // Reaching the top fires exactly one marker request; the gated response
+        // stays in flight while the user scrolls away and back: the armed flag
+        // re-arms past 96 px but the in-flight request still blocks a second one.
+        list->setProperty("contentY", 0.0);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.gates->empty(), 3000);
+        list->setProperty("contentY", 400.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 96.0, 2000);
+        list->setProperty("contentY", 10.0);
+        QTest::qWait(200);
+        QCOMPARE(fixture.feedMarkerPages, 1); // never while in flight
+        // The floating scroll-to-bottom button appeared while away from bottom.
+        QVERIFY(view("feedScrollToBottom"));
+        for (auto &release : *fixture.gates)
+            release();
+        fixture.gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
+        // The prepend restore keeps the visual position: contentY moved down by
+        // the merged height instead of jumping to the top.
+        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QCOMPARE(fixture.feedMarkerPages, 1);
+        // Clicking the button returns to the bottom.
+        click(window, view("feedScrollToBottom"));
+        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
+    }
+
+    void feedPageErrorAndEmptyStates()
+    {
+        WindowFeedFixture failure;
+        failure.failFeed = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(failure, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(hasVisibleText(window->contentItem(), "Failed to load messages"), 5000);
+        QVERIFY(view("feedErrorBox"));
+        // The empty project renders the feed.noMessages card instead.
+        failure.failFeed = false;
+        failure.emptyFeed = true;
+        controller.retryFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(hasVisibleText(window->contentItem(), "No messages yet"), 5000);
+        QVERIFY(!view("feedErrorBox"));
     }
 
     // Issue #54: switching sidebar destinations in the mounted window keeps
