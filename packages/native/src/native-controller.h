@@ -603,6 +603,19 @@ public:
     Q_INVOKABLE void forwardMessages(const QStringList &messageUuids, const QString &streamUuid,
         const QString &topicUuid);
     Q_INVOKABLE void checkForwardStatus();
+    // Reactive view for the forward modal (issue #7 slice 2): busy state, the
+    // unconfirmed "Check never re-sends" state, and the last batch error.
+    Q_PROPERTY(bool forwardPending READ forwardPending NOTIFY forwardChanged)
+    Q_PROPERTY(bool forwardAwaitingCheck READ forwardAwaitingCheck NOTIFY forwardChanged)
+    Q_PROPERTY(QString forwardError READ forwardError NOTIFY forwardChanged)
+    bool forwardAwaitingCheck() const { return m_forwardIntent.pending && !m_forwardIntent.busy; }
+    QString forwardError() const { return m_forwardError; }
+    // Topic options for an arbitrary destination stream in the forward picker
+    // (reference chat-page forward modal lists each channel's topics). GET
+    // /stream_topics/ only; options cache per stream and reload on request.
+    Q_INVOKABLE void fetchForwardTopics(const QString &streamUuid);
+    Q_INVOKABLE QVariantList forwardTopicOptions(const QString &streamUuid) const;
+    Q_INVOKABLE bool forwardTopicsPending(const QString &streamUuid) const;
     Q_INVOKABLE bool beginEditMessage(const QString &id);
     Q_INVOKABLE void cancelEditMessage();
     Q_INVOKABLE void submitEditMessage();
@@ -751,6 +764,7 @@ signals:
     void directChatOpened(QString stream, QString peer, QString defaultTopic);
     void messageSent(QString id, QString stream, QString topic);
     void forwardChanged();
+    void forwardTopicsChanged();
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
     // ---- Issue #214 polls foundation signals ----
     void pollActionFailed(QString messageUuid, QString action, QString detail,
@@ -1337,6 +1351,10 @@ private:
     void readForwardStatus(quint64 ticket);
     bool confirmForward(const QJsonObject &raw, quint64 ticket);
     ForwardIntent m_forwardIntent;
+    QString m_forwardError;
+    QHash<QString, QVariantList> m_forwardTopicOptions;
+    QHash<QString, quint64> m_forwardTopicRequests;
+    QSet<QString> m_forwardTopicsLoading;
     void finishForgetSavedAccount(const QString &id, std::function<void()> done);
     QString m_outgoingOwner;
     NativeDraftService::Lease m_outgoingLease;

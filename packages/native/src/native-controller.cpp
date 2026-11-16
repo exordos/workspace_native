@@ -15205,6 +15205,7 @@ void NativeController::clearForwardIntent()
 void NativeController::failForward(const QString &error)
 {
     clearForwardIntent();
+    m_forwardError = error;
     report(error);
     emit forwardChanged();
     emit stateChanged();
@@ -15228,6 +15229,7 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
     intent.busy = true;
     m_forwardIntent = intent;
     m_error.clear();
+    m_forwardError.clear();
     emit forwardChanged();
     emit stateChanged();
     fetchForwardSources(intent.ticket);
@@ -15345,7 +15347,8 @@ void NativeController::postForward(quint64 ticket)
             && result.status != 404 && result.status != 408 && result.status != 409 && result.status != 429;
         if (definite) { failForward(tr("The forward could not be sent. %1").arg(result.error)); return; }
         m_forwardIntent.busy = false; m_forwardIntent.pending = true;
-        m_error = tr("Forwarding was not confirmed. Check does not send it again.");
+        m_forwardError = tr("Forwarding was not confirmed. Check does not send it again.");
+        m_error = m_forwardError;
         emit forwardChanged();
         emit stateChanged();
     });
@@ -15368,7 +15371,8 @@ void NativeController::readForwardStatus(quint64 ticket)
         if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
         if (result.ok() && confirmForward(result.data.toObject(), ticket)) return;
         m_forwardIntent.busy = false; m_forwardIntent.pending = true;
-        m_error = tr("The forwarded message could not be verified. Check does not send it again.");
+        m_forwardError = tr("The forwarded message could not be verified. Check does not send it again.");
+        m_error = m_forwardError;
         emit forwardChanged();
         emit stateChanged();
     });
@@ -15389,10 +15393,51 @@ bool NativeController::confirmForward(const QJsonObject &raw, quint64 ticket)
     }
     clearForwardIntent();
     m_error.clear();
+    m_forwardError.clear();
     emit forwardChanged();
     if (visible) emit messagesChanged();
     emit stateChanged();
     return true;
+}
+
+// Forward-modal topic options for one stream (reference forward picker). GET
+// only, cached per owner+stream so a picker reload never re-posts anything;
+// a failed fetch leaves the previous options untouched and re-openable.
+void NativeController::fetchForwardTopics(const QString &streamUuid)
+{
+    if (!authenticated() || QUuid(streamUuid).isNull()) return;
+    const auto key = ownerKey() + QLatin1Char('|') + streamUuid;
+    if (m_forwardTopicOptions.contains(key) || m_forwardTopicsLoading.contains(key)) return;
+    m_forwardTopicsLoading.insert(key);
+    const auto attempt = ++m_forwardTopicRequests[key];
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("stream_uuid"), streamUuid);
+    request("GET", messenger + "/stream_topics/", {}, query,
+        [this, key, streamUuid, attempt](const ApiResult &result) {
+        if (m_forwardTopicRequests.value(key) != attempt) return;
+        m_forwardTopicsLoading.remove(key);
+        if (result.ok() && result.data.isArray()) {
+            QVariantList rows;
+            for (const auto &value : result.data.toArray()) {
+                const auto topic = parseTopic(value.toObject(), m_session->project(), streamUuid);
+                if (!topic || topic->uuid.isEmpty()) continue;
+                rows.append(QVariantMap{{QStringLiteral("id"), topic->uuid},
+                    {QStringLiteral("name"), topic->name}});
+            }
+            m_forwardTopicOptions.insert(key, rows);
+        }
+        emit forwardTopicsChanged();
+    });
+}
+
+QVariantList NativeController::forwardTopicOptions(const QString &streamUuid) const
+{
+    return m_forwardTopicOptions.value(ownerKey() + QLatin1Char('|') + streamUuid);
+}
+
+bool NativeController::forwardTopicsPending(const QString &streamUuid) const
+{
+    return m_forwardTopicsLoading.contains(ownerKey() + QLatin1Char('|') + streamUuid);
 }
 
 // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----

@@ -57,6 +57,10 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>Select</source><translation>Выбрать</translation></message>
+        <message><source>Deselect</source><translation>Снять выделение</translation></message>
+        <message><source>Selected: %1</source><translation>Выбрано: %1</translation></message>
+        <message><source>Forward</source><translation>Переслать</translation></message>
         <message><source>File</source><translation>Файл</translation></message>
         <message><source>Image</source><translation>Изображение</translation></message>
         <message><source>Video</source><translation>Видео</translation></message>
@@ -4164,5 +4168,18 @@
             <source>Archive</source>
             <translation>Архивировать</translation>
         </message>
+    </context>
+    <context>
+        <name>NativeForwardDialog</name>
+        <message><source>Forward to channel</source><translation>Переслать в канал</translation></message>
+        <message><source>Channel</source><translation>Канал</translation></message>
+        <message><source>Select channel</source><translation>Выберите канал</translation></message>
+        <message><source>Topic name</source><translation>Название темы</translation></message>
+        <message><source>Select a topic to send messages to the channel</source><translation>Выберите тему для отправки сообщений в канал</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Check</source><translation>Проверить</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Forward</source><translation>Переслать</translation></message>
+        <message><source>Please wait…</source><translation>Подождите…</translation></message>
     </context>
 </TS>

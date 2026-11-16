@@ -527,6 +527,41 @@ ApplicationWindow {
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
     onNormalizedSidebarQueryChanged: root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
     property date calendarDate: new Date()
+    // Issue #7 slice 2 (docs/NATIVE_DESKTOP_MULTI_FORWARD.md): message
+    // multi-select for forwarding. The reference keeps the selection as a set
+    // of uuids on the chat page (chat-page-workspace.ui.tsx:606); selection
+    // mode starts with the first toggle (selectionMode = size > 0, :1257) and
+    // switching conversations empties it (:1707). The bar carries the count
+    // and the Forward action (chat-page-selection-bar.ui.tsx).
+    property var messageSelectionIds: []
+    readonly property int messageSelectionCount: root.messageSelectionIds.length
+    // The composer shell (and with it the selection bar) is not present on
+    // closed topics, aggregates or locked encrypted chats, so selection is
+    // only offered where the bar can render.
+    readonly property bool messageSelectionSurface: !root.aggregateConversation
+        && (root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed)
+    readonly property string messageSelectionConversation:
+        root.controller.selectedStream + "/" + root.controller.selectedTopic
+    onMessageSelectionConversationChanged: root.clearMessageSelection()
+    function isMessageSelected(id) {
+        return root.messageSelectionIds.indexOf(String(id)) >= 0
+    }
+    function toggleMessageSelection(id) {
+        const key = String(id)
+        if (key.length === 0)
+            return
+        const next = root.messageSelectionIds.slice()
+        const at = next.indexOf(key)
+        if (at >= 0)
+            next.splice(at, 1)
+        else
+            next.push(key)
+        root.messageSelectionIds = next
+    }
+    function clearMessageSelection() {
+        if (root.messageSelectionCount > 0)
+            root.messageSelectionIds = []
+    }
     property string menuMessageId: ""
     // Snapshot of the body selection at the moment the bubble menu opened
     // (workspace-message-body-interactions.hook.ts:364,383 at 230e02b8): the
@@ -4027,7 +4062,7 @@ ApplicationWindow {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -4975,6 +5010,7 @@ ApplicationWindow {
                     Rectangle {
                         objectName: "message-avatar-" + messageRow.modelData.id
                         visible: !messageRow.keyControl && messageRow.avatar.shown
+                            && root.messageSelectionCount === 0
                         x: 0
                         y: messageRow.avatar.y
                         width: 48
@@ -5020,6 +5056,54 @@ ApplicationWindow {
                             contentItem: Text { text: parent.text; textFormat: Text.PlainText; font.pixelSize: 12; color: root.colors.accent; elide: Text.ElideRight }
                             background: null
                             onClicked: root.controller.selectTopic(messageRow.modelData.topicId)
+                        }
+                    }
+                    Rectangle {
+                        objectName: "selectMessage-" + messageRow.modelData.id
+                        // Reference WorkspaceMessageSelectionControl: a 32 px
+                        // hit area bottom-anchored to the bubble (2 px inset),
+                        // a 16 px visual with 4 px radius and 1 px muted
+                        // border; checked = accent fill + 12 px check glyph in
+                        // bg colour. The checkboxes appear only in selection
+                        // mode (workspace-message-list.ui.tsx:503,545-553).
+                        visible: root.messageSelectionCount > 0
+                            && !messageRow.keyControl && root.messageSelectionSurface
+                        x: 12
+                        y: bubble.y + bubble.height - height - 2
+                        width: 32
+                        height: 32
+                        color: "transparent"
+                        Accessible.role: Accessible.CheckBox
+                        Accessible.name: root.isMessageSelected(messageRow.modelData.id)
+                            ? qsTr("Deselect") : qsTr("Select")
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleMessageSelection(messageRow.modelData.id)
+                        }
+                        Rectangle {
+                            objectName: "selectMessageBox-" + messageRow.modelData.id
+                            anchors.centerIn: parent
+                            width: 16
+                            height: 16
+                            radius: 4
+                            color: root.isMessageSelected(messageRow.modelData.id) ? root.colors.accent : "transparent"
+                            border.width: 1
+                            border.color: root.isMessageSelected(messageRow.modelData.id)
+                                ? root.colors.accent : root.colors["text-muted"]
+                            Image {
+                                objectName: "selectMessageCheck-" + messageRow.modelData.id
+                                anchors.centerIn: parent
+                                width: 12
+                                height: 12
+                                visible: root.isMessageSelected(messageRow.modelData.id)
+                                source: "qrc:/workspace/icons/check.svg"
+                                layer.enabled: true
+                                layer.effect: MultiEffect {
+                                    colorization: 1.0
+                                    colorizationColor: root.colors.bg
+                                }
+                            }
                         }
                     }
                     Rectangle {
@@ -6438,6 +6522,7 @@ ApplicationWindow {
                 // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
                 Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
                     + (composerToolbarRow.visible ? composerToolbarRow.Layout.preferredHeight + composerInputColumn.spacing : 0)
+                    + (messageSelectionBar.visible ? messageSelectionBar.height : 0)
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
                     + replyTabStrip.height
                     + (replyNotice.visible ? replyNotice.height : 0)
@@ -6450,8 +6535,75 @@ ApplicationWindow {
                     color: root.colors["border-subtle"]
                 }
                 Rectangle {
+                    id: messageSelectionBar
+                    objectName: "messageSelectionBar"
+                    // Reference ChatPageSelectionBar: only visible with a
+                    // non-empty selection; a danger notice marker (4 px, 10 px
+                    // vertical inset, rounded right edge), "Selected: N" in
+                    // text-sm medium text-primary, then Cancel + Forward.
+                    // The 52 px keeps the native 40 px button inside the strip
+                    // with the reference's 6 px vertical padding.
+                    width: parent.width
+                    height: 52
+                    visible: root.messageSelectionCount > 0
+                    color: root.colors["composer-outer"]
+                    Accessible.role: Accessible.ToolBar
+                    Accessible.name: selectionCountText.text
+                    Rectangle {
+                        objectName: "selectionNoticeMarker"
+                        x: 0
+                        y: 10
+                        width: 4
+                        height: parent.height - 20
+                        radius: 2
+                        color: root.colors.danger
+                    }
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: root.colors["border-subtle"]
+                    }
+                    RowLayout {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 24
+                        anchors.rightMargin: 24
+                        spacing: 12
+                        Text {
+                            id: selectionCountText
+                            objectName: "messageSelectionCountText"
+                            Layout.alignment: Qt.AlignVCenter
+                            text: qsTr("Selected: %1").arg(root.messageSelectionCount)
+                            textFormat: Text.PlainText
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: root.colors["text-primary"]
+                        }
+                        Item { Layout.fillWidth: true }
+                        NativeButton {
+                            objectName: "selectionCancelButton"
+                            colors: root.colors
+                            text: qsTr("Cancel")
+                            onClicked: root.clearMessageSelection()
+                        }
+                        NativeButton {
+                            objectName: "selectionForwardButton"
+                            colors: root.colors
+                            text: qsTr("Forward")
+                            // reference forwardDisabled = selectedCount === 0
+                            // (chat-page-workspace.ui.tsx:4759); the bar only
+                            // exists with a non-empty selection.
+                            enabled: root.messageSelectionCount > 0
+                            onClicked: forwardDialog.open()
+                        }
+                    }
+                }
+                Rectangle {
                     id: editMessageNotice
                     objectName: "editMessageNotice"
+                    y: messageSelectionBar.visible ? messageSelectionBar.height : 0
                     width: parent.width
                     height: 33
                     color: root.colors["composer-outer"]
@@ -6520,7 +6672,8 @@ ApplicationWindow {
                 Rectangle {
                     id: replyTabStrip
                     objectName: "replyTabStrip"
-                    y: editMessageNotice.visible ? editMessageNotice.height : 0
+                    y: (messageSelectionBar.visible ? messageSelectionBar.height : 0)
+                        + (editMessageNotice.visible ? editMessageNotice.height : 0)
                     width: parent.width
                     // Height-collapsed rather than visible-toggled: a hidden view never
                     // materializes its delegates, so the strip collapses to 0 px instead
@@ -6640,7 +6793,8 @@ ApplicationWindow {
                 Rectangle {
                     id: replyNotice
                     objectName: "replyNotice"
-                    y: (editMessageNotice.visible ? editMessageNotice.height : 0)
+                    y: (messageSelectionBar.visible ? messageSelectionBar.height : 0)
+                        + (editMessageNotice.visible ? editMessageNotice.height : 0)
                         + replyTabStrip.height
                     width: parent.width
                     height: 12 + replyQuoteFrame.height
@@ -6756,7 +6910,8 @@ ApplicationWindow {
                 ListView {
                     id: editAttachmentStrip
                     objectName: "editAttachmentStrip"
-                    y: (editMessageNotice.visible ? editMessageNotice.height : 0)
+                    y: (messageSelectionBar.visible ? messageSelectionBar.height : 0)
+                        + (editMessageNotice.visible ? editMessageNotice.height : 0)
                         + replyTabStrip.height + (replyNotice.visible ? replyNotice.height : 0)
                     x: 8
                     width: parent.width - 16
@@ -6860,7 +7015,8 @@ ApplicationWindow {
                     objectName: "composerInputColumn"
                     anchors.fill: parent
                     anchors.margins: 8
-                    anchors.topMargin: 9 + (editMessageNotice.visible ? editMessageNotice.height : 0)
+                    anchors.topMargin: 9 + (messageSelectionBar.visible ? messageSelectionBar.height : 0)
+                        + (editMessageNotice.visible ? editMessageNotice.height : 0)
                         + replyTabStrip.height
                         + (replyNotice.visible ? replyNotice.height : 0)
                         + editAttachmentStrip.height
@@ -8036,6 +8192,17 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    // Issue #7 slice 2: the forward destination modal (issue #7 slice 2
+    // section of docs/NATIVE_DESKTOP_MULTI_FORWARD.md). A confirmed forward
+    // clears the chat selection exactly like the reference onSuccess.
+    NativeForwardDialog {
+        id: forwardDialog
+        colors: root.colors
+        controller: root.controller
+        sourceIds: root.messageSelectionIds
+        onForwardSucceeded: root.clearMessageSelection()
     }
 
     component ArchiveSpinner: Canvas {
@@ -9810,6 +9977,18 @@ ApplicationWindow {
             asset: "copy.svg"
             text: qsTr("Copy text")
             onTriggered: root.controller.copyMessage(root.menuMessageId)
+        }
+        MessageMenuAction {
+            objectName: "selectMessageAction"
+            // The reference puts "Select" last in the bubble menu's secondary
+            // section (workspace-message-bubble-menu.ui.tsx:383-395); toggling
+            // the first message enters selection mode.
+            visible: root.menuMessageOrdinaryReadable && root.messageSelectionSurface
+                && !root.aggregateConversation
+            enabled: visible
+            asset: "check.svg"
+            text: qsTr("Select")
+            onTriggered: root.toggleMessageSelection(root.menuMessageId)
         }
         MessageMenuSeparator {
             visible: root.menuMessageOwn && root.menuMessageOrdinaryReadable

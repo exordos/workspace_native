@@ -25839,6 +25839,99 @@ private slots:
         for (const auto &request : fixture.server.requests)
             QVERIFY(!(request.method == "POST" && request.target.path().endsWith("/messages/")));
     }
+
+    // The forward modal drives these reactive states (issue #7 slice 2):
+    // busy while a batch is in flight, unconfirmed with a Check escape after an
+    // ambiguous POST, and a clean cleared state once the GET read-back confirms.
+    void forwardStatePropertiesFollowTheBatch()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        int posts = 0;
+        bool serverKept = false;
+        QJsonObject postedBody;
+        QString echoUuid;
+        fixture.messages = [&](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid")))
+                return Response{QJsonArray{message("First source", sourceA)}};
+            if (request.method == "POST") {
+                ++posts;
+                postedBody = request.body;
+                echoUuid = QUuid::createUuidV5(QUuid(postedBody.value("topic_uuid").toString()),
+                    postedBody.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                if (!serverKept) return Response{QJsonObject{{QStringLiteral("detail"), QStringLiteral("boom")}}, 500, 0, {}};
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            }
+            if (request.method == "GET" && !echoUuid.isEmpty()
+                && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid) {
+                if (serverKept) return Response{forwardEchoDto(postedBody, echoUuid)};
+                return Response{QJsonObject{}, 404, 0, {}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(!fixture.controller.forwardPending());
+        QVERIFY(!fixture.controller.forwardAwaitingCheck());
+        QVERIFY(fixture.controller.forwardError().isEmpty());
+        fixture.controller.forwardMessages({sourceA}, targetStream, targetTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.forwardPending()
+            && fixture.controller.forwardAwaitingCheck(), 3000);
+        QVERIFY(fixture.controller.forwardError().contains("Forwarding was not confirmed"));
+        // A Check that cannot verify the batch keeps the modal in the same
+        // unconfirmed state, with a fresh read-back error and no second POST.
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.forwardError().contains("could not be verified"), 3000);
+        QVERIFY(fixture.controller.forwardPending());
+        QVERIFY(fixture.controller.forwardAwaitingCheck());
+        QCOMPARE(posts, 1);
+        // The confirming Check lands the batch and resets all three properties.
+        serverKept = true;
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QVERIFY(!fixture.controller.forwardAwaitingCheck());
+        QVERIFY(fixture.controller.forwardError().isEmpty());
+        QCOMPARE(posts, 1);
+    }
+
+    // The picker lists one arbitrary stream's topics (reference forward modal);
+    // the options load GET-only and are served from cache afterwards.
+    void fetchForwardTopicsServesForwardPicker()
+    {
+        Fixture fixture;
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        int pickerGets = 0;
+        fixture.topics = [&](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == targetStream) {
+                ++pickerGets;
+                return Response{QJsonArray{QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+                    {"stream_uuid", targetStream}, {"name", "Picker topic"}}}};
+            }
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.forwardTopicOptions(targetStream).isEmpty());
+        fixture.controller.fetchForwardTopics(targetStream);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardTopicsPending(targetStream), 3000);
+        const auto rows = fixture.controller.forwardTopicOptions(targetStream);
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows[0].toMap().value("id").toString(), secondTopicId);
+        QCOMPARE(rows[0].toMap().value("name").toString(), QStringLiteral("Picker topic"));
+        QCOMPARE(pickerGets, 1);
+        // The repeat request is served from the cache - no second GET - and an
+        // invalid stream uuid never reaches the network.
+        fixture.controller.fetchForwardTopics(targetStream);
+        QTest::qWait(200);
+        QCOMPARE(pickerGets, 1);
+        fixture.controller.fetchForwardTopics(QStringLiteral("not-a-uuid"));
+        QTest::qWait(100);
+        QCOMPARE(pickerGets, 1);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
