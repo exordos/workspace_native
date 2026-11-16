@@ -180,9 +180,13 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   summarizes a link's own label recursively (a linked image contributes
   `Image`, never its urn). A reference definition is dropped entirely - the
   reference AST renders no text for it. A final residue pass collapses any
-  other `[...](...)`/`![...](...)` shape to its label and drops a leftover
-  `urn:` token, so no destination can survive as raw source; the 80-character
-  clamp also refuses to cut inside a target token (it drops the whole
+  other `[...](...)`/`![...](...)` shape to its label (its destination tail is
+  parenthesis-balanced, because CommonMark destinations may contain balanced
+  parentheses - `[a](https://host/(x)?q=1)` ends at the last `)`, and a scan
+  that stops at the first `(` strands the rest of the target as plain text)
+  and drops a leftover `urn:` token, so no destination can survive as raw
+  source; the 80-character clamp also refuses to cut inside a target
+  token (it drops the whole
   straddling token, including the case where the cut lands inside the token's
   first characters, before the `://` marker).
 - Deviation (exo-review thread 4581966233, round 3): the reviewer's feed
