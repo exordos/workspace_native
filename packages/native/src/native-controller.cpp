@@ -15158,6 +15158,243 @@ void NativeController::deleteMessage(const QString &id)
     });
 }
 
+// ---- Issue #7 multi-forward (docs/NATIVE_DESKTOP_MULTI_FORWARD.md) ----
+// Reference features/workspace-forward-message @ workspace_ui
+// 75bd21f37de94728e2ebe100acfea24ac9c1a4e1: a batch keeps source uuids only,
+// bodies load through a GET-only read, uniqueForwardMessageUuids collapses
+// repeats so one source is forwarded at most once per batch, and the joined
+// snapshot is posted as one message. A POST that cannot be verified stays
+// unconfirmed; checkForwardStatus() confirms it with a GET alone and never
+// re-sends - the canonical Check pattern of postOrdinarySend/readOrdinarySend.
+
+QStringList NativeController::uniqueForwardUuids(const QStringList &messageUuids)
+{
+    // uniqueForwardMessageUuids (workspace-forward-message.lib.ts:22-32):
+    // trim, drop empty entries and repeats, keep first-occurrence order.
+    QStringList unique;
+    for (const auto &candidate : messageUuids) {
+        const auto uuid = candidate.trimmed();
+        if (uuid.isEmpty() || unique.contains(uuid)) continue;
+        unique << uuid;
+    }
+    return unique;
+}
+
+bool NativeController::forwardOwned(const ForwardIntent &intent) const
+{
+    return !intent.uuid.isEmpty() && intent.owner == ownerKey()
+        && intent.project == m_session->project() && intent.user == m_session->user()
+        && intent.generation == m_api->generation();
+}
+
+bool NativeController::canForwardMessages() const
+{
+    return authenticated() && !m_forwardIntent.busy;
+}
+
+bool NativeController::forwardPending() const
+{
+    return m_forwardIntent.busy || m_forwardIntent.pending;
+}
+
+void NativeController::clearForwardIntent()
+{
+    m_forwardIntent = ForwardIntent{};
+}
+
+void NativeController::failForward(const QString &error)
+{
+    clearForwardIntent();
+    report(error);
+    emit forwardChanged();
+    emit stateChanged();
+}
+
+void NativeController::forwardMessages(const QStringList &messageUuids, const QString &streamUuid,
+    const QString &topicUuid)
+{
+    if (!canForwardMessages()) return;
+    const auto sources = uniqueForwardUuids(messageUuids);
+    if (sources.isEmpty() || QUuid(streamUuid).isNull() || QUuid(topicUuid).isNull()) {
+        report(tr("There is nothing to forward."));
+        return;
+    }
+    auto intent = ForwardIntent{};
+    intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    intent.publicId = QUuid::createUuidV5(QUuid(topicUuid), intent.uuid.toUtf8()).toString(QUuid::WithoutBraces);
+    intent.owner = ownerKey(); intent.project = m_session->project(); intent.user = m_session->user();
+    intent.stream = streamUuid; intent.topic = topicUuid; intent.sources = sources;
+    intent.generation = m_api->generation(); intent.ticket = ++m_nextOutgoing;
+    intent.busy = true;
+    m_forwardIntent = intent;
+    m_error.clear();
+    emit forwardChanged();
+    emit stateChanged();
+    fetchForwardSources(intent.ticket);
+}
+
+void NativeController::fetchForwardSources(quint64 ticket)
+{
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) { clearForwardIntent(); return; }
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("project_id"), m_forwardIntent.project);
+    for (const auto &uuid : m_forwardIntent.sources)
+        query.addQueryItem(QStringLiteral("uuid"), uuid);
+    const auto project = m_forwardIntent.project;
+    const auto sources = m_forwardIntent.sources;
+    request("GET", messenger + "/messages/", {}, query, [this, ticket, project, sources](const ApiResult &result) {
+        if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+        if (!result.ok() || !result.data.isArray()) {
+            failForward(tr("The messages to forward could not be loaded. %1").arg(result.error));
+            return;
+        }
+        QHash<QString, Message> found;
+        for (const auto &row : result.data.toArray()) {
+            const auto parsed = parseMessage(row.toObject(), project);
+            if (parsed && parsed->kind == QLatin1String("markdown") && sources.contains(parsed->uuid)
+                && !found.contains(parsed->uuid))
+                found.insert(parsed->uuid, *parsed);
+        }
+        m_forwardIntent.wire = buildForwardSnapshot(m_forwardIntent.sources, found);
+        if (m_forwardIntent.wire.isEmpty()) {
+            failForward(tr("The forwarded text could not be built."));
+            return;
+        }
+        postForward(ticket);
+    });
+}
+
+QString NativeController::buildForwardSnapshot(const QStringList &sources,
+    const QHash<QString, Message> &found) const
+{
+    // buildWorkspaceForwardMarkdown (lib.ts:66-125): one forward-reference
+    // block per resolved source, joined by a blank line, trailing whitespace
+    // trimmed. A uuid whose body never resolved is dropped (lib.ts:53-64);
+    // one malformed block nulls the whole snapshot.
+    QStringList blocks;
+    for (const auto &uuid : sources) {
+        const auto foundIt = found.constFind(uuid);
+        if (foundIt == found.constEnd()) continue;
+        const auto &message = *foundIt;
+        const Stream *stream = nullptr;
+        for (const auto &candidate : m_streams)
+            if (candidate.uuid == message.stream) { stream = &candidate; break; }
+        const auto streamLabel = stream && !stream->name.trimmed().isEmpty()
+            ? stream->name.trimmed() : message.stream;
+        workspace::WorkspaceForwardOptions options;
+        QString sourceLabel;
+        if (stream && stream->privateStream && !stream->directUser.isEmpty()) {
+            // resolveSourceLabel: a direct stream labels as its peer.
+            sourceLabel = userDisplayName(stream->directUser, streamLabel);
+            options.directSource = true;
+        } else {
+            const Topic *topic = nullptr;
+            for (const auto &candidate : m_topics)
+                if (candidate.uuid == message.topic) { topic = &candidate; break; }
+            const auto topicLabel = topic ? topic->name.trimmed() : QString();
+            sourceLabel = (topicLabel.isEmpty() || (topic && topic->isDefault))
+                ? streamLabel : streamLabel + QLatin1Char(' ') + QChar(0x00B7) + QLatin1Char(' ') + topicLabel;
+        }
+        options.sourceLabel = sourceLabel;
+        if (message.createdMicros > 0)
+            options.sourceCreatedAt = QDateTime::fromMSecsSinceEpoch(message.createdMicros / 1000, Qt::UTC)
+                .toString(Qt::ISODateWithMs);
+        else
+            options.sourceLabel.reset();
+        const auto block = workspace::buildWorkspaceForwardReference(
+            userDisplayName(message.author, message.author), message.uuid, message.content, options);
+        if (block.isEmpty()) return QString();
+        blocks << block;
+    }
+    auto body = blocks.join(QStringLiteral("\n\n"));
+    while (!body.isEmpty() && body.back().isSpace()) body.chop(1);
+    return body;
+}
+
+bool NativeController::matchesForwardedPost(const QJsonObject &raw, const ForwardIntent &intent) const
+{
+    const auto parsed = parseMessage(raw, intent.project);
+    return parsed && parsed->stream == intent.stream && parsed->topic == intent.topic
+        && parsed->kind == QLatin1String("markdown") && parsed->content == intent.wire
+        && parsed->own && parsed->author == intent.user
+        && raw.value(QStringLiteral("user_uuid")).toString() == intent.user;
+}
+
+void NativeController::postForward(quint64 ticket)
+{
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+    const auto intent = m_forwardIntent;
+    const QJsonObject body{{QStringLiteral("uuid"), intent.uuid},
+        {QStringLiteral("stream_uuid"), intent.stream}, {QStringLiteral("topic_uuid"), intent.topic},
+        {QStringLiteral("payload"), QJsonObject{{QStringLiteral("kind"), QStringLiteral("markdown")},
+            {QStringLiteral("content"), intent.wire}}}};
+    const auto project = intent.project;
+    request("POST", messenger + "/messages/", body, {}, [this, ticket, project](const ApiResult &result) {
+        if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+        if (result.ok() && matchesForwardedPost(result.data.toObject(), m_forwardIntent)) {
+            // Old servers may return a different public identity; adopt it the
+            // way postOrdinarySend does, then confirm with the GET read-back.
+            const auto sent = parseMessage(result.data.toObject(), project);
+            if (sent && sent->uuid != m_forwardIntent.publicId) m_forwardIntent.publicId = sent->uuid;
+            readForwardStatus(ticket);
+            return;
+        }
+        // Network/5xx and retryable statuses are ambiguous; even a malformed
+        // success may have committed. Never repeat the mutation (canonical rule).
+        const bool definite = result.status >= 400 && result.status < 500
+            && result.status != 404 && result.status != 408 && result.status != 409 && result.status != 429;
+        if (definite) { failForward(tr("The forward could not be sent. %1").arg(result.error)); return; }
+        m_forwardIntent.busy = false; m_forwardIntent.pending = true;
+        m_error = tr("Forwarding was not confirmed. Check does not send it again.");
+        emit forwardChanged();
+        emit stateChanged();
+    });
+}
+
+void NativeController::checkForwardStatus()
+{
+    if (!m_forwardIntent.pending || m_forwardIntent.busy || !forwardOwned(m_forwardIntent)) return;
+    m_forwardIntent.busy = true;
+    emit forwardChanged();
+    emit stateChanged();
+    readForwardStatus(m_forwardIntent.ticket);
+}
+
+void NativeController::readForwardStatus(quint64 ticket)
+{
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+    const auto publicId = m_forwardIntent.publicId;
+    request("GET", messenger + "/messages/" + publicId, {}, {}, [this, ticket](const ApiResult &result) {
+        if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+        if (result.ok() && confirmForward(result.data.toObject(), ticket)) return;
+        m_forwardIntent.busy = false; m_forwardIntent.pending = true;
+        m_error = tr("The forwarded message could not be verified. Check does not send it again.");
+        emit forwardChanged();
+        emit stateChanged();
+    });
+}
+
+bool NativeController::confirmForward(const QJsonObject &raw, quint64 ticket)
+{
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return false;
+    const auto intent = m_forwardIntent;
+    const auto saved = parseMessage(raw, intent.project);
+    if (!saved || saved->uuid != intent.publicId || !matchesForwardedPost(raw, intent))
+        return false;
+    const auto visible = m_stream == intent.stream && m_topic == intent.topic;
+    if (visible && !findMessage(saved->uuid)) {
+        observeMessage(raw);
+        m_messages = mergeMessages(m_messages, {*saved});
+        ++m_messageRevision;
+    }
+    clearForwardIntent();
+    m_error.clear();
+    emit forwardChanged();
+    if (visible) emit messagesChanged();
+    emit stateChanged();
+    return true;
+}
+
 // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
 
 void NativeController::fetchCallMeetHost()

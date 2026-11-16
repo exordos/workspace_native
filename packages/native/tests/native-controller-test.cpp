@@ -25695,6 +25695,150 @@ private slots:
         QCOMPARE(f.vault.read(f.vault.lease(), {streamId, KeyManagementFixture::KeyOld}).value.bytes.size(), 32);
         QCOMPARE(f.inventoryUuids().size(), 2);
     }
+
+    // ---- Issue #7 multi-forward (docs/NATIVE_DESKTOP_MULTI_FORWARD.md) ----
+
+    static QJsonObject forwardEchoDto(const QJsonObject &posted, const QString &publicId)
+    {
+        auto dto = message(posted.value("payload").toObject().value("content").toString(), publicId);
+        dto.insert("stream_uuid", posted.value("stream_uuid").toString());
+        dto.insert("topic_uuid", posted.value("topic_uuid").toString());
+        return dto;
+    }
+
+    void forwardMessagesCollapsesDuplicateSourcesInOneBatch()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString sourceB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        QStringList forwardUuidParams;
+        int posts = 0;
+        QJsonObject postedBody;
+        QString echoUuid;
+        fixture.messages = [&](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid"))) {
+                QStringList uuids;
+                const auto items = query.queryItems();
+                for (const auto &item : items)
+                    if (item.first == QLatin1String("uuid")) uuids << item.second;
+                forwardUuidParams = uuids;
+                QJsonArray rows;
+                for (const auto &uuid : uuids) {
+                    if (uuid == sourceA) rows.append(message("First source", sourceA));
+                    if (uuid == sourceB) rows.append(message("Second source", sourceB));
+                }
+                return Response{rows};
+            }
+            if (request.method == "POST") {
+                ++posts;
+                postedBody = request.body;
+                echoUuid = QUuid::createUuidV5(QUuid(postedBody.value("topic_uuid").toString()),
+                    postedBody.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            }
+            if (request.method == "GET" && !echoUuid.isEmpty()
+                && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid)
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.canForwardMessages());
+        // One source repeated, one blank entry and one fresh source: the batch
+        // must forward each distinct source exactly once (uniqueForwardMessageUuids).
+        fixture.controller.forwardMessages({sourceA, QStringLiteral(" %1 ").arg(sourceA), QString(), sourceB},
+            targetStream, targetTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(posts == 1, 3000);
+        QCOMPARE(forwardUuidParams, QStringList({sourceA, sourceB}));
+        QCOMPARE(postedBody.value("stream_uuid").toString(), targetStream);
+        QCOMPARE(postedBody.value("topic_uuid").toString(), targetTopic);
+        const auto payload = postedBody.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), QStringLiteral("markdown"));
+        const auto wire = payload.value("content").toString();
+        QCOMPARE(wire.count(QStringLiteral("urn:forward:") + sourceA), 1);
+        QCOMPARE(wire.count(QStringLiteral("urn:forward:") + sourceB), 1);
+        QCOMPARE(wire.count(QStringLiteral("\n\n")), 1);
+        QVERIFY(isUuid(postedBody.value("uuid").toString()));
+        // Confirmation is the GET-only read-back; the POST is never repeated.
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QVERIFY(fixture.controller.error().isEmpty());
+        QCOMPARE(posts, 1);
+    }
+
+    void forwardConfirmationCheckNeverResendsThePost()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        int posts = 0;
+        int checkGets = 0;
+        bool serverKept = false;
+        QJsonObject postedBody;
+        QString echoUuid;
+        fixture.messages = [&](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid"))) {
+                return Response{QJsonArray{message("First source", sourceA)}};
+            }
+            if (request.method == "POST") {
+                ++posts;
+                postedBody = request.body;
+                echoUuid = QUuid::createUuidV5(QUuid(postedBody.value("topic_uuid").toString()),
+                    postedBody.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                if (!serverKept) return Response{QJsonObject{{QStringLiteral("detail"), QStringLiteral("boom")}}, 500, 0, {}};
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            }
+            if (request.method == "GET" && !echoUuid.isEmpty()
+                && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid) {
+                ++checkGets;
+                if (serverKept) return Response{forwardEchoDto(postedBody, echoUuid)};
+                return Response{QJsonObject{}, 404, 0, {}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.forwardMessages({sourceA, sourceA}, targetStream, targetTopic);
+        // The ambiguous POST stays unconfirmed and is never repeated.
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.forwardPending()
+            && fixture.controller.error().contains("Forwarding was not confirmed"), 3000);
+        QCOMPARE(posts, 1);
+        // A Check against a server that never kept the message stays unresolved.
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.error().contains("could not be verified"), 3000);
+        QVERIFY(fixture.controller.forwardPending());
+        QCOMPARE(posts, 1);
+        // When the server actually committed it (the 5xx lied), Check confirms
+        // with the GET read-back alone - still exactly one POST.
+        serverKept = true;
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QVERIFY(fixture.controller.error().isEmpty());
+        QCOMPARE(posts, 1);
+        QVERIFY(checkGets >= 2);
+    }
+
+    void forwardMessagesRejectsEmptyAndInvalidBatches()
+    {
+        Fixture fixture;
+        const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        QVERIFY(fixture.start());
+        fixture.controller.forwardMessages({QStringLiteral(""), QStringLiteral("  ")},
+            targetStream, secondTopicId);
+        QTest::qWait(200);
+        QVERIFY(!fixture.controller.error().isEmpty());
+        QVERIFY(!fixture.controller.forwardPending());
+        fixture.controller.forwardMessages({sourceA}, QStringLiteral("not-a-uuid"), secondTopicId);
+        QTest::qWait(200);
+        QVERIFY(!fixture.controller.forwardPending());
+        for (const auto &request : fixture.server.requests)
+            QVERIFY(!(request.method == "POST" && request.target.path().endsWith("/messages/")));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
