@@ -382,6 +382,11 @@ if(BUILD_TESTING)
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
     # Actual local TLS/h2 transport regressions. Existing QtTest failOnWarning policy is untouched.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(native-clipboard-slow-read SHARED tests/clipboard-slow-read.cpp)
+        target_link_libraries(native-clipboard-slow-read PRIVATE ${CMAKE_DL_LIBS})
+        add_test(NAME native-clipboard-lifecycle COMMAND native-controller-test destroyingControllerCancelsClipboardSnapshotPreparation)
+        set_tests_properties(native-clipboard-lifecycle PROPERTIES TIMEOUT 20
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
         add_executable(native-updater-http2-recovery-driver tests/updater-http2/recovery.cpp src/native-updater.cpp src/native-updater.h)
         target_include_directories(native-updater-http2-recovery-driver PRIVATE src)

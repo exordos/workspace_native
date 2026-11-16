@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "clipboard-snapshot-budget.h"
 #include "native-auth-guard.h"
 #include "native-logging.h"
 #include "native-chat-crypto.h"
@@ -41,6 +42,9 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <atomic>
+#ifdef Q_OS_LINUX
+#include <unistd.h>
+#endif
 #include <QTemporaryDir>
 #include <QMap>
 #include <QUuid>
@@ -11272,6 +11276,17 @@ private slots:
             + otherId + ")\n\nSecond answer typed while uploading");
         QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
         QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        const auto reopened = fixture.controller.replyTabs();
+        QCOMPARE(reopened.size(), 2);
+        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QCOMPARE(fixture.controller.draft(), QString("first answer"));
+        QVERIFY(fixture.controller.selectReplyTab(reopened[1].toMap().value("id").toString()));
+        QCOMPARE(fixture.controller.draft(), QString("Second answer typed while uploading"));
+        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        const auto originalWire = saved;
+        fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 2);
+        QCOMPARE(saved, originalWire);
     }
 
     void inlineEditCancellationKeepsAnEarlierOrdinaryUpload()
@@ -14288,6 +14303,126 @@ private slots:
         data->setUrls({QUrl::fromLocalFile(input.fileName())}); clipboard->setMimeData(data);
         const bool accepted = fixture.controller.pasteAttachments(); QTest::qWait(400);
         QCOMPARE(posts, 0); QVERIFY(!accepted);
+    }
+
+    void destroyingControllerCancelsClipboardSnapshotPreparation_data()
+    {
+        QTest::addColumn<QString>("transition");
+        QTest::newRow("destroy") << QString("destroy");
+        QTest::newRow("logout") << QString("logout");
+        QTest::newRow("cancel") << QString("cancel");
+    }
+
+    void destroyingControllerCancelsClipboardSnapshotPreparation()
+    {
+        if (!qEnvironmentVariableIsSet("CASSI_SLOW_CLIPBOARD_TEST")) QSKIP("Run by native-clipboard-lifecycle with controlled slow input");
+        QFETCH(QString, transition);
+        QTemporaryDir directory; QFile input(directory.filePath("cassi-slow-synthetic.bin"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); QVERIFY(input.resize(1024 * 1024)); input.close();
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        auto fixture = std::make_unique<Fixture>(); auto files = std::make_unique<FileClient>(&fixture->api);
+        fixture->controller.useFiles(files.get()); QVERIFY(fixture->start());
+        QList<QUrl> urls; for (int i = 0; i < 10; ++i) urls.append(QUrl::fromLocalFile(input.fileName()));
+        auto *data = new QMimeData; data->setUrls(urls); clipboard->setMimeData(data);
+        const QDir tasks("/proc/self/task");
+        const auto ids = [&] { const auto list = tasks.entryList(QDir::Dirs | QDir::NoDotAndDotDot); return QSet<QString>(list.begin(), list.end()); };
+        const auto before = ids();
+        QVERIFY(fixture->controller.prepareClipboardFiles());
+        QSet<QString> started;
+        QTRY_VERIFY(!(started = ids() - before).isEmpty());
+        if (transition == "destroy") { fixture.reset(); files.reset(); }
+        else if (transition == "logout") fixture->controller.logout();
+        else fixture->controller.cancelClipboardFiles();
+        QTRY_VERIFY_WITH_TIMEOUT((ids() & started).isEmpty(), 500);
+        if (fixture) {
+            QVERIFY(!fixture->controller.clipboardFilesPreparing());
+            QVERIFY(fixture->controller.clipboardFilesPreview().isEmpty());
+        }
+    }
+
+    void clipboardSnapshotRejectsOversizedSecondFileAndCleansUp()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile first(directory.filePath("first.txt")), large(directory.filePath("too-large.txt"));
+        QVERIFY(first.open(QIODevice::WriteOnly)); first.write("safe synthetic"); first.close();
+        QVERIFY(large.open(QIODevice::WriteOnly)); QVERIFY(large.resize(25 * 1024 * 1024 + 1)); large.close();
+        int posts = 0; fixture.files = [&](const Request &) { ++posts; return Response{QJsonObject{}, 503}; };
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        QVERIFY(fixture.start());
+        auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(first.fileName()), QUrl::fromLocalFile(large.fileName())}); clipboard->setMimeData(data);
+        QVERIFY(fixture.controller.prepareClipboardFiles());
+        QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(fixture.controller.clipboardFilesPreview().isEmpty()); QVERIFY(!fixture.controller.error().isEmpty());
+        fixture.controller.attachClipboardFiles(); QTest::qWait(100); QCOMPARE(posts, 0);
+        QVERIFY(fixture.controller.uploadEntries().isEmpty());
+    }
+
+    void clipboardSnapshotReadErrorAfterFirstFileCleansUp()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile first(directory.filePath("first.txt")), denied(directory.filePath("denied.txt"));
+        QVERIFY(first.open(QIODevice::WriteOnly)); first.write("safe synthetic"); first.close();
+        QVERIFY(denied.open(QIODevice::WriteOnly)); denied.write("synthetic"); denied.close();
+        QVERIFY(denied.setPermissions({}));
+        QFile verify(denied.fileName()); if (verify.open(QIODevice::ReadOnly)) QSKIP("Filesystem does not enforce file permissions for this user");
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { denied.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); clipboard->setMimeData(old); });
+        QVERIFY(fixture.start());
+#ifdef Q_OS_LINUX
+        const auto openAnonymousTemps = [] {
+            int count = 0; const QDir descriptors("/proc/self/fd");
+            for (const auto &fd : descriptors.entryList(QDir::System | QDir::NoDotAndDotDot)) {
+                const auto path = QFile::encodeName(descriptors.filePath(fd)); char target[4096];
+                const auto length = ::readlink(path.constData(), target, sizeof(target));
+                if (length <= 0) continue;
+                const QByteArray resolved(target, length);
+                if (resolved.startsWith(QFile::encodeName(QDir::tempPath()) + "/#") && resolved.endsWith(" (deleted)")) ++count;
+            }
+            return count;
+        };
+        const auto initialTempFds = openAnonymousTemps();
+#endif
+        auto *data = new QMimeData; data->setUrls({QUrl::fromLocalFile(first.fileName()), QUrl::fromLocalFile(denied.fileName())}); clipboard->setMimeData(data);
+        QVERIFY(fixture.controller.prepareClipboardFiles());
+        QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(fixture.controller.clipboardFilesPreview().isEmpty()); QVERIFY(!fixture.controller.error().isEmpty());
+        fixture.controller.attachClipboardFiles(); QVERIFY(fixture.controller.uploadEntries().isEmpty());
+#ifdef Q_OS_LINUX
+        QTRY_COMPARE(openAnonymousTemps(), initialTempFds);
+#endif
+    }
+
+    void clipboardSnapshotBudgetChecksCountAndTotal()
+    {
+        ClipboardSnapshotBudget budget(3, 10);
+        QVERIFY(budget.add(4)); QVERIFY(budget.add(6));
+        QVERIFY(!budget.add(1)); // total must not exceed the budget
+        QVERIFY(budget.add(0)); // rejected additions did not consume a slot
+        QVERIFY(!budget.add(0)); // file count is bounded independently
+        ClipboardSnapshotBudget invalid(2, 10); QVERIFY(!invalid.add(-1));
+    }
+
+    void clipboardSnapshotRejectsTooManyFilesBeforeCopying()
+    {
+        Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
+        QTemporaryDir directory; QFile input(directory.filePath("tiny.txt"));
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("x"); input.close();
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(old); });
+        QVERIFY(fixture.start()); QList<QUrl> urls;
+        for (int i = 0; i < 101; ++i) urls.append(QUrl::fromLocalFile(input.fileName()));
+        auto *data = new QMimeData; data->setUrls(urls); clipboard->setMimeData(data);
+        fixture.controller.prepareClipboardFiles();
+        QTRY_VERIFY(!fixture.controller.clipboardFilesPreparing());
+        QVERIFY(!fixture.controller.error().isEmpty());
+        QVERIFY(fixture.controller.clipboardFilesPreview().isEmpty());
+        fixture.controller.attachClipboardFiles(); QVERIFY(fixture.controller.uploadEntries().isEmpty());
     }
 
     void oversizedEditDoesNotProtectAnUnsubmittedUpload()

@@ -37,13 +37,19 @@ unsubmitted cards and cancels pending transfers. Local tests use synthetic files
 and HTTP responses. They do not establish live-service behavior, exact
 cross-renderer pixels, native OS picker behavior or Windows/macOS acceptance.
 
-For clipboard file URLs, native deliberately adds a confirmation displaying the
-captured local paths before any file is read or uploaded. A clipboard owner can
-replace expected text with a file URL, so an ordinary paste otherwise sends a
-local file without an explicit file choice. Cancellation or a change of account,
-conversation or edit session drops the captured selection. Clipboard image data
-continues to paste directly, and the file picker and external file drop remain
-explicit file selections.
+For clipboard file URLs, native deliberately adds a confirmation before upload.
+A clipboard owner can replace expected text with a file URL, so an ordinary paste
+otherwise sends a local file without an explicit file choice. A worker reads a
+bounded private temporary copy before displaying the requested path and any
+resolved symbolic-link target. One clipboard paste is limited to 100 files and
+100 MiB total, in addition to the existing 25 MiB per-file limit; these extra
+limits prevent a clipboard owner from exhausting temporary storage. The upload uses that copy even if the source is
+changed while the dialog is open. Cancellation or a change of account,
+conversation or edit session discards the selection and removes the temporary
+copy once preparation stops. Temporary files are automatically removed on normal
+cleanup, but a process or machine crash can leave a private file in the system
+temporary directory. Clipboard image data continues to paste directly, and the
+file picker and external file drop remain explicit file selections.
 
 Like the reference composer, visible image aliases are matched lexically: typed
 text matching an attachment alias is serialized as that image, including a
@@ -68,3 +74,7 @@ constructs the `FileClient` and controller with the same `ApiClient` in
 message Markdown are never deletion authority. A file named by an admitted or
 uncertain send, or by an already submitted edit, must not be deleted based on
 a failed or missing acknowledgement.
+
+When reopening an edited reply, native extracts standalone attachments before
+restoring quote tabs, matching the source composer. It preserves the original
+attachment prefix when the user saves the restored reply again.

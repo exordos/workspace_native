@@ -118,6 +118,8 @@
         <message><source>Remove image from text</source><translation>Удалить изображение из текста</translation></message>
         <message><source>Drag image into message</source><translation>Перетащить изображение в сообщение</translation></message>
         <message><source>Upload files from clipboard?</source><translation>Загрузить файлы из буфера обмена?</translation></message>
+        <message><source>Paste up to 100 files totalling at most 100 MiB.</source><translation>Вставьте не более 100 файлов общим размером до 100 МиБ.</translation></message>
+        <message><source>Preparing files…</source><translation>Подготовка файлов…</translation></message>
         <message><source>Check the file paths before uploading.</source><translation>Проверьте пути к файлам перед загрузкой.</translation></message>
         <message><source>Upload</source><translation>Загрузить</translation></message>
         <message>
