@@ -593,6 +593,16 @@ public:
     Q_INVOKABLE void starMessage(const QString &id);
     Q_INVOKABLE void deleteMessage(const QString &id);
     Q_INVOKABLE void editMessage(const QString &id, const QString &text);
+    // Issue #7 multi-forward (docs/NATIVE_DESKTOP_MULTI_FORWARD.md): forward a
+    // batch of source uuids as one snapshot message into a target
+    // conversation. Duplicates inside one batch collapse here; an
+    // unconfirmed batch is confirmed GET-only with checkForwardStatus() and
+    // never re-sent, mirroring the canonical Check pattern.
+    Q_INVOKABLE bool canForwardMessages() const;
+    Q_INVOKABLE bool forwardPending() const;
+    Q_INVOKABLE void forwardMessages(const QStringList &messageUuids, const QString &streamUuid,
+        const QString &topicUuid);
+    Q_INVOKABLE void checkForwardStatus();
     Q_INVOKABLE bool beginEditMessage(const QString &id);
     Q_INVOKABLE void cancelEditMessage();
     Q_INVOKABLE void submitEditMessage();
@@ -740,6 +750,7 @@ signals:
     void channelCreateStageResolved(QString attempt, QString outcome, QString message);
     void directChatOpened(QString stream, QString peer, QString defaultTopic);
     void messageSent(QString id, QString stream, QString topic);
+    void forwardChanged();
     void reactionAdded(QString messageId, QString canonicalEmoji, QString ownerKey, QString stream, QString topic);
     // ---- Issue #214 polls foundation signals ----
     void pollActionFailed(QString messageUuid, QString action, QString detail,
@@ -1305,6 +1316,27 @@ private:
     void postOrdinarySend(const QString &conversation, const QString &id, quint64 ticket);
     void readOrdinarySend(const QString &conversation, const QString &id, quint64 ticket, bool retry);
     void confirmOrdinarySend(const QJsonObject &raw, const QString &conversation, const QString &id, quint64 ticket);
+    // Issue #7 multi-forward (docs/NATIVE_DESKTOP_MULTI_FORWARD.md). A batch
+    // carries source uuids only: bodies load GET-only, one batch posts once,
+    // and confirmation is the canonical GET-only read-back Check - an
+    // unconfirmed batch is confirmed with a GET alone, never a second POST.
+    struct ForwardIntent {
+        QString uuid, publicId, owner, user, project, stream, topic, wire;
+        QStringList sources;
+        quint64 generation = 0, ticket = 0;
+        bool busy = false, pending = false;
+    };
+    static QStringList uniqueForwardUuids(const QStringList &messageUuids);
+    bool forwardOwned(const ForwardIntent &intent) const;
+    void clearForwardIntent();
+    void failForward(const QString &error);
+    void fetchForwardSources(quint64 ticket);
+    QString buildForwardSnapshot(const QStringList &sources, const QHash<QString, Message> &found) const;
+    bool matchesForwardedPost(const QJsonObject &raw, const ForwardIntent &intent) const;
+    void postForward(quint64 ticket);
+    void readForwardStatus(quint64 ticket);
+    bool confirmForward(const QJsonObject &raw, quint64 ticket);
+    ForwardIntent m_forwardIntent;
     void finishForgetSavedAccount(const QString &id, std::function<void()> done);
     QString m_outgoingOwner;
     NativeDraftService::Lease m_outgoingLease;

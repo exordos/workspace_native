@@ -2360,6 +2360,30 @@
         <source>Pending messages could not be removed. The saved account was kept.</source>
         <translation>Не удалось удалить очередь сообщений. Сохранённый аккаунт оставлен.</translation>
     </message>
+    <message>
+        <source>There is nothing to forward.</source>
+        <translation>Нечего пересылать.</translation>
+    </message>
+    <message>
+        <source>The messages to forward could not be loaded. %1</source>
+        <translation>Не удалось загрузить сообщения для пересылки. %1</translation>
+    </message>
+    <message>
+        <source>The forwarded text could not be built.</source>
+        <translation>Не удалось сформировать текст пересылки.</translation>
+    </message>
+    <message>
+        <source>The forward could not be sent. %1</source>
+        <translation>Не удалось отправить пересылку. %1</translation>
+    </message>
+    <message>
+        <source>Forwarding was not confirmed. Check does not send it again.</source>
+        <translation>Пересылка не подтверждена. Проверка не отправляет её повторно.</translation>
+    </message>
+    <message>
+        <source>The forwarded message could not be verified. Check does not send it again.</source>
+        <translation>Пересланное сообщение не подтверждено. Проверка не отправляет его повторно.</translation>
+    </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
