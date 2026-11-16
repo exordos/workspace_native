@@ -182,14 +182,30 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   reference AST renders no text for it. A final residue pass collapses any
   other `[...](...)`/`![...](...)` shape to its label and drops a leftover
   `urn:` token, so no destination can survive as raw source; the 80-character
-  clamp also refuses to cut inside a target token (it drops the whole trailing
-  token instead of leaving a fragment). Kept deliberately at reference parity:
-  a link whose readable label IS its href (an autolink) and raw HTML typed as
-  text are printed verbatim by the reference too
-  (`summarizeLinkInline` fallback, `workspace-message-parse.lib.ts:747`
-  keeps raw HTML as text) - they are message text, not a link target.
-  Pinned by `feedPreviewSummarizesMarkdownWithoutRawUrls` and
-  `feedPreviewHidesUncommonMarkdownLinkTargets`.
+  clamp also refuses to cut inside a target token (it drops the whole
+  straddling token, including the case where the cut lands inside the token's
+  first characters, before the `://` marker).
+- Deviation (exo-review thread 4581966233, round 3): the reviewer's feed
+  privacy invariant overrides the reference's autolink contract. Measured at
+  the pinned sha, the reference prints some URLs verbatim: `summarizeLinkInline`
+  (workspace-message-summary.lib.ts:97-112) falls back to the child text when
+  a link's label IS its href and to `href` for an empty label; `marked` turns
+  `<https://...>` into a link whose child is the URL; and bare URLs typed as
+  plain text are text inlines that pass through unchanged
+  (`URL_ONLY_PATTERN`/`isReadableLinkLabel`, lines 17 and 61-68, only decide
+  label precedence, never hide the URL). Native never does: after
+  `summarizeFeedMarkdown`, a preview never contains `://` in any scheme case,
+  `urn:` or `mailto:`, nor a fragment of any destination. Everything
+  URL-shaped that survives summarization - autolinks whose label is the
+  destination, raw `<https://...>` forms, bare URLs in message text,
+  `HTTP://`-style case variants, a URL left inside literal HTML such as
+  `<img src="http://...">` - collapses to the neutral `Link` label via
+  `collapseFeedUrlTokens` after the clamp (whole tokens only; a clamp cut
+  inside a URL-shaped token drops the whole token instead). A plain `www.`
+  host typed as a link label is not itself a destination and stays visible,
+  matching the reference readable-label contract. Pinned by
+  `feedPreviewSummarizesMarkdownWithoutRawUrls` and
+  `feedPreviewHidesUncommonMarkdownLinkTargets` (hostile-row sweep).
 - The Feed page is an exclusive content page (issue #355). `Main.qml` hides the
   whole `conversation` panel (`conversationPanel`: header, message list and
   composer) while `controller.feedVisible`, exactly like the Drafts/Mentions/
