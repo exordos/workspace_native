@@ -41,6 +41,33 @@ them. The deterministic regression gate is absence of hidden directory models,
 combined with working visible interaction. Preserve per-run logs outside this
 repository and compare repeated runs on the same host/build configuration.
 
+## Message projection during pending startup
+
+An empty message-action target no longer reads the full message projection. The
+cache-status text uses the message list's existing current-route snapshot for
+its empty/nonempty distinction. Active menu and reaction lookups still use the
+controller projection, including its ownership and mutation checks. A target
+may remain selected after a menu closes because a confirmation dialog can still
+need it; this change does not eliminate every later projection read.
+
+On one Linux/XCB host using the same Debug build, eight interleaved
+baseline/candidate process pairs ran
+the 3,000-user, 50-message fixture above with its directory response pending.
+A temporary getter counter reported 84 to 0 projection reads during 39 synthetic
+key events on the cold case and 94 to 2 on the seeded-cache case. Median time
+per event excluding the first key changed from 6.98 to 3.96 ms cold and 7.47 to
+4.14 ms seeded; every pair improved on that metric. The first key, which can
+include pending layout work, had no reliable improvement, nor did the window or
+content metrics. The event timing includes test dispatch and synchronous GUI
+work and is not a production typing-latency or process-start measurement.
+
+The `emptyMessageActionTargetDoesNotBuildMessageProjection` regression executes
+the actual packaged QML function with a counting getter. The
+`savedStatusTracksMessagesWhenSwitchingChats` window test checks the banner
+against nonempty and empty saved histories, a delayed obsolete chat response,
+and the end of revalidation. The existing cold/warm startup test exercises real
+key input and focus while the directory response remains pending.
+
 ## Remaining startup acceptance
 
 This is a focused synthetic startup improvement, not complete acceptance of

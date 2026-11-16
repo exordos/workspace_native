@@ -7978,6 +7978,126 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    // Run the actual function shipped in Main.qml against a counting getter.
+    // This isolates the expensive model read from incidental async startup work.
+    void emptyMessageActionTargetDoesNotBuildMessageProjection()
+    {
+        QFile source(QStringLiteral(":/workspace/qml/Main.qml"));
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        const QString qml = QString::fromUtf8(source.readAll());
+        const auto begin = qml.indexOf(QStringLiteral("    function currentMessage(id) {"));
+        const auto end = qml.indexOf(QStringLiteral("    function openReactionPicker("), begin);
+        QVERIFY(begin >= 0 && end > begin);
+        const auto function = qml.mid(begin, end - begin);
+        QJSEngine engine;
+        const auto program = QStringLiteral(R"JS(
+            let reads = 0;
+            const root = { controller: { get messages() { ++reads; return [{id: "one"}]; } } };
+        )JS") + function + QStringLiteral(R"JS(
+            ({ lookup: currentMessage, reads: () => reads })
+        )JS");
+        const auto object = engine.evaluate(program);
+        QVERIFY2(!object.isError(), qPrintable(object.toString()));
+        auto lookup = object.property("lookup");
+        auto reads = object.property("reads");
+        QVERIFY(lookup.call({QString()}).isNull());
+        QCOMPARE(reads.call().toInt(), 0);
+        QCOMPARE(lookup.call({QStringLiteral("one")}).property("id").toString(), QStringLiteral("one"));
+        QCOMPARE(reads.call().toInt(), 1);
+        QVERIFY(lookup.call({QStringLiteral("missing")}).isNull());
+        QCOMPARE(reads.call().toInt(), 2);
+    }
+
+    void savedStatusTracksMessagesWhenSwitchingChats()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        const QString otherStream = QStringLiteral("3e0d0000-0000-4000-8000-000000000002");
+        QTemporaryDir directory;
+        MockServer server;
+        const QJsonArray streams{windowChannel(streamId, "First channel"), windowChannel(otherStream, "Second channel")};
+        const QJsonArray firstTopics{windowChannelTopic(topicId, streamId, "First topic")};
+        const QJsonArray otherTopics{windowChannelTopic(secondTopicId, otherStream, "Second topic")};
+        const QJsonArray firstHistory{message("Saved message")};
+        const QJsonArray users{QJsonObject{{"uuid", userId}, {"project_id", projectId},
+            {"username", "synthetic-user"}, {"first_name", "Synthetic"}, {"email", "synthetic@example.invalid"}}};
+        {
+            NativeCache seed(directory.path(), {}, true);
+            QVERIFY(seed.open(server.origin(), projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}}, users));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, streamId, {}, {}}, firstTopics));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, otherStream, {}, {}}, otherTopics));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, topicId, {}}, firstHistory));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, otherStream, secondTopicId, {}}, QJsonArray{}));
+        }
+        QMap<QString, QList<std::function<void()>>> pending;
+        std::function<void()> releaseUsers;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/users/")) {
+                Response response{users};
+                response.defer = [&](auto send) { releaseUsers = std::move(send); };
+                return response;
+            }
+            if (path.endsWith("/streams/")) return Response{streams};
+            if (path.endsWith("/streams/" + streamId)) return Response{streams[0]};
+            if (path.endsWith("/streams/" + otherStream)) return Response{streams[1]};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream ? otherTopics : firstTopics};
+            if (path.endsWith("/messages/")) {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (topic.isEmpty()) return Response{QJsonArray{}};
+                Response response{topic == topicId ? firstHistory : QJsonArray{}};
+                response.defer = [&, topic](auto send) { pending[topic].append(std::move(send)); };
+                return response;
+            }
+            return sessionResponse(request);
+        };
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Cache status window teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 2);
+        QTRY_VERIFY(bool(releaseUsers));
+        auto *content = window->contentItem();
+        auto *status = item(content, "cacheStatus"); QVERIFY(status);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY(item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_VERIFY(!pending.value(topicId).isEmpty());
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QTRY_VERIFY(controller.cacheStale() && status->isVisible());
+        QTRY_COMPARE(status->property("text").toString(), QString("Showing saved messages · Updating…"));
+        clickCurrentItem(window, "stream-" + otherStream);
+        QTRY_VERIFY(item(content, "topic-" + secondTopicId));
+        clickCurrentItem(window, "topic-" + secondTopicId);
+        QTRY_VERIFY(!pending.value(secondTopicId).isEmpty());
+        QTRY_COMPARE(controller.messages().size(), 0);
+        QTRY_VERIFY(controller.cacheStale() && status->isVisible());
+        QTRY_COMPARE(status->property("text").toString(), QString("Showing saved chats · Updating…"));
+        // Complete the previous chat's obsolete response while the empty chat
+        // is selected. It must not change either its content or its banner.
+        for (const auto &send : std::as_const(pending[topicId])) send();
+        QTest::qWait(100);
+        QCOMPARE(controller.selectedStream(), otherStream);
+        QCOMPARE(controller.messages().size(), 0);
+        QCOMPARE(status->property("text").toString(), QString("Showing saved chats · Updating…"));
+        for (const auto &send : std::as_const(pending[secondTopicId])) send();
+        releaseUsers();
+        QTRY_VERIFY(!controller.cacheStale());
+        QTRY_VERIFY(!status->isVisible());
+        cache.shutdown(); QTRY_VERIFY(cache.stopped());
+    }
+
     void startupDirectoryDoesNotPopulateHiddenPickers_data()
     {
         QTest::addColumn<bool>("warm");
