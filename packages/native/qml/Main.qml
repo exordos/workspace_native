@@ -8533,15 +8533,13 @@ ApplicationWindow {
     Dialog {
         id: clipboardFilesDialog
         objectName: "clipboardFilesDialog"
-        property var files: []
         property string contextKey: ""
         property string stream: ""
         property string topic: ""
         property string editSession: ""
         function openForClipboard() {
-            const rows = root.controller.clipboardFiles();
-            if (!rows.length) return false;
-            files = rows; contextKey = root.controller.ownStatusContextKey;
+            if (!root.controller.prepareClipboardFiles()) return false;
+            contextKey = root.controller.ownStatusContextKey;
             stream = root.controller.selectedStream; topic = root.controller.selectedTopic;
             editSession = root.controller.editSessionKey;
             open(); return true;
@@ -8558,26 +8556,34 @@ ApplicationWindow {
             Column {
                 id: paths; width: clipboardFilesDialog.width - clipboardFilesDialog.leftPadding - clipboardFilesDialog.rightPadding
                 spacing: 8
-                Label { width: parent.width; text: qsTr("Check the file paths before uploading."); wrapMode: Text.Wrap }
+                Label { width: parent.width; text: root.controller.clipboardFilesPreparing ? qsTr("Preparing files…") : qsTr("Check the file paths before uploading."); wrapMode: Text.Wrap }
                 Repeater {
-                    model: clipboardFilesDialog.files
-                    Label { required property var modelData; width: paths.width; text: String(modelData.path)
-                        wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
+                    model: root.controller.clipboardFilesPreview
+                    Column {
+                        required property var modelData
+                        width: paths.width
+                        Label { width: parent.width; text: String(parent.modelData.path); wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
+                        Label { width: parent.width; visible: Boolean(parent.modelData.target); text: String(parent.modelData.target || ""); wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
+                    }
                 }
             }
         }
         footer: RowLayout {
             Item { Layout.fillWidth: true }
             Button { text: qsTr("Cancel"); onClicked: clipboardFilesDialog.reject() }
-            Button { objectName: "clipboardFilesConfirm"; text: qsTr("Upload"); onClicked: clipboardFilesDialog.accept() }
+            Button { objectName: "clipboardFilesConfirm"; text: qsTr("Upload"); enabled: !root.controller.clipboardFilesPreparing && root.controller.clipboardFilesPreview.length > 0; onClicked: clipboardFilesDialog.accept() }
         }
         onAccepted: {
-            if (contextMatches()) root.controller.attachClipboardFiles(files.map(row => row.url));
+            if (contextMatches()) root.controller.attachClipboardFiles();
         }
-        onClosed: files = []
+        onClosed: root.controller.cancelClipboardFiles()
         Connections {
             target: root.controller
-            function onStateChanged() { if (clipboardFilesDialog.visible && !clipboardFilesDialog.contextMatches()) clipboardFilesDialog.close(); }
+            function onStateChanged() {
+                if (clipboardFilesDialog.visible && (!clipboardFilesDialog.contextMatches()
+                        || (!root.controller.clipboardFilesPreparing && !root.controller.clipboardFilesPreview.length)))
+                    clipboardFilesDialog.close();
+            }
         }
     }
 

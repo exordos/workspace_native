@@ -12,6 +12,7 @@
 #include "realtime-client.h"
 #include "power-watcher.h"
 #include "file-client.h"
+#include "clipboard-snapshot-budget.h"
 
 #include <QDir>
 #include <QDesktopServices>
@@ -24,6 +25,7 @@
 #include <QMimeDatabase>
 #include <QImage>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QFile>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -8508,6 +8510,7 @@ NativeController::~NativeController()
 
 void NativeController::cancelFileTransfers(const QString &reason)
 {
+    cancelClipboardFiles();
     m_inlineDraft.clear(); m_inlineDraftRoute.clear(); m_inlineDraftOwner.clear();
     const bool editWasWaiting = !m_editingMessage.isEmpty() && m_pendingUploads.value(m_editRoute) > 0;
     ++m_fileEpoch;
@@ -8657,36 +8660,123 @@ QString NativeController::clipboardUploadName(const QString &extension, bool ima
     return candidate;
 }
 
-QVariantList NativeController::clipboardFiles() const
+bool NativeController::prepareClipboardFiles()
 {
-    QVariantList result;
-    if (!canAttach()) return result;
+    if (!canAttach()) return false;
     const auto *clipboard = QGuiApplication::clipboard();
     const auto *data = clipboard ? clipboard->mimeData() : nullptr;
-    if (!data) return result;
+    if (!data) return false;
+    QList<QUrl> urls;
     for (const auto &url : data->urls())
-        if (url.isLocalFile() && !url.hasQuery() && !url.hasFragment())
-            result.append(QVariantMap{{"url", url}, {"path", url.toLocalFile()}});
-    return result;
+        if (url.isLocalFile() && !url.hasQuery() && !url.hasFragment()) urls.append(url);
+    if (urls.isEmpty()) return false;
+    if (urls.size() > ClipboardSnapshotBudget::MaxFiles) {
+        m_error = tr("Paste up to 100 files totalling at most 100 MiB.");
+        emit stateChanged();
+        return false;
+    }
+    cancelClipboardFiles();
+    m_clipboardOwner = ownStatusContextKey(); m_clipboardStream = m_stream;
+    m_clipboardTopic = m_topic; m_clipboardEdit = editSessionKey();
+    m_clipboardSnapshotCancel = std::make_shared<std::atomic_bool>(false);
+    auto cancelled = m_clipboardSnapshotCancel;
+    m_clipboardFilesPreparing = true;
+    struct Result { QList<ClipboardSnapshot> snapshots; QVariantList preview; QString error; };
+    auto result = std::make_shared<Result>();
+    auto *uiThread = thread();
+    auto *worker = QThread::create([urls, cancelled, result, uiThread] {
+        constexpr qint64 limit = 25 * 1024 * 1024;
+        ClipboardSnapshotBudget budget;
+        for (const auto &url : urls) {
+            if (cancelled->load()) return;
+            const QFileInfo info(url.toLocalFile());
+            if (!info.isFile() || info.size() <= 0 || info.size() > limit) {
+                result->error = FileClient::tr("Select a nonempty file of at most 25 MiB and a valid stream."); return;
+            }
+            if (!budget.add(info.size())) {
+                result->error = NativeController::tr("Paste up to 100 files totalling at most 100 MiB."); return;
+            }
+        }
+        qint64 copied = 0;
+        for (const auto &url : urls) {
+            if (cancelled->load()) break;
+            const auto requested = url.toLocalFile();
+            const QFileInfo info(requested);
+            const auto canonical = info.canonicalFilePath();
+            if (canonical.isEmpty() || !info.isFile() || info.size() <= 0 || info.size() > limit) {
+                result->error = FileClient::tr("Select a nonempty file of at most 25 MiB and a valid stream."); break;
+            }
+            QFile input(canonical);
+            if (!input.open(QIODevice::ReadOnly)) { result->error = FileClient::tr("Cannot read the selected file."); break; }
+            const auto extension = info.suffix().isEmpty() ? QStringLiteral(".bin") : '.' + info.suffix();
+            auto temp = std::make_shared<QTemporaryFile>(QDir::tempPath() + "/cassi-clipboard-XXXXXX" + extension);
+            if (!temp->open()) { result->error = FileClient::tr("Cannot read the selected file."); break; }
+            qint64 total = 0;
+            while (!cancelled->load()) {
+                const auto chunk = input.read(64 * 1024);
+                if (chunk.isEmpty()) { if (input.error() != QFile::NoError) result->error = FileClient::tr("Cannot read the selected file."); break; }
+                total += chunk.size();
+                if (chunk.size() > ClipboardSnapshotBudget::MaxBytes - copied) {
+                    result->error = NativeController::tr("Paste up to 100 files totalling at most 100 MiB."); break;
+                }
+                copied += chunk.size();
+                if (total > limit || temp->write(chunk) != chunk.size()) { result->error = FileClient::tr("Cannot read the selected file."); break; }
+            }
+            if (cancelled->load() || !result->error.isEmpty()) break;
+            if (!total || !temp->flush()) { result->error = FileClient::tr("Cannot read the selected file."); break; }
+            temp->close();
+            result->snapshots.append({info.fileName(), temp});
+            result->preview.append(QVariantMap{{"path", requested}, {"target", canonical == requested ? QString{} : canonical}});
+        }
+        if (cancelled->load() || !result->error.isEmpty()) {
+            // The files still belong to this worker, so delete partial and
+            // completed snapshots here without relying on the UI event loop.
+            result->snapshots.clear(); result->preview.clear();
+            return;
+        }
+        for (const auto &snapshot : result->snapshots) snapshot.file->moveToThread(uiThread);
+    });
+    connect(worker, &QThread::finished, this, [this, result, cancelled] {
+        if (cancelled != m_clipboardSnapshotCancel || cancelled->load()) return;
+        m_clipboardFilesPreparing = false;
+        if (!result->error.isEmpty() || result->snapshots.isEmpty()) {
+            m_error = result->error.isEmpty() ? tr("The file could not be validated") : result->error;
+            m_clipboardSnapshots.clear(); m_clipboardFilesPreview.clear();
+        } else {
+            m_clipboardSnapshots = result->snapshots;
+            m_clipboardFilesPreview = result->preview;
+        }
+        emit stateChanged();
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+    return true;
 }
 
-void NativeController::attachClipboardFiles(const QVariantList &urls)
+void NativeController::cancelClipboardFiles()
 {
-    if (!canAttach()) return;
-    int added = 0;
-    for (const auto &value : urls) {
-        const auto url = value.toUrl();
-        if (!url.isLocalFile() || url.hasQuery() || url.hasFragment()) continue;
-        const QFileInfo info(url.toLocalFile());
-        auto name = info.fileName();
+    if (m_clipboardSnapshotCancel) m_clipboardSnapshotCancel->store(true);
+    m_clipboardSnapshotCancel.reset(); m_clipboardSnapshots.clear(); m_clipboardFilesPreview.clear();
+    m_clipboardFilesPreparing = false;
+}
+
+void NativeController::attachClipboardFiles()
+{
+    if (!canAttach() || m_clipboardFilesPreparing || !m_clipboardSnapshotCancel
+        || m_clipboardOwner != ownStatusContextKey() || m_clipboardStream != m_stream
+        || m_clipboardTopic != m_topic || m_clipboardEdit != editSessionKey()) return;
+    const auto snapshots = m_clipboardSnapshots;
+    cancelClipboardFiles();
+    for (const auto &snapshot : snapshots) {
+        auto name = snapshot.name;
         static const QRegularExpression generic(QStringLiteral("^(?:image|pasted[-_ ]?image|blob)(?:[-_ ]?\\(?\\d+\\)?)?(?:\\.[^.]+)?$"), QRegularExpression::CaseInsensitiveOption);
         if (generic.match(name).hasMatch()) {
-            const bool image = QMimeDatabase().mimeTypeForFile(info.filePath(), QMimeDatabase::MatchExtension).name().startsWith("image/");
+            const QFileInfo info(name);
+            const bool image = QMimeDatabase().mimeTypeForFile(name, QMimeDatabase::MatchExtension).name().startsWith("image/");
             name = clipboardUploadName(info.suffix().isEmpty() ? QStringLiteral(".bin") : '.' + info.suffix().toLower(), image);
         }
-        enqueueUpload(info.filePath(), name); ++added;
+        enqueueUpload(snapshot.file->fileName(), name, snapshot.file);
     }
-    if (!added) return;
     const QPointer<NativeController> guard(this);
     if (!m_editingMessage.isEmpty()) emit editSessionChanged();
     if (guard) emit stateChanged();
@@ -8698,7 +8788,9 @@ bool NativeController::pasteAttachments()
     if (!canAttach()) return false;
     const auto *clipboard = QGuiApplication::clipboard();
     const auto *data = clipboard ? clipboard->mimeData() : nullptr;
-    if (!data || !clipboardFiles().isEmpty()) return false;
+    if (!data) return false;
+    for (const auto &url : data->urls())
+        if (url.isLocalFile() && !url.hasQuery() && !url.hasFragment()) return false;
     int added = 0;
     if (data->hasImage()) {
         const auto image = qvariant_cast<QImage>(data->imageData());
@@ -15422,7 +15514,7 @@ void NativeController::removeReplyTab(const QString &tabId)
     m_replyTabs.removeAt(removedIndex);
     if (m_editRestoresReply) {
         const auto cards = m_editAttachments.take(tabId);
-        if (m_replyTabs.isEmpty()) m_editAttachments.insert(QString(), cards);
+        if (m_replyTabs.isEmpty()) m_editAttachments[QString()].append(cards);
         ++m_editRevision;
         emit editSessionChanged();
     }
@@ -15463,7 +15555,7 @@ bool NativeController::reorderReplyTab(const QString &tabId, int destinationInde
 void NativeController::cancelReply()
 {
     if (m_editRestoresReply && !m_editingMessage.isEmpty()) {
-        const auto cards = m_editAttachments.value(m_replyActiveTab);
+        const auto cards = m_editAttachments.value(QString()) + m_editAttachments.value(m_replyActiveTab);
         m_editAttachments.clear(); m_editAttachments.insert(QString(), cards);
         ++m_editRevision;
     }
@@ -16202,9 +16294,20 @@ bool NativeController::beginEditMessage(const QString &id)
     // leading quote reference is restored as a reply session so the user edits
     // the answer, never the raw urn:quote markdown. Quoted origins outside the
     // loaded window resolve through the existing quote lookup path.
-    const auto restored = parseEditQuoteRestore(message->content);
-    m_editAttachments.clear();
     NativeMarkdown parser;
+    const auto wholeContent = parser.editContent(message->content);
+    const auto restored = parseEditQuoteRestore(wholeContent.value("markdown").toString());
+    m_editAttachments.clear();
+    if (!restored.isEmpty()) {
+        QVariantList cards;
+        for (const auto &entry : wholeContent.value("attachments").toList()) {
+            auto card = entry.toMap();
+            if (!card.value("retained").toBool()) continue;
+            card.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
+            cards.append(card);
+        }
+        m_editAttachments.insert(QString(), cards);
+    }
     const auto extract = [this, &parser](const QString &body, const QString &tabId) {
         const auto content = parser.editContent(body);
         QVariantList cards;
@@ -16255,7 +16358,9 @@ bool NativeController::beginEditMessage(const QString &id)
 QVariantList NativeController::editAttachments() const
 {
     if (m_editingMessage.isEmpty()) return {};
-    return m_editAttachments.value(m_editRestoresReply ? m_replyActiveTab : QString());
+    if (m_editRestoresReply && !m_replyActiveTab.isEmpty())
+        return m_editAttachments.value(QString()) + m_editAttachments.value(m_replyActiveTab);
+    return m_editAttachments.value(QString());
 }
 
 QString NativeController::editAnswer(const QString &text, const QString &tabId) const
@@ -16266,7 +16371,11 @@ QString NativeController::editAnswer(const QString &text, const QString &tabId) 
 void NativeController::removeEditAttachment(const QString &id)
 {
     if (m_editingMessage.isEmpty() || !editableMessage(m_editingMessage) || m_editRoute != conversationKey()) return;
-    auto &cards = m_editAttachments[m_editRestoresReply ? m_replyActiveTab : QString()];
+    const auto global = m_editAttachments.value(QString());
+    bool globalCard = false;
+    for (const auto &value : global)
+        if (value.toMap().value("id").toString() == id) { globalCard = true; break; }
+    auto &cards = m_editAttachments[globalCard ? QString() : (m_editRestoresReply ? m_replyActiveTab : QString())];
     for (qsizetype index = 0; index < cards.size(); ++index) {
         const auto card = cards[index].toMap();
         if (card.value("id").toString() != id) continue;
@@ -16313,6 +16422,8 @@ void NativeController::submitEditMessage()
         while (!text.isEmpty() && text.back().isSpace()) text.chop(1); // reference trimEnd
     }
     text = replaceImageAliases(text, true);
+    if (m_editRestoresReply && !m_replyTabs.isEmpty())
+        text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
     const auto newAttachments = readyUploadLinks(m_editSession);
     if (!newAttachments.isEmpty())
         text = newAttachments.join('\n') + (text.isEmpty() ? QString{} : QStringLiteral("\n") + text);

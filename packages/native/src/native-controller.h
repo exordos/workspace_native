@@ -27,6 +27,7 @@
 #include <QVariantList>
 #include <QTemporaryFile>
 #include <memory>
+#include <atomic>
 
 namespace workspace {
 
@@ -716,8 +717,13 @@ public:
     QVariantList uploadEntries() const;
     bool uploadPending() const;
     Q_INVOKABLE bool pasteAttachments();
-    Q_INVOKABLE QVariantList clipboardFiles() const;
-    Q_INVOKABLE void attachClipboardFiles(const QVariantList &urls);
+    Q_PROPERTY(bool clipboardFilesPreparing READ clipboardFilesPreparing NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList clipboardFilesPreview READ clipboardFilesPreview NOTIFY stateChanged)
+    Q_INVOKABLE bool prepareClipboardFiles();
+    Q_INVOKABLE void attachClipboardFiles();
+    Q_INVOKABLE void cancelClipboardFiles();
+    bool clipboardFilesPreparing() const { return m_clipboardFilesPreparing; }
+    QVariantList clipboardFilesPreview() const { return m_clipboardFilesPreview; }
     Q_INVOKABLE void removeUpload(const QString &id);
     Q_INVOKABLE void removeUploadFromText(const QString &id);
     Q_INVOKABLE void retryUpload(const QString &id);
@@ -1922,7 +1928,16 @@ private:
     QHash<QString, PollSendAttempt> m_pollSendAttempts; // Owner + conversation retry identity
     QSet<QString> m_pendingPollCreations; // Dialog submission tokens, never canonical UUIDs
     QHash<QString, int> m_pendingUploads;
+    struct ClipboardSnapshot {
+        QString name;
+        std::shared_ptr<QTemporaryFile> file;
+    };
     QList<UploadEntry> m_uploadEntries;
+    QList<ClipboardSnapshot> m_clipboardSnapshots;
+    QVariantList m_clipboardFilesPreview;
+    std::shared_ptr<std::atomic_bool> m_clipboardSnapshotCancel;
+    QString m_clipboardOwner, m_clipboardStream, m_clipboardTopic, m_clipboardEdit;
+    bool m_clipboardFilesPreparing = false;
     QString m_inlineDraft, m_inlineDraftRoute, m_inlineDraftOwner;
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;

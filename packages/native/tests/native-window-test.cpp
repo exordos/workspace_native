@@ -15205,7 +15205,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTest::qWait(500);
         QCOMPARE(uploads, 0); QCOMPARE(controller.draft(), QString("Safe text"));
         auto *dialog = window->findChild<QObject *>("clipboardFilesDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
-        QVERIFY(hasVisibleText(window->contentItem(), path));
+        QTRY_VERIFY(hasVisibleText(window->contentItem(), path));
         QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(uploads, 0);
         QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
         controller.selectTopic(secondTopicId); QTRY_VERIFY(!dialog->property("visible").toBool()); QCOMPARE(uploads, 0);
@@ -15215,16 +15215,48 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto replacement = directory.filePath("other.txt"); QFile other(replacement);
         QVERIFY(other.open(QIODevice::WriteOnly)); other.write("different"); other.close();
         auto *replaced = new QMimeData; replaced->setUrls({QUrl::fromLocalFile(replacement)}); clipboard->setMimeData(replaced);
-        auto *confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); click(window, confirm);
+        auto *confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); QTRY_VERIFY(confirm->isEnabled()); click(window, confirm);
         QTRY_COMPARE(uploads, 1); QVERIFY(uploadedBody.contains("synthetic")); QVERIFY(!uploadedBody.contains("different"));
         QTRY_VERIFY(!controller.fileBusy()); controller.removeUpload(controller.uploadEntries().first().toMap().value("id").toString());
+        // Diagnostic: replace the confirmed pathname after the dialog is shown.
+        for (const int mode : {0, 1, 2}) {
+            const bool symlink = mode == 1;
+            const auto shown = directory.filePath(symlink ? "cassi-link.txt" : "cassi-replaced.txt");
+            const auto initial = directory.filePath("cassi-initial.txt");
+            const auto target = directory.filePath("cassi-target.txt");
+            QFile::remove(initial); QFile::remove(target); QFile::remove(shown);
+            QFile first(initial); QVERIFY(first.open(QIODevice::WriteOnly)); first.write("initial-synthetic"); first.close();
+            QFile second(target); QVERIFY(second.open(QIODevice::WriteOnly)); second.write("replacement-synthetic"); second.close();
+            if (symlink) QVERIFY(QFile::link(initial, shown));
+            else QVERIFY(QFile::copy(initial, shown));
+            auto *mime = new QMimeData; mime->setUrls({QUrl::fromLocalFile(shown)}); clipboard->setMimeData(mime);
+            composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+            QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
+            QTRY_VERIFY(hasVisibleText(window->contentItem(), shown));
+            confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm);
+            QTRY_VERIFY(confirm->isEnabled());
+            if (symlink) QTRY_VERIFY(hasVisibleText(window->contentItem(), initial));
+            if (mode == 2) {
+                QFile overwrite(shown); QVERIFY(overwrite.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                QCOMPARE(overwrite.write("replacement-synthetic"), qint64(21)); overwrite.close();
+            } else {
+                QVERIFY(QFile::remove(shown));
+                if (symlink) QVERIFY(QFile::link(target, shown));
+                else QVERIFY(QFile::copy(target, shown));
+            }
+            QFile atConfirm(shown); QVERIFY(atConfirm.open(QIODevice::ReadOnly)); QCOMPARE(atConfirm.readAll(), QByteArray("replacement-synthetic")); atConfirm.close();
+            const int before = uploads;
+            confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); click(window, confirm);
+            QTRY_COMPARE(uploads, before + 1); QVERIFY(uploadedBody.contains("initial-synthetic")); QVERIFY(!uploadedBody.contains("replacement-synthetic"));
+            QTRY_VERIFY(!controller.fileBusy()); controller.removeUpload(controller.uploadEntries().first().toMap().value("id").toString());
+        }
         auto *fresh = new QMimeData; fresh->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(fresh);
         composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
         QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier); QTRY_VERIFY(dialog->property("visible").toBool());
         session.logout(); QTRY_VERIFY(!dialog->property("visible").toBool());
         otherOwner = true; session.login(fixture.server.origin(), "other", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
-        QTRY_COMPARE(session.user(), channelPeer); QCOMPARE(uploads, 1); QVERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(session.user(), channelPeer); QCOMPARE(uploads, 4); QVERIFY(!dialog->property("visible").toBool());
     }
 
     void composerAcceptsClipboardImagesAndFileDrops_data()
