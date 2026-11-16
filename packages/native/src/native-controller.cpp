@@ -2948,6 +2948,7 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
 {
     UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {},
         sourceTrimmed(row.value("email").toString()), {}, {}, {}};
+    result.accountDeactivated = row.value("account_deactivated").toBool();
     result.createdAt = sourceTrimmed(row.value("created_at").toString());
     result.username = sourceTrimmed(row.value("username").toString());
     if (!authoritative) {
@@ -3004,6 +3005,12 @@ QString NativeController::userPresence(const QString &id) const
 {
     if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
     return m_names.value(id).presence;
+}
+
+bool NativeController::userAccountDeactivated(const QString &id) const
+{
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return false;
+    return m_names.value(id).accountDeactivated;
 }
 
 QString NativeController::userStatusLabel(const QString &id) const
@@ -3427,6 +3434,7 @@ QVariantMap NativeController::directPeer() const
     choice["displayName"] = peerDisplayName(id);
     choice["avatar"] = userAvatar(id);
     choice["presence"] = userPresence(id);
+    choice["accountDeactivated"] = userAccountDeactivated(id);
     return choice;
 }
 

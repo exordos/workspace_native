@@ -1599,6 +1599,11 @@ private:
         std::optional<qint64> presenceUpdatedAt;
         QString email;
         QString status, statusText, statusEmoji;
+        // Issue #177: the directory's deactivated-account fact behind the
+        // direct header badge (dm.partnerBlocked). Absent means not
+        // deactivated, never invented; unlike presence it is account state,
+        // so the updated_at presence guard does not keep it.
+        bool accountDeactivated = false;
         // Issue #134: raw DTO facts the profile page renders (joined date,
         // username). Absent fields stay empty, never invented.
         QString createdAt;
@@ -1652,6 +1657,8 @@ private:
     QHash<QString, quint64> m_rowPreviewFence;
     quint64 m_nextRowPreviewFence = 0;
     QString userPresence(const QString &id) const;
+    // Issue #177: mirrors userPresence gating for the deactivated-account fact.
+    bool userAccountDeactivated(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
     QHash<QString, UserPresentation> m_names;
     QSet<QString> m_topicMetadataInFlight;
