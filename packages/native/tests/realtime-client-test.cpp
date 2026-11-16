@@ -1104,6 +1104,57 @@ private slots:
         resumed.stop();
     }
 
+    // Review #359 finding 4585693719: the held fence is right, but a no-op
+    // save must not drop the dirty replacement cursor. Once the owed delete
+    // recovers and removes the stale row, the replacement has to be written
+    // to the now-empty key without any new realtime event arriving; a save
+    // that only cleared the dirty flag leaves the replacement unpersisted
+    // forever.
+
+    void noopSaveReschedulesReplacementAfterDeleteRecovers()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        // Invalidation whose delete fails, and whose replacement cursor
+        // (gen-a/10, lower epoch inside the same generation) can only be a
+        // monotonic no-op save against the surviving gen-a/12 row.
+        fixture.events.clear();
+        store.setFaultsForTest(false, true);
+        fixture.client.resynchronize();
+        QTRY_COMPARE(fixture.snapshots, 2);
+        // The fence is held: repeated no-op saves never touch the stale row.
+        QTest::qWait(900);
+        const auto stale = store.read(key);
+        QVERIFY(stale.has_value());
+        QCOMPARE(stale->generation, QString("generation-a"));
+        QCOMPARE(stale->epoch, quint64(12));
+        // Storage recovers: the delete lands, and the replacement cursor
+        // must then be re-marked and persisted on the cleared key - no new
+        // realtime event is sent for the rest of this test.
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto current = store.read(key);
+            return current.has_value() && current->generation == QString("generation-a")
+                && current->epoch == quint64(10);
+        })(), 3000);
+        fixture.client.stop();
+    }
+
     // Review #359 finding 4585327340: a second failed owner clear must not
     // overwrite the first owner's pending deletion. Every failed delete
     // retries independently until it lands.
