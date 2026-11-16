@@ -3307,7 +3307,15 @@ ApplicationWindow {
                                 implicitWidth: 40
                                 implicitHeight: 40
                                 radius: 20
-                                color: root.colors.bg
+                                // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md):
+                                // reference sidebar-workspace.ui.tsx:512-519 paints the
+                                // non-direct row with resolveAvatarBackgroundColor(stream.color)
+                                // and falls back to the Avatar bg-bg token; direct rows stay
+                                // photo/letter (WorkspaceAvatar path). Same binding as
+                                // NativeDraftsPage.qml:182-185.
+                                color: !Boolean(streamDelegate.modelData.isDirect)
+                                    && String(streamDelegate.modelData.avatarColor || "").length
+                                    ? streamDelegate.modelData.avatarColor : root.colors.bg
                                 border.color: root.colors["border-subtle"]
                                 NativeAvatarImage {
                                     id: streamPhoto

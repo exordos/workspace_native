@@ -11138,10 +11138,12 @@ QVariantList NativeController::streams() const
     QVariantList result;
     for (const auto *entry : ordered) {
         const auto &stream = *entry;
+        const bool direct = stream.privateStream && isUuid(stream.directUser)
+            && stream.directUser != m_session->user();
         auto row = QVariantMap{{"id", stream.uuid}, {"name", stream.name},
             {"description", stream.description}, {"unread", stream.unread}, {"activeUnread", stream.activeUnread},
             {"passiveUnread", stream.passiveUnread}, {"lastMessage", stream.lastMessage}, {"encrypted", stream.encrypted},
-            {"isDirect", stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()},
+            {"isDirect", direct},
             {"peerId", stream.privateStream ? stream.directUser : QString{}},
             {"displayName", stream.privateStream && isUuid(stream.directUser)
                 ? peerDisplayName(stream.directUser) : stream.name},
@@ -11152,6 +11154,11 @@ QVariantList NativeController::streams() const
             {"activityMicros", activity.value(stream.uuid)},
             {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
         row.insert(rowPreviewFields(stream.lastMessage));
+        // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md): same
+        // resolveAvatarBackgroundColor derivation as the drafts surface below
+        // in draftPage(); direct rows never carry a stream color.
+        row["avatarColor"] = !direct && stream.color
+            ? QString("#%1").arg(*stream.color, 6, 16, QLatin1Char('0')) : QString{};
         result.append(row);
     }
     return result;
