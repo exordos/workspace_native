@@ -1,6 +1,7 @@
 // Slow only the synthetic input used by the clipboard worker lifecycle test.
 // This keeps the cancellation regression deterministic without large files.
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,12 @@ extern "C" ssize_t read(int fd, void *buffer, size_t count)
     if (length > 0) {
         target[length] = '\0';
         if (std::strstr(target, "/cassi-slow-synthetic.bin")) usleep(150000);
+        if (const auto suffix = std::strstr(target, "/cassi-preconfirm-synthetic.bin")) {
+            char marker[4096]; const auto prefix = static_cast<size_t>(suffix - target);
+            std::snprintf(marker, sizeof(marker), "%.*s/cassi-preconfirm-read.marker", int(prefix), target);
+            const int markerFd = ::open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+            if (markerFd >= 0) ::close(markerFd);
+        }
     }
     return actual(fd, buffer, count);
 }

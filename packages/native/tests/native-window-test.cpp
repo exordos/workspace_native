@@ -15247,8 +15247,13 @@ mv -Tf "$root/.current-new" "$root/current"
             QFile atConfirm(shown); QVERIFY(atConfirm.open(QIODevice::ReadOnly)); QCOMPARE(atConfirm.readAll(), QByteArray("replacement-synthetic")); atConfirm.close();
             const int before = uploads;
             confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); click(window, confirm);
-            QTRY_COMPARE(uploads, before + 1); QVERIFY(uploadedBody.contains("initial-synthetic")); QVERIFY(!uploadedBody.contains("replacement-synthetic"));
-            QTRY_VERIFY(!controller.fileBusy()); controller.removeUpload(controller.uploadEntries().first().toMap().value("id").toString());
+            QTRY_VERIFY(!controller.clipboardFilesPreparing());
+            if (symlink) {
+                QTRY_COMPARE(uploads, before + 1); QVERIFY(uploadedBody.contains("initial-synthetic")); QVERIFY(!uploadedBody.contains("replacement-synthetic"));
+                QTRY_VERIFY(!controller.fileBusy()); controller.removeUpload(controller.uploadEntries().first().toMap().value("id").toString());
+            } else {
+                QCOMPARE(uploads, before); QVERIFY(!controller.error().isEmpty());
+            }
         }
         auto *fresh = new QMimeData; fresh->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(fresh);
         composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
@@ -15256,7 +15261,86 @@ mv -Tf "$root/.current-new" "$root/current"
         session.logout(); QTRY_VERIFY(!dialog->property("visible").toBool());
         otherOwner = true; session.login(fixture.server.origin(), "other", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
-        QTRY_COMPARE(session.user(), channelPeer); QCOMPARE(uploads, 4); QVERIFY(!dialog->property("visible").toBool());
+        QTRY_COMPARE(session.user(), channelPeer); QCOMPARE(uploads, 2); QVERIFY(!dialog->property("visible").toBool());
+    }
+
+    void confirmedSlowClipboardCopyRemainsVisibleAndCancellable()
+    {
+        if (!qEnvironmentVariableIsSet("CASSI_SLOW_CLIPBOARD_TEST")) QSKIP("Run by native-clipboard-slow-ui with controlled slow input");
+        WindowChannelFixture fixture; fixture.sourceScene = true; const auto fallback = fixture.server.handler;
+        int uploads = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) { ++uploads; return Response{QJsonObject{}, 503}; }
+            return fallback(request);
+        };
+        QTemporaryDir directory; const auto path = directory.filePath("cassi-slow-synthetic.bin"); QFile input(path);
+        QVERIFY(input.open(QIODevice::WriteOnly)); QVERIFY(input.resize(1024 * 1024)); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), clipboard, old] {
+            clipboard->setMimeData(old);
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Slow clipboard window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Preserved draft");
+        auto *mime = new QMimeData; mime->setUrls({QUrl::fromLocalFile(path)}); clipboard->setMimeData(mime);
+        auto *composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        auto *dialog = window->findChild<QObject *>("clipboardFilesDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("visible").toBool());
+        auto *confirm = visibleItem(window->contentItem(), "clipboardFilesConfirm"); QVERIFY(confirm); QTRY_VERIFY(confirm->isEnabled()); click(window, confirm);
+        QTRY_VERIFY(controller.clipboardFilesPreparing());
+        QVERIFY2(dialog->property("visible").toBool(), "The slow preparation has no visible progress or cancel control");
+        QVERIFY(hasVisibleText(window->contentItem(), QStringLiteral("Preparing files…")));
+        QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_VERIFY(!controller.clipboardFilesPreparing()); QTest::qWait(500);
+        QCOMPARE(uploads, 0); QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(controller.canSend());
+        auto *send = visibleItem(window->contentItem(), "sendButton"); QVERIFY(send); QTRY_VERIFY(send->isEnabled());
+    }
+
+    void rejectedClipboardFilesDoNotPasteTheirText()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true; const auto fallback = fixture.server.handler;
+        int uploads = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/files/")) { ++uploads; return Response{QJsonObject{}, 503}; }
+            return fallback(request);
+        };
+        QTemporaryDir directory; const auto path = directory.filePath("synthetic.txt"); QFile input(path);
+        QVERIFY(input.open(QIODevice::WriteOnly)); input.write("synthetic"); input.close();
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto *clipboard = QGuiApplication::clipboard(); auto *old = new QMimeData;
+        if (const auto *previous = clipboard->mimeData()) for (const auto &format : previous->formats()) old->setData(format, previous->data(format));
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), clipboard, old] {
+            clipboard->setMimeData(old);
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Clipboard rejection window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); controller.selectTopic(topicId);
+        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Protected draft");
+        QList<QUrl> urls; for (int i = 0; i < 101; ++i) urls.append(QUrl::fromLocalFile(path));
+        auto *mixed = new QMimeData; mixed->setUrls(urls); mixed->setText("clipboard sentinel"); clipboard->setMimeData(mixed);
+        auto *composer = visibleItem(window->contentItem(), "messageComposer"); QVERIFY(composer); click(window, composer);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QTRY_VERIFY(!controller.error().isEmpty()); QTest::qWait(200);
+        QCOMPARE(controller.draft(), QString("Protected draft")); QCOMPARE(uploads, 0);
     }
 
     void composerAcceptsClipboardImagesAndFileDrops_data()

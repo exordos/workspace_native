@@ -1,6 +1,7 @@
 #pragma once
 
 #include "media-viewer.h"
+#include "clipboard-file-identity.h"
 
 #include "api-client.h"
 #include "domain.h"
@@ -719,9 +720,11 @@ public:
     Q_INVOKABLE bool pasteAttachments();
     Q_PROPERTY(bool clipboardFilesPreparing READ clipboardFilesPreparing NOTIFY stateChanged)
     Q_PROPERTY(QVariantList clipboardFilesPreview READ clipboardFilesPreview NOTIFY stateChanged)
-    Q_INVOKABLE bool prepareClipboardFiles();
+    // 0 = no local files, 1 = preparing preview, 2 = files rejected with an error.
+    Q_INVOKABLE int prepareClipboardFiles();
     Q_INVOKABLE void attachClipboardFiles();
     Q_INVOKABLE void cancelClipboardFiles();
+    Q_INVOKABLE void dismissClipboardFiles();
     bool clipboardFilesPreparing() const { return m_clipboardFilesPreparing; }
     QVariantList clipboardFilesPreview() const { return m_clipboardFilesPreview; }
     Q_INVOKABLE void removeUpload(const QString &id);
@@ -1929,7 +1932,8 @@ private:
     QSet<QString> m_pendingPollCreations; // Dialog submission tokens, never canonical UUIDs
     QHash<QString, int> m_pendingUploads;
     struct ClipboardSnapshot {
-        QString name;
+        QString requested, canonical, name;
+        ClipboardFileIdentity identity;
         std::shared_ptr<QTemporaryFile> file;
     };
     QList<UploadEntry> m_uploadEntries;
@@ -1938,6 +1942,7 @@ private:
     std::shared_ptr<std::atomic_bool> m_clipboardSnapshotCancel;
     QString m_clipboardOwner, m_clipboardStream, m_clipboardTopic, m_clipboardEdit;
     bool m_clipboardFilesPreparing = false;
+    bool m_clipboardFilesAccepted = false;
     QString m_inlineDraft, m_inlineDraftRoute, m_inlineDraftOwner;
     QHash<QString, QString> m_attachmentNotices;
     QString m_stream;
