@@ -552,13 +552,13 @@ public:
         };
     }
 
-    bool start(const QUrl &origin = {})
+    bool start(const QUrl &origin = {}, int expectedStreams = 1)
     {
         controller.login((origin.isEmpty() ? server.origin() : origin).toString(), "synthetic-user", "synthetic-password", "");
         if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000))
             return false;
         controller.openProject(projectId);
-        if (!QTest::qWaitFor([this] { return controller.streams().size() == 1; }, 2000))
+        if (!QTest::qWaitFor([this, expectedStreams] { return controller.streams().size() == expectedStreams; }, 2000))
             return false;
         controller.selectStream(streamId);
         if (!QTest::qWaitFor([this] { return !controller.topics().isEmpty(); }, 2000))
@@ -25706,6 +25706,21 @@ private slots:
         return dto;
     }
 
+    // Review round 2 (cid 4586649206): the forward destination is resolved
+    // against the stream catalog, so a test that forwards into a dedicated
+    // target channel must ship that channel in the catalog alongside the
+    // default unencrypted stream.
+    static void catalogTargetStream(Fixture &fixture, const QString &targetStream)
+    {
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", targetStream}, {"project_id", projectId},
+                    {"name", "Target channel"}, {"encryption", false}}}};
+        };
+    }
+
     void forwardMessagesCollapsesDuplicateSourcesInOneBatch()
     {
         Fixture fixture;
@@ -25714,6 +25729,7 @@ private slots:
         const QString sourceB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
         QStringList forwardUuidParams;
         int posts = 0;
         QJsonObject postedBody;
@@ -25745,7 +25761,7 @@ private slots:
                 return Response{forwardEchoDto(postedBody, echoUuid)};
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start());
+        QVERIFY(fixture.start({}, 2));
         QVERIFY(fixture.controller.canForwardMessages());
         // One source repeated, one blank entry and one fresh source: the batch
         // must forward each distinct source exactly once (uniqueForwardMessageUuids).
@@ -25777,6 +25793,7 @@ private slots:
         const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         int posts = 0;
         int checkGets = 0;
+        catalogTargetStream(fixture, targetStream);
         bool serverKept = false;
         QJsonObject postedBody;
         QString echoUuid;
@@ -25801,7 +25818,7 @@ private slots:
             }
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start());
+        QVERIFY(fixture.start({}, 2));
         fixture.controller.forwardMessages({sourceA, sourceA}, targetStream, targetTopic);
         // The ambiguous POST stays unconfirmed and is never repeated.
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.forwardPending()
@@ -25850,6 +25867,7 @@ private slots:
         const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
         int posts = 0;
         bool serverKept = false;
         QJsonObject postedBody;
@@ -25873,7 +25891,7 @@ private slots:
             }
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start());
+        QVERIFY(fixture.start({}, 2));
         QVERIFY(!fixture.controller.forwardPending());
         QVERIFY(!fixture.controller.forwardAwaitingCheck());
         QVERIFY(fixture.controller.forwardError().isEmpty());
@@ -25992,6 +26010,79 @@ private slots:
         QVERIFY(fixture.controller.error().contains("encrypted"));
     }
 
+    // Review round 2 (cid 4586649206): the encrypted guard may not be a scan
+    // for a *matching* encrypted row - a destination stream uuid that is
+    // absent from the loaded stream catalog (stale or incomplete catalog, or
+    // a direct controller call) cannot be proven unencrypted, so it must be
+    // refused with a visible error before any source fetch or POST.
+    void forwardMessagesRefusesDestinationAbsentFromStreamCatalog()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString encryptedStream = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        const QString unknownStream = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        const QString sourceA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        int posts = 0;
+        int sourceGets = 0;
+        QJsonObject postedBody;
+        QString echoUuid;
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", encryptedStream}, {"project_id", projectId},
+                    {"name", "Encrypted channel"}, {"encryption", true}}}};
+        };
+        fixture.messages = [&](const Request &request) {
+            const auto query = QUrlQuery(request.target);
+            if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid"))) {
+                ++sourceGets;
+                return Response{QJsonArray{message("First source", sourceA)}};
+            }
+            if (request.method == "POST") {
+                ++posts;
+                postedBody = request.body;
+                echoUuid = QUuid::createUuidV5(QUuid(postedBody.value("topic_uuid").toString()),
+                    postedBody.value("uuid").toString().toUtf8()).toString(QUuid::WithoutBraces);
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            }
+            if (request.method == "GET" && !echoUuid.isEmpty()
+                && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid)
+                return Response{forwardEchoDto(postedBody, echoUuid)};
+            return Response{QJsonArray{}};
+        };
+        // The fixture start helper waits for a single-stream catalog, so the
+        // two-stream scene is booted with the same steps inline.
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.projects().size() == 1, 2000);
+        fixture.controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.streams().size() == 2, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.busy(), 2000);
+        QVERIFY(fixture.controller.canForwardMessages());
+        // A destination that is not in the catalog cannot be proven to be an
+        // unencrypted chat: it is refused outright - no source fetch, no POST,
+        // and the reason reaches the forward alert channel the modal shows.
+        fixture.controller.forwardMessages({sourceA}, unknownStream, targetTopic);
+        QTest::qWait(300);
+        QCOMPARE(posts, 0);
+        QCOMPARE(sourceGets, 0);
+        QVERIFY(!fixture.controller.forwardPending());
+        QVERIFY(fixture.controller.forwardError().contains("unknown destination"));
+        QVERIFY(fixture.controller.error().contains("unknown destination"));
+        // The round 1 guard for a known encrypted stream is still in force.
+        fixture.controller.forwardMessages({sourceA}, encryptedStream, targetTopic);
+        QTest::qWait(300);
+        QCOMPARE(posts, 0);
+        QVERIFY(fixture.controller.forwardError().contains("encrypted"));
+        // A known unencrypted catalog destination still forwards normally.
+        fixture.controller.forwardMessages({sourceA}, streamId, targetTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QCOMPARE(posts, 1);
+        QVERIFY(fixture.controller.error().isEmpty());
+    }
+
     // Review round 1, finding 2 (cid 4586012796): an unconfirmed (pending)
     // forward must block a new batch (a second begin would replace the
     // retained identity and strand the first ambiguous POST without its
@@ -26004,6 +26095,7 @@ private slots:
         const QString sourceB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
         int posts = 0;
         bool serverKept = false;
         QJsonObject postedBody;
@@ -26032,7 +26124,7 @@ private slots:
                                   : Response{QJsonObject{}, 404, 0, {}};
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start());
+        QVERIFY(fixture.start({}, 2));
         fixture.controller.forwardMessages({sourceA}, targetStream, targetTopic);
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.forwardPending()
             && fixture.controller.forwardAwaitingCheck(), 3000);
@@ -26113,6 +26205,7 @@ private slots:
         const QString sourceB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
         int posts = 0;
         fixture.messages = [&](const Request &request) {
             const auto query = QUrlQuery(request.target);
@@ -26133,7 +26226,7 @@ private slots:
             }
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start());
+        QVERIFY(fixture.start({}, 2));
         fixture.controller.forwardMessages({sourceA, sourceB}, targetStream, targetTopic);
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.error().contains("Only text"), 3000);
         // The mixed batch never reaches the network: no snapshot without the
