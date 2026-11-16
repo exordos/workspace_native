@@ -26231,6 +26231,109 @@ private slots:
         QVERIFY(probe);
         QVERIFY(avatarProbeHasVisibleLock(probe));
     }
+    // Issue #177 (reference 61dacef7): the direct header avatar swaps the
+    // presence dot for a block badge. avatar.tsx:20-23 positions the badge
+    // with bottom/right calc(14.65%-7px): the same 14.65 percent inset center
+    // as the presence dot, 18px total (14px glyph + 2px ring, presence-
+    // indicator.tsx:40-50). role=status, name t('dm.partnerBlocked') =
+    // "Account deactivated" / "Пользователь заблокирован" (en.json:898,
+    // ru.json:906).
+    void deactivatedDirectPartnerShowsBlockBadge_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en")<<QString("en");
+        QTest::newRow("ru")<<QString("ru");
+    }
+
+    void deactivatedDirectPartnerShowsBlockBadge()
+    {
+        QFETCH(QString, locale);
+        const QString label=locale==QString("ru")
+            ?QString::fromUtf8("Пользователь заблокирован"):QString("Account deactivated");
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"account_deactivated",true},
+                {"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("deactivated.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Deactivated badge window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1200,800);QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);
+        preferences.setLocale(locale);preferences.setMode("light");
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());
+        QTRY_VERIFY(!controller.busy());
+        // Projection: the directory fact reaches the header data source while
+        // presence itself stays projected, so the dot must be suppressed by
+        // deactivation, not by missing presence data.
+        QTRY_COMPARE(controller.directPeer().value("presence").toString(),QString("active"));
+        QVERIFY(controller.directPeer().value("accountDeactivated").toBool());
+        // The swap mirrors PresenceIndicator: no presence fill, one status badge.
+        QTRY_VERIFY(visibleItem("deactivated-direct-header"));
+        QTRY_VERIFY(!visibleItem("presence-direct-header"));
+        auto *badge=visibleItem("deactivated-direct-header");
+        const auto face=badge->parentItem();
+        QCOMPARE(face->width(),qreal(40));QCOMPARE(face->height(),qreal(40));
+        // 18px total with the same 14.65 percent inset center as PresenceBadge
+        // (a 12px box at .8535*size-6 centers on .8535*size).
+        QCOMPARE(badge->size(),QSizeF(18,18));
+        QCOMPARE(badge->position(),QPointF(face->width()*0.8535-9,face->height()*0.8535-9));
+        QVERIFY(!badge->activeFocusOnTab());
+        auto *fill=item(badge,"deactivated-fill");QVERIFY(fill);
+        QCOMPARE(fill->size(),QSizeF(14,14));QCOMPARE(fill->position(),QPointF(2,2));
+        // blue-cold light: ring bg #e4ecf3, inner card-bg #eef5fb, glyph text-muted #989898.
+        QCOMPARE(fill->property("color").value<QColor>(),QColor("#eef5fb"));
+        auto *ring=item(badge,"deactivated-ring");QVERIFY(ring);
+        QCOMPARE(ring->property("color").value<QColor>(),QColor("#e4ecf3"));
+        auto *glyph=item(badge,"deactivated-glyph");QVERIFY(glyph);
+        QCOMPARE(glyph->size(),QSizeF(14,14));QCOMPARE(glyph->position(),QPointF(2,2));
+        QCOMPARE(QQmlProperty(glyph,"icon.color").read().value<QColor>(),QColor("#989898"));
+        QVERIFY(QQmlProperty(glyph,"icon.source").read().toString().endsWith("block.svg"));
+        // Stable interior: the 2px bg ring at radius 8 on both sides (the
+        // card-bg band between glyph and disc edge is ~1px wide at 1x and is
+        // asserted through properties instead).
+        const auto pixels=window->grabWindow();QVERIFY(!pixels.isNull());
+        const auto sample=[&](QPointF local) {
+            const auto point=badge->mapToScene(local)*window->devicePixelRatio();
+            return pixels.pixelColor(QPoint(qFloor(point.x()),qFloor(point.y())));
+        };
+        const auto close=[](const QColor &actual,const QColor &expected) {
+            return qAbs(actual.red()-expected.red())<=3&&qAbs(actual.green()-expected.green())<=3
+                &&qAbs(actual.blue()-expected.blue())<=3;
+        };
+        QTRY_VERIFY(close(sample({1,9}),QColor("#e4ecf3"))&&close(sample({17,9}),QColor("#e4ecf3")));
+        // Accessible name is the localized dm.partnerBlocked string.
+        auto *accessible=QAccessible::queryAccessibleInterface(badge);QVERIFY(accessible);
+        QCOMPARE(accessible->role(),QAccessible::StatusBar);
+        QCOMPARE(accessible->text(QAccessible::Name),label);
+        // Caption replaces the presence caption like resolveDmStatusText.
+        QTRY_VERIFY(visibleItem("directPresenceStatus"));
+        QTRY_COMPARE(visibleItem("directPresenceStatus")->property("text").toString(),label);
+        // A name-less/unknown projection never shows the badge: removing the
+        // fact (ordinary partner row) restores the plain presence dot.
+        auto restored=fixture.users[1].toObject();restored.remove("account_deactivated");
+        restored["updated_at"]=QDateTime::fromString("2026-01-02T10:05:00Z",Qt::ISODate).toString(Qt::ISODate);
+        fixture.users[1]=restored;controller.refresh();
+        QTRY_VERIFY(!visibleItem("deactivated-direct-header"));
+        QTRY_VERIFY(visibleItem("presence-direct-header"));
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {
