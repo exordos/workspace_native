@@ -1,11 +1,17 @@
 #include "realtime-client.h"
+#include "native-realtime-cursor-store.h"
 #include "mock-server.h"
 
+#include <QDir>
 #include <QJsonDocument>
 #include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QWebSocket>
 #include <QWebSocketServer>
+#include <optional>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -485,6 +491,268 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(attempts.size(), 3, 6000);
         QVERIFY(attempts.at(1) - attempts.at(0) >= 800);
         QVERIFY(attempts.at(2) - attempts.at(1) >= 1700);
+    }
+
+    // Issue #15: durable realtime cursors (docs/NATIVE_DESKTOP_DURABLE_REALTIME_CURSORS.md)
+
+    void persistedCursorAdvancesAndFreshClientResumesFromIt()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        // The coalesced write lands within the throttle window after the ack.
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        const auto persisted = store.read(key);
+        QVERIFY(persisted.has_value());
+        QCOMPARE(persisted->generation, QString("generation-a"));
+        QCOMPARE(persisted->epoch, quint64(12));
+        // A fresh instance (the process-restart case) restores the durable
+        // cursor into the realtime socket URL on its next connect.
+        fixture.client.stop();
+        RealtimeClient resumed(&fixture.api, &fixture.session);
+        resumed.useCursorStore(&store);
+        resumed.start();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        const auto socket = fixture.sockets.last();
+        QVERIFY(socket);
+        const QUrlQuery cursor(socket->requestUrl());
+        QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("12"));
+        QCOMPARE(cursor.queryItemValue("epoch_generation"), QString("generation-a"));
+        QCOMPARE(resumed.acknowledgedEpoch(), quint64(12));
+        resumed.stop();
+    }
+
+    void sameOwnerReconnectResumesFromPersistedCursorWithoutBaseline()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        fixture.client.stop();
+        const auto epochRequestsBefore = std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
+            [](const Request &request) { return request.target.path().endsWith("/epoch/"); });
+        RealtimeClient resumed(&fixture.api, &fixture.session);
+        resumed.useCursorStore(&store);
+        QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
+        resumed.start();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        // No epoch endpoint round-trip and no snapshot: the persisted cursor
+        // resumed the REST catch-up directly at the acknowledged epoch.
+        QCOMPARE(std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
+                   [](const Request &request) { return request.target.path().endsWith("/epoch/"); }),
+                 epochRequestsBefore);
+        QCOMPARE(snapshots.size(), qsizetype(0));
+        const auto lastEvents = std::find_if(fixture.requests.crbegin(), fixture.requests.crend(),
+            [](const Request &request) { return request.target.path().endsWith("/events/"); });
+        QVERIFY(lastEvents != fixture.requests.crend());
+        QCOMPARE(QUrlQuery(lastEvents->target).queryItemValue("epoch_version>"), QString("12"));
+        const QUrlQuery cursor(fixture.sockets.last()->requestUrl());
+        QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("12"));
+        resumed.stop();
+    }
+
+    void cursorExpiredAfterRestartResynchronizesAndReplacesPersistedCursor()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        fixture.client.stop();
+        // The server pruned generation-a while the client was away: the stale
+        // restored cursor is rejected through the existing resynchronize path.
+        fixture.epochGeneration = "generation-b";
+        fixture.baselineEpoch = 30;
+        fixture.events.clear();
+        fixture.eventsHandler = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("epoch_generation") != fixture.epochGeneration)
+                return Response{pruned(fixture.epochGeneration), 410, 0, {}};
+            return Response{QJsonArray{}, 200, 0, {}};
+        };
+        RealtimeClient resumed(&fixture.api, &fixture.session);
+        resumed.useCursorStore(&store);
+        QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
+        resumed.start();
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        // The pruned row was deleted: a restart before the snapshot ack now
+        // finds no cursor instead of resending the pruned one.
+        QVERIFY(!store.read(key).has_value());
+        resumed.acknowledgeSnapshot();
+        // The post-resync cursor replaces the persisted one after the fresh
+        // snapshot is acknowledged.
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        const auto replaced = store.read(key);
+        QVERIFY(replaced.has_value());
+        QCOMPARE(replaced->generation, QString("generation-b"));
+        QCOMPARE(replaced->epoch, quint64(30));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        const QUrlQuery cursor(fixture.sockets.last()->requestUrl());
+        QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("30"));
+        QCOMPARE(cursor.queryItemValue("epoch_generation"), QString("generation-b"));
+        resumed.stop();
+    }
+
+    void signOutClearsPersistedCursorAndNextConnectStartsClean()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        fixture.events.clear();
+        fixture.session.logout();
+        // The signed-out owner's position must not survive anywhere.
+        QVERIFY(!store.read(key).has_value());
+        // The next connect cannot resume it: fresh baseline plus snapshot,
+        // and the socket carries the new baseline position, never 12.
+        QVERIFY(fixture.login());
+        QTRY_COMPARE(fixture.snapshots, 2);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(10));
+        const QUrlQuery cursor(fixture.sockets.last()->requestUrl());
+        QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("10"));
+    }
+
+    void durableCursorStoreIsOwnerScopedMonotonicAndValidating()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        const auto ownerA = RealtimeCursorStore::ownerKey(QUrl("https://owner-a.test"), projectId, userId);
+        const auto ownerB = RealtimeCursorStore::ownerKey(QUrl("https://owner-b.test"), projectId, userId);
+        QVERIFY(ownerA != ownerB);
+        QVERIFY(store.save(ownerA, {QStringLiteral("generation-a"), 7}));
+        QVERIFY(store.save(ownerB, {QStringLiteral("generation-b"), 9}));
+        const auto fromA = store.read(ownerA);
+        QVERIFY(fromA.has_value());
+        QCOMPARE(fromA->generation, QString("generation-a"));
+        QCOMPARE(fromA->epoch, quint64(7));
+        // Same-generation writes only ever advance the cursor.
+        QVERIFY(store.save(ownerA, {QStringLiteral("generation-a"), 5}));
+        QCOMPARE(store.read(ownerA)->epoch, quint64(7));
+        QVERIFY(store.save(ownerA, {QStringLiteral("generation-a"), 11}));
+        QCOMPARE(store.read(ownerA)->epoch, quint64(11));
+        // A replacement generation (post-resync) is accepted after a prune.
+        QVERIFY(store.save(ownerA, {QStringLiteral("generation-c"), 2}));
+        QCOMPARE(store.read(ownerA)->generation, QString("generation-c"));
+        // Wipes stay owner-scoped: clearing A never touches B.
+        QVERIFY(store.clear(ownerA));
+        QVERIFY(!store.read(ownerA).has_value());
+        const auto fromB = store.read(ownerB);
+        QVERIFY(fromB.has_value());
+        QCOMPARE(fromB->generation, QString("generation-b"));
+        // Malformed keys and values never round-trip.
+        QVERIFY(!store.read(QStringLiteral("not-an-owner-hash")).has_value());
+        QVERIFY(!store.save(QStringLiteral("not-an-owner-hash"), {QStringLiteral("generation-a"), 1}));
+        QVERIFY(!store.save(ownerA, {QString(), 1}));
+        QVERIFY(!store.save(ownerA, {QString(2000, QLatin1Char('g')), 1}));
+        QVERIFY(!store.save(ownerA, {QStringLiteral("generation-d"), 9007199254740992ULL}));
+        QVERIFY(!store.read(ownerA).has_value());
+    }
+
+    void missingOrCorruptDurableCursorFallsBackToCleanConnect()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto databasePath = QDir(directory.path()).filePath(QStringLiteral("realtime_cursors.sqlite3"));
+        const auto owner = RealtimeCursorStore::ownerKey(QUrl("https://owner.test"), projectId, userId);
+        {
+            RealtimeCursorStore empty(directory.path());
+            QVERIFY(!empty.read(owner).has_value());
+        }
+        // A row tampered into an invalid shape reads back as no cursor and is
+        // discarded, so a later connect can re-persist cleanly.
+        {
+            RealtimeCursorStore store(directory.path());
+            QVERIFY(store.save(owner, {QStringLiteral("generation-a"), 12}));
+        }
+        {
+            auto tamper = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("realtime-cursor-tamper"));
+            tamper.setDatabaseName(databasePath);
+            QVERIFY(tamper.open());
+            QSqlQuery query(tamper);
+            QVERIFY(query.exec(QStringLiteral("UPDATE realtime_cursors SET epoch_version = CAST('x' AS TEXT)")));
+            tamper.close();
+            QSqlDatabase::removeDatabase(QStringLiteral("realtime-cursor-tamper"));
+        }
+        {
+            RealtimeCursorStore store(directory.path());
+            QVERIFY(!store.read(owner).has_value());
+            QVERIFY(store.save(owner, {QStringLiteral("generation-a"), 13}));
+            const auto rewritten = store.read(owner);
+            QVERIFY(rewritten.has_value());
+            QCOMPARE(rewritten->epoch, quint64(13));
+        }
+        // An unreadable database file never blocks the socket: the client
+        // takes the untouched baseline path with no regression.
+        QFile::remove(databasePath);
+        QFile garbage(databasePath);
+        QVERIFY(garbage.open(QIODevice::WriteOnly));
+        garbage.write(QByteArray(4096, 'x'));
+        garbage.close();
+        RealtimeCursorStore corrupted(directory.path());
+        QVERIFY(!corrupted.available());
+        QVERIFY(!corrupted.read(owner).has_value());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&corrupted);
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.snapshots, 1);
+        fixture.client.acknowledgeSnapshot();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 1, 3000);
+        QVERIFY(fixture.sockets.first()->requestUrl().toString().contains("last_epoch_version=10"));
+        QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(10));
     }
 };
 
