@@ -5382,6 +5382,109 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!controller.feedVisible());
     }
 
+    // Issue #355: the Feed page is a content page. While it is open the
+    // conversation header, message list and composer must all be hidden and
+    // the Feed must own the central content area, both at a normal window width
+    // and at the minimum supported one (Main.qml minimumWidth: 700). Opening a
+    // Feed row returns the normal conversation layout.
+    void feedPageHidesConversationAndOwnsContentWidth()
+    {
+        WindowFeedFixture fixture;
+        fixture.rows = {{1, fixture.one(1)}, {2, fixture.one(2)}, {3, fixture.one(3)}};
+        const QString firstId = fixture.one(1).value("uuid").toString();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        // Hidden panels must stay findable, so search by object name only.
+        std::function<QQuickItem *(QQuickItem *, const QString &)> walk
+            = [&](QQuickItem *root, const QString &name) -> QQuickItem * {
+                if (root->objectName() == name) return root;
+                for (auto *child : root->childItems())
+                    if (auto *found = walk(child, name)) return found;
+                return nullptr;
+            };
+        const auto named = [&](const QString &name) { return walk(window->contentItem(), name); };
+        const QStringList panels{"conversationPanel", "conversationHeader", "messageList",
+            "messageComposer"};
+        // A normal conversation keeps all three surfaces on screen.
+        for (const auto &name : panels) {
+            auto *item = named(name); QVERIFY2(item, qPrintable(name));
+            QVERIFY2(item->isVisible(), qPrintable(name));
+            QVERIFY2(item->width() > 0, qPrintable(name));
+        }
+        auto *panel = named("conversationPanel"); QVERIFY(panel);
+        auto *workspace = panel->parentItem(); QVERIFY(workspace);
+        const auto contentWidthBefore = panel->width();
+        const auto contentLeftBefore = panel->mapToItem(workspace, QPointF(0, 0)).x();
+        QVERIFY(contentWidthBefore > 0);
+        const auto link = QString("ew://open/org/%1/project/%2/feed")
+            .arg(workspace::orgRouteIdFromOrigin(fixture.server.origin()), projectId);
+        controller.openMessageLink(link);
+        QTRY_VERIFY(controller.feedVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + firstId) != nullptr, 5000);
+        // Feed owns the central content area: all three conversation surfaces
+        // are hidden (a skipped Layout child keeps its last width, so the
+        // visible-footprint contract is proven by the Feed geometry below),
+        // the Feed fills the space the conversation used to have, and it starts
+        // at the same left edge - no second message surface beside it.
+        const auto assertFeedOwnsContentArea = [&](qreal contentWidth, qreal contentLeft,
+                                                   qreal minimumFeedWidth) {
+            for (const auto &name : panels) {
+                auto *hidden = named(name); QVERIFY2(hidden, qPrintable(name));
+                QVERIFY2(!hidden->isVisible(),
+                    qPrintable(name + QStringLiteral(" stayed visible while Feed is open")));
+            }
+            auto *feed = named("nativeFeedPage"); QVERIFY(feed);
+            QVERIFY2(feed->isVisible(), "the Feed page is not visible");
+            QVERIFY2(workspace->width() > 0, "the workspace has no width");
+            QVERIFY2(feed->width() >= contentWidth - 8,
+                qPrintable(QStringLiteral("feed %1 vs conversation %2")
+                    .arg(feed->width()).arg(contentWidth)));
+            QVERIFY2(feed->width() >= minimumFeedWidth,
+                qPrintable(QStringLiteral("feed width %1").arg(feed->width())));
+            const auto feedLeft = feed->mapToItem(workspace, QPointF(0, 0)).x();
+            QVERIFY2(qAbs(feedLeft - contentLeft) < 8,
+                qPrintable(QStringLiteral("feed left %1 vs conversation left %2")
+                    .arg(feedLeft).arg(contentLeft)));
+        };
+        assertFeedOwnsContentArea(contentWidthBefore, contentLeftBefore, 600);
+        // The same contract at the minimum supported window width: measure the
+        // content area again with the conversation back on screen, then reopen.
+        click(window, view("feedCloseButton"));
+        QVERIFY(!controller.feedVisible());
+        window->resize(700, 600);
+        QTRY_COMPARE_WITH_TIMEOUT(window->width(), 700, 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(named("conversationPanel")->isVisible()
+            && named("messageComposer")->isVisible(), 4000);
+        const auto minWidth = named("conversationPanel")->width();
+        const auto minLeft = named("conversationPanel")->mapToItem(workspace, QPointF(0, 0)).x();
+        QVERIFY(minWidth > 0);
+        controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(controller.feedVisible()
+            && !named("conversationPanel")->isVisible(), 4000);
+        assertFeedOwnsContentArea(minWidth, minLeft, 300);
+        // Opening a Feed row returns the conversation layout (open-in-chat).
+        window->resize(1440, 900);
+        QTRY_COMPARE_WITH_TIMEOUT(window->width(), 1440, 4000);
+        click(window, view("feed-open-" + firstId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.feedVisible()
+            && controller.selectedTopic() == secondTopicId, 5000);
+        for (const auto &name : panels) {
+            auto *item = named(name); QVERIFY2(item, qPrintable(name));
+            QVERIFY2(item->isVisible(), qPrintable(name));
+            QVERIFY2(item->width() > 0, qPrintable(name));
+        }
+    }
+
     void feedPageTopPaginationAnchorsAndDoesNotDoubleRequest()
     {
         WindowFeedFixture fixture;

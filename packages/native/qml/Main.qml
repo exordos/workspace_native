@@ -3363,8 +3363,16 @@ ApplicationWindow {
 
         ColumnLayout {
             id: conversation
+            objectName: "conversationPanel"
+            // Issue #355: the workspace has exactly one visible content page.
+            // The Feed page is a sibling fillWidth child, so it must take part
+            // in this expression: while Feed is open the conversation header,
+            // message list and composer are hidden (their shared visibility
+            // gates then suspend visible-message read reporting and keyboard
+            // interaction, docs/NATIVE_DESKTOP_FEED.md).
             visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
-                && !root.controller.inboxVisible && root.controller.section === "chat"
+                && !root.controller.inboxVisible && !root.controller.feedVisible
+                && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
