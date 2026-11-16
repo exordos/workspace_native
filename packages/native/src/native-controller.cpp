@@ -6206,6 +6206,43 @@ void NativeController::closeOtherContentPages(ContentPage keep)
         closeMentions();
     if (keep != ContentPage::Inbox)
         closeInbox();
+    if (keep != ContentPage::Mail)
+        resetChatSection(); // callers emit stateChanged()
+}
+
+// Chat is the home section: entering a chat page or navigating to a
+// conversation leaves Mail (issue #35).
+void NativeController::resetChatSection()
+{
+    if (m_section == QLatin1String("chat"))
+        return;
+    m_section = QStringLiteral("chat");
+    emit stateChanged();
+}
+
+void NativeController::showSection(const QString &name)
+{
+    if (!authenticated())
+        return;
+    if (name == QLatin1String("mail"))
+    {
+        closeOtherContentPages(ContentPage::Mail);
+        m_section = QStringLiteral("mail");
+        emit stateChanged();
+    }
+    else if (name == QLatin1String("chat"))
+    {
+        // The Chat button is the section home: the reference route to "/"
+        // leaves drafts, mentions, inbox and mail alike.
+        closeOtherContentPages(ContentPage::Mail);
+        if (m_section != QLatin1String("chat"))
+        {
+            m_section = QStringLiteral("chat");
+            emit stateChanged();
+        }
+    }
+    // Unknown sections (calendar today, calls/services later) are ignored
+    // until the client can render them.
 }
 
 void NativeController::showMentions()
@@ -10675,6 +10712,7 @@ QString NativeController::selectedFolder() const
 
 void NativeController::selectFolder(const QString &key)
 {
+    resetChatSection(); // folder switching is chat navigation (issue #35)
     for (const auto &row : m_folders)
     {
         if (row.key != key && row.uuid != key) continue;
@@ -12062,6 +12100,7 @@ void NativeController::reloadSnapshot()
 
 void NativeController::selectStream(const QString &id)
 {
+    resetChatSection(); // a conversation is chat section navigation (issue #35)
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
@@ -12453,6 +12492,7 @@ void NativeController::requestTopicMetadata(const QString &topicUuid)
 
 void NativeController::selectTopic(const QString &id)
 {
+    resetChatSection(); // a conversation is chat section navigation (issue #35)
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
