@@ -2,6 +2,7 @@
 #include "native-updater-taskbar.h"
 
 #include <QCryptographicHash>
+#include <QDBusConnection>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -22,6 +23,7 @@
 #include <QTest>
 #include <QWindow>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -110,7 +112,11 @@ struct Environment final {
     explicit Environment(QByteArray name, const QByteArray &value)
         : name(std::move(name)), value(qgetenv(this->name.constData())), existed(qEnvironmentVariableIsSet(this->name.constData()))
     { qputenv(this->name.constData(), value); }
-    ~Environment() { if (existed) qputenv(name.constData(), value); else qunsetenv(name.constData()); }
+    ~Environment()
+    {
+        if (existed) qputenv(name.constData(), value);
+        else qunsetenv(name.constData());
+    }
     QByteArray name;
     QByteArray value;
     bool existed;
@@ -174,6 +180,20 @@ wait "$child"
 }
 }
 
+// A fake desktop launcher: owns the well-known com.canonical.Unity.LauncherEntry
+// bus name that real launchers (Unity7, GNOME Dash-to-Dock, Plank, Latte) own
+// and records every Update(desktop-entry, properties) signal delivered to it.
+class LauncherEntryRecorder final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "com.canonical.Unity.LauncherEntry")
+public:
+    struct Call { QString desktopEntry; QVariantMap properties; };
+    QList<Call> calls;
+public slots:
+    void Update(const QString &desktopEntry, const QVariantMap &properties)
+    { calls.append(Call { desktopEntry, properties }); }
+};
+
 class NativeUpdaterTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -203,6 +223,8 @@ private slots:
     void cancellationAllowsTheInstallerToRemoveItsOwnActiveLock();
     void downloadProgressMirrorsTheTaskbarHint_data();
     void downloadProgressMirrorsTheTaskbarHint();
+    void downloadProgressReachesTheLauncherEntryChannel_data();
+    void downloadProgressReachesTheLauncherEntryChannel();
 };
 
 void NativeUpdaterTest::explicitCheckAndVerifiedStreamingDownload()
@@ -828,6 +850,135 @@ void NativeUpdaterTest::downloadProgressMirrorsTheTaskbarHint()
         QCOMPARE(previous, qreal(1)); // Reached full progress before the clear.
     QVERIFY(!samples.isEmpty());
     QCOMPARE(samples.last().hint, qreal(-1)); // The final outward event cleared.
+}
+
+void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto *mode : {"downloaded", "error", "cancel"})
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+// Reviewer finding 4581288189: a dynamic window property never reaches an OS
+// taskbar. Progress and clear must go over a real desktop channel - the
+// com.canonical.Unity.LauncherEntry.Update session-bus protocol the Unity7,
+// GNOME Dash-to-Dock, Plank and Latte taskbars listen for. This case is the
+// wire-level check: a fake launcher owns the well-known name and records the
+// Update signals themselves, so a property-only sink records nothing and fails.
+// Re-executed under dbus-run-session (the native-controller-test
+// downloadedFileActions pattern) so the fake never shadows a live desktop bus.
+void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
+{
+    QFETCH(QString, mode);
+    if (!qEnvironmentVariableIsSet("CASSI_NATIVE_LAUNCHER_CHILD")) {
+        QProcess child;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("CASSI_NATIVE_LAUNCHER_CHILD", "1");
+        environment.insert("CASSI_NATIVE_LAUNCHER_MODE", mode.toUtf8()); // The child runs only this row.
+        environment.insert("QT_QPA_PLATFORM", "offscreen");
+        child.setProcessEnvironment(environment);
+        child.start("dbus-run-session", { "--", QCoreApplication::applicationFilePath(),
+            QStringLiteral("downloadProgressReachesTheLauncherEntryChannel") });
+        QVERIFY(child.waitForFinished(90000));
+        const auto output = child.readAllStandardOutput() + child.readAllStandardError();
+        QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+        QVERIFY2(child.exitCode() == 0, output.constData());
+        return;
+    }
+    if (qEnvironmentVariableIsSet("CASSI_NATIVE_LAUNCHER_MODE")
+        && mode != qEnvironmentVariable("CASSI_NATIVE_LAUNCHER_MODE"))
+        return;
+    LauncherEntryRecorder launcher;
+    // A second connection to the same private bus: the bus daemon never echoes
+    // a connection's own signals back to it, so the fake launcher listens on
+    // its own connection while the mirror publishes over the session bus.
+    const auto busAddress = qEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS");
+    QVERIFY2(!busAddress.isEmpty(), "dbus-run-session must provide DBUS_SESSION_BUS_ADDRESS");
+    auto launcherBus = QDBusConnection::connectToBus(busAddress, "workspace-native-launcher-entry-test");
+    QVERIFY2(launcherBus.isConnected(), "the fake launcher needs its own bus connection");
+    QVERIFY2(launcherBus.registerService("com.canonical.Unity.LauncherEntry"),
+        "the fake launcher may not already be running on this bus");
+    QVERIFY(launcherBus.registerObject("/com/canonical/Unity/LauncherEntry", &launcher,
+        QDBusConnection::ExportAllSlots));
+    QVERIFY(launcherBus.connect(QString(), QString(),
+        QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
+        &launcher, SLOT(Update(QString, QVariantMap))));
+    auto releaseBus = qScopeGuard([&] {
+        launcherBus.unregisterObject("/com/canonical/Unity/LauncherEntry");
+        launcherBus.unregisterService("com.canonical.Unity.LauncherEntry");
+    }); // The next data row registers its own fake on the same bus.
+
+    Server server;
+    QVERIFY(server.listening);
+    QTemporaryDir cache;
+    QVERIFY(cache.isValid());
+    QPointer<QTcpSocket> binary;
+    const auto chunk = Archive.size() / 4; // Four equal synthetic chunks.
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (request.startsWith("GET /latest ")) { Server::reply(socket, json(server.release())); return; }
+        binary = socket;
+        socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(Archive.size())
+            + "\r\nConnection: close\r\n\r\n" + Archive.left(chunk));
+    };
+    QWindow window;
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), cache.path());
+    UpdaterTaskbarProgress mirror;
+    mirror.attach(&window, &updater);
+    QVERIFY(launcher.calls.isEmpty()); // Nothing published before any updater state.
+    updater.check();
+    QTRY_COMPARE(updater.state(), QStringLiteral("available"));
+    QCOMPARE(launcher.calls.size(), 0); // checking/available publish nothing, like the reference.
+    updater.download();
+    QTRY_COMPARE(server.requests.size(), 2);
+    QTRY_VERIFY(updater.progress() > 0);
+    // At least one bytes-moved frame must have crossed the bus before the
+    // terminal state, so the visible-true trajectory cannot be vacuous.
+    QTRY_VERIFY(std::any_of(launcher.calls.cbegin(), launcher.calls.cend(), [](const LauncherEntryRecorder::Call &call) {
+        return call.properties.value(QStringLiteral("progress-visible")).toBool()
+            && call.properties.value(QStringLiteral("progress")).toDouble() > 0;
+    }));
+    if (mode == QStringLiteral("cancel")) {
+        updater.cancel(); // No Electron counterpart, but a cancelled download must not stick.
+    } else {
+        const auto delivered = mode == QStringLiteral("error") ? 2 * chunk : Archive.size();
+        for (auto offset = chunk; offset < delivered; offset += chunk) {
+            QVERIFY(binary);
+            binary->write(Archive.mid(offset, chunk));
+            QTRY_VERIFY(updater.progress() >= qreal(offset + chunk) / qreal(Archive.size()));
+        }
+        if (binary) binary->disconnectFromHost(); // Early close is an error, complete is downloaded.
+        QTRY_VERIFY(updater.state() == QStringLiteral("downloaded") || updater.state() == QStringLiteral("error"));
+    }
+    QTRY_VERIFY(!launcher.calls.isEmpty()
+        && !launcher.calls.last().properties.value(QStringLiteral("progress-visible")).toBool());
+    if (mode != QStringLiteral("cancel")) QCOMPARE(updater.state(), mode);
+    // Every wire message names the installed desktop entry through the
+    // protocol's application:// app-uri...
+    for (const auto &call : launcher.calls)
+        QCOMPARE(call.desktopEntry,
+            QStringLiteral("application://com.exordos.workspace.native.preview.desktop"));
+    // ...the visible progress values stay inside [0, 1] and never fall behind...
+    qreal previous = 0;
+    bool sawProgress = false;
+    for (const auto &call : launcher.calls) {
+        const auto properties = call.properties;
+        if (!properties.value(QStringLiteral("progress-visible")).toBool()) continue;
+        QVERIFY(properties.contains(QStringLiteral("progress")));
+        const auto progress = properties.value(QStringLiteral("progress")).toDouble();
+        QVERIFY(progress >= 0.0);
+        QVERIFY(progress <= 1.0);
+        QVERIFY(progress >= previous);
+        previous = progress;
+        if (progress > 0) sawProgress = true;
+    }
+    QVERIFY(sawProgress); // The fake launcher actually saw bytes move.
+    if (mode == QStringLiteral("downloaded"))
+        QCOMPARE(previous, qreal(1)); // Full progress reached the launcher before the clear.
+    // The last published frame is the clear: progress-visible=false and no
+    // stale progress value (the final state must not leave a stuck bar).
+    const auto &last = launcher.calls.last();
+    QCOMPARE(last.properties.value(QStringLiteral("progress-visible")).toBool(), false);
+    QVERIFY(!last.properties.contains(QStringLiteral("progress")));
 }
 
 // The window progress hint case needs a real QWindow, so the suite runs on

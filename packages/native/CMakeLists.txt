@@ -251,9 +251,9 @@ if(BUILD_TESTING)
     add_executable(native-updater-test tests/native-updater-test.cpp src/native-updater.cpp src/native-updater.h
         src/native-updater-taskbar.cpp src/native-updater-taskbar.h)
     target_include_directories(native-updater-test PRIVATE src)
-    target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test)
+    target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test Qt6::DBus)
     add_test(NAME native-updater COMMAND native-updater-test)
-    set_tests_properties(native-updater PROPERTIES TIMEOUT 120)
+    set_tests_properties(native-updater PROPERTIES TIMEOUT 180)
 
     # Real About leaf policy with public QObject adapters; no network/window.
     add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
