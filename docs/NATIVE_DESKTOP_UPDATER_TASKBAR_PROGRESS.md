@@ -86,31 +86,102 @@ stores the value as the window's `progress` property:
 - Dedup: a value identical to the last pushed hint is not re-written, matching
   `QWindow::setProgress`'s documented dedupe.
 
-`UpdaterTaskbarProgress::setHint()` is the single platform sink. When a Qt
-release ships `QWindow::setProgress`, that call is added there without touching
-the state mapping.
+`UpdaterTaskbarProgress::setHint()` is the single platform sink: it writes the
+window property and publishes every new hint on the real desktop channel
+described in the next section. When a Qt release ships `QWindow::setProgress`,
+that call is added at the same sink without touching the state mapping.
 
-## Where the DE ignores the hint (expected environment limitation)
+## Platform channel: com.canonical.Unity.LauncherEntry (fix for finding 4581288189)
+
+Reviewer finding: a dynamic `QWindow` property is consumed by nothing on any
+platform, so the property-only sink was vacuous ("the tests pass without
+displaying a bar"). The fix forwards progress and clear events through
+`com.canonical.Unity.LauncherEntry.Update`, the de-facto standard session-bus
+taskbar protocol on Linux, used the same way Chrome, Firefox and libunity-based
+clients use it.
+
+Protocol (measured against the cited pages 2026-11-16):
+
+- Signal `com.canonical.Unity.LauncherEntry.Update(s app-uri, a{sv} properties)`
+  on the session bus. The low-level D-Bus API section of the Unity Launcher API
+  wiki (`wiki.ubuntu.com/Unity/LauncherAPI`, quoted by the community worked
+  example at askubuntu.com/questions/65054 "Unity Launcher API for C++")
+  defines exactly this Qt pattern: `QDBusMessage::createSignal(path,
+  "com.canonical.Unity.LauncherEntry", "Update")`, `signal << "application://firefox.desktop"`,
+  a `QVariantMap` with `progress-visible` (b) and `progress` (d, "float between
+  0 and 1"), sent via `QDBusConnection::sessionBus().send(signal)`.
+- `app-uri` is `application://` + the basename of the installed desktop file.
+  Valve's producer-side note (github.com/ValveSoftware/steam-for-linux#4777)
+  confirms the identical `sa{sv}` frame:
+  `"application://steam.desktop"` + `{ "progress-visible": true, "progress": 0.5 }`.
+- The object path carries no meaning: "The exact object path is not important,
+  and only being used to avoid internal collisions" (forum.snapcraft.io
+  topic 22004 on libunity internals, which broadcasts from
+  `/com/canonical/unity/launcherentry/$hash`). We use
+  `/com/canonical/Unity/LauncherEntry`.
+- Launchers subscribe with sender-agnostic signal match rules, e.g. a GNOME
+  shell consumer subscribes `Gio.DBus.session.signal_subscribe(null,
+  'com.canonical.Unity.LauncherEntry', 'Update', null, null, ...)` and reads
+  `props['progress-visible']` / `props['progress']` (basskibo/linux_dynamic_island
+  `sources/progress.js`). Consumers consume the app-uri minus its prefix:
+  `appUri.replace('application://', '')` then `Shell.AppSystem.lookup_app`
+  (same file). Dash-to-Dock has honoured these launcher progress/badge
+  properties since v62 ("support for Ubuntu launchers notification badges
+  and progress", micheleg.github.io/dash-to-dock release notes v62).
+- A property change may carry only the changed keys ("you don't always have to
+  specify all parameters", stackoverflow.com/questions/43875343), so the clear
+  frame sends just `progress-visible=false`.
+
+Implementation (`src/native-updater-taskbar.cpp`, `UpdaterTaskbarProgress::publish`):
+
+- `hint >= 0`: `{ "progress-visible": true, "progress": <hint as double> }` with
+  `hint` already clamped to `[0, 1]` by `hintFor()` (reference clamp kept
+  1:1). `hint < 0` (clear): `{ "progress-visible": false }` and no stale
+  `progress` key.
+- Broadcast (no destination), matching the wiki pattern: a broadcast reaches
+  every match-rule listener as well as any launcher that owns a well-known
+  name, while a name-addressed signal would only reach a name owner that real
+  consumers (GNOME extensions) do not take.
+- Fire-and-forget: with no launcher listening (bare WMs, headless X) the daemon
+  simply has no receiver, so the documented Xvnc limitation below stays honest
+  while real desktops render the bar. There is no delivery state worth
+  tracking; the libunity extra of re-publishing when the launcher bus name is
+  re-acquired is unnecessary here because every progress tick re-publishes
+  within milliseconds.
+- app-uri: `application://com.exordos.workspace.native.preview.desktop` - the
+  installed file name (`packages/native/CMakeLists.txt`,
+  `install(FILES resources/workspace-native.desktop ... RENAME
+  com.exordos.workspace.native.preview.desktop)`).
+
+KDE Plasma additionally respects the X11 `_KDE_NET_WM_PROGRESSIVE_ACTIVITY`
+client message (KDE window-manager-protocol extensions). It was intentionally
+not added: it needs raw xcb hand-rolled events on top, Plasma also honours the
+LauncherEntry signal, and LauncherEntry alone already matches "supported
+platform taskbar APIs".
+
+## Where the DE ignores the channel (expected environment limitation)
 
 Taskbar rendering is DE-side and optional:
 
 - The current freedesktop EWMH specification (`wm-spec`, `latest-single`,
   fetched 2026-11-16) defines no progress hint at all - grep for `progress`
   returns no matches. There is no standard cross-DE X11 wire hint.
-- KDE Plasma and modern GNOME docks honour per-window progress through their
-  own private channels; bare window managers (this repo's Xvnc + openbox QA
-  stand, and any minimal X session) have no taskbar at all and silently ignore
-  the hint.
+- Taskbar progress rendering is done by launchers that implement the
+  LauncherEntry protocol above (Unity7, Dash-to-Dock, Plank, Latte); bare
+  window managers (this repo's Xvnc + openbox QA stand, and any minimal X
+  session) run no such launcher, so nobody subscribes to the Update signal
+  there and the broadcast is dropped unchanged - exactly the documented,
+  honest limitation of the QA stand, not of the channel.
 - Even KDE's own applications implement taskbar progress only for Windows
   (`ITaskbarList3`; e.g. `KDE/elisa` `src/windows/taskbarmanager.{h,cpp}`),
   which confirms there is no X11-side standard to mirror today.
 
-Consequently acceptance asserts the mirror through the window `progress`
-property (`QWindow::property("progress")`) in the existing
-`native-updater` CTest group against the existing fake update server - never
-through pixel screenshots of a dock.
+Consequently acceptance is asserted at the protocol layer in the existing
+`native-updater` CTest group against the existing fake update server - the
+window `progress` property plus the Update signals observed by a fake
+launcher on a private bus - never through pixel screenshots of a dock.
 
-## Acceptance test (native-native-updater group)
+## Acceptance tests (native-native-updater group)
 
 `packages/native/tests/native-updater-test.cpp` gains
 `downloadProgressMirrorsTheTaskbarHint` (data rows: `downloaded`, `error`,
@@ -122,6 +193,29 @@ through pixel screenshots of a dock.
   download starts);
 - on `downloaded`, on `error`, and on `cancel()` the property becomes `-1`
   (cleared).
+
+`downloadProgressReachesTheLauncherEntryChannel` (same data rows) is the
+protocol-level check for finding 4581288189. The case re-executes itself with
+`dbus-run-session` (the `native-controller-test` downloadedFileActions
+pattern) so the fake never shadows a live desktop bus, registers a fake
+launcher (well-known name `com.canonical.Unity.LauncherEntry`, object
+`/com/canonical/Unity/LauncherEntry`, plus a sender-agnostic match rule, on a
+second bus connection because a daemon never echoes a connection's own
+signals back), and then drives the same chunked fake download. It asserts
+the wire frames themselves:
+
+- nothing is published while checking/available;
+- at least one `progress-visible=true` frame with `progress > 0` (bytes
+  actually moved) crosses the bus before the terminal state;
+- the published `progress` values stay in `[0, 1]`, never decrease, and
+  `downloaded` proves `1.0` reached the launcher;
+- every frame's app-uri is
+  `application://com.exordos.workspace.native.preview.desktop`;
+- the last frame on `downloaded`, `error` and `cancel()` is the clear:
+  `progress-visible=false` with no stale `progress` key.
+
+With the property-only sink this case fails on every row (the fake records
+zero frames); it went RED before the publish implementation went GREEN.
 
 The binary needs a `QWindow`, so the test main switches from
 `QTEST_GUILESS_MAIN` to a `QGuiApplication` main with the platform forced to
