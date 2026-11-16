@@ -2393,6 +2393,10 @@
         <translation>Пересылка в зашифрованные чаты не поддерживается.</translation>
     </message>
     <message>
+        <source>Forwarding to an unknown destination is not supported.</source>
+        <translation>Пересылка в неизвестное назначение не поддерживается.</translation>
+    </message>
+    <message>
         <source>Only text messages can be forwarded.</source>
         <translation>Пересылать можно только текстовые сообщения.</translation>
     </message>

@@ -1344,6 +1344,7 @@ private:
     bool forwardOwned(const ForwardIntent &intent) const;
     void clearForwardIntent();
     void failForward(const QString &error);
+    QString forwardDestinationRefusal(const QString &streamUuid) const;
     void fetchForwardSources(quint64 ticket);
     QString buildForwardSnapshot(const QStringList &sources, const QHash<QString, Message> &found) const;
     bool matchesForwardedPost(const QJsonObject &raw, const ForwardIntent &intent) const;

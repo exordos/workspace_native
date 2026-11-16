@@ -15214,6 +15214,24 @@ void NativeController::failForward(const QString &error)
     emit stateChanged();
 }
 
+// Review round 2 (cid 4586649206): the encrypted destination check must be a
+// resolution against the current stream catalog, not a scan for a matching
+// encrypted row. A destination uuid absent from m_streams (a stale or
+// incomplete catalog, or a direct controller call that skipped the picker)
+// cannot be proven unencrypted, and this route has no crypto submit path, so
+// it is refused with a visible reason of its own. An empty return means the
+// destination is a known, current, unencrypted stream.
+QString NativeController::forwardDestinationRefusal(const QString &streamUuid) const
+{
+    for (const auto &stream : m_streams) {
+        if (stream.uuid != streamUuid) continue;
+        if (stream.encrypted)
+            return tr("Forwarding to encrypted chats is not supported.");
+        return QString();
+    }
+    return tr("Forwarding to an unknown destination is not supported.");
+}
+
 void NativeController::forwardMessages(const QStringList &messageUuids, const QString &streamUuid,
     const QString &topicUuid)
 {
@@ -15223,19 +15241,16 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
         report(tr("There is nothing to forward."));
         return;
     }
-    // Review round 1 (cid 4586012787): the reference's only submit route
-    // sendMessengerMessage throws on stream.encryption === true before any
-    // request (workspace_ui 75bd21f37 messenger-message-actions.lib.ts:
-    // 309-311), so a plaintext snapshot never reaches an encrypted chat.
-    // This forward route has no crypto submit path at all, so refuse the
-    // destination here - no batch identity, no source fetch, no POST, and
-    // failForward puts the reason on the forward alert for the modal.
-    for (const auto &stream : m_streams) {
-        if (stream.uuid == streamUuid && stream.encrypted) {
-            failForward(tr("Forwarding to encrypted chats is not supported."));
-            return;
-        }
-    }
+    // Review round 1 (cid 4586012787) + round 2 (cid 4586649206): the
+    // reference's only submit route sendMessengerMessage throws on
+    // stream.encryption === true before any request (workspace_ui 75bd21f37
+    // messenger-message-actions.lib.ts:309-311), so a plaintext snapshot
+    // never reaches an encrypted chat. This forward route has no crypto
+    // submit path at all, so the destination must resolve to a cataloged,
+    // unencrypted stream here - no batch identity, no source fetch, no POST,
+    // and failForward puts the reason on the forward alert for the modal.
+    const auto refusal = forwardDestinationRefusal(streamUuid);
+    if (!refusal.isEmpty()) { failForward(refusal); return; }
     auto intent = ForwardIntent{};
     intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     intent.publicId = QUuid::createUuidV5(QUuid(topicUuid), intent.uuid.toUtf8()).toString(QUuid::WithoutBraces);
@@ -15353,6 +15368,11 @@ bool NativeController::matchesForwardedPost(const QJsonObject &raw, const Forwar
 void NativeController::postForward(quint64 ticket)
 {
     if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
+    // The catalog may have moved while sources were fetching; the same
+    // known-and-unencrypted resolution re-gates the deferred send (cid
+    // 4586649206) so no path reaches the plaintext POST unproven.
+    const auto refusal = forwardDestinationRefusal(m_forwardIntent.stream);
+    if (!refusal.isEmpty()) { failForward(refusal); return; }
     const auto intent = m_forwardIntent;
     const QJsonObject body{{QStringLiteral("uuid"), intent.uuid},
         {QStringLiteral("stream_uuid"), intent.stream}, {QStringLiteral("topic_uuid"), intent.topic},
