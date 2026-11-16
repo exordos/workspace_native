@@ -147,12 +147,32 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   front. Version + owner guards discard stale pages: a response whose owner
   key or request version no longer matches mutates nothing (feed-page.ui.test
   lines 337, 407).
-- Row projection reuses the shipped single-flow preview path
-  (`summarizeRowPreview`-style clamp at 80 chars like `mentionPreview`; media/
-  attachment/quote labels and the encrypted label come from the same text the
-  row already carries). The full Markdown-AST summary is intentionally not
-  duplicated, following the precedent documented in
+- Row preview (`feedRowPreview`) runs a markdown summary before the 80-char
+  clamp so a link target or attachment urn is never visible in a row and can
+  never be truncated into a half-URL. Measured against
+  `packages/web/src/pages/feed/feed-page.ui.tsx:64-69`
+  (`FEED_MESSAGE_SUMMARY_OPTIONS`: maxLength 80, media/attachment labels and
+  quote prefix on) and `workspace-message-summary.lib.ts`: media inlines
+  render as the media label (`summarizeFileInline`, lines 74-95; unsupported
+  media keeps the media label, `workspace-message-parse.lib.ts:745`), file
+  references as `Файл: name`/`Файл`, markdown links prefer the readable label
+  over the target (`summarizeLinkInline`, lines 97-112), mentions render as
+  `@label`, and a block quote renders as `Цитата: <summary>`
+  (summarizeBlock, lines 206-213). The pinned oracle
+  `packages/web/src/pages/feed/feed-page.ui.test.tsx:279-297` proves the
+  visible contract: `![screen.png](urn:image:...?name=screen.png) Вот скрин`
+  renders as `Изображение: Вот скрин` with neither the urn nor the file uuid
+  present; with the ru catalog the native preview produces exactly that
+  string (`Image`/`Video`/`File`/`Quote` labels come from the same
+  translations the message renderer uses). Deviations kept deliberately:
+  block decorations without a security role (code/list prefixes) follow the
+  shipped single-flow precedent documented in
   docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md.
+- Feed previews render as plain text. The reference puts the summary string
+  into a React text node (feed-page.ui.tsx:398) - it is never interpreted as
+  markup; the native `Text` therefore pins `textFormat: Text.PlainText`
+  (also for sender and pills) so attacker-controlled content can never load
+  a remote image through automatic format detection.
 - Time pill: `formatFeedRowTime` implements formatMessageTimeWithDate
   (same day HH:mm, else locale dated + HH:mm) against the preferences locale,
   same locale accessor as `rowPreviewFields`.
