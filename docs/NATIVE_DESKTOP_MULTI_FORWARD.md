@@ -103,6 +103,53 @@ Deferred, recorded here and on the issue:
 - Cache projection of the confirmed forward is deferred with the slice-2 send
   route alignment (keep the edit surface away from lane #38).
 
+### Review round 1 (PR #357, exordy cids 4586012787/4586012796/4586012826/4586012837/4586012848)
+
+Measured reference behavior at `workspace_ui`
+`75bd21f37de94728e2ebe100acfea24ac9c1a4e1` (all lines verified at that sha):
+
+- **Encrypted destinations (cid 4586012787).** The reference forward picker
+  itself does not filter encrypted streams out of the channel list -
+  `buildWorkspaceForwardStreamOptions` (`workspace-forward-message.lib.ts:127-141`)
+  drops only archived streams and private direct streams (the direct tab owns
+  those). The refusal lives in the submit path: the dialog submits through
+  `sendMessengerMessage`, which throws
+  `"Encrypted chats require an available crypto provider"` when
+  `stream.encryption === true` (`entities/messenger/messenger-message-actions.lib.ts:309-311`)
+  before any request leaves the client. So in the reference a plaintext
+  snapshot can never reach an encrypted conversation. The native forward route
+  has no crypto submit path (it always POSTs markdown plaintext), so native
+  mirrors the guarantee at both layers instead: the picker omits encrypted
+  conversations from the channel select
+  (`NativeForwardDialog.qml` `streamRows` filters `stream.encrypted`) and the
+  controller refuses an encrypted destination in `forwardMessages` without
+  creating an intent, fetching sources, or posting
+  ("Forwarding to encrypted chats is not supported.").
+- **Mixed selections (cid 4586012837).** The reference keeps every server
+  message selectable - the selection control renders for any server row
+  (`widgets/workspace-message-list/workspace-message-list.ui.tsx:503`,
+  `rendersSelectionControl = selectionMode && serverMessage != null`) - and
+  rejects the whole batch at submit with the visible `message.forwardError`
+  alert when any source payload kind is not `markdown`/`poll`
+  (`workspace-forward-message.lib.ts:78-84` returns null;
+  `workspace-forward-message.ui.tsx:449-451` turns that into the error and
+  keeps the modal open). Native mirrors that UX: checkboxes stay on every row,
+  and `fetchForwardSources` fails the batch with "Only text messages can be
+  forwarded." (the native markdown-only subset) without posting a truncated
+  snapshot.
+- **Pending batch lock (cid 4586012796).** `canForwardMessages()` now requires
+  `!busy && !pending` - an unconfirmed batch owns its identity until Check
+  settles it; a second begin can no longer strand the first ambiguous POST.
+- **Topic cache freshness (cid 4586012826).** `fetchForwardTopics(stream, refresh)`
+  gained a refresh flag; the picker passes `refresh=true` on every stream
+  activation, so topics created mid-session appear when the picker reopens
+  (the per-stream cache only short-cuts passive reads and concurrent fetches).
+- **Stale confirm vs newer selection (cid 4586012848).** The dialog snapshots
+  the selection at submit time (`submittedIds`) and emits
+  `forwardSucceeded(submittedIds)`; `Main.qml` clears the chat selection only
+  when it still equals the submitted batch, so confirming an old batch can no
+  longer discard a newer selection.
+
 ### Slice 2 (next): UI
 
 Message multi-select entry + `NativeForwardDialog.qml` (channel picker tab
