@@ -348,6 +348,8 @@ ApplicationWindow {
         if (presence === "offline") return qsTr("offline");
         return "";
     }
+    // Issue #177: dm.partnerBlocked - en source string, ru catalog entry.
+    function accountDeactivatedLabel() { return qsTr("Account deactivated"); }
     component PresenceBadge: Item {
         id: badge
         property string presence: ""
@@ -3799,7 +3801,50 @@ ApplicationWindow {
                         }
                         PresenceBadge {
                             objectName: "presence-direct-header"
-                            presence: root.controller.authenticated ? String(root.controller.directPeer.presence || "") : ""
+                            // Reference avatar.tsx:53,84-95 swaps the dot for
+                            // the deactivated badge: presence stays projected
+                            // in the data, only the dot is suppressed.
+                            presence: root.controller.authenticated
+                                && root.controller.directPeer.accountDeactivated !== true
+                                ? String(root.controller.directPeer.presence || "") : ""
+                        }
+                        // Issue #177 (reference 61dacef7 avatar.tsx:20-23,
+                        // presence-indicator.tsx:40-50): bg-card-bg disc with a
+                        // 2px ring-bg ring and a 14px block glyph in
+                        // text-text-muted, on the same 14.65 percent inset
+                        // center as PresenceBadge (18px box -> -9 centering).
+                        Item {
+                            objectName: "deactivated-direct-header"
+                            width: 18; height: 18
+                            x: parent ? parent.width * 0.8535 - 9 : 0
+                            y: parent ? parent.height * 0.8535 - 9 : 0
+                            z: 1
+                            visible: root.controller.authenticated
+                                && root.controller.directPeer.accountDeactivated === true
+                            Accessible.role: Accessible.StatusBar
+                            Accessible.name: root.accountDeactivatedLabel()
+                            Accessible.ignored: !visible
+                            Rectangle {
+                                objectName: "deactivated-ring"
+                                anchors.fill: parent
+                                radius: 9
+                                color: root.colors.bg
+                                Accessible.ignored: true
+                            }
+                            Rectangle {
+                                objectName: "deactivated-fill"
+                                x: 2; y: 2; width: 14; height: 14; radius: 7
+                                color: root.colors["card-bg"]
+                                Accessible.ignored: true
+                            }
+                            NativeIconButton {
+                                objectName: "deactivated-glyph"
+                                x: 2; y: 2; width: 14; height: 14; padding: 0
+                                colors: root.colors; asset: "block.svg"; glyphSize: 14
+                                enabled: false; opacity: 1
+                                icon.color: root.colors["text-muted"]
+                                Accessible.ignored: true
+                            }
                         }
                         Text {
                             visible: !directHeaderPhoto.replacesFallback
@@ -3830,7 +3875,11 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             // An unknown user has no dot; Source's actual header
                             // still displays its offline caption, not online.
-                            text: root.presenceLabel(String(root.controller.directPeer.presence || "")) || qsTr("offline")
+                            // A deactivated partner replaces the whole caption
+                            // like resolveDmStatusText (chat-header.lib.ts:20-22).
+                            text: root.controller.directPeer.accountDeactivated === true
+                                ? root.accountDeactivatedLabel()
+                                : root.presenceLabel(String(root.controller.directPeer.presence || "")) || qsTr("offline")
                             textFormat: Text.PlainText
                             color: root.colors["text-muted"]
                             font.pixelSize: 12

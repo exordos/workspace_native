@@ -57,6 +57,7 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>Account deactivated</source><translation>Пользователь заблокирован</translation></message>
         <message><source>Select</source><translation>Выбрать</translation></message>
         <message><source>Deselect</source><translation>Снять выделение</translation></message>
         <message><source>Selected: %1</source><translation>Выбрано: %1</translation></message>
