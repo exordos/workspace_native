@@ -16995,6 +16995,289 @@ private slots:
         QVERIFY(fixture.controller.mentionsPage().value("rows").toList().isEmpty());
     }
 
+    // ---- Project Feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
+
+    static QJsonObject feedMessage(int number)
+    {
+        const auto id = QStringLiteral("78787878-7878-4878-8878-")
+            + QString("%1").arg(number, 12, 16, QLatin1Char('0'));
+        auto row = message(QStringLiteral("Feed message %1").arg(number), id);
+        row.insert("is_own", false);
+        row.insert("read", true);
+        row.insert("created_at", QDateTime::fromString("2026-01-02T10:00:00Z", Qt::ISODate)
+                         .addSecs(number).toString(Qt::ISODateWithMs));
+        return row;
+    }
+
+    // Serves GET /messages/ like the Workspace feed query: newest items first
+    // inside a page, page_limit caps the page and the continuation cursor
+    // rides X-Pagination-Marker (feed.api.ts:43-78, messenger-client.ts:202-225).
+    static Response feedPageResponse(const QMap<int, QJsonObject> &rows, const Request &request)
+    {
+        const auto query = QUrlQuery(request.target);
+        const int limit = qMax(1, query.queryItemValue("page_limit").toInt());
+        const auto marker = query.queryItemValue("page_marker");
+        const int boundary = marker.isEmpty() ? std::numeric_limits<int>::max()
+                                             : marker.right(12).toInt(nullptr, 16);
+        QJsonArray items;
+        bool more = false;
+        for (auto it = rows.cend(); it != rows.cbegin();) {
+            --it;
+            if (it.key() >= boundary)
+                continue;
+            if (items.size() == limit) {
+                more = true;
+                break;
+            }
+            items.append(it.value());
+        }
+        Response response{items, 200, 0, {}};
+        if (more)
+            response.headers.insert("X-Pagination-Marker",
+                items.last().toObject().value("uuid").toString().toUtf8());
+        return response;
+    }
+
+    // The feed query is the only project-scoped page_limit=50 GET without
+    // mentioned/stream/topic/uuid narrowing (projectScopedParams,
+    // messenger-client.ts:96-119).
+    static bool isFeedQuery(const QUrlQuery &query)
+    {
+        return query.queryItemValue("page_limit") == "50"
+            && !query.hasQueryItem("mentioned") && !query.hasQueryItem("stream_uuid")
+            && !query.hasQueryItem("topic_uuid") && !query.hasQueryItem("uuid");
+    }
+
+    void feedLoadsProjectScopedFirstPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, feedMessage(1)}, {2, feedMessage(2)}, {3, feedMessage(3)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            const QUrlQuery query(request.target);
+            queries->append(query);
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QVERIFY(fixture.controller.feedVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.feedPage().value("loading").toBool(), 4000);
+        const auto list = fixture.controller.feedPage().value("rows").toList();
+        QCOMPARE(list.size(), 3);
+        // The store order is oldest-first with the newest at the list bottom
+        // (feed.model.ts:39-68 sortUniqueMessages createdAt asc, uuid asc).
+        QCOMPARE(list.first().toMap().value("id").toString(),
+            feedMessage(1).value("uuid").toString());
+        QCOMPARE(list.last().toMap().value("id").toString(),
+            feedMessage(3).value("uuid").toString());
+        bool sawFeedQuery = false;
+        for (const auto &query : *queries) {
+            if (!isFeedQuery(query))
+                continue;
+            sawFeedQuery = true;
+            QCOMPARE(query.queryItemValue("project_id"), projectId);
+            QVERIFY(!query.hasQueryItem("page_marker"));
+            QVERIFY(!query.hasQueryItem("sort_key")); // the feed sends no sort params
+        }
+        QVERIFY(sawFeedQuery);
+        // Row projection: time pill, "stream · topic" context pill, sender and
+        // the clamped summary (feed-page.ui.tsx:363-424).
+        const auto row = list.last().toMap();
+        QVERIFY(!row.value("time").toString().isEmpty());
+        QCOMPARE(row.value("context").toString(), QString("Native channel · Native topic"));
+        QCOMPARE(row.value("preview").toString(), QString("Feed message 3"));
+        // Author names resolve from authorUuid only (feed-page.ui.test.tsx:251).
+        QVERIFY(!row.value("sender").toString().isEmpty());
+        QVERIFY(!fixture.controller.feedPage().value("canLoadMore").toBool());
+    }
+
+    void feedPaginationFollowsMarkerOldestFirst()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, feedMessage(n));
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            const QUrlQuery query(request.target);
+            queries->append(query);
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 50, 4000);
+        QVERIFY(fixture.controller.feedPage().value("canLoadMore").toBool());
+        fixture.controller.loadMoreFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 60, 4000);
+        // The continuation rode X-Pagination-Marker into page_marker
+        // (feed-page.ui.test.tsx:363, api-client.cpp:497).
+        const bool marked = std::any_of(queries->cbegin(), queries->cend(),
+            [](const QUrlQuery &query) { return isFeedQuery(query) && query.hasQueryItem("page_marker"); });
+        QVERIFY(marked);
+        const auto list = fixture.controller.feedPage().value("rows").toList();
+        QCOMPARE(list.size(), 60);
+        QSet<QString> ids;
+        for (const auto &value : list)
+            ids.insert(value.toMap().value("id").toString());
+        QCOMPARE(ids.size(), 60); // dedupe by uuid (feed.model.ts sortUniqueMessages)
+        // The older page merged in front: oldest first, newest last.
+        QCOMPARE(list.first().toMap().value("id").toString(),
+            feedMessage(1).value("uuid").toString());
+        QCOMPARE(list.last().toMap().value("id").toString(),
+            feedMessage(60).value("uuid").toString());
+        QVERIFY(!fixture.controller.feedPage().value("canLoadMore").toBool());
+    }
+
+    void feedInFlightOlderPageIsNotDuplicated()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, feedMessage(n));
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto markerRequests = std::make_shared<int>(0);
+        fixture.messages = [rows, gates, markerRequests](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query) && query.hasQueryItem("page_marker")) {
+                ++*markerRequests;
+                Response response{feedPageResponse(*rows, request)};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 50, 4000);
+        fixture.controller.loadMoreFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the older page is in flight
+        // Never a second request while one is in flight
+        // (feed-scroll.lib.ts shouldRequestOlderFeedPage isLoadingMore guard).
+        fixture.controller.loadMoreFeed();
+        fixture.controller.loadMoreFeed();
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 60, 4000);
+        QCOMPARE(*markerRequests, 1);
+    }
+
+    void feedStaleOwnerSwitchDiscardsInFlightPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, feedMessage(1)}, {2, feedMessage(2)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        fixture.messages = [rows, gates](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query)) {
+                Response response{feedPageResponse(*rows, request)};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        // An owner switch during the in-flight page clears the feed
+        // (feed-page.ui.test.tsx:337) and the late response must not repopulate
+        // it (feed-page.ui.test.tsx:407).
+        fixture.controller.logout();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.authenticated(), 4000);
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTest::qWait(250); // give the late response a chance to misfire
+        QVERIFY(!fixture.controller.feedVisible());
+        QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
+    }
+
+    void feedErrorAndRetry()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, feedMessage(1)}});
+        auto failing = std::make_shared<bool>(true);
+        fixture.messages = [rows, failing](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query)) {
+                if (*failing)
+                    return Response{QJsonObject{{"detail", "synthetic outage"}}, 500, 0, {}};
+                return feedPageResponse(*rows, request);
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.feedPage().value("error").toBool(), 4000);
+        QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
+        *failing = false;
+        fixture.controller.retryFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 1, 4000);
+        QVERIFY(!fixture.controller.feedPage().value("error").toBool());
+    }
+
+    void feedLoadingAndEmptyStates()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        fixture.messages = [gates](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query)) {
+                Response response{QJsonArray{}, 200, 0, {}}; // empty project feed
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000);
+        QVERIFY(fixture.controller.feedPage().value("loading").toBool()); // app.loading card
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.feedPage().value("loading").toBool(), 4000);
+        // Empty without error: the reference renders the feed.noMessages card.
+        QVERIFY(fixture.controller.feedPage().value("rows").toList().isEmpty());
+        QVERIFY(!fixture.controller.feedPage().value("error").toBool());
+        QVERIFY(!fixture.controller.feedPage().value("canLoadMore").toBool());
+        fixture.controller.closeFeed();
+        QVERIFY(!fixture.controller.feedVisible());
+    }
+
+    void feedIsExclusiveContentPage()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        fixture.controller.showInbox();
+        QVERIFY(fixture.controller.inboxVisible());
+        fixture.controller.showFeed();
+        QVERIFY(fixture.controller.feedVisible());
+        QVERIFY(!fixture.controller.inboxVisible());
+        fixture.controller.closeFeed();
+        QVERIFY(!fixture.controller.feedVisible());
+    }
+
     // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
 
     // Stream/topic fixtures measured against workspace_ui

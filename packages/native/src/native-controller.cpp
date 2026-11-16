@@ -6206,6 +6206,8 @@ void NativeController::closeOtherContentPages(ContentPage keep)
         closeMentions();
     if (keep != ContentPage::Inbox)
         closeInbox();
+    if (keep != ContentPage::Feed)
+        closeFeed();
     if (keep != ContentPage::Mail)
         resetChatSection(); // callers emit stateChanged()
 }
@@ -6630,6 +6632,209 @@ void NativeController::resetMentions()
     m_mentionIndexWalking = false;
     m_mentionIndexMarker.clear();
     m_mentionIndexMarkers.clear();
+}
+
+// ---- Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
+
+void NativeController::showFeed()
+{
+    if (!authenticated())
+        return;
+    closeOtherContentPages(ContentPage::Feed);
+    m_feedVisible = true;
+    emit stateChanged();
+    // Every mount refreshes the newest page (useCacheFirstPageLoad,
+    // feed-page.ui.tsx:110-176); an in-flight request already owns that refresh.
+    if (!m_feed.inflight)
+        loadFeedPage(false);
+}
+
+void NativeController::closeFeed()
+{
+    if (!m_feedVisible)
+        return;
+    m_feedVisible = false;
+    emit stateChanged();
+}
+
+void NativeController::loadMoreFeed()
+{
+    // One request until re-armed; never while one is in flight
+    // (feed-scroll.lib.ts shouldRequestOlderFeedPage, feed-page.ui.test.tsx:363).
+    if (!authenticated() || m_feed.inflight || !m_feed.hasMore())
+        return;
+    loadFeedPage(true);
+}
+
+void NativeController::retryFeed()
+{
+    if (!authenticated() || m_feed.inflight)
+        return;
+    loadFeedPage(false);
+}
+
+void NativeController::openFeedRow(const QString &stream, const QString &topic)
+{
+    // Like openInboxRow this reuses the existing topic-navigation path: the
+    // reference row click routes to the message topic route
+    // (feed-page.ui.tsx:324-334, feed-page.ui.test.tsx:263). A row without a
+    // usable topic target routes to its stream instead.
+    closeFeed();
+    if (!isUuid(stream))
+        return;
+    if (!topic.isEmpty() && isUuid(topic)) {
+        openTopic(topic, stream);
+        return;
+    }
+    selectStream(stream);
+}
+
+void NativeController::loadFeedPage(bool append)
+{
+    if (!authenticated() || m_feed.inflight)
+        return;
+    m_feed.inflight = true;
+    const quint64 version = ++m_feed.version;
+    const auto owner = creationOwnerKey();
+    QUrlQuery query;
+    // feed.api.ts:43-78 with projectScopedParams (messenger-client.ts:96-119):
+    // page_limit=50, the cursor rides page_marker only for an older page, and
+    // the query is project-scoped. No sort, stream or topic parameters.
+    query.addQueryItem("page_limit", "50");
+    query.addQueryItem("project_id", m_session->project());
+    if (append && !m_feed.marker.isEmpty())
+        query.addQueryItem("page_marker", QString::fromUtf8(m_feed.marker));
+    if (append)
+        m_feed.loadingMore = true;
+    else
+        m_feed.loading = true;
+    emit stateChanged();
+    request("GET", messenger + "/messages/", {}, query,
+        [this, append, version, owner](const ApiResult &result) {
+        if (version != m_feed.version || owner != creationOwnerKey())
+            return; // a newer request or an owner switch owns the state now
+                    // (feed-page.ui.test.tsx:337, 407)
+        m_feed.inflight = false;
+        if (!result.ok() || !result.data.isArray()) {
+            m_feed.loading = m_feed.loadingMore = false;
+            if (!append)
+                m_feed.error = true;
+            emit stateChanged();
+            return;
+        }
+        QVector<Message> page;
+        for (const auto &value : result.data.toArray()) {
+            const auto parsed = parseMessage(value.toObject(), m_session->project());
+            if (parsed)
+                page.append(*parsed);
+        }
+        // sortUniqueMessages/mergeOlderMessages (feed.model.ts:39-68): dedupe by
+        // uuid, created_at asc with a uuid asc tie break - oldest first, so the
+        // newest row stays at the list bottom and an older page merges in front.
+        QMap<QString, Message> byUuid;
+        const QVector<Message> existing = append ? m_feed.rows : QVector<Message>{};
+        for (const auto &message : existing)
+            byUuid.insert(message.uuid, message);
+        for (const auto &message : page)
+            byUuid.insert(message.uuid, message);
+        QVector<Message> merged;
+        merged.reserve(byUuid.size());
+        for (const auto &message : byUuid)
+            merged.append(message);
+        std::sort(merged.begin(), merged.end(), [](const Message &left, const Message &right) {
+            if (left.createdMicros != right.createdMicros)
+                return left.createdMicros < right.createdMicros;
+            return left.uuid < right.uuid;
+        });
+        m_feed.rows = merged;
+        m_feed.marker = result.nextMarker; // X-Pagination-Marker (api-client.cpp:497)
+        m_feed.loading = m_feed.loadingMore = false;
+        m_feed.error = false;
+        emit stateChanged();
+    });
+}
+
+QVariantMap NativeController::feedPage() const
+{
+    return QVariantMap{
+        {"rows", feedRows()},
+        {"loading", m_feed.loading},
+        {"loadingMore", m_feed.loadingMore},
+        {"error", m_feed.error},
+        {"canLoadMore", m_feed.hasMore() && !m_feed.inflight},
+    };
+}
+
+void NativeController::resetFeed()
+{
+    m_feedVisible = false;
+    m_feed = FeedState{};
+}
+
+QVariantList NativeController::feedRows() const
+{
+    QVariantList rows;
+    for (const auto &message : m_feed.rows) {
+        rows.append(QVariantMap{
+            {"id", message.uuid}, {"stream", message.stream}, {"topic", message.topic},
+            {"time", feedRowTime(message.created)},
+            {"context", feedRowContext(message)},
+            // Author names resolve from authorUuid only, falling back to the
+            // uuid itself (feed-page.ui.tsx FeedSenderName, test line 251).
+            {"sender", userDisplayName(message.author, message.author)},
+            {"preview", feedRowPreview(message)},
+        });
+    }
+    return rows;
+}
+
+QString NativeController::feedRowTime(const QDateTime &created) const
+{
+    // datetime.lib.ts:86-96 formatMessageTimeWithDate: the same local day is a
+    // manual 24 h HH:mm; anything older is the locale dated style (2-digit day,
+    // short month, numeric year) followed by a space and HH:mm.
+    if (!created.isValid())
+        return {};
+    const auto local = created.toLocalTime();
+    if (local.date() == QDate::currentDate())
+        return local.toString(QStringLiteral("HH:mm"));
+    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
+    const auto datePart = locale.language() == QLocale::Russian
+        ? locale.toString(local.date(), QStringLiteral("dd MMM yyyy 'г.'"))
+        : locale.toString(local.date(), QStringLiteral("MMM dd, yyyy"));
+    return datePart + QLatin1Char(' ') + local.toString(QStringLiteral("HH:mm"));
+}
+
+QString NativeController::feedRowContext(const Message &message) const
+{
+    // "${stream name} · ${topic name}" with uuid fallbacks for an unknown
+    // or blank catalog name (feed-page.ui.tsx:369-372).
+    auto name = QString(message.stream);
+    for (const auto &stream : m_streams)
+        if (stream.uuid == message.stream && !sourceTrimmed(stream.name).isEmpty())
+            name = sourceTrimmed(stream.name);
+    auto topic = QString(message.topic);
+    for (const auto &row : m_topics)
+        if (row.uuid == message.topic && !sourceTrimmed(row.name).isEmpty())
+            topic = sourceTrimmed(row.name);
+    return name + QStringLiteral(" · ") + topic;
+}
+
+QString NativeController::feedRowPreview(const Message &message) const
+{
+    // FEED_MESSAGE_SUMMARY_OPTIONS: maxLength 80 with media/attachment labels
+    // and the quote prefix kept inside the text (feed-page.ui.tsx:64-69); a
+    // non-markdown payload renders the encrypted label
+    // (features/encrypted-chat-message/encrypted-message-label.lib.ts). The
+    // shipped single-flow clamp of mentionPreview is reused deliberately: the
+    // previews stay textual and never expose raw file urls
+    // (feed-page.ui.test.tsx:280, docs/NATIVE_DESKTOP_ACTIVITY_MENTIONS.md).
+    if (message.kind != QLatin1String("markdown"))
+        return tr("Encrypted message — key support is under development");
+    auto text = message.content.simplified();
+    if (text.size() > 80)
+        text = text.left(77).trimmed() + QStringLiteral("...");
+    return text;
 }
 
 // ---- Inbox page (issue #44, docs/NATIVE_DESKTOP_INBOX.md) ----
@@ -9011,6 +9216,7 @@ void NativeController::reset()
     if (m_draftStore) m_draftStore->hidePage();
     resetMentions();
     resetInbox();
+    resetFeed();
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();
     if (!guard) return;
@@ -13339,6 +13545,16 @@ void NativeController::applyDeepLink(const QString &url)
         if (match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
             && match.captured(2).compare(m_session->project(), Qt::CaseInsensitive) == 0)
             showInbox();
+        return;
+    }
+    // The reference feed route (docs/NATIVE_DESKTOP_FEED.md): the rail entry
+    // stays hidden, so the route itself is the entry surface.
+    static const QRegularExpression feedRoutePattern(
+        "^/org/([^/]+)/project/([^/]+)/feed/?$");
+    if (const auto match = feedRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
+            && match.captured(2).compare(m_session->project(), Qt::CaseInsensitive) == 0)
+            showFeed();
         return;
     }
     const auto message = workspace::parseMessageRoute(*route);
