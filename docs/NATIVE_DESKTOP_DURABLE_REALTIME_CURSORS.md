@@ -126,7 +126,11 @@ durable queue storage.
   satisfies a pending clear when the key verifiably holds the replacement
   cursor - a same-generation monotonic no-op save leaves the invalidated row
   untouched, so the fence and the delete obligation stay in force until the
-  row is actually gone or replaced.
+  row is actually gone or replaced. While the fence is held the replacement
+  cursor also stays dirty with the coalescing timer re-armed: a no-op save
+  wrote nothing, so if the dirty flag were cleared the later successful
+  delete would remove the stale row and the replacement would never reach
+  disk; the flush after the delete lands writes it to the now-empty key.
 - Justification: catch-up pages arrive in batches of up to 100 events
   (`page_limit=100` in `catchUp()`), so an fsync per acknowledge would
   serialize the GUI thread during exactly the bursts where responsiveness

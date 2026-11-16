@@ -465,18 +465,28 @@ void RealtimeClient::flushCursorPersist()
         return;
     }
     if (m_cursorStore->save(m_durableKey, {m_epochGeneration, m_epoch})) {
-        m_cursorDirty = false;
-        if (m_pendingClearKeys.contains(m_durableKey)) {
+        bool replacementLanded = !m_pendingClearKeys.contains(m_durableKey);
+        if (!replacementLanded) {
             // save() also returns true for a same-generation monotonic
             // no-op, where the invalidated row survives untouched. Only
             // release the fence once the key verifiably holds the
             // replacement cursor; until then the delete keeps retrying
-            // (finding 4585327330).
+            // (finding 4585327330). The replacement also stays dirty: a
+            // no-op save wrote nothing, so dropping it here would let the
+            // later successful delete remove the stale row while the
+            // replacement never reaches disk (finding 4585693719). The
+            // next flush, after the delete lands, writes it to the
+            // now-empty key.
             const auto written = m_cursorStore->read(m_durableKey);
             if (written.has_value() && written->generation == m_epochGeneration
-                && written->epoch == m_epoch)
+                && written->epoch == m_epoch) {
                 m_pendingClearKeys.remove(m_durableKey);
+                replacementLanded = true;
+            }
         }
+        m_cursorDirty = !replacementLanded;
+        if (m_cursorDirty && m_active)
+            m_cursorFlush.start(CursorPersistDelayMs);
     } else if (m_active) {
         // A transient save failure must not drop the pending cursor until
         // the next event: keep it dirty and retry while this owner is still
