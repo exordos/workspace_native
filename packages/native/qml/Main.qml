@@ -1785,7 +1785,7 @@ ApplicationWindow {
                 asset: "chat_bubble.svg"
                 help: qsTr("Chats and channels")
                 selected: root.controller.section === "chat"
-                activeBorder: selected
+                activeBorder: true
                 width: 48
                 height: 48
                 glyphSize: 32
@@ -1814,7 +1814,7 @@ ApplicationWindow {
                 glyphSize: 32
                 cornerRadius: 12
                 selected: root.controller.section === "mail"
-                activeBorder: selected
+                activeBorder: true
                 iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
                 onClicked: root.controller.showSection("mail")
             }
