@@ -8196,13 +8196,24 @@ ApplicationWindow {
 
     // Issue #7 slice 2: the forward destination modal (issue #7 slice 2
     // section of docs/NATIVE_DESKTOP_MULTI_FORWARD.md). A confirmed forward
-    // clears the chat selection exactly like the reference onSuccess.
+    // clears the chat selection exactly like the reference onSuccess - but
+    // only the selection it was submitted with (review round 1, cid
+    // 4586012848): a Check that lands after the modal went away must leave a
+    // newer selection alone.
     NativeForwardDialog {
         id: forwardDialog
         colors: root.colors
         controller: root.controller
         sourceIds: root.messageSelectionIds
-        onForwardSucceeded: root.clearMessageSelection()
+        onForwardSucceeded: function (submittedIds) {
+            const submitted = (submittedIds || []).map(String)
+            if (submitted.length === 0 || root.messageSelectionCount !== submitted.length)
+                return
+            for (const id of root.messageSelectionIds)
+                if (!submitted.includes(id))
+                    return
+            root.clearMessageSelection()
+        }
     }
 
     component ArchiveSpinner: Canvas {

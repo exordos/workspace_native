@@ -43,17 +43,30 @@ Popup {
     // store.messageUuids and clears the chat selection only on success).
     property var sourceIds: []
 
-    signal forwardSucceeded()
+    signal forwardSucceeded(var submittedIds)
 
     property string streamUuid: ""
     property string topicUuid: ""
     property var topicRows: []
     property bool submitAttempted: false
     property bool wasBusy: false
+    // Review round 1 (cid 4586012848): success must settle exactly the batch
+    // it was submitted with. The snapshot is taken at submit time so a Check
+    // that lands after the modal went away can recognise its own selection
+    // and leave a newer one untouched.
+    property var submittedIds: []
 
     // Picker rows over the catalog: the reference lists every channel and
-    // resolves the picked channel's topics for the topic select.
-    property var streamRows: (root.controller ? root.controller.streams : []).map(function (stream) {
+    // resolves the picked channel's topics for the topic select. Encrypted
+    // conversations are never offered: the reference's only submit route
+    // sendMessengerMessage throws on stream.encryption === true before any
+    // POST (workspace_ui 75bd21f37 messenger-message-actions.lib.ts:309-311),
+    // and this native route posts plaintext markdown with no crypto path, so
+    // the picker drops encrypted destinations outright (the controller
+    // refuses them as a second line).
+    property var streamRows: (root.controller ? root.controller.streams : []).filter(function (stream) {
+        return !stream.encrypted
+    }).map(function (stream) {
         return { id: stream.id, name: stream.isDirect && stream.displayName ? stream.displayName : stream.name }
     })
     readonly property var streamOptions: [{ id: "", name: qsTr("Select channel") }].concat(root.streamRows)
@@ -80,7 +93,7 @@ Popup {
         function onForwardChanged() {
             const busy = root.controller.forwardPending
             if (root.wasBusy && !busy && root.controller.forwardError.length === 0) {
-                root.forwardSucceeded()
+                root.forwardSucceeded(root.submittedIds)
                 root.close()
             }
             root.wasBusy = busy
@@ -174,7 +187,11 @@ Popup {
                         root.topicUuid = ""
                         root.topicRows = []
                         topicCombo.currentIndex = -1
-                        root.controller.fetchForwardTopics(currentValue)
+                        // Review round 1 (cid 4586012826): each stream
+                        // activation is a fresh read of the topic list, so
+                        // topics created mid-session appear when the picker
+                        // reopens (GET-only, never a replay).
+                        root.controller.fetchForwardTopics(currentValue, true)
                     }
                     delegate: ItemDelegate {
                         required property var modelData
@@ -285,6 +302,9 @@ Popup {
                             && !root.controller.forwardAwaitingCheck
                         onClicked: {
                             root.submitAttempted = true
+                            // The success handler recognises this snapshot
+                            // later, even after the modal goes away.
+                            root.submittedIds = root.sourceIds.slice()
                             root.controller.forwardMessages(root.sourceIds, root.streamUuid, root.topicUuid)
                         }
                     }

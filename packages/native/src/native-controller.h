@@ -613,7 +613,7 @@ public:
     // Topic options for an arbitrary destination stream in the forward picker
     // (reference chat-page forward modal lists each channel's topics). GET
     // /stream_topics/ only; options cache per stream and reload on request.
-    Q_INVOKABLE void fetchForwardTopics(const QString &streamUuid);
+    Q_INVOKABLE void fetchForwardTopics(const QString &streamUuid, bool refresh = false);
     Q_INVOKABLE QVariantList forwardTopicOptions(const QString &streamUuid) const;
     Q_INVOKABLE bool forwardTopicsPending(const QString &streamUuid) const;
     Q_INVOKABLE bool beginEditMessage(const QString &id);

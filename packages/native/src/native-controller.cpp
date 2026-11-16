@@ -15189,7 +15189,10 @@ bool NativeController::forwardOwned(const ForwardIntent &intent) const
 
 bool NativeController::canForwardMessages() const
 {
-    return authenticated() && !m_forwardIntent.busy;
+    // Review round 1 (cid 4586012796): an unconfirmed-pending batch owns its
+    // identity until Check settles it; a new begin would strand the first
+    // ambiguous POST without its Check escape, so pending blocks too.
+    return authenticated() && !m_forwardIntent.busy && !m_forwardIntent.pending;
 }
 
 bool NativeController::forwardPending() const
@@ -15219,6 +15222,19 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
     if (sources.isEmpty() || QUuid(streamUuid).isNull() || QUuid(topicUuid).isNull()) {
         report(tr("There is nothing to forward."));
         return;
+    }
+    // Review round 1 (cid 4586012787): the reference's only submit route
+    // sendMessengerMessage throws on stream.encryption === true before any
+    // request (workspace_ui 75bd21f37 messenger-message-actions.lib.ts:
+    // 309-311), so a plaintext snapshot never reaches an encrypted chat.
+    // This forward route has no crypto submit path at all, so refuse the
+    // destination here - no batch identity, no source fetch, no POST, and
+    // failForward puts the reason on the forward alert for the modal.
+    for (const auto &stream : m_streams) {
+        if (stream.uuid == streamUuid && stream.encrypted) {
+            failForward(tr("Forwarding to encrypted chats is not supported."));
+            return;
+        }
     }
     auto intent = ForwardIntent{};
     intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -15251,11 +15267,23 @@ void NativeController::fetchForwardSources(quint64 ticket)
             return;
         }
         QHash<QString, Message> found;
+        bool unsupported = false;
         for (const auto &row : result.data.toArray()) {
             const auto parsed = parseMessage(row.toObject(), project);
-            if (parsed && parsed->kind == QLatin1String("markdown") && sources.contains(parsed->uuid)
-                && !found.contains(parsed->uuid))
-                found.insert(parsed->uuid, *parsed);
+            if (!parsed || !sources.contains(parsed->uuid) || found.contains(parsed->uuid))
+                continue;
+            // Review round 1 (cid 4586012837): the reference admits every
+            // server message to selection and then refuses the whole batch
+            // with a visible error when any source cannot build a snapshot
+            // (workspace_ui 75bd21f37 workspace-forward-message.lib.ts:78-84
+            // + ui.tsx:449-451). Mirror that instead of silently dropping the
+            // unsupported source and posting a truncated snapshot.
+            if (parsed->kind != QLatin1String("markdown")) { unsupported = true; continue; }
+            found.insert(parsed->uuid, *parsed);
+        }
+        if (unsupported) {
+            failForward(tr("Only text messages can be forwarded."));
+            return;
         }
         m_forwardIntent.wire = buildForwardSnapshot(m_forwardIntent.sources, found);
         if (m_forwardIntent.wire.isEmpty()) {
@@ -15403,11 +15431,16 @@ bool NativeController::confirmForward(const QJsonObject &raw, quint64 ticket)
 // Forward-modal topic options for one stream (reference forward picker). GET
 // only, cached per owner+stream so a picker reload never re-posts anything;
 // a failed fetch leaves the previous options untouched and re-openable.
-void NativeController::fetchForwardTopics(const QString &streamUuid)
+// Review round 1 (cid 4586012826): the cache is a session shortcut, not a
+// freeze - the picker passes refresh=true on every stream activation so
+// topics created or renamed mid-session reach the reopened picker, even
+// after an empty or single-topic first fetch.
+void NativeController::fetchForwardTopics(const QString &streamUuid, bool refresh)
 {
     if (!authenticated() || QUuid(streamUuid).isNull()) return;
     const auto key = ownerKey() + QLatin1Char('|') + streamUuid;
-    if (m_forwardTopicOptions.contains(key) || m_forwardTopicsLoading.contains(key)) return;
+    if (m_forwardTopicsLoading.contains(key)) return;
+    if (!refresh && m_forwardTopicOptions.contains(key)) return;
     m_forwardTopicsLoading.insert(key);
     const auto attempt = ++m_forwardTopicRequests[key];
     QUrlQuery query;
