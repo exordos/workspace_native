@@ -24403,12 +24403,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(borderWidth(chatButton), 1.0);
         QTest::mouseMove(window, away);
         QTRY_VERIFY_WITH_TIMEOUT(!chatButton->property("hovered").toBool(), 5000);
-        // Disabled chips never take the hover border.
-        QVERIFY(!calendarButton->isEnabled());
-        QTest::mouseMove(window, center(calendarButton)); QTRY_VERIFY(!mailButton->property("hovered").toBool());
-        QTest::qWait(150);
+        // Issue #36: Calendar is `available: true` in the reference
+        // (top-bar.lib.ts getTopBarSectionNavItems), so it follows the idle
+        // hover contract instead of the former disabled-chip branch.
+        QVERIFY(calendarButton->isEnabled() && !calendarButton->property("selected").toBool());
         QCOMPARE(borderWidth(calendarButton), 0.0);
+        QTest::mouseMove(window, center(calendarButton));
+        QTRY_VERIFY_WITH_TIMEOUT(calendarButton->property("hovered").toBool(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(borderWidth(calendarButton), 1.0, 5000);
+        QCOMPARE(QQmlProperty::read(calendarButton, "background.border.color").value<QColor>(), borderSubtle);
         QTest::mouseMove(window, away);
+        QTRY_VERIFY_WITH_TIMEOUT(!calendarButton->property("hovered").toBool(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(borderWidth(calendarButton), 0.0, 5000);
     }
 };
 

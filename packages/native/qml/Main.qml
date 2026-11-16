@@ -1797,12 +1797,15 @@ ApplicationWindow {
                 objectName: "sectionCalendarButton"
                 colors: root.colors
                 asset: "calendar.svg"
-                help: qsTr("Calendar is not available in this native preview")
-                enabled: false
+                help: qsTr("Calendar")
+                selected: root.controller.section === "calendar"
+                activeBorder: true
                 width: 48
                 height: 48
                 glyphSize: 32
                 cornerRadius: 12
+                iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
+                onClicked: root.controller.showSection("calendar")
             }
             NativeIconButton {
                 objectName: "sectionMailButton"
@@ -7490,6 +7493,21 @@ ApplicationWindow {
             heading: qsTr("Mail")
             body: qsTr("This section is temporarily unavailable in web mode.")
             visible: root.controller.section === "mail"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
+        // Calendar section page (issue #36): like Mail, the packaged desktop
+        // reference exposes only the unavailable fallback card for /calendar
+        // (workspace_ui 61dacef7 calendar-page.ui.tsx + electron main.ts:452);
+        // WebView is forbidden. The shared component already serves any
+        // section via heading/body/asset (nav.calendar, app.webModeUnavailable).
+        NativeSectionUnavailablePage {
+            objectName: "calendarSectionPage"
+            colors: root.colors
+            asset: "calendar.svg"
+            heading: qsTr("Calendar")
+            body: qsTr("This section is temporarily unavailable in web mode.")
+            visible: root.controller.section === "calendar"
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

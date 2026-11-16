@@ -6230,6 +6230,12 @@ void NativeController::showSection(const QString &name)
         m_section = QStringLiteral("mail");
         emit stateChanged();
     }
+    else if (name == QLatin1String("calendar"))
+    {
+        closeOtherContentPages(ContentPage::Calendar);
+        m_section = QStringLiteral("calendar");
+        emit stateChanged();
+    }
     else if (name == QLatin1String("chat"))
     {
         // The Chat button is the section home: the reference route to "/"
@@ -6241,8 +6247,8 @@ void NativeController::showSection(const QString &name)
             emit stateChanged();
         }
     }
-    // Unknown sections (calendar today, calls/services later) are ignored
-    // until the client can render them.
+    // Unknown sections (calls/services today) are ignored until the client
+    // can render them.
 }
 
 void NativeController::showMentions()
