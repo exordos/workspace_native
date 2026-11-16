@@ -2388,6 +2388,14 @@
         <source>The forwarded message could not be verified. Check does not send it again.</source>
         <translation>Пересланное сообщение не подтверждено. Проверка не отправляет его повторно.</translation>
     </message>
+    <message>
+        <source>Forwarding to encrypted chats is not supported.</source>
+        <translation>Пересылка в зашифрованные чаты не поддерживается.</translation>
+    </message>
+    <message>
+        <source>Only text messages can be forwarded.</source>
+        <translation>Пересылать можно только текстовые сообщения.</translation>
+    </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
