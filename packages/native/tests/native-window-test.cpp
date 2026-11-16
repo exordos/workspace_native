@@ -24217,6 +24217,67 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // button is covered above.
         QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage"), 5000);
     }
+
+    // Issue #35 review 4581320967: the reference available-chip class string
+    // is `border border-transparent hover:border-border-subtle`
+    // (top-bar.lib.ts resolveTopBarSectionButtonClassName at workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af), so an idle enabled chip shows
+    // the 1 px border-subtle stroke only while hovered, the active chip keeps
+    // it, and the disabled branch (unavailable chips) has no hover chrome.
+    void idleSectionChipShowsReferenceHoverBorder()
+    {
+        const QColor borderSubtle("#d8e4ef"); // light border-subtle
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chatButton = view("sectionChatButton"); QVERIFY(chatButton);
+        auto *mailButton = view("sectionMailButton"); QVERIFY(mailButton);
+        auto *calendarButton = view("sectionCalendarButton"); QVERIFY(calendarButton);
+        const auto borderWidth = [](QQuickItem *chip) {
+            return QQmlProperty::read(chip, "background.border.width").toReal();
+        };
+        const auto center = [](QQuickItem *chip) {
+            return chip->mapToScene(QPointF(chip->width() / 2, chip->height() / 2)).toPoint();
+        };
+        const QPoint away(4, window->height() - 4);
+        QTest::mouseMove(window, away); QTRY_VERIFY(!mailButton->property("hovered").toBool());
+        QVERIFY(chatButton->property("selected").toBool());
+        QVERIFY(mailButton->isEnabled() && !mailButton->property("selected").toBool());
+        // Idle unhovered chip is borderless (reference border-transparent).
+        QCOMPARE(borderWidth(mailButton), 0.0);
+        // Hovering the idle chip draws the 1 px border-subtle stroke.
+        QTest::mouseMove(window, center(mailButton));
+        QTRY_VERIFY_WITH_TIMEOUT(mailButton->property("hovered").toBool(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(borderWidth(mailButton), 1.0, 5000);
+        QCOMPARE(QQmlProperty::read(mailButton, "background.border.color").value<QColor>(), borderSubtle);
+        QVERIFY(!mailButton->property("selected").toBool());
+        // Leaving restores the borderless idle chrome.
+        QTest::mouseMove(window, away);
+        QTRY_VERIFY_WITH_TIMEOUT(!mailButton->property("hovered").toBool(), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(borderWidth(mailButton), 0.0, 5000);
+        // The selected chip keeps its border while hovered (reference parity).
+        QTest::mouseMove(window, center(chatButton));
+        QTRY_VERIFY_WITH_TIMEOUT(chatButton->property("hovered").toBool(), 5000);
+        QCOMPARE(borderWidth(chatButton), 1.0);
+        QTest::mouseMove(window, away);
+        QTRY_VERIFY_WITH_TIMEOUT(!chatButton->property("hovered").toBool(), 5000);
+        // Disabled chips never take the hover border.
+        QVERIFY(!calendarButton->isEnabled());
+        QTest::mouseMove(window, center(calendarButton)); QTRY_VERIFY(!mailButton->property("hovered").toBool());
+        QTest::qWait(150);
+        QCOMPARE(borderWidth(calendarButton), 0.0);
+        QTest::mouseMove(window, away);
+    }
 };
 
 class NativeLivelockWindowWorker final : public QObject {
