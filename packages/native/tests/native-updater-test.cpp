@@ -1,9 +1,11 @@
 #include "native-updater.h"
+#include "native-updater-taskbar.h"
 
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,6 +20,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWindow>
 
 #include <functional>
 #include <memory>
@@ -198,6 +201,8 @@ private slots:
     void rejectedInstall();
     void cancellationTerminatesTheInstallerAndRemovesStaging();
     void cancellationAllowsTheInstallerToRemoveItsOwnActiveLock();
+    void downloadProgressMirrorsTheTaskbarHint_data();
+    void downloadProgressMirrorsTheTaskbarHint();
 };
 
 void NativeUpdaterTest::explicitCheckAndVerifiedStreamingDownload()
@@ -744,5 +749,94 @@ void NativeUpdaterTest::cancellationAllowsTheInstallerToRemoveItsOwnActiveLock()
     QVERIFY(QDir(sandbox.filePath(QStringLiteral("cache"))).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
 }
 
-QTEST_GUILESS_MAIN(NativeUpdaterTest)
+void NativeUpdaterTest::downloadProgressMirrorsTheTaskbarHint_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto *mode : {"downloaded", "error", "cancel"})
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+// Reference (workspace_ui 61dacef7 main.ts:1363-1381): download-progress
+// pushes percent/100 into the taskbar, and update-downloaded/error clear it
+// with -1. The native mirror must reproduce that trajectory on the window's
+// progress hint; see docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md.
+void NativeUpdaterTest::downloadProgressMirrorsTheTaskbarHint()
+{
+    QFETCH(QString, mode);
+    Server server;
+    QVERIFY(server.listening);
+    QTemporaryDir cache;
+    QVERIFY(cache.isValid());
+    QPointer<QTcpSocket> binary;
+    const auto chunk = Archive.size() / 4; // Four equal synthetic chunks.
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        if (request.startsWith("GET /latest ")) { Server::reply(socket, json(server.release())); return; }
+        binary = socket;
+        socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(Archive.size())
+            + "\r\nConnection: close\r\n\r\n" + Archive.left(chunk));
+    };
+    QWindow window;
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), cache.path());
+    UpdaterTaskbarProgress mirror;
+    mirror.attach(&window, &updater);
+    struct Sample { QString state; qreal hint; bool present; };
+    QList<Sample> samples;
+    // Connected after the mirror, so each sample observes the hint just synced.
+    QObject::connect(&updater, &NativeUpdater::changed, &updater, [&] {
+        const auto property = window.property("progress");
+        samples.append(Sample{updater.state(), property.toDouble(), property.isValid()});
+    });
+    QVERIFY(!window.property("progress").isValid()); // No bar before any download event.
+    updater.check();
+    QTRY_COMPARE(updater.state(), QStringLiteral("available"));
+    QVERIFY(!window.property("progress").isValid()); // checking/available never push a hint.
+    updater.download();
+    QTRY_COMPARE(server.requests.size(), 2);
+    QTRY_VERIFY(updater.progress() > 0);
+    if (mode == QStringLiteral("cancel")) {
+        // No Electron counterpart, but a cancelled download must not stick.
+        updater.cancel();
+        QCOMPARE(updater.state(), QStringLiteral("idle"));
+        QCOMPARE(window.property("progress").toDouble(), qreal(-1));
+        return;
+    }
+    const auto delivered = mode == QStringLiteral("error") ? 2 * chunk : Archive.size();
+    for (auto offset = chunk; offset < delivered; offset += chunk) {
+        QVERIFY(binary);
+        binary->write(Archive.mid(offset, chunk));
+        QTRY_VERIFY(updater.progress() >= qreal(offset + chunk) / qreal(Archive.size()));
+    }
+    // A complete transfer already closed the reply; the held socket may be gone.
+    if (binary) binary->disconnectFromHost(); // Early close is an error, complete is downloaded.
+    QTRY_VERIFY(updater.state() == QStringLiteral("downloaded") || updater.state() == QStringLiteral("error"));
+    QCOMPARE(updater.state(), mode);
+    QCOMPARE(window.property("progress").toDouble(), qreal(-1)); // Cleared on both edges.
+    // The forwarded hint rose monotonically from 0 toward 1 inside [0, 1].
+    qreal previous = 0;
+    bool sawProgress = false;
+    for (const auto &sample : samples) {
+        if (sample.state != QStringLiteral("downloading")) continue;
+        QVERIFY(sample.present);
+        QVERIFY(sample.hint >= 0);
+        QVERIFY(sample.hint <= 1);
+        QVERIFY(sample.hint >= previous);
+        previous = sample.hint;
+        if (sample.hint > 0) sawProgress = true;
+    }
+    QVERIFY(sawProgress);
+    if (mode == QStringLiteral("downloaded"))
+        QCOMPARE(previous, qreal(1)); // Reached full progress before the clear.
+    QVERIFY(!samples.isEmpty());
+    QCOMPARE(samples.last().hint, qreal(-1)); // The final outward event cleared.
+}
+
+// The window progress hint case needs a real QWindow, so the suite runs on
+// QGuiApplication; forcing offscreen keeps every case headless as before.
+int main(int argc, char *argv[])
+{
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication app(argc, argv);
+    NativeUpdaterTest test;
+    return QTest::qExec(&test, argc, argv);
+}
 #include "native-updater-test.moc"
