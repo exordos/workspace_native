@@ -254,6 +254,13 @@ if(BUILD_TESTING)
     target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test Qt6::DBus)
     add_test(NAME native-updater COMMAND native-updater-test)
     set_tests_properties(native-updater PROPERTIES TIMEOUT 180)
+    # Focused selection of the LauncherEntry bus case (its own entry so
+    # `ctest -R native-updater` gates it explicitly); it also runs inside the
+    # full native-updater binary run, which is what the CI '^native-updater$'
+    # step selects.
+    add_test(NAME native-updater-launcher-entry COMMAND native-updater-test
+        downloadProgressReachesTheLauncherEntryChannel)
+    set_tests_properties(native-updater-launcher-entry PROPERTIES TIMEOUT 180)
 
     # Real About leaf policy with public QObject adapters; no network/window.
     add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
