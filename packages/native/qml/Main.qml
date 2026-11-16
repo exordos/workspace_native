@@ -7639,6 +7639,17 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
+        // Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md): cross-chat
+        // "All messages" reached through the /feed route; the reference keeps
+        // the sidebar rail entry hidden, so there is deliberately no native
+        // rail entry for it either.
+        NativeFeedPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.feedVisible
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
         // Mail section page (issue #35): the unavailable-state fallback card is
         // the only state the shipping desktop product exposes for /mail
         // (workspace_ui 61dacef7 electron main.ts:452); WebView is forbidden.

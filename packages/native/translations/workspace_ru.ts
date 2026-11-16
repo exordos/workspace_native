@@ -3013,6 +3013,37 @@
         </message>
     </context>
     <context>
+        <name>NativeFeedPage</name>
+        <message>
+            <source>All messages</source>
+            <translation>Все сообщения</translation>
+        </message>
+        <message>
+            <source>Close feed</source>
+            <translation>Закрыть ленту</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>Failed to load messages</source>
+            <translation>Не удалось загрузить сообщения</translation>
+        </message>
+        <message>
+            <source>No messages yet</source>
+            <translation>Пока нет сообщений</translation>
+        </message>
+        <message>
+            <source>Open in chat</source>
+            <translation>Открыть в чате</translation>
+        </message>
+        <message>
+            <source>Forward</source>
+            <translation>Переслать</translation>
+        </message>
+    </context>
+    <context>
         <name>workspace::NotificationService</name>
         <message>
             <source>New message</source>
