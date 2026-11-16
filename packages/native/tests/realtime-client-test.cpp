@@ -1050,7 +1050,7 @@ private slots:
     // so a successful save must not release the invalidation fence until the
     // key verifiably holds the replacement cursor.
 
-    void noopSaveKeepsInvalidationFenceAndNextConnectRebaselines()
+    void noopSaveKeepsInvalidationFenceAndStaleRowNeverRestored()
     {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -1094,13 +1094,23 @@ private slots:
             return !current.has_value() || current->epoch < quint64(12);
         })(), 3000);
         fixture.client.stop();
-        // The next connect therefore cannot restore the future-epoch row:
-        // a fresh client re-baselines instead of resuming pruned gen-a/12.
+        // The next connect can never restore the future-epoch row: the
+        // owed delete removed gen-a/12, and the held-dirty replacement
+        // landed in its place, so the fresh client resumes the valid
+        // gen-a/10 position instead of restoring the pruned one.
         RealtimeClient resumed(&fixture.api, &fixture.session);
         resumed.useCursorStore(&store);
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
-        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto current = store.read(key);
+            return current.has_value() && current->generation == QString("generation-a")
+                && current->epoch == quint64(10);
+        })(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.sockets.size() >= 2 && fixture.sockets.last()
+            && QUrlQuery(fixture.sockets.last()->requestUrl()).queryItemValue("last_epoch_version")
+                == QString("10"), 3000);
+        QCOMPARE(snapshots.size(), 0);
         resumed.stop();
     }
 
