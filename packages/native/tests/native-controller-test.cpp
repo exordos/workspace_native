@@ -17439,8 +17439,12 @@ private slots:
         QCOMPARE(preview(4), QStringLiteral("Hi @Alice"));
         QCOMPARE(preview(5), QStringLiteral("Quote: follow up please"));
         // Attacker-supplied HTML stays literal text; the QML side must keep
-        // rendering it plain (never rich text).
-        QCOMPARE(preview(6), QStringLiteral("<img src=\"http://evil.invalid/track.png\"> ping"));
+        // rendering it plain (never rich text). The url carried in the src
+        // attribute is still a link destination, so the URL-token invariant
+        // collapses it to the neutral `Link` label (exo-review thread
+        // 4581966233 round 3; docs/NATIVE_DESKTOP_FEED.md deviation note).
+        QCOMPARE(preview(6), QStringLiteral("<img Link ping"));
+        QVERIFY(!preview(6).contains(QStringLiteral("evil")));
         // The clamp runs on the summarized text: the link target is gone
         // before truncation, so the summary keeps its tail label.
         QVERIFY(!preview(7).contains(QStringLiteral("https://")));
@@ -17489,6 +17493,32 @@ private slots:
                 "note [a][u]\n\n[u]: urn:file:55555555-5555-4555-8555-555555555555?name=secret.pdf"))},
             {8, withContent(8, QStringLiteral(
                 "plain [docs](https://example.com/handbook) tail"))},
+            // Round 3 sweep (thread 4581966233): hostile rows that survive the
+            // markdown passes above because the reference itself prints their
+            // text verbatim - autolinks whose label IS the destination, URLs
+            // typed as plain text, raw <...> autolinks, URL-shaped labels,
+            // scheme-case variants - plus a destination whose first characters
+            // cross the 80-character clamp.
+            {9, withContent(9, QStringLiteral(
+                "[https://intranet.example/secret?k=1](https://intranet.example/secret?k=1)"))},
+            {10, withContent(10, QStringLiteral(
+                "Read the doc at https://intranet.example/secret/a?k=1 ok"))},
+            {11, withContent(11, QStringLiteral(
+                "see [www.example.com/leak](https://intranet.example/secret) now"))},
+            {12, withContent(12, QStringLiteral(
+                "<https://intranet.example/raw>"))},
+            {13, withContent(13, QStringLiteral(
+                "see doc https://leak.example/x now"))},
+            {14, withContent(14, QStringLiteral(
+                "[HTTP://EXAMPLE.EXAMPLE/SECRET](HTTP://EXAMPLE.EXAMPLE/SECRET)"))},
+            {15, withContent(15, QStringLiteral(
+                "[urn:uuid:secret-id](urn:uuid:secret-id)"))},
+            {16, withContent(16, QStringLiteral(
+                "[https://public.example/label](https://intranet.example/target)"))},
+            {17, withContent(17, QStringLiteral(
+                "note the url https://intranet.example/x?sig=deadbeefcafe123"))},
+            {18, withContent(18, QStringLiteral("x").repeated(74) + QStringLiteral(
+                " https://leak.example/p?token=supersecretvalue"))},
         });
         fixture.messages = [rows](const Request &request) {
             const QUrlQuery query(request.target);
@@ -17499,19 +17529,39 @@ private slots:
         QVERIFY(fixture.start());
         fixture.controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(
-            fixture.controller.feedPage().value("rows").toList().size() == 8, 4000);
+            fixture.controller.feedPage().value("rows").toList().size() == 18, 4000);
         const auto preview = [&](int number) {
             const auto list = fixture.controller.feedPage().value("rows").toList();
             return list.at(number - 1).toMap().value("preview").toString();
         };
-        // No row may carry a raw target, whatever Markdown shape carried it.
+        // Invariant (exo-review thread 4581966233): after summarization and
+        // clamping a preview never carries a scheme marker (`://` in any case,
+        // `urn:`, `mailto:`), a known destination host or an urn payload -
+        // not in full and not as a fragment cut by the clamp.
         QStringList leaked;
-        for (int number = 1; number <= 8; ++number) {
+        const QString xTail(74, QLatin1Char('x'));
+        for (int number = 1; number <= 18; ++number) {
             const auto value = preview(number);
-            if (value.contains(QStringLiteral("intranet")) || value.contains(QStringLiteral("urn:"))
-                || value.contains(QStringLiteral("!(")) || value.contains(QStringLiteral("](")))
+            const auto lowered = value.toLower();
+            bool suspect = lowered.contains(QStringLiteral("://"))
+                || lowered.contains(QStringLiteral("urn:"))
+                || lowered.contains(QStringLiteral("mailto:"))
+                || lowered.contains(QStringLiteral("intranet"))
+                || lowered.contains(QStringLiteral("leak.example"))
+                || lowered.contains(QStringLiteral("evil.invalid"))
+                || lowered.contains(QStringLiteral("secret-id"))
+                || lowered.contains(QStringLiteral("public.example"))
+                || value.contains(QStringLiteral("EXAMPLE.EXAMPLE"))
+                || value.contains(QStringLiteral("!(")) || value.contains(QStringLiteral("]("));
+            // Row 18's clamp fragment (`...ht` of `https`) carries no marker:
+            // only the exact whole-token expectation proves it.
+            if (number == 18 && value != xTail + QStringLiteral("..."))
+                suspect = true;
+            if (suspect)
                 leaked << QStringLiteral("row %1: [%2]").arg(number).arg(value);
         }
+        for (const auto &row : leaked)
+            qWarning().noquote() << QStringLiteral("LEAK-WITNESS %1").arg(row);
         const QStringList expected;
         QCOMPARE(leaked, expected);
         QCOMPARE(preview(1), QStringLiteral("handbook"));
@@ -17528,6 +17578,26 @@ private slots:
         QVERIFY(!preview(6).contains(QStringLiteral("://")));
         QVERIFY(preview(6).endsWith(QStringLiteral("...")));
         QVERIFY(preview(6).startsWith(head));
+        // Round 3: every URL-shaped row collapses to the neutral `Link` label.
+        // The reference would print rows 9-17 as their URL text verbatim
+        // (summarizeLinkInline fallback, workspace_ui 61dacef78dab:97-112);
+        // the feed privacy invariant wins (docs/NATIVE_DESKTOP_FEED.md).
+        QCOMPARE(preview(9), QStringLiteral("Link"));
+        QCOMPARE(preview(10), QStringLiteral("Read the doc at Link ok"));
+        // A plain `www.` host label is not a destination and stays visible.
+        QCOMPARE(preview(11), QStringLiteral("see www.example.com/leak now"));
+        QCOMPARE(preview(12), QStringLiteral("Link"));
+        QCOMPARE(preview(13), QStringLiteral("see doc Link now"));
+        QCOMPARE(preview(14), QStringLiteral("Link"));
+        QVERIFY(!preview(15).contains(QStringLiteral("secret-id")));
+        QVERIFY(!preview(15).contains(QStringLiteral("urn:")));
+        QCOMPARE(preview(16), QStringLiteral("Link"));
+        QCOMPARE(preview(17), QStringLiteral("note the url Link"));
+        // The clamp cuts at whole tokens even when the destination crosses
+        // the limit inside its first characters (`...ht` of `https` is already
+        // a partial destination): the entire token is dropped, never trimmed
+        // down to a fragment. (The witness loop above asserts the same.)
+        QCOMPARE(preview(18), xTail + QStringLiteral("..."));
     }
 
     void feedLoadingAndEmptyStates()
