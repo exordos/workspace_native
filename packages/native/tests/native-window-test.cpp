@@ -5453,12 +5453,63 @@ mv -Tf "$root/.current-new" "$root/current"
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(hasVisibleText(window->contentItem(), "Failed to load messages"), 5000);
         QVERIFY(view("feedErrorBox"));
-        // The empty project renders the feed.noMessages card instead.
+        // Recovery goes through the card's own retry control, not a direct
+        // retryFeed() call, so the UI wiring itself is covered (exo-review
+        // finding on NativeFeedPage.qml: the error card had no retry action).
+        QTRY_VERIFY_WITH_TIMEOUT(view("feedRetryButton") != nullptr, 2000);
         failure.failFeed = false;
         failure.emptyFeed = true;
-        controller.retryFeed();
+        click(window, view("feedRetryButton"));
         QTRY_VERIFY_WITH_TIMEOUT(hasVisibleText(window->contentItem(), "No messages yet"), 5000);
         QVERIFY(!view("feedErrorBox"));
+    }
+
+    // exo-review: feed previews must render attacker-controlled content as
+    // plain text (automatic Text format detection could otherwise load remote
+    // images from hostile message bodies) and show safe labels for markdown
+    // media instead of raw urns (workspace_ui 61dacef feed-page.ui.test.tsx:
+    // 279-297 "renders Workspace feed message summary without raw file urls").
+    void feedPreviewIsPlainTextAndLabelSafe()
+    {
+        WindowFeedFixture fixture;
+        auto hostile = fixture.one(1);
+        auto hostilePayload = hostile.value("payload").toObject();
+        hostilePayload.insert("content",
+            QStringLiteral("<img src=\"http://127.0.0.1:9/evil.png\"> ping"));
+        hostile["payload"] = hostilePayload;
+        auto media = fixture.one(2);
+        auto mediaPayload = media.value("payload").toObject();
+        mediaPayload.insert("content", QStringLiteral(
+            "![screen.png](urn:image:11111111-1111-4111-8111-111111111111?name=screen.png) Вот скрин"));
+        media["payload"] = mediaPayload;
+        fixture.rows = {{1, hostile}, {2, media}};
+        const QString hostileId = hostile.value("uuid").toString();
+        const QString mediaId = media.value("uuid").toString();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(view("feed-summary-" + hostileId)
+            && view("feed-summary-" + mediaId), 5000);
+        auto *hostileLabel = view("feed-summary-" + hostileId);
+        // QQuickText::PlainText: the <img> tag is shown verbatim and never
+        // parsed as rich text, so no remote image can be requested from the feed.
+        QCOMPARE(hostileLabel->property("textFormat").toString(),
+            QString("PlainText"));
+        QCOMPARE(hostileLabel->property("text").toString(),
+            QStringLiteral("<img src=\"http://127.0.0.1:9/evil.png\"> ping"));
+        auto *mediaLabel = view("feed-summary-" + mediaId);
+        QCOMPARE(mediaLabel->property("textFormat").toString(),
+            QString("PlainText"));
+        QCOMPARE(mediaLabel->property("text").toString(), QStringLiteral("Image: Вот скрин"));
     }
 
     // Issue #54: switching sidebar destinations in the mounted window keeps
