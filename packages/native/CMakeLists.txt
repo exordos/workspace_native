@@ -32,6 +32,7 @@ add_library(workspace-native-core STATIC
     src/native-instance.cpp src/native-instance.h
     src/native-logging.cpp src/native-logging.h
     src/native-updater.cpp src/native-updater.h
+    src/native-updater-taskbar.cpp src/native-updater-taskbar.h
     src/native-cache.cpp src/native-cache.h
     src/native-cache-service.cpp src/native-cache-service.h
     src/native-draft-store.cpp src/native-draft-store.h
