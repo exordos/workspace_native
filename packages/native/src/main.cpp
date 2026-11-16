@@ -11,6 +11,7 @@
 #include "native-instance.h"
 #include "native-logging.h"
 #include "native-updater.h"
+#include "native-updater-taskbar.h"
 #include "native-preferences.h"
 #include "realtime-client.h"
 #include "power-watcher.h"
@@ -133,6 +134,12 @@ int main(int argc, char **argv)
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
     workspace::NativeDesktop desktop(window);
+    // Mirror updater download progress into the window's taskbar progress
+    // hint (issue #76): percent/100 while downloading, cleared on downloaded
+    // and on error, reproducing the reference setProgressBar semantics. Bare
+    // window managers ignore the hint (docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md).
+    workspace::UpdaterTaskbarProgress updaterTaskbar;
+    updaterTaskbar.attach(window, &updater);
     // Desktop notifications over the session bus with X11 attention support.
     auto *notifications = controller.notifications();
     auto *desktopNotifications = new workspace::DBusNotificationTransport(
