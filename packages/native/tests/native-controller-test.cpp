@@ -17235,6 +17235,74 @@ private slots:
         QVERIFY(!fixture.controller.feedPage().value("error").toBool());
     }
 
+    // The preview reproduces the reference summarizeWorkspaceMessageMarkdown
+    // contract for inline syntax: FEED_MESSAGE_SUMMARY_OPTIONS maxLength 80
+    // with media/attachment labels and the quote prefix (feed-page.ui.tsx:64-69);
+    // summarizeFileInline, summarizeLinkInline and summarizeParagraph in
+    // workspace-message-summary.lib.ts replace link targets and attachment
+    // urns with safe labels BEFORE the clamp truncates, so no raw urn or link
+    // target survives into the preview (feed-page.ui.test.tsx:279-297 pins the
+    // media case as "Изображение: Вот скрин" with no urn and no file uuid).
+    void feedPreviewSummarizesMarkdownWithoutRawUrls()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto withContent = [](int number, const QString &content) {
+            auto row = feedMessage(number);
+            auto payload = row.value("payload").toObject();
+            payload.insert("content", content);
+            row.insert("payload", payload);
+            return row;
+        };
+        const QString longText(78, QLatin1Char('a'));
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, withContent(1, QStringLiteral(
+                "![screen.png](urn:image:11111111-1111-4111-8111-111111111111?name=screen.png) Вот скрин"))},
+            {2, withContent(2, QStringLiteral(
+                "Docs at [the handbook](https://example.com/docs/secret) daily"))},
+            {3, withContent(3, QStringLiteral(
+                "![report.pdf](urn:file:22222222-2222-4222-8222-222222222222?name=report.pdf&content_type=application/pdf&size=1024) attached"))},
+            {4, withContent(4, QStringLiteral(
+                "Hi [Alice](urn:user:33333333-3333-4333-8333-333333333333)"))},
+            {5, withContent(5, QStringLiteral("> follow up please"))},
+            {6, withContent(6, QStringLiteral("<img src=\"http://evil.invalid/track.png\"> ping"))},
+            {7, withContent(7, longText + QStringLiteral(
+                " [the handbook](https://example.com/very/long/path?with=query&more=segments#anchor) end"))},
+        });
+        fixture.messages = [rows](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (isFeedQuery(query))
+                return feedPageResponse(*rows, request);
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFeed();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fixture.controller.feedPage().value("rows").toList().size() == 7, 4000);
+        // Rows project oldest-first (feed.model.ts sortUniqueMessages), so
+        // feed message N sits at index N-1.
+        const auto preview = [&](int number) {
+            const auto list = fixture.controller.feedPage().value("rows").toList();
+            return list.at(number - 1).toMap().value("preview").toString();
+        };
+        QCOMPARE(preview(1), QStringLiteral("Image: Вот скрин"));
+        QCOMPARE(preview(2), QStringLiteral("Docs at the handbook daily"));
+        QCOMPARE(preview(3), QStringLiteral("File: report.pdf attached"));
+        QCOMPARE(preview(4), QStringLiteral("Hi @Alice"));
+        QCOMPARE(preview(5), QStringLiteral("Quote: follow up please"));
+        // Attacker-supplied HTML stays literal text; the QML side must keep
+        // rendering it plain (never rich text).
+        QCOMPARE(preview(6), QStringLiteral("<img src=\"http://evil.invalid/track.png\"> ping"));
+        // The clamp runs on the summarized text: the link target is gone
+        // before truncation, so the summary keeps its tail label.
+        QVERIFY(!preview(7).contains(QStringLiteral("https://")));
+        QVERIFY(preview(7).endsWith(QStringLiteral("...")));
+        QCOMPARE(preview(7).size(), 80);
+        QVERIFY(!preview(1).contains(QStringLiteral("urn:")));
+        QVERIFY(!preview(1).contains(QStringLiteral("11111111")));
+        QVERIFY(!preview(3).contains(QStringLiteral("22222222")));
+    }
+
     void feedLoadingAndEmptyStates()
     {
         Fixture fixture;
