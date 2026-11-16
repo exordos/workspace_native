@@ -5603,12 +5603,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(view("feed-summary-" + hostileId)
             && view("feed-summary-" + mediaId), 5000);
         auto *hostileLabel = view("feed-summary-" + hostileId);
-        // QQuickText::PlainText: the <img> tag is shown verbatim and never
-        // parsed as rich text, so no remote image can be requested from the feed.
+        // QQuickText::PlainText: the <img> tag is never parsed as rich text, so
+        // no remote image can be requested from the feed. The destination
+        // inside the raw tag is URL-shaped, so the feed preview's
+        // destination-leak invariant collapses it to the safe label - no
+        // destination survives anywhere in the previewed text.
         QCOMPARE(hostileLabel->property("textFormat").toString(),
             QString("PlainText"));
         QCOMPARE(hostileLabel->property("text").toString(),
-            QStringLiteral("<img src=\"http://127.0.0.1:9/evil.png\"> ping"));
+            QStringLiteral("<img Link ping"));
         auto *mediaLabel = view("feed-summary-" + mediaId);
         QCOMPARE(mediaLabel->property("textFormat").toString(),
             QString("PlainText"));
