@@ -1,3 +1,30 @@
+# Workspace Native 0.29.0 - Linux development preview
+
+Reading position survives restarts, forwarding becomes an honest batch, and the project feed gets its own page:
+
+- Realtime stream positions are now durable: each conversation's
+  cursor is stored locally per owner and restored when the socket
+  resumes - a resynchronize that lands after the acknowledgement replaces
+  the restored position, a failed persist is retained and retried until a
+  read-back confirms it instead of being silently dropped, everything is
+  wiped on sign-out, and a corrupt store degrades to a clean fallback
+  rather than blocking delivery.
+- Forwarding several messages now lands exactly one copy per message:
+  select rows from the bubble menu or row checkboxes and forward through
+  the reference modal with stream and topic pickers. Duplicates inside a
+  batch collapse into a single delivery, a posted batch is confirmed by a
+  GET read-back and never re-sent, and encrypted or unknown destinations
+  are refused before anything leaves the machine. Messages the client
+  cannot render reject the batch instead of being silently omitted, and a
+  confirmation can no longer overwrite a newer selection.
+- The project feed page lists every message across all of a project's
+  conversations in one place: deep links open it, top pagination keeps
+  fetching older pages, and open-in-chat jumps to any row. Preview text
+  renders markdown safely - link labels survive their destinations,
+  which stay hidden.
+
+---
+
 # Workspace Native 0.28.0 - Linux development preview
 
 The taskbar now reports update downloads, and Calendar joins the top bar:
