@@ -1,0 +1,428 @@
+[0/1] Re-running CMake...
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquick2plugin' is a dependency of 'workspace-native', but
+  the link target it defines (Qt6::qtquick2plugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qmlplugin' is a dependency of 'workspace-native', but the
+  link target it defines (Qt6::qmlplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'modelsplugin' is a dependency of 'workspace-native', but
+  the link target it defines (Qt6::modelsplugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'workerscriptplugin' is a dependency of 'workspace-native',
+  but the link target it defines (Qt6::workerscriptplugin) does not exist in
+  the current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'quickwindowplugin' is a dependency of 'workspace-native',
+  but the link target it defines (Qt6::quickwindow) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtwebenginequickplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtwebenginequickplugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'webchannelquickplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::WebChannelQuickplugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtwebenginequickdelegatesplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtwebenginequickdelegatesplugin) does not exist in the current scope.
+  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2plugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2plugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qquicklayoutsplugin' is a dependency of 'workspace-native',
+  but the link target it defines (Qt6::qquicklayoutsplugin) does not exist in
+  the current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickdialogsplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickdialogsplugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2fusionstyleplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2fusionstyleplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2materialstyleplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2materialstyleplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2imaginestyleplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2imaginestyleplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2universalstyleplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2universalstyleplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2basicstyleplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2basicstyleplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickdialogs2quickimplplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickdialogs2quickimplplugin) does not exist in the current scope.
+  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquicktemplates2plugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquicktemplates2plugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2implplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2implplugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2fusionstyleimplplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2fusionstyleimplplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2materialstyleimplplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2materialstyleimplplugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2imaginestyleimplplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2imaginestyleimplplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2universalstyleimplplugin' is a dependency
+  of 'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2universalstyleimplplugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qtquickcontrols2basicstyleimplplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qtquickcontrols2basicstyleimplplugin) does not exist in the current
+  scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qmlshapesplugin' is a dependency of 'workspace-native', but
+  the link target it defines (Qt6::qmlshapesplugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'labsmodelsplugin' is a dependency of 'workspace-native',
+  but the link target it defines (Qt6::labsmodelsplugin) does not exist in
+  the current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'qmlfolderlistmodelplugin' is a dependency of
+  'workspace-native', but the link target it defines
+  (Qt6::qmlfolderlistmodelplugin) does not exist in the current scope.  The
+  plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'effectsplugin' is a dependency of 'workspace-native', but
+  the link target it defines (Qt6::effectsplugin) does not exist in the
+  current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+CMake Warning at /usr/lib/x86_64-linux-gnu/cmake/Qt6Qml/Qt6QmlMacros.cmake:4669 (message):
+  The qml plugin 'quickmultimediaplugin' is a dependency of
+  'workspace-native', but the link target it defines (Qt6::quickmultimedia)
+  does not exist in the current scope.  The plugin will not be linked.
+Call Stack (most recent call first):
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (qt6_import_qml_plugins)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:801 (cmake_language)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:879 (_qt_internal_finalize_executable)
+  /usr/lib/x86_64-linux-gnu/cmake/Qt6Core/Qt6CoreMacros.cmake:848:EVAL:1 (qt6_finalize_target)
+  CMakeLists.txt:DEFERRED
+
+
+-- Configuring done (0.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/ubuntu/dev/lanes/244/build/gate
+[1/139] Copying workspace-native qml sources into build dir
+[2/139] Automatic MOC and UIC for target native-updater-http2-recovery-driver
+[3/137] Automatic MOC and UIC for target native-updater-test
+[4/135] Automatic MOC and UIC for target workspace-native-desktop
+[5/133] Automatic MOC and UIC for target workspace-native-core
+[6/131] Automatic MOC and UIC for target native-updater-http2-controls-driver
+[7/129] Automatic MOC and UIC for target native-runtime-probe
+[8/127] Automatic MOC and UIC for target secure-store-platform-test
+[9/125] Automatic MOC and UIC for target native-e2ee-read-test
+[10/123] Automatic MOC and UIC for target workspace-native-ui
+[11/121] Running qmlimportscanner for workspace-native
+[12/121] Automatic MOC and UIC for target native-chat-key-vault-platform-test
+[13/119] Automatic MOC and UIC for target workspace-reference-test
+[14/117] Automatic MOC and UIC for target native-about-policy-test
+[15/115] Automatic MOC and UIC for target domain-test
+[16/113] Automatic MOC and UIC for target api-client-test
+[17/111] Automatic MOC and UIC for target workspace-native
+[18/110] Automatic MOC and UIC for target file-client-test
+[19/108] Automatic MOC and UIC for target avatar-images-test
+[20/106] Automatic MOC and UIC for target message-images-test
+[21/104] Automatic MOC and UIC for target native-design-test
+[22/102] Automatic MOC and UIC for target native-markdown-test
+[23/100] Automatic MOC and UIC for target native-chat-crypto-test
+[24/98] Automatic MOC and UIC for target native-chat-key-vault-test
+[25/96] Automatic MOC and UIC for target native-preferences-test
+[26/94] Automatic MOC and UIC for target native-chat-runtime-test
+[27/92] Automatic MOC and UIC for target native-locale-test
+[28/90] Automatic MOC and UIC for target native-auth-guard-test
+[29/88] Automatic MOC and UIC for target native-instance-test
+[30/86] Automatic MOC and UIC for target native-cache-test
+[31/84] Automatic MOC and UIC for target native-cache-preferences-test
+[32/82] Automatic MOC and UIC for target native-cache-service-test
+[33/80] Automatic MOC and UIC for target native-draft-store-test
+[34/78] Automatic MOC and UIC for target native-draft-service-test
+[35/76] Automatic MOC and UIC for target native-drafts-test
+[36/74] Automatic MOC and UIC for target native-draft-sync-test
+[37/72] Automatic MOC and UIC for target session-test
+[38/70] Automatic MOC and UIC for target session-vault-test
+[39/68] Automatic MOC and UIC for target realtime-client-test
+[40/66] Automatic MOC and UIC for target native-controller-test
+[41/64] Automatic MOC and UIC for target native-desktop-test
+[42/62] Automatic MOC and UIC for target native-call-test
+[43/60] Automatic MOC and UIC for target native-e2ee-ui-test
+[44/59] Generating .rcc/qmlcache/workspace-native_qml/NativeQuickReactions_qml.cpp, .rcc/qmlcache/workspace-native_qml/NativeQuickReactions_qml.cpp.aotstats
+[45/59] Running rcc for resource native_qml
+[46/59] Running rcc for resource workspace-native_raw_qml_0
+[47/59] Building CXX object CMakeFiles/native-e2ee-ui-test.dir/.qt/rcc/qrc_native_qml.cpp.o
+[48/59] Automatic MOC and UIC for target native-window-test
+[49/58] Building CXX object CMakeFiles/native-window-test.dir/.qt/rcc/qrc_native_qml.cpp.o
+[50/58] Linking CXX executable native-e2ee-ui-test
+[51/58] Generating .rcc/qmlcache/workspace-native_qml/Main_qml.cpp, .rcc/qmlcache/workspace-native_qml/Main_qml.cpp.aotstats
+[52/58] Building CXX object CMakeFiles/workspace-native.dir/.qt/rcc/qrc_workspace-native_raw_qml_0.cpp.o
+[53/58] Building CXX object CMakeFiles/workspace-native.dir/.rcc/qmlcache/workspace-native_qml/NativeQuickReactions_qml.cpp.o
+[54/58] Building CXX object CMakeFiles/workspace-native.dir/.rcc/qmlcache/workspace-native_qml/Main_qml.cpp.o
+[55/58] Linking CXX executable workspace-native
+[56/58] Building CXX object CMakeFiles/native-window-test.dir/tests/native-window-test.cpp.o
+[57/58] Linking CXX executable native-window-test

@@ -1,3 +1,22 @@
+# Workspace Native 0.28.0 - Linux development preview
+
+The taskbar now reports update downloads, and Calendar joins the top bar:
+
+- While the updater is downloading an update, the launcher tile in the
+  taskbar mirrors the download progress and shows the completed hint when
+  the download finishes. A listener that joins the session bus mid-download
+  is no longer left behind: the progress hint is republished on an interval
+  while a download is in flight and stops once the update reaches a terminal
+  state.
+- The Calendar button in the top bar is now active instead of a disabled
+  placeholder. Clicking it switches to the calendar section as its own page,
+  rendered as the reference unavailable-state card: centered glyph, heading
+  and body text explaining that calendar is not available in the packaged
+  desktop client, identical in both locales and both color modes. The chip
+  follows the reference idle, active and hover behavior.
+
+---
+
 # Workspace Native 0.27.0 - Linux development preview
 
 Mail joins the top bar as a real section, and typing in busy conversations got cheaper:
