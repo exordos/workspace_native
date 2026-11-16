@@ -1780,16 +1780,18 @@ ApplicationWindow {
             y: topBar.titleStripHeight + (topBar.toolbarHeight - height) / 2
             spacing: 12
             NativeIconButton {
+                objectName: "sectionChatButton"
                 colors: root.colors
                 asset: "chat_bubble.svg"
                 help: qsTr("Chats and channels")
-                selected: true
+                selected: root.controller.section === "chat"
+                activeBorder: selected
                 width: 48
                 height: 48
                 glyphSize: 32
                 cornerRadius: 12
-                iconColor: root.colors["icon-active"]
-                onClicked: { root.controller.closeDrafts(); root.sidebarQuery = ""; }
+                iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
+                onClicked: { root.controller.showSection("chat"); root.controller.closeDrafts(); root.sidebarQuery = ""; }
             }
             NativeIconButton {
                 colors: root.colors
@@ -1802,14 +1804,18 @@ ApplicationWindow {
                 cornerRadius: 12
             }
             NativeIconButton {
+                objectName: "sectionMailButton"
                 colors: root.colors
                 asset: "mail.svg"
-                help: qsTr("Mail is not available in this native preview")
-                enabled: false
+                help: qsTr("Mail")
                 width: 48
                 height: 48
                 glyphSize: 32
                 cornerRadius: 12
+                selected: root.controller.section === "mail"
+                activeBorder: selected
+                iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
+                onClicked: root.controller.showSection("mail")
             }
         }
         Row {
@@ -3319,7 +3325,7 @@ ApplicationWindow {
         ColumnLayout {
             id: conversation
             visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
-                && !root.controller.inboxVisible
+                && !root.controller.inboxVisible && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
@@ -7470,6 +7476,19 @@ ApplicationWindow {
             controller: root.controller
             colors: root.colors
             visible: root.controller.inboxVisible
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
+        // Mail section page (issue #35): the unavailable-state fallback card is
+        // the only state the shipping desktop product exposes for /mail
+        // (workspace_ui 61dacef7 electron main.ts:452); WebView is forbidden.
+        NativeSectionUnavailablePage {
+            objectName: "mailSectionPage"
+            colors: root.colors
+            asset: "mail.svg"
+            heading: qsTr("Mail")
+            body: qsTr("This section is temporarily unavailable in web mode.")
+            visible: root.controller.section === "mail"
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

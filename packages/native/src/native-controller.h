@@ -194,6 +194,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString mentionsFilter READ mentionsFilter NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap mentionsPage READ mentionsPage NOTIFY stateChanged)
     Q_PROPERTY(bool inboxVisible READ inboxVisible NOTIFY stateChanged)
+    Q_PROPERTY(QString section READ section NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
@@ -399,6 +400,9 @@ public:
     QString mentionsFilter() const { return m_mentionsFilter; }
     QVariantMap mentionsPage() const;
     bool inboxVisible() const { return m_inboxVisible; }
+    // Top-bar application section: "chat" or "mail"; switching is exclusive and
+    // any conversation navigation returns to "chat" (issue #35).
+    QString section() const { return m_section; }
     QVariantMap inboxPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
@@ -464,6 +468,7 @@ public:
     Q_INVOKABLE void loadMoreMentions();
     Q_INVOKABLE void retryMentions();
     Q_INVOKABLE void showInbox();
+    Q_INVOKABLE void showSection(const QString &name);
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void nextDraftPage();
@@ -1694,7 +1699,8 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox };
+    enum class ContentPage { Drafts, Mentions, Inbox, Mail };
+    void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
     // stream/topic/created_at are needed for the read-boundary and scope clears
@@ -1730,6 +1736,7 @@ private:
     void hydrateSidebarSearchTopics();
     QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream) const;
     bool m_inboxVisible = false;
+    QString m_section = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
     QHash<QString, quint64> m_inboxHydrating; // stream -> hydration token (#64)
     quint64 m_inboxHydrationToken = 0;

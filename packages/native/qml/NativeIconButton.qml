@@ -12,6 +12,9 @@ ToolButton {
     property int glyphHeight: glyphSize
     property int cornerRadius: 6
     property bool selected: false
+    // Active top-bar chips draw the reference border-border-subtle (issue #35);
+    // opt-in so every other instance keeps its current chrome.
+    property bool activeBorder: false
     implicitWidth: 36
     implicitHeight: 36
     padding: 0
@@ -27,7 +30,7 @@ ToolButton {
     background: Rectangle {
         radius: control.cornerRadius
         color: control.selected ? control.colors["card-bg-active"] : control.down || control.hovered ? control.colors["sidebar-item-hover"] : "transparent"
-        border.width: control.visualFocus ? 1 : 0
-        border.color: control.colors.accent
+        border.width: control.visualFocus || (control.selected && control.activeBorder) ? 1 : 0
+        border.color: control.visualFocus ? control.colors.accent : control.colors["border-subtle"]
     }
 }

@@ -322,8 +322,12 @@
             <translation>Календарь пока недоступен</translation>
         </message>
         <message>
-            <source>Mail is not available in this native preview</source>
-            <translation>Почта пока недоступна</translation>
+            <source>Mail</source>
+            <translation>Почта</translation>
+        </message>
+        <message>
+            <source>This section is temporarily unavailable in web mode.</source>
+            <translation>Раздел временно недоступен в веб-режиме.</translation>
         </message>
         <message>
             <source>Profile</source>
