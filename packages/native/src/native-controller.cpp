@@ -6746,9 +6746,16 @@ void NativeController::openStarredMessage(const QString &id)
 void NativeController::loadStarredCollection(bool append)
 {
     auto &collection = m_starred;
-    if (collection.inflight)
+    if (collection.inflight) {
+        // A first-page refresh that arrives mid-request must not vanish:
+        // every mount refreshes from the first page
+        // (activity-page.ui.tsx:283-297), so queue it for the response tail.
+        if (!append)
+            collection.refreshPending = true;
         return;
+    }
     collection.inflight = true;
+    collection.refreshPending = false;
     const quint64 version = ++collection.version;
     QUrlQuery query;
     query.addQueryItem("starred", "true");
@@ -6764,6 +6771,8 @@ void NativeController::loadStarredCollection(bool append)
         if (state.version != version)
             return; // a newer collection owner owns the state now (test 952)
         state.inflight = false;
+        const bool rerunRefresh = state.refreshPending;
+        state.refreshPending = false;
         if (!result.ok() || !result.data.isArray()) {
             state.loading = false;
             if (append)
@@ -6771,6 +6780,8 @@ void NativeController::loadStarredCollection(bool append)
             else
                 state.error = true;
             emit stateChanged();
+            if (rerunRefresh)
+                loadStarredCollection(false);
             return;
         }
         QVector<Message> page;
@@ -6789,6 +6800,8 @@ void NativeController::loadStarredCollection(bool append)
         state.error = false;
         state.paginationError = false;
         emit stateChanged();
+        if (rerunRefresh)
+            loadStarredCollection(false);
     });
 }
 
