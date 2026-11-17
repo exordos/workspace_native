@@ -14,6 +14,7 @@
 #include <QWebSocket>
 #include <QWebSocketServer>
 #include <optional>
+#include <vector>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -227,6 +228,19 @@ public:
     int epochGets = 0;
     int eventsGets = 0;
     std::function<void()> onStreamsGet;
+    // Test-owned snapshot gate: while holdStreams is set, every /streams/
+    // response is held until the test calls releaseStreams(), so a snapshot
+    // can stay unacknowledged across a reconnect without any sleeps.
+    bool holdStreams = false;
+    std::vector<std::function<void()>> heldStreamSends;
+
+    void releaseStreams()
+    {
+        holdStreams = false;
+        const auto pending = std::exchange(heldStreamSends, {});
+        for (const auto &send : pending)
+            send();
+    }
 
     BootstrapGateway()
     {
@@ -266,7 +280,7 @@ public:
                     request.body = QJsonDocument::fromJson(bytes.mid(end + 4, size)).object();
                     requests.append(request);
                     const auto response = handle(request);
-                    QTimer::singleShot(response.delay, socket, [socket, response] {
+                    const auto send = [socket, response] {
                         if (socket->state() != QAbstractSocket::ConnectedState)
                             return;
                         const auto body = response.data.isArray()
@@ -279,7 +293,11 @@ public:
                             headers += it.key() + ": " + it.value() + "\r\n";
                         socket->write(headers + "\r\n" + body);
                         socket->disconnectFromHost();
-                    });
+                    };
+                    if (response.defer)
+                        response.defer(send);
+                    else
+                        QTimer::singleShot(response.delay, socket, send);
                 });
             }
         });
@@ -327,7 +345,13 @@ public:
             ++streamsGets;
             if (onStreamsGet)
                 onStreamsGet();
-            return {streamRows, 200, 0, {}};
+            Response response{streamRows, 200, 0, {}};
+            if (holdStreams) {
+                response.defer = [this](std::function<void()> send) {
+                    heldStreamSends.push_back(std::move(send));
+                };
+            }
+            return response;
         }
         if (path.endsWith("/users/")) {
             ++usersGets;
@@ -1533,6 +1557,67 @@ private slots:
             const auto current = app.store.read(key);
             return current.has_value() && current->generation == QString("generation-a")
                 && current->epoch == quint64(12);
+        }, 4000));
+    }
+
+    // Findings 4599009714/4599009723: the snapshot requirement of a restored
+    // durable cursor is application-model hydration state, not transport
+    // state: a suspend()/resume() cycle while the restore-time snapshot is
+    // still unacknowledged must keep catch-up blocked until the catalog
+    // bootstrap completes, and catch-up must then resume above the
+    // restored epoch exactly as without the interruption.
+    void reconnectDuringUnacknowledgedRestoreSnapshotKeepsHydrationGate()
+    {
+        QTemporaryDir cursorDirectory;
+        QVERIFY(cursorDirectory.isValid());
+        BootstrapGateway mock;
+        const auto key = RealtimeCursorStore::ownerKey(mock.origin(), projectId, userId);
+        {
+            RealtimeCursorStore seed(cursorDirectory.path());
+            QVERIFY(seed.save(key, {QStringLiteral("generation-a"), 10}));
+        }
+        // One channel was created after the cursor was persisted; it may
+        // only be applied on top of the snapshot catalog.
+        mock.events.insert(11, streamCreatedEvent(11,
+            QStringLiteral("99999999-9999-4999-8999-000000000011"), "Channel after reconnect"));
+        // Hold every catalog response: the restore-time snapshot stays
+        // unacknowledged until the test releases it. No sleeps in this race.
+        mock.holdStreams = true;
+        QTemporaryDir cacheDirectory;
+        QVERIFY(cacheDirectory.isValid());
+        BootstrapProcess app(mock, cacheDirectory.path(), cursorDirectory.path(), true);
+        QSignalSpy snapshots(&app.client, &RealtimeClient::snapshotRequired);
+        QVERIFY(app.login(mock));
+        // The durable restore asked for one snapshot and the catalog request
+        // is in flight (held), so nothing has been acknowledged yet.
+        QVERIFY(QTest::qWaitFor([&] { return mock.streamsGets >= 1 && snapshots.size() >= 1; }, 4000));
+        QCOMPARE(mock.epochGets, 0);
+        QCOMPARE(mock.eventsGets, 0);
+        // A reconnect lands while the snapshot response is still held. The
+        // transport must keep the hydration requirement across it.
+        app.client.reconnectNow("power_resume");
+        QVERIFY2(QTest::qWaitFor([&] { return snapshots.size() >= 2 && mock.streamsGets >= 2; }, 4000),
+            "reconnect during the unacknowledged restore snapshot did not keep the snapshot requirement");
+        // The reconnect must not have started catch-up ahead of the
+        // acknowledgement: no first-sync request and no resumed socket.
+        QVERIFY2(mock.eventsGets == 0,
+            "catch-up issued a first-sync request before the restore snapshot was acknowledged");
+        QVERIFY(mock.sockets.isEmpty());
+        // Release the held snapshot: the catalog completes, the controller
+        // acknowledges, and catch-up runs above the restored epoch.
+        mock.releaseStreams();
+        QVERIFY(QTest::qWaitFor([&] { return app.controller.streams().size() == 2; }, 4000));
+        const auto lastEvents = std::find_if(mock.requests.crbegin(), mock.requests.crend(),
+            [](const Request &request) { return request.target.path().endsWith("/events/"); });
+        QVERIFY(lastEvents != mock.requests.crend());
+        QCOMPARE(QUrlQuery(lastEvents->target).queryItemValue("epoch_version>"), QString("10"));
+        QCOMPARE(QUrlQuery(lastEvents->target).queryItemValue("epoch_generation"), QString("generation-a"));
+        QVERIFY(mock.indexOf("/streams/") < mock.indexOf("/events/"));
+        // The acknowledged catch-up advanced the durable cursor.
+        QVERIFY(QTest::qWaitFor([&] {
+            const auto current = app.store.read(key);
+            return current.has_value() && current->generation == QString("generation-a")
+                && current->epoch == quint64(11);
         }, 4000));
     }
 
