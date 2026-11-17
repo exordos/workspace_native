@@ -5603,6 +5603,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!view("messageList"));
         QVERIFY(!view("messageComposer"));
         QCOMPARE(fixture.collectionRequests, 0);
+        // Conversation navigation leaves the state (selectStream closes the
+        // activity pages, like the starred page does).
+        controller.selectStream(streamId);
+        QTRY_VERIFY(view("messageList"));
+        controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
+            + QString::number(fixture.server.origin().port())
+            + QStringLiteral("/project/") + projectId + QStringLiteral("/activity/reactions"));
+        QTRY_VERIFY(view("activityUnsupportedText"));
+        QVERIFY(!view("messageList"));
         // The header close control returns to the conversation.
         auto *closeButton = view("activityUnsupportedCloseButton"); QVERIFY(closeButton);
         click(window, closeButton);

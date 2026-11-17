@@ -13619,6 +13619,7 @@ void NativeController::selectStream(const QString &id)
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
     closeStarred();
+    closeReactions();
     activateStream(id);
 }
 
@@ -14024,6 +14025,7 @@ void NativeController::selectTopic(const QString &id)
     closeMentions();
     closeInbox();
     closeStarred();
+    closeReactions();
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;
