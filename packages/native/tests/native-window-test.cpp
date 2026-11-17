@@ -28483,6 +28483,134 @@ private slots:
             QVERIFY(controller.sidebarStreams().isEmpty());
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+
+    // Issue #100 review fix 1: the state machine allows the partial banner and
+    // the empty card together (a query that matches nothing while a catalog
+    // refresh failed). The card must stack below the banner, never paint over
+    // it (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md stacking rule).
+    void sidebarPartialErrorStacksEmptyCardBelowBanner()
+    {
+        WindowChannelFixture fixture;
+        bool failCatalog = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (failCatalog && request.method == "GET"
+                && request.target.path().endsWith("/streams/"))
+                return {QJsonArray{}, 503};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-partial-empty.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar partial+empty window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+        // A failed refresh raises the partial banner while rows stay visible.
+        failCatalog = true;
+        controller.refresh();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarPartialBanner"),5000);
+        // A query that matches nothing on top of the failed refresh keeps the
+        // banner AND surfaces the empty card: both states are active together.
+        window->setProperty("sidebarQuery","nothing-matches");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarEmptyCard"),5000);
+        QVERIFY(visibleItem("sidebarPartialBanner"));
+        QVERIFY(!visibleItem("stream-"+streamId));
+        auto *banner = visibleItem("sidebarPartialBanner");
+        auto *emptyCard = visibleItem("sidebarEmptyCard");
+        const qreal bannerBottom = banner->mapToItem(window->contentItem(),QPointF(0,banner->height())).y();
+        const qreal emptyTop = emptyCard->mapToItem(window->contentItem(),QPointF(0,0)).y();
+        QVERIFY2(emptyTop >= bannerBottom,
+            qPrintable(QStringLiteral("empty card top %1 overlaps banner bottom %2")
+                .arg(emptyTop).arg(bannerBottom)));
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Issue #100 review fix 2: each visible state block must expose its status
+    // text to accessibility clients (Accessible.role + Accessible.name on the
+    // container, the house pattern at Main.qml AlertMessage/StatusBar/StaticText
+    // blocks) instead of being marked accessibility-ignored.
+    void sidebarCatalogStatesExposeAccessibleText_data()
+    {
+        QTest::addColumn<QString>("stateCase"); QTest::addColumn<int>("role");
+        QTest::addColumn<QString>("cardName"); QTest::addColumn<QString>("text");
+        QTest::addRow("loading") << QStringLiteral("loading") << int(QAccessible::StatusBar)
+            << QStringLiteral("sidebarLoadingCard") << QStringLiteral("Loading…");
+        QTest::addRow("blocking") << QStringLiteral("blocking") << int(QAccessible::AlertMessage)
+            << QStringLiteral("sidebarErrorCard")
+            << QStringLiteral("Something went wrong Could not load the catalog. Request failed (HTTP 503).");
+        QTest::addRow("partial") << QStringLiteral("partial") << int(QAccessible::AlertMessage)
+            << QStringLiteral("sidebarPartialBanner")
+            << QStringLiteral("Some sidebar data could not be refreshed Could not load the catalog. Request failed (HTTP 503).");
+        QTest::addRow("empty") << QStringLiteral("empty") << int(QAccessible::StaticText)
+            << QStringLiteral("sidebarEmptyCard")
+            << QStringLiteral("No matches Try a different chat or topic name.");
+    }
+    void sidebarCatalogStatesExposeAccessibleText()
+    {
+        QFETCH(QString, stateCase); QFETCH(int, role);
+        QFETCH(QString, cardName); QFETCH(QString, text);
+        WindowChannelFixture fixture;
+        bool failCatalog = false;
+        std::function<void()> releaseStreams;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                if (stateCase == QStringLiteral("blocking") || failCatalog)
+                    return {QJsonArray{}, 503};
+                if (stateCase == QStringLiteral("loading")) {
+                    auto response = fallback(request);
+                    response.defer = [&releaseStreams](std::function<void()> send) {
+                        releaseStreams = std::move(send);
+                    };
+                    return response;
+                }
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-a11y.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar accessibility window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        if (stateCase == QStringLiteral("partial")) {
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+            failCatalog = true;
+            controller.refresh();
+        } else if (stateCase == QStringLiteral("empty")) {
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+            window->setProperty("sidebarQuery","nothing-matches");
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(cardName),5000);
+        auto *card = visibleItem(cardName); QVERIFY(card);
+        auto *accessible = QAccessible::queryAccessibleInterface(card); QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::Role(role));
+        QCOMPARE(accessible->text(QAccessible::Name), text);
+        if (stateCase == QStringLiteral("loading")) {
+            const auto send = std::exchange(releaseStreams,{}); if (send) send();
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+        }
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
