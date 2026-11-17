@@ -27496,7 +27496,301 @@ private slots:
         QTRY_VERIFY(!visibleItem("deactivated-direct-header"));
         QTRY_VERIFY(visibleItem("presence-direct-header"));
     }
+    // ---- Issue #45: static Services placeholder hub
+    // (docs/NATIVE_DESKTOP_SERVICES.md, workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af services-page.ui.tsx) ----
+    void servicesPlaceholderHubMatchesReferenceContract_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void servicesPlaceholderHubMatchesReferenceContract()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        const bool dark = mode == QLatin1String("dark");
+        const bool ru = locale == QLatin1String("ru");
+        const QColor pageBg = dark ? QColor("#141517") : QColor("#e4ecf3");
+        const QColor cardBg = dark ? QColor("#282a32") : QColor("#eef5fb");
+        const QColor textPrimary = dark ? QColor("#ffffff") : QColor("#1b1b1d");
+        const QColor textMuted = dark ? QColor("#707070") : QColor("#989898");
+        const QColor borderSubtle = dark ? QColor("#33384d") : QColor("#d8e4ef");
+        const QColor accent("#7087ff");
+        const QColor onAccent = dark ? QColor("#141517") : QColor("#1b1b1d");
+        // Six cards in the fixed reference order (services-page.ui.tsx:13-50)
+        // with the exact i18n strings (en.json:1098-1109, ru.json:1110-1121).
+        struct CardSpec
+        {
+            QString id; QString asset; QString titleEn; QString hintEn;
+            QString titleRu; QString hintRu;
+        };
+        const QList<CardSpec> specs = {
+            {QStringLiteral("knowledge-base"), QStringLiteral("files.svg"),
+                QStringLiteral("Knowledge base"),
+                QStringLiteral("Internal docs and team playbooks."),
+                QString::fromUtf8("База знаний"),
+                QString::fromUtf8("Внутренние документы и командные инструкции.")},
+            {QStringLiteral("people-directory"), QStringLiteral("group.svg"),
+                QStringLiteral("People directory"),
+                QStringLiteral("Team structure, contacts, and roles."),
+                QString::fromUtf8("Справочник сотрудников"),
+                QString::fromUtf8("Структура команды, контакты и роли.")},
+            {QStringLiteral("approvals"), QStringLiteral("handshake.svg"),
+                QStringLiteral("Approvals"),
+                QStringLiteral("Requests and approval workflows."),
+                QString::fromUtf8("Согласования"),
+                QString::fromUtf8("Заявки и процессы согласования.")},
+            {QStringLiteral("docs"), QStringLiteral("folder.svg"),
+                QStringLiteral("Document vault"),
+                QStringLiteral("Contracts, templates, and shared files."),
+                QString::fromUtf8("Документы"),
+                QString::fromUtf8("Договоры, шаблоны и общие файлы.")},
+            {QStringLiteral("automation"), QStringLiteral("business_center.svg"),
+                QStringLiteral("Automation"),
+                QStringLiteral("Routine process automation and bots."),
+                QString::fromUtf8("Автоматизация"),
+                QString::fromUtf8("Автоматизация рутинных процессов и боты.")},
+            {QStringLiteral("integrations"), QStringLiteral("links.svg"),
+                QStringLiteral("Integrations"),
+                QStringLiteral("Connections with external SaaS systems."),
+                QString::fromUtf8("Интеграции"),
+                QString::fromUtf8("Подключения к внешним SaaS-системам.")},
+        };
+        const QString headingText = ru ? QString::fromUtf8("Сервисы") : QStringLiteral("Services");
+        const QString plannedHint = ru
+            ? QString::fromUtf8("Здесь появятся сервисы. Интеграции уже готовятся.")
+            : QStringLiteral("Services will be available here. Integrations are being prepared.");
+        const QString chipText = ru ? QString::fromUtf8("Скоро") : QStringLiteral("Coming soon");
+        const QString chatsLabel = ru ? QString::fromUtf8("Чаты и каналы")
+                                      : QStringLiteral("Chats & channels");
+
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        QVERIFY(!view("nativeServicesPage"));
+        // The reference top bar keeps the Services button behind a build flag
+        // (top-bar.test.tsx:153: no services nav button by default), so the
+        // native build must not render a visible section entry either; the
+        // whitelisted /services deeplink (section state) is the entry surface.
+        QVERIFY(!view("sectionServicesButton"));
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        auto *page = view("nativeServicesPage"); QVERIFY(page);
+        QCOMPARE(controller.section(), QStringLiteral("services"));
+        QVERIFY(!view("messageComposer")); // The chat surfaces are hidden.
+        // Page background: the plain bg token behind the whole hub.
+        auto *pageBgRect = view("servicesPageBackground"); QVERIFY(pageBgRect);
+        QCOMPARE(QQmlProperty::read(pageBgRect, "color").value<QColor>(), pageBg);
+        // Header: full width, bg-card-bg, 1 px bottom border-border-subtle.
+        auto *headerBg = view("servicesHeaderBg"); QVERIFY(headerBg);
+        QCOMPARE(pos(headerBg).x(), pos(page).x());
+        QCOMPARE(pos(headerBg).y(), pos(page).y());
+        QCOMPARE(headerBg->width(), page->width());
+        QCOMPARE(QQmlProperty::read(headerBg, "color").value<QColor>(), cardBg);
+        auto *headerBorder = view("servicesHeaderBorder"); QVERIFY(headerBorder);
+        QCOMPARE(headerBorder->height(), 1.0);
+        QCOMPARE(headerBorder->width(), page->width());
+        QCOMPARE(pos(headerBorder).y() - pos(page).y(), headerBg->height());
+        QCOMPARE(QQmlProperty::read(headerBorder, "color").value<QColor>(), borderSubtle);
+        // h1 text-lg font-semibold text-text-primary at px-4 py-4.
+        auto *heading = view("servicesHeading"); QVERIFY(heading);
+        QCOMPARE(heading->property("text").toString(), headingText);
+        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 18);
+        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::DemiBold);
+        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
+        QCOMPARE(pos(heading).x() - pos(page).x(), 16.0);
+        QCOMPARE(pos(heading).y() - pos(page).y(), 16.0);
+        // Sub: mt-1 text-sm text-text-muted.
+        auto *sub = view("servicesPlannedHint"); QVERIFY(sub);
+        QCOMPARE(sub->property("text").toString(), plannedHint);
+        QCOMPARE(sub->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(sub->property("color").value<QColor>(), textMuted);
+        QCOMPARE(pos(sub).x() - pos(page).x(), 16.0);
+        QVERIFY(qAbs(pos(sub).y() - (pos(heading).y() + heading->height()) - 4.0) < 1.0);
+        // Exactly six cards, in the fixed reference order: the DOM order is
+        // the index order (objectName servicesCard-<id>) and the painted
+        // order matches it at the default window (3 columns at 1440 px).
+        QStringList cardOrder;
+        for (const auto &spec : specs) cardOrder << spec.id;
+        QList<QQuickItem *> cards;
+        for (const auto &id : cardOrder)
+        {
+            auto *card = view("servicesCard-" + id);
+            QVERIFY2(card, qPrintable(QStringLiteral("missing card %1").arg(id)));
+            cards.append(card);
+        }
+        for (qsizetype index = 0; index < cards.size(); ++index)
+        {
+            const auto &spec = specs[index];
+            auto *card = cards[index];
+            QCOMPARE(card->property("cardId").toString(), spec.id);
+            // Card box: min-h-[170px] rounded-xl border-border-subtle bg-card-bg.
+            QVERIFY2(card->height() >= 170.0,
+                qPrintable(QStringLiteral("card %1 height %2")
+                    .arg(spec.id).arg(card->height())));
+            QCOMPARE(QQmlProperty::read(card, "radius").toReal(), 12.0);
+            QCOMPARE(QQmlProperty::read(card, "color").value<QColor>(), cardBg);
+            QCOMPARE(QQmlProperty::read(card, "border.width").toReal(), 1.0);
+            QCOMPARE(QQmlProperty::read(card, "border.color").value<QColor>(), borderSubtle);
+            // Icon tile: 44 x 44 rounded-lg bg-bg 1 px border at p-4,
+            // icon size 22 in text-text-muted.
+            auto *tile = view("servicesIcon-" + spec.id); QVERIFY(tile);
+            QCOMPARE(tile->width(), 44.0);
+            QCOMPARE(tile->height(), 44.0);
+            QCOMPARE(QQmlProperty::read(tile, "radius").toReal(), 8.0);
+            QCOMPARE(QQmlProperty::read(tile, "color").value<QColor>(), pageBg);
+            QCOMPARE(QQmlProperty::read(tile, "border.width").toReal(), 1.0);
+            QCOMPARE(QQmlProperty::read(tile, "border.color").value<QColor>(), borderSubtle);
+            QCOMPARE(pos(tile).x() - pos(card).x(), 16.0);
+            QCOMPARE(pos(tile).y() - pos(card).y(), 16.0);
+            QCOMPARE(tile->property("asset").toString(), spec.asset);
+            auto *glyph = view("servicesGlyph-" + spec.id); QVERIFY(glyph);
+            QCOMPARE(glyph->width(), 22.0);
+            QCOMPARE(glyph->height(), 22.0);
+            QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
+            // Title text-sm font-medium text-text-primary.
+            auto *title = view("servicesTitle-" + spec.id); QVERIFY(title);
+            QCOMPARE(title->property("text").toString(),
+                ru ? spec.titleRu : spec.titleEn);
+            QCOMPARE(title->property("font").value<QFont>().pixelSize(), 14);
+            QCOMPARE(title->property("font").value<QFont>().weight(), QFont::Medium);
+            QCOMPARE(title->property("color").value<QColor>(), textPrimary);
+            QCOMPARE(pos(title).x() - pos(card).x(), 16.0);
+            QVERIFY(qAbs(pos(title).y() - (pos(tile).y() + tile->height()) - 12.0) < 1.0);
+            // Hint mt-1 text-sm text-text-muted.
+            auto *hint = view("servicesHint-" + spec.id); QVERIFY(hint);
+            QCOMPARE(hint->property("text").toString(),
+                ru ? spec.hintRu : spec.hintEn);
+            QCOMPARE(hint->property("font").value<QFont>().pixelSize(), 14);
+            QCOMPARE(hint->property("color").value<QColor>(), textMuted);
+            QCOMPARE(pos(hint).x() - pos(card).x(), 16.0);
+            QVERIFY(qAbs(pos(hint).y() - (pos(title).y() + title->height()) - 4.0) < 1.0);
+            // Chip: mt-4 (bottom-anchored by justify-between) rounded-md
+            // bg-bg px-2.5 py-1 text-xs text-text-muted.
+            auto *chip = view("servicesChip-" + spec.id); QVERIFY(chip);
+            QCOMPARE(QQmlProperty::read(chip, "radius").toReal(), 6.0);
+            QCOMPARE(QQmlProperty::read(chip, "color").value<QColor>(), pageBg);
+            QCOMPARE(QQmlProperty::read(chip, "border.width").toReal(), 1.0);
+            QCOMPARE(QQmlProperty::read(chip, "border.color").value<QColor>(), borderSubtle);
+            auto *chipLabel = view("servicesChipText-" + spec.id); QVERIFY(chipLabel);
+            QCOMPARE(chipLabel->property("text").toString(), chipText);
+            QCOMPARE(chipLabel->property("font").value<QFont>().pixelSize(), 12);
+            QCOMPARE(chipLabel->property("color").value<QColor>(), textMuted);
+            QVERIFY(qAbs(chip->width() - (chipLabel->width() + 20.0)) < 1.0);
+            QVERIFY(qAbs(chip->height() - (chipLabel->height() + 8.0)) < 1.0);
+            // justify-between pins the chip to the card's bottom padding edge.
+            QCOMPARE(pos(chip).x() - pos(card).x(), 16.0);
+            QVERIFY(qAbs(pos(chip).y() + chip->height()
+                - (pos(card).y() + card->height()) - 16.0) < 1.0);
+            // mt-4 (16 px) is the minimum gap to the hint block.
+            QVERIFY(pos(chip).y() >= pos(hint).y() + hint->height() + 16.0 - 1.0);
+        }
+        // Button: rounded-lg bg-accent px-3 py-1.5 text-sm text-on-accent,
+        // bottom-right of the p-4 section (flex justify-end).
+        auto *button = view("servicesChatButton"); QVERIFY(button);
+        QCOMPARE(QQmlProperty::read(button, "radius").toReal(), 8.0);
+        QCOMPARE(QQmlProperty::read(button, "color").value<QColor>(), accent);
+        auto *buttonLabel = view("servicesChatButtonText"); QVERIFY(buttonLabel);
+        QCOMPARE(buttonLabel->property("text").toString(), chatsLabel);
+        QCOMPARE(buttonLabel->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(buttonLabel->property("color").value<QColor>(), onAccent);
+        QVERIFY(qAbs(button->width() - (buttonLabel->width() + 24.0)) < 1.0);
+        QVERIFY(qAbs(button->height() - (buttonLabel->height() + 12.0)) < 1.0);
+        QVERIFY(qAbs(pos(button).x() + button->width() - (pos(page).x() + page->width()) + 16.0) < 1.0);
+        QVERIFY(qAbs(pos(button).y() + button->height() - (pos(page).y() + page->height()) + 16.0) < 1.0);
+        // The button navigates back to the chat view (reference openMessenger
+        // -> messenger root; services-page.test.tsx:31-36).
+        click(window, button);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeServicesPage") && view("messageComposer"), 5000);
+        QCOMPARE(controller.section(), QStringLiteral("chat"));
+    }
+
+    void servicesPlaceholderGridColumnsFollowWindowWidth_data()
+    {
+        QTest::addColumn<int>("windowWidth");
+        QTest::addColumn<int>("columns");
+        QTest::newRow("min-700") << 700 << 1;
+        QTest::newRow("md-1100") << 1100 << 2;
+        QTest::newRow("xl-1440") << 1440 << 3;
+    }
+    void servicesPlaceholderGridColumnsFollowWindowWidth()
+    {
+        // docs/NATIVE_DESKTOP_SERVICES.md: the reference grid is grid-cols-1
+        // with md:grid-cols-2 (viewport >= 768) and xl:grid-cols-3
+        // (viewport >= 1280); the native window width is the viewport band
+        // selector (app-window minimum is 700 px).
+        QFETCH(int, windowWidth);
+        QFETCH(int, columns);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(windowWidth, 800);
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        auto *page = view("nativeServicesPage"); QVERIFY(page);
+        QTRY_COMPARE_WITH_TIMEOUT(page->property("gridColumns").toInt(), columns, 5000);
+        QList<QQuickItem *> cards;
+        const QStringList ids = {QStringLiteral("knowledge-base"), QStringLiteral("people-directory"),
+            QStringLiteral("approvals"), QStringLiteral("docs"),
+            QStringLiteral("automation"), QStringLiteral("integrations")};
+        for (const auto &id : ids) cards.append(view("servicesCard-" + id));
+        for (auto *card : cards) QVERIFY(card);
+        // Column count: the painted x positions form exactly `columns`
+        // distinct columns (QSet of rounded x coordinates).
+        const auto columnCount = [&]() {
+            QSet<int> xs;
+            for (auto *card : cards) xs.insert(qRound(pos(card).x()));
+            return xs.size();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return columnCount() == columns; })(), 5000);
+        // Column spacing equals the card pitch and every card shares the
+        // same width; the grid starts at the p-4 section padding.
+        const auto gridX = pos(view("servicesGrid")).x();
+        QCOMPARE(gridX - pos(page).x(), 16.0);
+        const auto cardWidth = cards.first()->width();
+        for (auto *card : cards) QVERIFY(qAbs(card->width() - cardWidth) < 1.0);
+        if (columns > 1)
+        {
+            const auto secondColumnX = pos(cards[1]).x();
+            QVERIFY(secondColumnX > pos(cards[0]).x());
+            // gap-3 = 12 px between columns.
+            QVERIFY(qAbs(secondColumnX - (pos(cards[0]).x() + cardWidth) - 12.0) < 1.0);
+        }
+        else
+        {
+            // Single column: cards stack vertically with gap-3 rows.
+            QVERIFY(pos(cards[1]).y() > pos(cards[0]).y() + cards[0]->height());
+        }
+    }
 };
+
 
 class NativeLivelockWindowWorker final : public QObject {
     Q_OBJECT
