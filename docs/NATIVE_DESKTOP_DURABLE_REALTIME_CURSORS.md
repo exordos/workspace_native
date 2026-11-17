@@ -250,7 +250,7 @@ group): `restoredDurableCursorBootstrapsFreshControllerModels`,
 NativeController + NativeCacheService + RealtimeCursorStore + RealtimeClient
 in `src/main.cpp` order against a mock gateway; the transport cases
 (`persistedCursorAdvancesAndFreshClientResumesFromIt`,
-`sameOwnerReconnectResumesFromPersistedCursorWithoutBaseline`,
+`persistedRestoreRequiresSnapshotWithoutEpochRoundTrip`,
 `cursorExpiredAfterRestartResynchronizesAndReplacesPersistedCursor`,
 `noopSaveKeepsInvalidationFenceAndStaleRowNeverRestored`) now acknowledge
 the restore-time snapshot as the production controller does. No new `tr()`
