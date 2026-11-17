@@ -20368,12 +20368,12 @@ private slots:
         fixture.controller.showSection(QStringLiteral("mail"));
         fixture.controller.selectStream(streamId);
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
-        // Sections the client cannot render yet are ignored: the Calendar lane
-        // adopts this property without a behavioural surprise. (Calls moved to
-        // a rendered section in issue #37; services remains the example.)
+        // Services became a rendered section in issue #45: it takes the top-bar
+        // slot from mail exactly like the other sections do. (Calls moved to a
+        // rendered section in issue #37.)
         fixture.controller.showSection(QStringLiteral("mail"));
         fixture.controller.showSection(QStringLiteral("services"));
-        QCOMPARE(fixture.controller.section(), QStringLiteral("mail"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("services"));
         fixture.controller.showSection(QStringLiteral("chat"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
@@ -20415,10 +20415,10 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
         QVERIFY(!fixture.controller.draftsVisible() && !fixture.controller.mentionsVisible()
             && !fixture.controller.inboxVisible());
-        // Sections the client cannot render yet are still ignored while
-        // calendar is active. (Calls became renderable in issue #37.)
+        // Services became a rendered section in issue #45: it takes the
+        // top-bar slot from calendar as well.
         fixture.controller.showSection(QStringLiteral("services"));
-        QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("services"));
         fixture.controller.showSection(QStringLiteral("chat"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
