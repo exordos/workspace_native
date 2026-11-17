@@ -273,6 +273,9 @@ FocusScope {
                             ? [qsTr("Private"), String(card.modelData.streamName)].filter(Boolean).join(" · ")
                             : [String(card.modelData.streamName), String(card.modelData.topicName)]
                                 .filter(Boolean).join(" · ")
+                        // Server-provided names never get rich-text markup
+                        // treatment: no attacker-controlled link or image load.
+                        textFormat: Text.PlainText
                         color: page.colors["text-muted"]
                         font.pixelSize: 11
                     }
@@ -281,6 +284,9 @@ FocusScope {
                     objectName: "starred-author-" + card.modelData.id
                     topPadding: 2
                     text: String(card.modelData.author)
+                    // Directory names are attacker-visible input: never let a
+                    // crafted name be parsed as rich text (image/link fetch).
+                    textFormat: Text.PlainText
                     color: page.colors["sidebar-sender"]
                     font.pixelSize: 12
                     elide: Text.ElideRight
