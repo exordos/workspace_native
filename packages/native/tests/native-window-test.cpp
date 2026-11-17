@@ -28838,8 +28838,13 @@ private slots:
         QTRY_VERIFY(search->property("text").toString() == QStringLiteral("review"));
         QVERIFY(!view("sidebarActivityPanel")); // the query hides the panel
         const auto searchTop = chatList->y();
-        QVERIFY2(searchTop < closedTop,
-            qPrintable(QStringLiteral("search top %1 did not rise above closed top %2").arg(searchTop).arg(closedTop)));
+        // #392 test-only migration: the old premise required the no-match
+        // query to lift the chat list above the rail-closed top. Since #100
+        // a no-match query shows the sidebarEmptyCard ("No matches") in the
+        // state block and the stream-list top inset follows the card, so an
+        // empty result list now legitimately sits below it. The invariant
+        // this case pins is the hidden-panel gap check below: the re-search
+        // top with the expanded panel hidden must equal this search top.
         // Clearing restores the closed panel layout.
         clearTyped();
         QTRY_VERIFY(search->property("text").toString().isEmpty());
