@@ -5523,6 +5523,127 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(fixture.starredPages, 3); // the exhausted cursor never re-fires
     }
 
+    // Issue #43: the reactions activity collection has no data source in the
+    // reference - /activity/reactions renders ActivityUnsupportedState
+    // (activity-page.ui.tsx:74-76, 103-109, 569-571): a 16 px padded,
+    // top-aligned 14 px text-text-muted line under the activity header, with
+    // no message list and no collection request (activity-page.test.tsx:360).
+    // The state is route-only: sidebar.lib.ts:90-96 keeps reactions out of the
+    // visible rail, so the deeplink is the entry surface exercised here.
+    void activityReactionsDeeplinkRendersUnsupportedState_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"})
+            for (const auto *mode : {"light", "dark"})
+                QTest::newRow(QString("%1-%2").arg(locale, mode).toUtf8().constData())
+                    << QString(locale) << QString(mode);
+    }
+
+    void activityReactionsDeeplinkRendersUnsupportedState()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        const bool russian = locale == QLatin1String("ru");
+        class WindowReactionsFixture final : public WindowChannelFixture {
+        public:
+            int collectionRequests = 0;
+            WindowReactionsFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/")
+                        && (query.hasQueryItem("starred") || query.hasQueryItem("mentioned")))
+                        ++collectionRequests;
+                    return fallback(request);
+                };
+            }
+        };
+        WindowReactionsFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QVERIFY(view("messageList")); // the conversation renders before the route
+        QVERIFY(!view("activityUnsupportedText"));
+        controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
+            + QString::number(fixture.server.origin().port())
+            + QStringLiteral("/project/") + projectId + QStringLiteral("/activity/reactions"));
+        auto *unsupported = view("activityUnsupportedText"); QVERIFY(unsupported);
+        const auto expectedBody = russian
+            ? QString::fromUtf8("Реакции пока не подключены к Workspace-мессенджеру.")
+            : QString("Reactions are not connected to Workspace messaging yet.");
+        QCOMPARE(unsupported->property("text").toString(), expectedBody);
+        QVERIFY(hasVisibleText(window->contentItem(), expectedBody));
+        // Header title (activity.reactions) paints over the muted line.
+        QVERIFY(hasVisibleText(window->contentItem(),
+            russian ? QString::fromUtf8("Реакции") : QString("Reactions")));
+        // Measured geometry (docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md addendum):
+        // p-4 = 16 px inset under the 54 px header, text-sm = 14 px,
+        // text-text-muted = #989898 light / #707070 dark (blue-cold).
+        const auto *text = unsupported; QVERIFY(text->inherits("QQuickText"));
+        QCOMPARE(text->property("font").value<QFont>().pixelSize(), qreal(14));
+        QCOMPARE(text->property("color").value<QColor>(),
+                 QColor(mode == QLatin1String("dark") ? "#707070" : "#989898"));
+        auto *page = item(window->contentItem(), "nativeActivityUnsupportedPage"); QVERIFY(page);
+        QCOMPARE(text->mapToItem(page, QPointF{}).x(), qreal(16));
+        QCOMPARE(text->mapToItem(page, QPointF{}).y(), qreal(70)); // 54 header + 16
+        // No message list renders behind the unsupported state.
+        QVERIFY(!view("messageList"));
+        QVERIFY(!view("messageComposer"));
+        QCOMPARE(fixture.collectionRequests, 0);
+        // The header close control returns to the conversation.
+        auto *closeButton = view("activityUnsupportedCloseButton"); QVERIFY(closeButton);
+        click(window, closeButton);
+        QTRY_VERIFY(view("messageList"));
+        QVERIFY(!view("activityUnsupportedText"));
+    }
+
+    // Issue #43: the reference keeps reactions out of VISIBLE_MY_ACTIVITY_KEYS
+    // (sidebar.lib.ts:90-96), so the native rail must stay at exactly the five
+    // visible activity chips with no reactions chip added.
+    void activityReactionsSidebarKeepsFiveVisibleChips()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *rail = item(window->contentItem(), "sidebarActivity"); QVERIFY(rail);
+        QStringList chips;
+        const auto children = rail->childItems();
+        for (auto *child : children)
+            if (child->objectName().startsWith(QLatin1String("activity-"))) chips << child->objectName();
+        chips.sort();
+        const QStringList expected{QStringLiteral("activity-drafts"), QStringLiteral("activity-favorites"),
+            QStringLiteral("activity-inbox"), QStringLiteral("activity-mentions"),
+            QStringLiteral("activity-starred")};
+        QCOMPARE(chips, expected);
+        // No reactions chip anywhere in the window, and the unsupported state
+        // stays hidden until its route is opened (the page object exists in the
+        // tree like every other activity page, only its visibility is off).
+        QVERIFY(!item(window->contentItem(), "activity-reactions"));
+        QVERIFY(!visibleItem(window->contentItem(), "nativeActivityUnsupportedPage"));
+    }
+
     // Issue #41: the error and empty states render the exact reference locale
     // strings (activity-page.ui.tsx:580-600, i18n keys activity.messagesLoadError,
     // activity.retryLoad and chat.noMessages).
