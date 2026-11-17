@@ -1,4 +1,6 @@
 #include "realtime-client.h"
+#include "native-cache-service.h"
+#include "native-controller.h"
 #include "native-realtime-cursor-store.h"
 #include "mock-server.h"
 
@@ -187,6 +189,189 @@ public:
     {
         if (!sockets.isEmpty() && sockets.last())
             sockets.last()->sendTextMessage(QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact)));
+    }
+};
+
+// Issue #376: a stream.created envelope carrying a minimal valid stream DTO,
+// so the real NativeController applier can merge an event-sourced channel on
+// top of the catalog the snapshot published.
+static QJsonObject streamCreatedEvent(quint64 epoch, const QString &streamUuid, const QString &name)
+{
+    return {{"schema_version", 1}, {"epoch_version", qint64(epoch)},
+        {"uuid", QString("99999999-9999-4999-8999-%1").arg(epoch, 12, 16, QLatin1Char('0'))},
+        {"project_id", projectId}, {"user_uuid", userId}, {"object_type", "stream"},
+        {"action", "created"},
+        {"payload", QJsonObject{{"kind", "stream.created"}, {"uuid", streamUuid},
+            {"project_id", projectId}, {"name", name}, {"encryption", false}}},
+        {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+}
+
+// Issue #376 regression harness: a mock gateway plus a "process" scope that
+// binds NativeCacheService, NativeController, RealtimeCursorStore and
+// RealtimeClient in exactly the order src/main.cpp does (controller first,
+// so its Session::authenticated slot runs before the transport's, then
+// useCache, useCursorStore and useRealtime).
+class BootstrapGateway final : public QObject {
+public:
+    QTcpServer gateway;
+    QWebSocketServer webSocketServer{"Bootstrap tests", QWebSocketServer::NonSecureMode};
+    QVector<Request> requests;
+    QVector<QPointer<QWebSocket>> sockets;
+    QMap<quint64, QJsonObject> events;
+    QJsonArray streamRows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+        {"name", "Restored channel"}, {"encryption", false}}};
+    QString epochGeneration = "generation-a";
+    quint64 baselineEpoch = 10;
+    int streamsGets = 0;
+    int usersGets = 0;
+    int epochGets = 0;
+    int eventsGets = 0;
+    std::function<void()> onStreamsGet;
+
+    BootstrapGateway()
+    {
+        gateway.listen(QHostAddress::LocalHost);
+        webSocketServer.setSupportedSubprotocols({"workspace.events.v1"});
+        connect(&gateway, &QTcpServer::newConnection, this, [this] {
+            while (auto *socket = gateway.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("handled").toBool())
+                        return;
+                    const auto bytes = socket->peek(socket->bytesAvailable());
+                    const auto end = bytes.indexOf("\r\n\r\n");
+                    if (end < 0)
+                        return;
+                    if (bytes.left(end).toLower().contains("upgrade: websocket")) {
+                        socket->setProperty("handled", true);
+                        webSocketServer.handleConnection(socket);
+                        return;
+                    }
+                    Request request;
+                    const auto lines = bytes.left(end).split('\n');
+                    const auto first = lines.first().trimmed().split(' ');
+                    request.method = first.value(0);
+                    request.target = QUrl::fromEncoded(first.value(1));
+                    for (int i = 1; i < lines.size(); ++i) {
+                        const auto separator = lines.at(i).indexOf(':');
+                        if (separator > 0)
+                            request.headers.insert(lines.at(i).left(separator).trimmed().toLower(),
+                                lines.at(i).mid(separator + 1).trimmed());
+                    }
+                    const auto size = request.headers.value("content-length").toInt();
+                    if (bytes.size() < end + 4 + size)
+                        return;
+                    socket->setProperty("handled", true);
+                    socket->readAll();
+                    request.body = QJsonDocument::fromJson(bytes.mid(end + 4, size)).object();
+                    requests.append(request);
+                    const auto response = handle(request);
+                    QTimer::singleShot(response.delay, socket, [socket, response] {
+                        if (socket->state() != QAbstractSocket::ConnectedState)
+                            return;
+                        const auto body = response.data.isArray()
+                            ? QJsonDocument(response.data.toArray()).toJson(QJsonDocument::Compact)
+                            : QJsonDocument(response.data.toObject()).toJson(QJsonDocument::Compact);
+                        QByteArray headers = "HTTP/1.1 " + QByteArray::number(response.status)
+                            + " Test\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "
+                            + QByteArray::number(body.size()) + "\r\n";
+                        for (auto it = response.headers.cbegin(); it != response.headers.cend(); ++it)
+                            headers += it.key() + ": " + it.value() + "\r\n";
+                        socket->write(headers + "\r\n" + body);
+                        socket->disconnectFromHost();
+                    });
+                });
+            }
+        });
+        connect(&webSocketServer, &QWebSocketServer::newConnection, this, [this] {
+            auto *socket = webSocketServer.nextPendingConnection();
+            sockets.append(socket);
+            connect(socket, &QWebSocket::disconnected, socket, &QObject::deleteLater);
+            socket->sendTextMessage(QString::fromUtf8(QJsonDocument(QJsonObject{
+                {"type", "ready"}, {"epoch_generation", epochGeneration},
+                {"epoch_version", QUrlQuery(socket->requestUrl()).queryItemValue("last_epoch_version").toLongLong()}
+            }).toJson(QJsonDocument::Compact)));
+        });
+    }
+
+    QUrl origin() const { return QUrl(QString("http://127.0.0.1:%1").arg(gateway.serverPort())); }
+
+    int indexOf(const QString &suffix) const
+    {
+        for (int index = 0; index < requests.size(); ++index)
+            if (requests.at(index).target.path().endsWith(suffix))
+                return index;
+        return -1;
+    }
+
+    Response handle(const Request &request)
+    {
+        const auto path = request.target.path();
+        if (path.endsWith("/epoch/")) {
+            ++epochGets;
+            return {QJsonObject{{"epoch_version", qint64(baselineEpoch)},
+                {"epoch_generation", epochGeneration}, {"current_epoch_version", qint64(baselineEpoch)},
+                {"minimum_epoch_version", 1}}, 200, 0, {}};
+        }
+        if (path.endsWith("/events/")) {
+            ++eventsGets;
+            const QUrlQuery query(request.target);
+            const auto after = std::max(query.queryItemValue("epoch_version>").toULongLong(),
+                query.queryItemValue("page_marker").toULongLong());
+            QJsonArray rows;
+            for (auto it = events.upperBound(after); it != events.end(); ++it)
+                rows.append(it.value());
+            return {rows, 200, 0, {}};
+        }
+        if (path.endsWith("/streams/")) {
+            ++streamsGets;
+            if (onStreamsGet)
+                onStreamsGet();
+            return {streamRows, 200, 0, {}};
+        }
+        if (path.endsWith("/users/")) {
+            ++usersGets;
+            return {QJsonArray{}, 200, 0, {}};
+        }
+        if (path.endsWith("/folders/"))
+            return {QJsonArray{}, 200, 0, {}};
+        return sessionResponse(request);
+    }
+};
+
+// One simulated application process: members are declared and wired in
+// src/main.cpp order. The controller must be constructed before the client
+// so its Session::authenticated slot (which drives resynchronizeRequested)
+// runs before the transport's own resume slot.
+class BootstrapProcess {
+public:
+    ApiClient api{nullptr, true};
+    Session session{&api};
+    NativeCacheService cache;
+    NativeController controller;
+    RealtimeCursorStore store;
+    RealtimeClient client;
+
+    BootstrapProcess(BootstrapGateway &mock, const QString &cacheDirectory,
+        const QString &cursorDirectory, bool attachCache)
+        : cache(cacheDirectory, NativeCache::Policy{}, true)
+        , controller(&api, &session)
+        , store(cursorDirectory)
+        , client(&api, &session)
+    {
+        if (attachCache)
+            controller.useCache(&cache);
+        client.useCursorStore(&store);
+        controller.useRealtime(&client);
+    }
+
+    bool login(BootstrapGateway &mock)
+    {
+        controller.login(mock.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000))
+            return false;
+        controller.openProject(projectId);
+        return QTest::qWaitFor([this] { return session.ready(); }, 2000);
     }
 };
 
@@ -528,11 +713,16 @@ private slots:
         QCOMPARE(persisted->generation, QString("generation-a"));
         QCOMPARE(persisted->epoch, quint64(12));
         // A fresh instance (the process-restart case) restores the durable
-        // cursor into the realtime socket URL on its next connect.
+        // cursor, and since issue #376 the restore requires one authorized
+        // snapshot before the transport delivers anything; the socket then
+        // still continues at the persisted epoch.
         fixture.client.stop();
         RealtimeClient resumed(&fixture.api, &fixture.session);
         resumed.useCursorStore(&store);
+        QSignalSpy restoredSnapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
+        QTRY_COMPARE_WITH_TIMEOUT(restoredSnapshots.size(), 1, 3000);
+        resumed.acknowledgeSnapshot();
         QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
         const auto socket = fixture.sockets.last();
         QVERIFY(socket);
@@ -543,7 +733,12 @@ private slots:
         resumed.stop();
     }
 
-    void sameOwnerReconnectResumesFromPersistedCursorWithoutBaseline()
+    // Issue #376 supersedes the original "no snapshot on persisted restore"
+    // premise: the durable row proves the transport position, never model
+    // hydration. A fresh-process restore must skip the epoch endpoint
+    // round-trip while still requiring exactly one authorized snapshot before
+    // catch-up and the socket continue from the persisted position.
+    void persistedRestoreRequiresSnapshotWithoutEpochRoundTrip()
     {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -565,17 +760,23 @@ private slots:
         fixture.client.stop();
         const auto epochRequestsBefore = std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
             [](const Request &request) { return request.target.path().endsWith("/epoch/"); });
+        const auto eventsRequestsBefore = std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
+            [](const Request &request) { return request.target.path().endsWith("/events/"); });
         RealtimeClient resumed(&fixture.api, &fixture.session);
         resumed.useCursorStore(&store);
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
-        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
-        // No epoch endpoint round-trip and no snapshot: the persisted cursor
-        // resumed the REST catch-up directly at the acknowledged epoch.
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        // No epoch endpoint round-trip: the restored position replaces it, and
+        // the snapshot gate held catch-up back until the acknowledgement.
         QCOMPARE(std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
                    [](const Request &request) { return request.target.path().endsWith("/epoch/"); }),
                  epochRequestsBefore);
-        QCOMPARE(snapshots.size(), qsizetype(0));
+        QCOMPARE(std::count_if(fixture.requests.cbegin(), fixture.requests.cend(),
+                   [](const Request &request) { return request.target.path().endsWith("/events/"); }),
+                 eventsRequestsBefore);
+        resumed.acknowledgeSnapshot();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
         const auto lastEvents = std::find_if(fixture.requests.crbegin(), fixture.requests.crend(),
             [](const Request &request) { return request.target.path().endsWith("/events/"); });
         QVERIFY(lastEvents != fixture.requests.crend());
@@ -619,9 +820,16 @@ private slots:
         resumed.useCursorStore(&store);
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
+        // Issue #376: the restore first asks for one snapshot, and the pruned
+        // generation only surfaces when catch-up runs above the restored
+        // position.
         QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
-        // The pruned row was deleted: a restart before the snapshot ack now
-        // finds no cursor instead of resending the pruned one.
+        resumed.acknowledgeSnapshot();
+        // The catch-up answered 410 and resynchronized: the pruned row was
+        // deleted before the fresh baseline asked for the second snapshot, so
+        // a restart in between now finds no cursor instead of resending the
+        // pruned one.
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 2, 3000);
         QVERIFY(!store.read(key).has_value());
         resumed.acknowledgeSnapshot();
         // The post-resync cursor replaces the persisted one after the fresh
@@ -859,6 +1067,11 @@ private slots:
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
         QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        resumed.acknowledgeSnapshot();
+        // Issue #376: catch-up over the restored row now hits the 410, and
+        // the fenced baseline requests its own second snapshot before catch-up
+        // may continue.
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 2, 3000);
         resumed.acknowledgeSnapshot();
         // Catch-up continues from the fresh baseline only: the request stream
         // settles on generation-b and stops, instead of repeating 410 rounds
@@ -1102,6 +1315,11 @@ private slots:
         resumed.useCursorStore(&store);
         QSignalSpy snapshots(&resumed, &RealtimeClient::snapshotRequired);
         resumed.start();
+        // Issue #376: the fresh process takes over the valid gen-a/10
+        // position but still requires one authorized snapshot before catch-up
+        // and the socket start from it.
+        QTRY_COMPARE_WITH_TIMEOUT(snapshots.size(), 1, 3000);
+        resumed.acknowledgeSnapshot();
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const auto current = store.read(key);
             return current.has_value() && current->generation == QString("generation-a")
@@ -1110,7 +1328,6 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fixture.sockets.size() >= 2 && fixture.sockets.last()
             && QUrlQuery(fixture.sockets.last()->requestUrl()).queryItemValue("last_epoch_version")
                 == QString("10"), 3000);
-        QCOMPARE(snapshots.size(), 0);
         resumed.stop();
     }
 
@@ -1235,7 +1452,183 @@ private slots:
                 == QString("10"), 3000);
         fixture.client.stop();
     }
+
+    // Issue #376: restoring a durable cursor must not skip the fresh
+    // controller bootstrap. These cases bind the controller, cache, cursor
+    // store and transport in src/main.cpp order and require the catalogs to
+    // load without a manual refresh, with the history cache empty, disabled
+    // or evicted, while catch-up around the initialization is reconciled
+    // and never lost.
+
+    void restoredDurableCursorBootstrapsFreshControllerModels()
+    {
+        QTemporaryDir cursorDirectory;
+        QVERIFY(cursorDirectory.isValid());
+        BootstrapGateway mock;
+        const auto key = RealtimeCursorStore::ownerKey(mock.origin(), projectId, userId);
+        {
+            RealtimeCursorStore seed(cursorDirectory.path());
+            QVERIFY(seed.save(key, {QStringLiteral("generation-a"), 10}));
+        }
+        QTemporaryDir cacheDirectory;
+        QVERIFY(cacheDirectory.isValid());
+        BootstrapProcess app(mock, cacheDirectory.path(), cursorDirectory.path(), true);
+        QVERIFY(app.login(mock));
+        // A fresh controller must load the catalogs with no user
+        // intervention: pre-fix the restored cursor went straight to
+        // catch-up and /streams/ was never requested.
+        QVERIFY(QTest::qWaitFor([&] { return app.controller.streams().size() == 1; }, 4000));
+        QVERIFY(mock.streamsGets >= 1);
+        QVERIFY(mock.usersGets >= 1);
+        // The restored transport position replaces the epoch endpoint
+        // round-trip, and catch-up only starts after the snapshot was
+        // requested: events can never overtake the catalogs.
+        QCOMPARE(mock.epochGets, 0);
+        QVERIFY(mock.indexOf("/streams/") >= 0);
+        // The socket resumes from the persisted position.
+        QVERIFY(QTest::qWaitFor([&] {
+            if (mock.sockets.isEmpty() || !mock.sockets.last())
+                return false;
+            const QUrlQuery cursor(mock.sockets.last()->requestUrl());
+            return cursor.queryItemValue("last_epoch_version") == QString("10")
+                && cursor.queryItemValue("epoch_generation") == QString("generation-a");
+        }, 4000));
+        // Catch-up started only after the snapshot was requested: no event
+        // can overtake the catalogs it has to be applied on top of.
+        QVERIFY(mock.indexOf("/events/") >= 0);
+        QVERIFY(mock.indexOf("/streams/") < mock.indexOf("/events/"));
+    }
+
+    void restoredDurableCursorReconcilesEventsArrivingDuringInitialLoad()
+    {
+        QTemporaryDir cursorDirectory;
+        QVERIFY(cursorDirectory.isValid());
+        BootstrapGateway mock;
+        const auto key = RealtimeCursorStore::ownerKey(mock.origin(), projectId, userId);
+        {
+            RealtimeCursorStore seed(cursorDirectory.path());
+            QVERIFY(seed.save(key, {QStringLiteral("generation-a"), 10}));
+        }
+        // One channel was created after the cursor was persisted, and one
+        // more arrives on the server while the snapshot catalog is in
+        // flight. Neither may be lost, and the catalog still comes from the
+        // snapshot.
+        mock.events.insert(11, streamCreatedEvent(11,
+            QStringLiteral("99999999-9999-4999-8999-000000000011"), "Channel from catch-up"));
+        mock.onStreamsGet = [&] {
+            mock.events.insert(12, streamCreatedEvent(12,
+                QStringLiteral("99999999-9999-4999-8999-000000000012"), "Channel during load"));
+        };
+        QTemporaryDir cacheDirectory;
+        QVERIFY(cacheDirectory.isValid());
+        BootstrapProcess app(mock, cacheDirectory.path(), cursorDirectory.path(), true);
+        QVERIFY(app.login(mock));
+        QVERIFY(QTest::qWaitFor([&] { return app.controller.streams().size() == 3; }, 4000));
+        QVERIFY(mock.streamsGets >= 1);
+        QCOMPARE(mock.epochGets, 0);
+        QVERIFY(mock.indexOf("/streams/") < mock.indexOf("/events/"));
+        // Both catch-up events were acknowledged, so the durable cursor
+        // advanced: a restart right here would not replay them again.
+        QVERIFY(QTest::qWaitFor([&] {
+            const auto current = app.store.read(key);
+            return current.has_value() && current->generation == QString("generation-a")
+                && current->epoch == quint64(12);
+        }, 4000));
+    }
+
+    void restoredDurableCursorBootstrapsWithCacheDisabled()
+    {
+        QTemporaryDir cursorDirectory;
+        QVERIFY(cursorDirectory.isValid());
+        BootstrapGateway mock;
+        const auto key = RealtimeCursorStore::ownerKey(mock.origin(), projectId, userId);
+        {
+            RealtimeCursorStore seed(cursorDirectory.path());
+            QVERIFY(seed.save(key, {QStringLiteral("generation-a"), 10}));
+        }
+        QTemporaryDir cacheDirectory;
+        QVERIFY(cacheDirectory.isValid());
+        // No history cache is attached at all (cache disabled): the
+        // snapshot path is pure network and must still run.
+        BootstrapProcess app(mock, cacheDirectory.path(), cursorDirectory.path(), false);
+        QVERIFY(app.login(mock));
+        QVERIFY(QTest::qWaitFor([&] { return app.controller.streams().size() == 1; }, 4000));
+        QVERIFY(mock.streamsGets >= 1);
+        QCOMPARE(mock.epochGets, 0);
+    }
+
+    void restoredDurableCursorBootstrapsAfterCacheEviction()
+    {
+        QTemporaryDir cursorDirectory;
+        QTemporaryDir cacheDirectory;
+        QVERIFY(cursorDirectory.isValid());
+        QVERIFY(cacheDirectory.isValid());
+        BootstrapGateway mock;
+        const auto key = RealtimeCursorStore::ownerKey(mock.origin(), projectId, userId);
+        {
+            BootstrapProcess first(mock, cacheDirectory.path(), cursorDirectory.path(), true);
+            QVERIFY(first.login(mock));
+            // Baseline run: epoch round-trip plus snapshot, and the
+            // acknowledged snapshot persists the cursor.
+            QVERIFY(QTest::qWaitFor([&] { return first.controller.streams().size() == 1; }, 4000));
+            QCOMPARE(mock.epochGets, 1);
+            QVERIFY(QTest::qWaitFor([&] { return first.store.read(key).has_value(); }, 2000));
+        }
+        // The operating system evicted the whole history cache directory.
+        // The cursor database is a separate file and survives - the exact
+        // user scenario of this bug: a restart where no replayed events
+        // reconstruct the existing catalog.
+        const auto priorEpochGets = mock.epochGets;
+        for (const auto &entry : QDir(cacheDirectory.path())
+                 .entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot)) {
+            if (entry.isDir())
+                QVERIFY(QDir(entry.absoluteFilePath()).removeRecursively());
+            else
+                QVERIFY(QFile::remove(entry.absoluteFilePath()));
+        }
+        {
+            BootstrapProcess second(mock, cacheDirectory.path(), cursorDirectory.path(), true);
+            QVERIFY(second.login(mock));
+            QVERIFY(QTest::qWaitFor([&] { return second.controller.streams().size() == 1; }, 4000));
+            // The second process resumed the persisted position (no new
+            // epoch round-trip) and still loaded the catalogs.
+            QCOMPARE(mock.epochGets, priorEpochGets);
+            QVERIFY(mock.streamsGets >= 2);
+        }
+    }
+
+    void sameProcessStopStartKeepsInMemoryCursorWithoutSnapshot()
+    {
+        // The counter-guard for #376: the snapshot gate applies to
+        // restores from the durable store - the fresh-process connect. A
+        // same-process suspend/resume has an already-hydrated consumer and
+        // must keep resuming from the in-memory cursor without a snapshot.
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        RealtimeCursorStore store(directory.path());
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        fixture.client.useCursorStore(&store);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        const auto snapshotsBeforeRestart = fixture.snapshots;
+        fixture.client.stop();
+        fixture.client.start();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.sockets.size(), 2, 3000);
+        QCOMPARE(fixture.snapshots, snapshotsBeforeRestart);
+        QCOMPARE(QUrlQuery(fixture.sockets.last()->requestUrl()).queryItemValue("last_epoch_version"),
+                 QString("12"));
+        fixture.client.stop();
+    }
 };
+
 
 QTEST_GUILESS_MAIN(RealtimeClientTest)
 #include "realtime-client-test.moc"
