@@ -6281,6 +6281,18 @@ void NativeController::showSection(const QString &name)
         m_section = QStringLiteral("calls");
         emit stateChanged();
     }
+    else if (name == QLatin1String("services"))
+    {
+        // Issue #45: the reference /services and /all-services routes render
+        // the static placeholder hub (app-route-definitions.tsx:166-167,
+        // 203-204, services-page.ui.tsx). The top-bar Services button stays
+        // behind the reference build gate (top-bar.test.tsx:153), which the
+        // native build settings do not introduce, so the whitelisted deep
+        // links are the only entry surfaces.
+        closeOtherContentPages(ContentPage::Services);
+        m_section = QStringLiteral("services");
+        emit stateChanged();
+    }
     else if (name == QLatin1String("chat"))
     {
         // The Chat button is the section home: the reference route to "/"
@@ -6292,8 +6304,7 @@ void NativeController::showSection(const QString &name)
             emit stateChanged();
         }
     }
-    // Unknown sections (services today) are ignored until the client
-    // can render them.
+    // Unknown sections are ignored until the client can render them.
 }
 
 void NativeController::showMentions()
@@ -14951,6 +14962,20 @@ void NativeController::applyDeepLink(const QString &url)
             && activity->org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
             && activity->project.compare(m_session->project(), Qt::CaseInsensitive) == 0)
             showReactions();
+        return;
+    }
+    // The reference services placeholder hub routes (issue #45,
+    // app-route-definitions.tsx:166-167,203-204 map /services and
+    // /all-services to ServicesPage): like /calls, the top-bar entry stays
+    // behind the reference build gate, so the whitelisted routes are the
+    // entry surfaces. The org-prefixed variant carries the origin guard.
+    static const QRegularExpression servicesRoutePattern(
+        "^(?:/org/([^/]+))?/(?:services|all-services)/?(?:[?#].*)?$");
+    if (const auto match = servicesRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).isEmpty()
+            || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
+                Qt::CaseInsensitive) == 0)
+            showSection(QStringLiteral("services"));
         return;
     }
     const auto message = workspace::parseMessageRoute(*route);

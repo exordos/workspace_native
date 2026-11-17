@@ -27635,6 +27635,23 @@ private slots:
             QVERIFY2(card, qPrintable(QStringLiteral("missing card %1").arg(id)));
             cards.append(card);
         }
+        // The grid geometry lands through deferred relayout passes (wrapped
+        // text heights polish one pass after the column width is applied);
+        // wait for the cards to leave the placeholder width and the chips to
+        // sit on the bottom padding edge before asserting the fine geometry.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            if (!page->property("gridSettled").toBool()) return false;
+            for (auto *card : cards)
+            {
+                if (card->width() <= 200.0) return false;
+                auto *chip = view("servicesChip-"
+                    + card->property("cardId").toString());
+                if (!chip) return false;
+                if (qAbs(pos(chip).y() + chip->height()
+                    - (pos(card).y() + card->height()) + 16.0) >= 1.0) return false;
+            }
+            return true;
+        })(), 5000);
         for (qsizetype index = 0; index < cards.size(); ++index)
         {
             const auto &spec = specs[index];
@@ -27697,9 +27714,12 @@ private slots:
             // justify-between pins the chip to the card's bottom padding edge.
             QCOMPARE(pos(chip).x() - pos(card).x(), 16.0);
             QVERIFY(qAbs(pos(chip).y() + chip->height()
-                - (pos(card).y() + card->height()) - 16.0) < 1.0);
+                - (pos(card).y() + card->height()) + 16.0) < 1.0);
             // mt-4 (16 px) is the minimum gap to the hint block.
-            QVERIFY(pos(chip).y() >= pos(hint).y() + hint->height() + 16.0 - 1.0);
+            QVERIFY2(pos(chip).y() >= pos(hint).y() + hint->height() + 16.0 - 1.0,
+                qPrintable(QStringLiteral("card %1 chipY %2 hintBottom %3 cardH %4 cardY %5 chipH %6")
+                    .arg(spec.id).arg(pos(chip).y()).arg(pos(hint).y() + hint->height())
+                    .arg(card->height()).arg(pos(card).y()).arg(chip->height())));
         }
         // Button: rounded-lg bg-accent px-3 py-1.5 text-sm text-on-accent,
         // bottom-right of the p-4 section (flex justify-end).
@@ -27778,15 +27798,20 @@ private slots:
         for (auto *card : cards) QVERIFY(qAbs(card->width() - cardWidth) < 1.0);
         if (columns > 1)
         {
-            const auto secondColumnX = pos(cards[1]).x();
-            QVERIFY(secondColumnX > pos(cards[0]).x());
-            // gap-3 = 12 px between columns.
-            QVERIFY(qAbs(secondColumnX - (pos(cards[0]).x() + cardWidth) - 12.0) < 1.0);
+            // gap-3 = 12 px between columns (QTRY: positions land with the
+            // deferred grid relayout).
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                const auto secondColumnX = pos(cards[1]).x();
+                return secondColumnX > pos(cards[0]).x()
+                    && qAbs(secondColumnX - (pos(cards[0]).x() + cards[0]->width()) - 12.0) < 1.0;
+            })(), 5000);
         }
         else
         {
             // Single column: cards stack vertically with gap-3 rows.
-            QVERIFY(pos(cards[1]).y() > pos(cards[0]).y() + cards[0]->height());
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                return pos(cards[1]).y() > pos(cards[0]).y() + cards[0]->height();
+            })(), 5000);
         }
     }
 };
