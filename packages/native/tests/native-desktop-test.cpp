@@ -170,6 +170,8 @@ private slots:
             {"ew://open/org/acme/project/p1/inbox", "/org/acme/project/p1/inbox"},
             {"ew://open/org/acme/project/p1/feed", "/org/acme/project/p1/feed"},
             {"ew://open/org/acme/project/p1/activity/anything", "/org/acme/project/p1/activity/anything"},
+            {"ew://open/org/acme/project/p1/activity/reactions",
+                "/org/acme/project/p1/activity/reactions"},
             {"ew://open/org/acme/project/p1/message/" + uuid, "/org/acme/project/p1/message/" + uuid},
             {"ew://open/org/acme/project/p1/message/" + upperUuid, "/org/acme/project/p1/message/" + upperUuid},
             {"ew://open/org/acme/project/p1/message/" + uuid + "?focused=1",
@@ -213,6 +215,10 @@ private slots:
             QStringLiteral("ew://open/calendar/extra"),
             QStringLiteral("ew://open/org/acme/unknown"),
             QStringLiteral("ew://open/org/acme/project/p1/unknown"),
+            // Issue #43: activity collections are registered under the project
+            // scope only (app-route-definitions.tsx:180), so the bare form is
+            // not a reference route and stays outside the whitelist.
+            QStringLiteral("ew://open/activity/reactions"),
             QStringLiteral("ew://open/org/acme/project/p1/stream/s/topic/t/deeper"),
             QStringLiteral("ew://open/org/acme/project/p1/message/not-a-uuid"),
             QStringLiteral("ew://open/org/acme/project/p1/message/"),
@@ -262,6 +268,34 @@ private slots:
         QCOMPARE(found->message, uuid);
         QVERIFY(!workspace::parseMessageRoute("/org/acme/project/" + project + "/stream/aaaaaaaa").has_value());
         QVERIFY(!workspace::parseMessageRoute("/calendar").has_value());
+    }
+
+    // Issue #43: the activity deeplink carries its own collection segment, so
+    // /activity/reactions resolves to the reactions unsupported-state view
+    // (activity-page.ui.tsx:569-571) instead of falling through to the default
+    // activity view like an unrecognised route does.
+    void activityRouteExtractionResolvesTheReactionsCollection()
+    {
+        const auto reactions = workspace::parseActivityRoute(
+            "/org/acme/project/p1/activity/reactions");
+        QVERIFY(reactions.has_value());
+        QCOMPARE(reactions->org, QString("acme"));
+        QCOMPARE(reactions->project, QString("p1"));
+        QCOMPARE(reactions->collection, QString("reactions"));
+        for (const auto *collection : {"mentions", "starred", "drafts", "favorites"}) {
+            const auto route = workspace::parseActivityRoute(
+                QStringLiteral("/org/acme/project/p1/activity/%1").arg(collection));
+            QVERIFY2(route.has_value(), collection);
+            QCOMPARE(route->collection, QString(collection));
+        }
+        const auto withQuery = workspace::parseActivityRoute(
+            "/org/acme/project/p1/activity/reactions?x=1#top");
+        QVERIFY(withQuery.has_value());
+        QCOMPARE(withQuery->collection, QString("reactions"));
+        QVERIFY(!workspace::parseActivityRoute("/org/acme/project/p1/activity").has_value());
+        QVERIFY(!workspace::parseActivityRoute("/org/acme/project/p1/inbox").has_value());
+        QVERIFY(!workspace::parseActivityRoute("/activity/reactions").has_value());
+        QVERIFY(!workspace::parseActivityRoute("/calendar").has_value());
     }
 
     void organizationRouteIdMatchesTheSourceDerivation()
