@@ -5182,11 +5182,12 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         auto *activity = view("activity-drafts"); QVERIFY(activity && activity->isEnabled());
-        for (const auto *name : {"activity-favorites", "activity-starred"}) {
+        for (const auto *name : {"activity-favorites"}) {
             auto *unsupported = view(QLatin1String(name)); QVERIFY(unsupported); QVERIFY(!unsupported->isEnabled());
         }
         QVERIFY(view("activity-mentions")->isEnabled()); // enabled by issue #42
         QVERIFY(view("activity-inbox")->isEnabled()); // enabled by issue #44
+        QVERIFY(view("activity-starred")->isEnabled()); // enabled by issue #41
         click(window, activity);
         QTRY_VERIFY(controller.draftsVisible() && view("nativeDraftsPage"));
         QTRY_VERIFY(view("draft-card-" + returnedId) && view("draft-card-" + newerId));
@@ -5327,6 +5328,292 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(!controller.mentionsVisible(), 5000);
         QVERIFY(composer->isVisible() && composer->isEnabled());
         QVERIFY(fixture.mentionLists >= 2);
+    }
+
+    // Issue #41: the sidebar Marked messages (starred) chip opens the page,
+    // rows render newest first with the measured card geometry, the close
+    // button restores the conversation and a card click leaves the page
+    // through the message route. Geometry contract:
+    // workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
+    // activity-message-card.ui.tsx.
+    void activityStarredChipOpensPageAndCloseFlow()
+    {
+        class WindowStarredFixture final : public WindowChannelFixture {
+        public:
+            int starredLists = 0;
+            QJsonArray all;
+            QJsonObject one(const QString &id, const QString &text, int minute)
+            {
+                auto row = message(text, id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredLists;
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredFixture fixture;
+        const QString olderId = "7b7b7b7b-7b7b-4b7b-8b7b-000000000001";
+        const QString newerId = "7b7b7b7b-7b7b-4b7b-8b7b-000000000002";
+        fixture.all = {fixture.one(olderId, "Starred architecture", 30),
+                       fixture.one(newerId, "Starred launch plan", 40)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-starred"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.starredVisible() && view("nativeStarredPage"));
+        QTRY_VERIFY(view("starred-card-" + olderId) && view("starred-card-" + newerId));
+        auto *composerProbe = item(window->contentItem(), "messageComposer");
+        QVERIFY(composerProbe && !composerProbe->isVisible()); // conversation column hidden
+        // Newest first: the newer card renders above the older card
+        // (activity-page.ui.tsx:239, test 1066 initial scroll at top).
+        QVERIFY(view("starred-card-" + newerId)->mapToItem(window->contentItem(), QPointF{}).y()
+            < view("starred-card-" + olderId)->mapToItem(window->contentItem(), QPointF{}).y());
+        // Measured card geometry (activity-message-card.ui.tsx): 11 px muted
+        // meta, 12 px sender line, 14 px preview; the meta names stream · topic.
+        auto *metaProbe = view("starred-meta-" + newerId); QVERIFY(metaProbe);
+        QCOMPARE(metaProbe->property("text").toString(), QString("Product team · General Topic"));
+        QCOMPARE(metaProbe->property("font").value<QFont>().pixelSize(), 11);
+        auto *authorProbe = view("starred-author-" + newerId); QVERIFY(authorProbe);
+        QCOMPARE(authorProbe->property("font").value<QFont>().pixelSize(), 12);
+        auto *previewProbe = view("starred-preview-" + newerId); QVERIFY(previewProbe);
+        QCOMPARE(previewProbe->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(previewProbe->property("maximumLineCount").toInt(), 2);
+        // Hover actions exist: open in chat always, forward enabled iff markdown.
+        QVERIFY(view("starred-open-" + newerId));
+        auto *forwardBtn = view("starred-forward-" + newerId); QVERIFY(forwardBtn);
+        QVERIFY(forwardBtn->isEnabled());
+        QVERIFY(view("starred-time-" + newerId));
+        click(window, view("starredCloseButton"));
+        QTRY_VERIFY(!controller.starredVisible());
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isVisible() && composer->isEnabled());
+        // Reopening refetches the first page and a card click leaves the page
+        // through the message route (activity-page.ui.tsx:399-406, test 315).
+        click(window, view("activity-starred"));
+        QTRY_VERIFY(controller.starredVisible());
+        QTRY_VERIFY(view("starred-card-" + newerId));
+        click(window, view("starred-card-" + newerId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.starredVisible(), 5000);
+        QVERIFY(composer->isVisible() && composer->isEnabled());
+        QVERIFY(fixture.starredLists >= 2);
+    }
+
+    // Issue #41: bottom-edge pagination follows the measured contract
+    // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
+    // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
+    void activityStarredScrollPaginationFollowsMarkerAndRearm()
+    {
+        class WindowStarredPageFixture final : public WindowChannelFixture {
+        public:
+            int starredPages = 0;
+            QString lastMarker = QStringLiteral("<none>");
+            QJsonArray rows;
+            QJsonObject one(int n)
+            {
+                return one(QStringLiteral("7b7b7b7b-7b7b-4b7b-8b7b-0000000000%1")
+                    .arg(n, 2, 10, QLatin1Char('0')), n);
+            }
+            QJsonObject one(const QString &id, int n)
+            {
+                auto row = message(QStringLiteral("Starred page row %1").arg(n), id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(n * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredPageFixture()
+            {
+                sourceScene = true;
+                // 14 rows, newest first: the first page (12 rows) overflows
+                // the viewport, the older pages continue under page2/page3.
+                for (int n = 14; n >= 1; --n)
+                    rows.append(one(n));
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredPages;
+                        lastMarker = query.queryItemValue("page_marker");
+                        if (lastMarker.isEmpty()) {
+                            Response response{QJsonArray{rows[0], rows[1], rows[2], rows[3],
+                                rows[4], rows[5], rows[6], rows[7], rows[8], rows[9],
+                                rows[10], rows[11]}, 200, 0, {}};
+                            response.headers.insert("X-Pagination-Marker", QByteArray("page2"));
+                            return response;
+                        }
+                        if (lastMarker == QLatin1String("page2")) {
+                            Response response{QJsonArray{rows[12], rows[13]}, 200, 0, {}};
+                            response.headers.insert("X-Pagination-Marker", QByteArray("page3"));
+                            return response;
+                        }
+                        return {QJsonArray{}};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredPageFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("activity-starred"));
+        QTRY_VERIFY(controller.starredVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 12, 5000);
+        auto *list = view("starredList"); QVERIFY(list);
+        // The initial render sits at the top (newest first, test 1066) and the
+        // content overflows the viewport so a real scroll is needed to page.
+        QCOMPARE(list->property("contentY").toReal(), 0.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal()
+            > list->height() + 96.0, 5000);
+        QCOMPARE(fixture.starredPages, 1);
+        // Moving within 64 px of the bottom fires exactly one request with
+        // the exact marker, and it does not re-fire while still down there.
+        const auto travel = list->property("contentHeight").toReal() - list->height();
+        list->setProperty("contentY", travel - 50.0);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 2, 3000);
+        QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 14, 5000);
+        QTest::qWait(250);
+        QCOMPARE(fixture.starredPages, 2); // one fire per arming (activity-page.ui.tsx:541-553)
+        // The append grew the content past the rearm threshold, so scrolling
+        // into the bottom edge fires the second continuation exactly once.
+        QVERIFY(list->property("contentHeight").toReal() - list->height()
+            - list->property("contentY").toReal() > 96.0);
+        const auto travel2 = list->property("contentHeight").toReal() - list->height();
+        list->setProperty("contentY", travel2 - 40.0);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 3, 3000);
+        QCOMPARE(fixture.lastMarker, QStringLiteral("page3"));
+        QTest::qWait(250);
+        QCOMPARE(fixture.starredPages, 3); // the exhausted cursor never re-fires
+    }
+
+    // Issue #41: the error and empty states render the exact reference locale
+    // strings (activity-page.ui.tsx:580-600, i18n keys activity.messagesLoadError,
+    // activity.retryLoad and chat.noMessages).
+    void activityStarredErrorAndEmptyStates_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en");
+        QTest::newRow("ru") << QString("ru");
+    }
+
+    void activityStarredErrorAndEmptyStates()
+    {
+        QFETCH(QString, locale);
+        const bool russian = locale == QLatin1String("ru");
+        class WindowStarredStateFixture final : public WindowChannelFixture {
+        public:
+            bool allow = false;
+            bool empty = false;
+            QJsonArray all;
+            WindowStarredStateFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        if (!allow)
+                            return {QJsonArray{}, 500, 0, {}};
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredStateFixture failure;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        preferences.setLocale(locale);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(failure, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("activity-starred"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starredErrorBox"), 5000);
+        QVERIFY(hasVisibleText(window->contentItem(), russian
+            ? QString::fromUtf8("Не удалось загрузить сообщения активности.")
+            : QString("Could not load activity messages.")));
+        QVERIFY(hasVisibleText(window->contentItem(), russian
+            ? QString::fromUtf8("Повторить") : QString("Retry")));
+        QVERIFY(view("starredRetryButton"));
+        QVERIFY(!view("starredLoadingText"));
+        // Retry reissues the request and the list renders.
+        const auto id = QStringLiteral("7b7b7b7b-7b7b-4b7b-8b7b-0000000000f0");
+        auto row = message("Starred recovered", id, topicId);
+        row["author_uuid"] = channelPeer;
+        row["is_own"] = false;
+        row["starred"] = true;
+        failure.all = {row};
+        failure.allow = true;
+        click(window, view("starredRetryButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + id), 5000);
+        QVERIFY(!view("starredErrorBox"));
+        click(window, view("starredCloseButton"));
+        QTRY_VERIFY(!controller.starredVisible());
+        // Empty collection renders chat.noMessages.
+        WindowStarredStateFixture emptyScene;
+        emptyScene.allow = true;
+        ApiClient emptyApi(nullptr, true); Session emptySession(&emptyApi);
+        NativeController emptyController(&emptyApi, &emptySession);
+        QQmlApplicationEngine emptyEngine; loadNativeUi(emptyEngine, &emptyController, &preferences);
+        auto *emptyWindow = qobject_cast<QQuickWindow *>(emptyEngine.rootObjects().value(0));
+        QVERIFY(emptyWindow);
+        auto emptyClose = qScopeGuard([&emptyEngine, guard = QPointer<QQuickWindow>(emptyWindow)] {
+            if (guard) closeIncubatedTestWindow(emptyEngine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(emptyWindow)); emptyWindow->requestActivate();
+        QVERIFY(startComposerEmojiFixture(emptyScene, emptyController, emptySession));
+        const auto emptyView = [&](const QString &name) {
+            return visibleItem(emptyWindow->contentItem(), name);
+        };
+        click(emptyWindow, emptyView("activity-starred"));
+        QTRY_VERIFY(emptyController.starredVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(emptyView("starredEmptyText"), 5000);
+        QVERIFY(hasVisibleText(emptyWindow->contentItem(), russian
+            ? QString::fromUtf8("Здесь пока нет сообщений...")
+            : QString("No messages here yet...")));
     }
 
     // Issue #44: the sidebar Inbox chip opens the page, stream cards render

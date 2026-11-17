@@ -3106,6 +3106,53 @@
         </message>
     </context>
     <context>
+        <name>NativeStarredPage</name>
+        <message>
+            <source>Marked messages</source>
+            <translation>Отмеченные сообщения</translation>
+        </message>
+        <message>
+            <source>Close marked messages</source>
+            <translation>Закрыть отмеченные сообщения</translation>
+        </message>
+        <message>
+            <source>Could not load activity messages.</source>
+            <translation>Не удалось загрузить сообщения активности.</translation>
+        </message>
+        <message>
+            <source>Could not refresh activity messages.</source>
+            <translation>Не удалось обновить сообщения активности.</translation>
+        </message>
+        <message>
+            <source>Could not load older messages.</source>
+            <translation>Не удалось загрузить более старые сообщения.</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>No messages here yet...</source>
+            <translation>Здесь пока нет сообщений...</translation>
+        </message>
+        <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>Private</source>
+            <translation>Личное</translation>
+        </message>
+        <message>
+            <source>Open in chat</source>
+            <translation>Открыть в чате</translation>
+        </message>
+        <message>
+            <source>Forward</source>
+            <translation>Переслать</translation>
+        </message>
+    </context>
+    <context>
         <name>NativeInboxPage</name>
         <message>
             <source>Inbox</source>

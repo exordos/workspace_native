@@ -552,6 +552,10 @@ ApplicationWindow {
     // switching conversations empties it (:1707). The bar carries the count
     // and the Forward action (chat-page-selection-bar.ui.tsx).
     property var messageSelectionIds: []
+    // Issue #41: the starred card forward flow opens the same forward modal
+    // with [uuid] without touching the chat selection (the reference forward
+    // store is independent, workspace-forward-message.model.ts:43-52).
+    property var starredForwardIds: []
     readonly property int messageSelectionCount: root.messageSelectionIds.length
     // The composer shell (and with it the selection bar) is not present on
     // closed topics, aggregates or locked encrypted chats, so selection is
@@ -3162,19 +3166,21 @@ ApplicationWindow {
                         Layout.minimumWidth: 0
                         Layout.preferredHeight: 32
                         enabled: modelData.id === "drafts" || modelData.id === "mentions"
-                            || modelData.id === "inbox"
+                            || modelData.id === "inbox" || modelData.id === "starred"
                         selected: modelData.id === "drafts" && root.controller.draftsVisible
                             || modelData.id === "mentions" && root.controller.mentionsVisible
                             || modelData.id === "inbox" && root.controller.inboxVisible
+                            || modelData.id === "starred" && root.controller.starredVisible
                         asset: modelData.asset
                         glyphSize: modelData.size
                         help: modelData.id === "drafts" || modelData.id === "mentions"
-                            || modelData.id === "inbox"
+                            || modelData.id === "inbox" || modelData.id === "starred"
                             ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
                         onClicked: {
                             if (modelData.id === "drafts") root.controller.showDrafts();
                             else if (modelData.id === "mentions") root.controller.showMentions();
                             else if (modelData.id === "inbox") root.controller.showInbox();
+                            else if (modelData.id === "starred") root.controller.showStarred();
                         }
                         background: Rectangle {
                             radius: 6
@@ -3659,6 +3665,7 @@ ApplicationWindow {
             // interaction, docs/NATIVE_DESKTOP_FEED.md).
             visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
                 && !root.controller.inboxVisible && !root.controller.feedVisible
+                && !root.controller.starredVisible
                 && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -8180,6 +8187,18 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
+        NativeStarredPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.starredVisible
+            loadActive: root.visible && root.controller.authenticated
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            onForwardRequested: function (messageUuid) {
+                root.starredForwardIds = [messageUuid]
+                forwardDialog.open()
+            }
+        }
         NativeInboxPage {
             controller: root.controller
             colors: root.colors
@@ -8838,7 +8857,8 @@ ApplicationWindow {
         id: forwardDialog
         colors: root.colors
         controller: root.controller
-        sourceIds: root.messageSelectionIds
+        sourceIds: root.starredForwardIds.length ? root.starredForwardIds : root.messageSelectionIds
+        onClosed: root.starredForwardIds = []
         onForwardSucceeded: function (submittedIds) {
             const submitted = (submittedIds || []).map(String)
             if (submitted.length === 0 || root.messageSelectionCount !== submitted.length)

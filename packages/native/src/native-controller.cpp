@@ -6235,6 +6235,8 @@ void NativeController::closeOtherContentPages(ContentPage keep)
         closeInbox();
     if (keep != ContentPage::Feed)
         closeFeed();
+    if (keep != ContentPage::Starred)
+        closeStarred();
     if (keep != ContentPage::Mail)
         resetChatSection(); // callers emit stateChanged()
 }
@@ -6671,6 +6673,184 @@ void NativeController::resetMentions()
     m_mentionIndexWalking = false;
     m_mentionIndexMarker.clear();
     m_mentionIndexMarkers.clear();
+}
+
+// ---- Activity starred messages page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md) ----
+//
+// Reference contract (workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af):
+// query and page size per activity-workspace-starred.api.ts:57-64
+// (starred=true, sort_key=created_at, sort_dir=desc, page_limit=50, cursor via
+// X-Pagination-Marker); collection and refresh semantics per
+// activity-page.ui.tsx:111-145,178-251,411-516; state and retry links per
+// activity-page.ui.tsx:565-644.
+
+void NativeController::showStarred()
+{
+    if (!authenticated())
+        return;
+    closeOtherContentPages(ContentPage::Starred);
+    m_starredVisible = true;
+    // Initial load blocks the list; a re-open keeps cached rows and refreshes
+    // (activity-page.ui.tsx:283-297 hasCurrentMessages branch).
+    if (m_starred.rows.isEmpty() && !m_starred.inflight)
+        m_starred.loading = true;
+    emit stateChanged();
+    loadStarredCollection(false);
+}
+
+void NativeController::closeStarred()
+{
+    if (!m_starredVisible)
+        return;
+    m_starredVisible = false;
+    emit stateChanged();
+}
+
+void NativeController::loadMoreStarred()
+{
+    // Suppressed while initial loading / refreshing / loading more
+    // (activity-page.ui.tsx:518-529 handleLoadMore guards).
+    if (!m_starred.hasMore || m_starred.inflight || m_starred.loading
+        || m_starred.marker.isEmpty())
+        return;
+    loadStarredCollection(true);
+}
+
+void NativeController::retryStarred()
+{
+    // The pagination retry re-fires the older-page request with the same
+    // cursor (activity-page.ui.tsx:607-615: onClick={handleLoadMore}); any
+    // other retry reloads the first page (handleRetry -> reloadVersion).
+    if (m_starred.paginationError) {
+        m_starred.paginationError = false;
+        emit stateChanged();
+        loadMoreStarred();
+        return;
+    }
+    m_starred.error = false;
+    if (m_starred.rows.isEmpty() && !m_starred.inflight)
+        m_starred.loading = true;
+    emit stateChanged();
+    loadStarredCollection(false);
+}
+
+void NativeController::openStarredMessage(const QString &id)
+{
+    // A card click navigates the message route (test 315): the page lives in
+    // the conversation area, so it leaves first, then the shipped
+    // message-link machinery performs the jump in chat.
+    closeStarred();
+    openMessageInChat(id);
+}
+
+void NativeController::loadStarredCollection(bool append)
+{
+    auto &collection = m_starred;
+    if (collection.inflight)
+        return;
+    collection.inflight = true;
+    const quint64 version = ++collection.version;
+    QUrlQuery query;
+    query.addQueryItem("starred", "true");
+    query.addQueryItem("sort_key", "created_at");
+    query.addQueryItem("sort_dir", "desc");
+    query.addQueryItem("page_limit", "50");
+    const auto marker = append ? collection.marker : QByteArray();
+    if (!marker.isEmpty())
+        query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    request("GET", messenger + "/messages/", {}, query,
+        [this, append, version](const ApiResult &result) {
+        auto &state = m_starred;
+        if (state.version != version)
+            return; // a newer collection owner owns the state now (test 952)
+        state.inflight = false;
+        if (!result.ok() || !result.data.isArray()) {
+            state.loading = false;
+            if (append)
+                state.paginationError = true;
+            else
+                state.error = true;
+            emit stateChanged();
+            return;
+        }
+        QVector<Message> page;
+        for (const auto &value : result.data.toArray()) {
+            const auto parsed = parseMessage(value.toObject(), m_session->project());
+            if (parsed)
+                page.append(*parsed);
+        }
+        if (append)
+            state.rows += page; // dedupe happens at row build
+        else
+            state.rows = page;
+        state.marker = result.nextMarker;
+        state.hasMore = !result.nextMarker.isEmpty();
+        state.loading = false;
+        state.error = false;
+        state.paginationError = false;
+        emit stateChanged();
+    });
+}
+
+QVariantList NativeController::starredRows() const
+{
+    // Newest first with uuid descending tie break, deduped by uuid
+    // (sortUniqueActivityMessages, activity-page.ui.tsx:91-101, test 764).
+    QMap<QString, Message> byUuid;
+    for (const auto &message : m_starred.rows)
+        byUuid.insert(message.uuid, message);
+    QVector<Message> merged;
+    merged.reserve(byUuid.size());
+    for (auto it = byUuid.cbegin(), end = byUuid.cend(); it != end; ++it)
+        merged.append(*it);
+    std::sort(merged.begin(), merged.end(), [](const Message &left, const Message &right) {
+        if (left.createdMicros != right.createdMicros)
+            return left.createdMicros > right.createdMicros;
+        return left.uuid > right.uuid;
+    });
+    QVariantList rows;
+    for (const auto &message : std::as_const(merged)) {
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &candidate) { return candidate.uuid == message.stream; });
+        QString topicName;
+        for (const auto &topic : m_topics)
+            if (topic.uuid == message.topic) topicName = topic.name;
+        const bool direct = stream != m_streams.cend() && stream->privateStream
+            && isUuid(stream->directUser);
+        const auto streamName = stream != m_streams.cend()
+            ? (sourceTrimmed(stream->name).isEmpty() ? stream->uuid : sourceTrimmed(stream->name))
+            : QString{};
+        // Starred rows never carry an unread marker: the reference list is
+        // rendered without getIsUnread (activity-page.ui.tsx:626-633), so no
+        // dot slot and no unread background exist on this page.
+        rows.append(QVariantMap{
+            {"id", message.uuid}, {"stream", message.stream}, {"topic", message.topic},
+            {"streamName", streamName}, {"topicName", topicName}, {"direct", direct},
+            {"author", userDisplayName(message.author,
+                message.own ? tr("You") : QStringLiteral("#") + message.author.left(8))},
+            {"time", mentionTime(message.created)},
+            {"preview", mentionPreview(message)},
+            {"markdown", message.kind == QLatin1String("markdown")},
+        });
+    }
+    return rows;
+}
+
+QVariantMap NativeController::starredPage() const
+{
+    return QVariantMap{
+        {"rows", starredRows()},
+        {"loading", m_starred.loading},
+        {"error", m_starred.error},
+        {"paginationError", m_starred.paginationError},
+        {"canLoadMore", m_starred.hasMore && !m_starred.loading && !m_starred.inflight},
+    };
+}
+
+void NativeController::resetStarred()
+{
+    m_starredVisible = false;
+    m_starred = StarredCollection{};
 }
 
 // ---- Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
@@ -10167,6 +10347,7 @@ void NativeController::reset()
     m_draftsVisible = false; m_draftOpenId.clear();
     if (m_draftStore) m_draftStore->hidePage();
     resetMentions();
+    resetStarred();
     resetInbox();
     resetFeed();
     const QPointer<NativeController> guard(this);
@@ -13396,6 +13577,7 @@ void NativeController::selectStream(const QString &id)
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
+    closeStarred();
     activateStream(id);
 }
 
@@ -13800,6 +13982,7 @@ void NativeController::selectTopic(const QString &id)
     m_draftsVisible = false; if (m_draftStore) m_draftStore->hidePage();
     closeMentions();
     closeInbox();
+    closeStarred();
     if (!id.isEmpty() && std::none_of(m_topics.begin(), m_topics.end(),
             [&id](const Topic &topic) { return topic.uuid == id; }))
         return;
