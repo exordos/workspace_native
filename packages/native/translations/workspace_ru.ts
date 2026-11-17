@@ -3106,6 +3106,21 @@
         </message>
     </context>
     <context>
+        <name>NativeActivityUnsupportedPage</name>
+        <message>
+            <source>Reactions</source>
+            <translation>Реакции</translation>
+        </message>
+        <message>
+            <source>Reactions are not connected to Workspace messaging yet.</source>
+            <translation>Реакции пока не подключены к Workspace-мессенджеру.</translation>
+        </message>
+        <message>
+            <source>Close reactions</source>
+            <translation>Закрыть реакции</translation>
+        </message>
+    </context>
+    <context>
         <name>NativeStarredPage</name>
         <message>
             <source>Marked messages</source>

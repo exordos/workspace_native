@@ -23,6 +23,19 @@ struct MessageRoute {
 // Extracts the org/project/message triple from an accepted "/message/" route.
 std::optional<MessageRoute> parseMessageRoute(const QString &route);
 
+struct ActivityRoute {
+    QString org;
+    QString project;
+    QString collection;
+};
+
+// Issue #43: extracts the org/project/collection triple from an accepted
+// "/activity/<collection>" route. The reference registers activity collections
+// under the project scope only (app-route-definitions.tsx:180), and the
+// collection segment decides which activity view renders
+// (activity-page.ui.tsx:563-571), so the route never collapses onto a default.
+std::optional<ActivityRoute> parseActivityRoute(const QString &route);
+
 // Source buildOrgRouteIdFromOrigin: deterministic organization route segment
 // derived from a deployment origin.
 QString orgRouteIdFromOrigin(const QUrl &origin);

@@ -102,6 +102,17 @@ std::optional<MessageRoute> parseMessageRoute(const QString &route)
     return MessageRoute{match.captured(1), match.captured(2), match.captured(3)};
 }
 
+std::optional<ActivityRoute> parseActivityRoute(const QString &route)
+{
+    // Same shape the whitelist accepts (native-deeplink.cpp projectRoutePattern)
+    // with the collection segment kept: /activity/reactions and friends.
+    static const QRegularExpression pattern(
+        "^/org/([^/?#]+)/project/([^/?#]+)/activity/([^/?#]+)/?(?:[?#].*)?$");
+    const auto match = pattern.match(route);
+    if (!match.hasMatch()) return std::nullopt;
+    return ActivityRoute{match.captured(1), match.captured(2), match.captured(3)};
+}
+
 QString orgRouteIdFromOrigin(const QUrl &origin)
 {
     if (!origin.isValid() || origin.host().isEmpty()) return sanitizeOrgSegment(origin.toString());
