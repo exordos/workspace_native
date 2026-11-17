@@ -14,6 +14,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusVariant>
 #include <algorithm>
 #include <cmath>
 
@@ -121,6 +124,7 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     loadAppearance();
     loadAuthIdleTimeout();
     loadChatLayout();
+    probePortalReducedMotion();
 }
 
 NativePreferences::~NativePreferences()
@@ -208,6 +212,61 @@ void NativePreferences::saveLastConversation()
 bool NativePreferences::dark() const
 {
     return m_mode == "dark" || (m_mode == "system" && m_systemDark);
+}
+
+// Issue #107: Qt 6.10 has no cross-platform reduced-motion hint
+// (QStyleHints::accessibility() only carries contrast), so read the same
+// preference the web's prefers-reduced-motion media query stands for on
+// Linux: the XDG Settings portal's documented org.freedesktop.appearance
+// reduced-motion key. ReadValue runs with a short timeout so a live-but-slow
+// portal never hangs startup, unknown values mean "no preference" per spec,
+// and SettingChanged keeps the flag live when the user flips the toggle.
+// Windows/macOS probes are deliberately out of scope (Linux-only product).
+void NativePreferences::probePortalReducedMotion()
+{
+    auto bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return;
+    auto read = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("/org/freedesktop/portal/settings"),
+        QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("ReadValue"))
+        << QStringLiteral("org.freedesktop.appearance") << QStringLiteral("reduced-motion");
+    const auto reply = bus.call(read, QDBus::Block, 2000);
+    if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty())
+        updatePortalReducedMotion(reply.arguments().first().value<QDBusVariant>().variant().toUInt() == 1u);
+    // Connect last and ignore failure: without a portal announcing the key the
+    // default "no preference" already holds.
+    bus.connect(QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("/org/freedesktop/portal/settings"),
+        QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("SettingChanged"),
+        this, SLOT(onPortalSettingChanged(QString, QString, QDBusVariant)));
+}
+
+void NativePreferences::onPortalSettingChanged(const QString &ns, const QString &key,
+                                               const QDBusVariant &value)
+{
+    if (ns == QLatin1String("org.freedesktop.appearance")
+        && key == QLatin1String("reduced-motion"))
+        updatePortalReducedMotion(value.variant().toUInt() == 1u);
+}
+
+void NativePreferences::updatePortalReducedMotion(bool reduced)
+{
+    const bool was = prefersReducedMotion();
+    m_portalReducedMotion = reduced;
+    if (was != prefersReducedMotion())
+        emit prefersReducedMotionChanged();
+}
+
+void NativePreferences::setPrefersReducedMotionOverride(bool reduced)
+{
+    const bool was = prefersReducedMotion();
+    m_reducedMotionOverride = reduced;
+    if (was != prefersReducedMotion())
+        emit prefersReducedMotionChanged();
 }
 
 QString NativePreferences::appearanceGroup() const

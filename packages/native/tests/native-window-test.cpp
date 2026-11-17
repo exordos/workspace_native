@@ -29713,7 +29713,13 @@ private slots:
         const auto deepLink = "ew://open/org/127.0.0.1-"
             + QString::number(server.origin().port())
             + "/project/" + projectId + "/message/" + target;
-        window->setProperty("prefersReducedMotion", reducedMotion);
+        // exordy #387 finding 1: the window flag follows the platform
+        // reduced-motion preference, so the rows drive the NativePreferences
+        // portal seam (the value a portal announcing
+        // org.freedesktop.appearance/reduced-motion would deliver) and the
+        // window binding must follow it without any QML-level assignment.
+        preferences.setPrefersReducedMotionOverride(reducedMotion);
+        QCOMPARE(window->property("prefersReducedMotion").toBool(), reducedMotion);
         QVERIFY(controller.anchorNavigationError().isEmpty());
         QVERIFY(controller.anchorTransitionPending() == false);
         controller.openMessageLink(deepLink);
@@ -29732,6 +29738,10 @@ private slots:
         QVERIFY(topZone->height() >= 96);
         QVERIFY(bottomZone->height() >= 96);
         QVERIFY(placeholder->height() >= 80);
+        // exordy #387 finding 2: the reference placeholder stays an empty
+        // min-h-20 column until a resolved preview exists - no skeleton bubble
+        // may sit inside it.
+        QVERIFY(!item(content, "anchorSkeletonBubbleCenter"));
         auto *status = item(content, "anchorLoadingStatus"); QVERIFY(status);
         QVERIFY(status->isVisible());
         QCOMPARE(status->property("text").toString(), QStringLiteral("Loading message context"));
@@ -29739,6 +29749,10 @@ private slots:
         QCOMPARE(layer->property("shimmerActive").toBool(), !reducedMotion);
         auto *ownTopBubble = item(content, "anchorSkeletonBubbleTopOwn"); QVERIFY(ownTopBubble);
         QCOMPARE(ownTopBubble->property("shimmerRunning").toBool(), !reducedMotion);
+        // The gate is the pulse animation itself: it must not be running under
+        // reduced motion and must run otherwise (exo-review finding 1 ask).
+        auto *pulse = topBubble->findChild<QObject *>("anchorSkeletonPulse"); QVERIFY(pulse);
+        QCOMPARE(pulse->property("running").toBool(), !reducedMotion);
         // A failing lookup lands on the alert instead of a silent fallback.
         lookupMode = QStringLiteral("missing");
         QVERIFY(pendingLookup);
