@@ -152,18 +152,109 @@ durable queue storage.
 In `resume()`, before deciding between baseline and catch-up: if the current
 owner has no in-memory cursor and a store is attached, read the durable row.
 
-- Valid row: install it into the owner cursor map and take the existing
-  catch-up path, which resumes REST paging from `epoch_version>` the persisted
+- Valid row: install it into the owner cursor map as the transport position.
+  A restore that came from the durable store (never from the in-memory map)
+  additionally routes through the snapshot gate exactly like `baseline()`
+  does - see "Transport position vs application-model hydration (issue #376)"
+  below. The catch-up then pages REST from `epoch_version>` the persisted
   epoch and hands `last_epoch_version` + `epoch_generation` to
-  `ApiClient::openRealtimeSocket()` on connect (`src/api-client.cpp`). No
-  epoch endpoint round-trip and no snapshot are issued for a restored cursor -
-  same behavior as the current in-memory reconnect, now across process exit.
+  `ApiClient::openRealtimeSocket()` on connect (`src/api-client.cpp`). Only
+  the epoch endpoint round-trip is skipped; no epoch fetch is invented for a
+  restored cursor.
 - Missing, invalid, locked or unavailable row: take the untouched `baseline()`
   path (epoch endpoint, snapshot required, fresh cursor). This is also exactly
   the pre-issue behavior, so a corrupt durable file is a no-regression case,
   not an error state.
 - The store is consulted for the exact owner key computed at connect time; a
   row for any other owner is invisible by construction.
+
+## Transport position vs application-model hydration (issue #376)
+
+Issue #15 shipped with the premise that a restored durable cursor can "take
+the existing catch-up path - same behavior as the current in-memory
+reconnect, now across process exit". That premise conflated two different
+pieces of state and produced a P1: a fresh process that restored a cursor
+authenticated successfully, went straight to catch-up, and never emitted
+`snapshotRequired`, so `NativeController::reloadSnapshot` - the only path
+that requests `/streams/` and `/users/` - never ran. The chat list stayed
+empty until a manual refresh. `openCache()` deliberately does not load the
+catalogs; only the snapshot path publishes them.
+
+The corrected doctrine separates the two state machines:
+
+- TRANSPORT POSITION: the durable `(epoch_generation, epoch_version)` pair.
+  It answers "from which server event may replay continue?" It survives
+  process exit and is owned by `RealtimeClient` plus
+  `RealtimeCursorStore`.
+- APPLICATION MODEL HYDRATION: the controller's authorized catalogs
+  (streams, users, and the conversation projection). It answers "has this
+  process ever published a valid authorized snapshot?". It is owned by
+  `NativeController` and is established only through the
+  `snapshotRequired` -> `reloadSnapshot` -> `snapshotReloaded` ->
+  `acknowledgeSnapshot` cycle (issue #15's own write-cadence rule: a cursor
+  is only persisted after an acknowledged snapshot or acknowledged event, so
+  a persisted row proves the previous process was hydrated - never this one).
+
+A durable row restored from the store therefore proves the former process
+hydrated, and this process nothing: every fresh process must complete one
+snapshot cycle even when the transport position is known. The
+`m_cursors` in-memory map retains the old contract (a same-process reconnect
+is an already-hydrated consumer and keeps skipping the snapshot).
+
+Policy applied in `resume()` when the durable row restores:
+
+1. Install the restored position as the epoch/`last_epoch_version` the socket
+   and REST catch-up will use (transport benefit of issue #15 retained: no
+   epoch endpoint round-trip).
+2. Enter the same `m_waitingSnapshot` gate the baseline path uses and emit
+   `snapshotRequired`. The consumer's `acknowledgeSnapshot` releases the
+   gate and catch-up resumes from the restored position. A consumer that
+   never acknowledges (a standalone transport with no controller) stalls at
+   the gate on purpose - holding events back is always safer than delivering
+   them to an unhydrated model, and it matches the pre-existing baseline
+   behavior where no socket opens without a snapshot ack.
+
+Catch-up around the initialization is reconciled, never lost:
+
+- While the snapshot is in flight the gate blocks `catchUp()`, `nudge()` and
+  `connectSocket()`, so no event can overtake the catalogs.
+- Catch-up requests events with `epoch_version>` the restored epoch, so
+  events that arrived (server-side) during the initial loading are
+  re-delivered after the acknowledgement and applied on top of the fresh
+  catalog - at-least-once delivery onto a current snapshot, which the
+  idempotent applier path already tolerates (same safety direction as the
+  write-throttle rule in "Write cadence").
+- Owner/session fencing is untouched: restore still consults only the exact
+  durable owner key, pending-clear fences still exclude invalidated rows,
+  and a stale restored generation is still pruned through `410`/`4410` into
+  `resynchronize()` (which deletes the row and re-baselines with a fresh
+  snapshot). The controller's authentication path continues to drive
+  `resynchronizeRequested` -> `resynchronize()` before any restore happens,
+  and a failed snapshot still retries through `snapshotFailed` ->
+  `retrySnapshot()` while the gate stays closed.
+
+This holds with an empty, evicted or disabled history cache: the snapshot
+requests are authoritative network reads (`cachedCollection` with
+`authoritative=true`), and the cursor database is a separate file that
+cache eviction never touches - which is exactly the user scenario (restart
+after a cursor was persisted, history cache cleared, catalogs unrecoverable
+from replayed events alone).
+
+Regression coverage lives in
+`packages/native/tests/realtime-client-test.cpp` (`native-realtime-client`
+group): `restoredDurableCursorBootstrapsFreshControllerModels`,
+`restoredDurableCursorReconcilesEventsArrivingDuringInitialLoad`,
+`restoredDurableCursorBootstrapsWithCacheDisabled`,
+`restoredDurableCursorBootstrapsAfterCacheEviction` and
+`sameProcessStopStartKeepsInMemoryCursorWithoutSnapshot` bind
+NativeController + NativeCacheService + RealtimeCursorStore + RealtimeClient
+in `src/main.cpp` order against a mock gateway; the transport cases
+(`persistedCursorAdvancesAndFreshClientResumesFromIt`,
+`sameOwnerReconnectResumesFromPersistedCursorWithoutBaseline`,
+`cursorExpiredAfterRestartResynchronizesAndReplacesPersistedCursor`,
+`noopSaveKeepsInvalidationFenceAndStaleRowNeverRestored`) now acknowledge
+the restore-time snapshot as the production controller does. No new `tr()`
+strings are introduced.
 
 ## Reconcile semantics (cursor expired/unknown)
 
