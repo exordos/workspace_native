@@ -13,6 +13,8 @@ FocusScope {
     property bool canGoBack: false
     signal closeRequested()
     signal backRequested()
+    // Issue #46: "Open Source Licenses" entry (docs/NATIVE_DESKTOP_LICENSES.md).
+    signal licensesRequested()
     width: 315
     clip: true
     objectName: "nativeAboutDrawer"
@@ -396,6 +398,36 @@ FocusScope {
                             }
                         }
                     }
+                }
+                // Issue #46: licenses entry link beside the policy-style rows
+                // (docs/NATIVE_DESKTOP_LICENSES.md); the window resolves it
+                // through the licenses section, so the drawer only emits.
+                AbstractButton {
+                    objectName: "nativeAboutLicensesLink"
+                    width: parent.width - 32
+                    implicitHeight: 44
+                    hoverEnabled: true
+                    Accessible.name: qsTr("Open Source Licenses")
+                    Accessible.role: Accessible.Button
+                    onClicked: drawer.licensesRequested()
+                    contentItem: Text {
+                        text: qsTr("Open Source Licenses")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        font.weight: Font.Medium
+                        color: parent.hovered ? drawer.colors["text-primary"] : drawer.colors.accent
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                    }
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.hovered ? drawer.colors["card-bg-active"]
+                            : drawer.colors["card-bg"]
+                        border.width: 1
+                        border.color: drawer.colors["border-subtle"]
+                    }
+                    leftPadding: 17
+                    rightPadding: 17
                 }
             }
         }

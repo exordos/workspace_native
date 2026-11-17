@@ -4493,4 +4493,21 @@
         <message><source>Forward</source><translation>Переслать</translation></message>
         <message><source>Please wait…</source><translation>Подождите…</translation></message>
     </context>
+    <context>
+        <name>NativeLicensesPage</name>
+        <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
+        <message><source>Workspace uses %1 open source packages</source><translation>Workspace использует %1 open source пакетов</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Reset</source><translation>Сбросить</translation></message>
+        <message><source>Search packages…</source><translation>Поиск пакетов…</translation></message>
+        <message><source>%1 of %2 packages</source><translation>%1 из %2 пакетов</translation></message>
+        <message><source>Package</source><translation>Пакет</translation></message>
+        <message><source>Version</source><translation>Версия</translation></message>
+        <message><source>License</source><translation>Лицензия</translation></message>
+        <message><source>Author</source><translation>Автор</translation></message>
+    </context>
+    <context>
+        <name>NativeAboutDrawer</name>
+        <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
+    </context>
 </TS>

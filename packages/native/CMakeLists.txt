@@ -104,6 +104,20 @@ add_custom_command(OUTPUT "${native_ru_qm}"
 set_source_files_properties("${native_ru_qm}" PROPERTIES GENERATED TRUE)
 qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
     BASE "${CMAKE_CURRENT_BINARY_DIR}/translations" FILES "${native_ru_qm}")
+# Licenses page dataset (issue #46, docs/NATIVE_DESKTOP_LICENSES.md): the
+# native client's own third-party dependencies, generated deterministically at
+# build time by scripts/collect-native-licenses.py (release-notes.py
+# precedent). tests/licenses-dataset-test.py guards shape and determinism as a
+# direct python check; it is not a CTest group so the group count stays stable.
+find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+set(native_licenses_json "${CMAKE_CURRENT_BINARY_DIR}/licenses/licenses.json")
+add_custom_command(OUTPUT "${native_licenses_json}"
+    COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/collect-native-licenses.py"
+        --out "${native_licenses_json}"
+    DEPENDS scripts/collect-native-licenses.py VERBATIM)
+set_source_files_properties("${native_licenses_json}" PROPERTIES GENERATED TRUE)
+qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
+    BASE "${CMAKE_CURRENT_BINARY_DIR}/licenses" FILES "${native_licenses_json}")
 # Live external-API handshake scripts the embed view injects (issue #162
 # round 4): the Qt WebChannel JS API (vendored qwebchannel.js) plus the
 # in-page glue mapping meeting-frame events onto the embed bridge.
@@ -117,7 +131,8 @@ qml/NativePollCard.qml
 qml/NativeForwardDialog.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
+
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")

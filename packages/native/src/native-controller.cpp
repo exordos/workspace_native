@@ -6253,6 +6253,15 @@ void NativeController::resetChatSection()
     emit stateChanged();
 }
 
+QString NativeController::licensesDatasetJson() const
+{
+    // Issue #46: the dataset is generated at build time into the Qt resource
+    // (docs/NATIVE_DESKTOP_LICENSES.md); QML XMLHttpRequest refuses local
+    // file reads, so the page receives the JSON through this invokable.
+    QFile file(QStringLiteral(":/workspace/licenses/licenses.json"));
+    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString{};
+}
+
 void NativeController::showSection(const QString &name)
 {
     if (!authenticated())
@@ -6291,6 +6300,19 @@ void NativeController::showSection(const QString &name)
         // links are the only entry surfaces.
         closeOtherContentPages(ContentPage::Services);
         m_section = QStringLiteral("services");
+        emit stateChanged();
+    }
+    else if (name == QLatin1String("licenses"))
+    {
+        // Issue #46: the reference /licenses route renders the Open Source
+        // Licenses browser (licenses-page.ui.tsx,
+        // docs/NATIVE_DESKTOP_LICENSES.md). The About drawer entry and the
+        // whitelisted deep link are the entry surfaces. The section active
+        // before the open is the reference page's "history back" surface.
+        if (m_section != QLatin1String("licenses"))
+            m_sectionBeforeLicenses = m_section;
+        closeOtherContentPages(ContentPage::Licenses);
+        m_section = QStringLiteral("licenses");
         emit stateChanged();
     }
     else if (name == QLatin1String("chat"))
@@ -14950,6 +14972,19 @@ void NativeController::applyDeepLink(const QString &url)
             || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
                 Qt::CaseInsensitive) == 0)
             showSection(QStringLiteral("calls"));
+        return;
+    }
+    // The reference licenses route (issue #46, licenses-page.ui.tsx mapped to
+    // /licenses and /org/:orgId/licenses): the whitelisted route renders the
+    // licenses page; the org-prefixed variant carries the same origin guard
+    // as /calls above.
+    static const QRegularExpression licensesRoutePattern(
+        "^(?:/org/([^/]+))?/licenses/?(?:[?#].*)?$");
+    if (const auto match = licensesRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).isEmpty()
+            || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
+                Qt::CaseInsensitive) == 0)
+            showSection(QStringLiteral("licenses"));
         return;
     }
     // The reference activity route carries its collection segment
