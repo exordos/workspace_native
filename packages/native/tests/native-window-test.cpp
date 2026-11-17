@@ -28204,6 +28204,285 @@ private slots:
         QTest::qWait(250);
         QCOMPARE(probe.urls.size(), 1);
     }
+
+    // ---- Issue #100: sidebar catalog states (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md) ----
+    // The reference sidebar-workspace.ui.tsx:662-699 state machine over the
+    // mock server's defer/response hooks: a held catalog answers the loading
+    // card, a failed catalog answers the blocking card, a failed refresh over
+    // visible rows answers the partial banner, and the five empty states each
+    // render their own title and hint.
+    void sidebarCatalogLoadingShowsDashedSpinnerCard()
+    {
+        WindowChannelFixture fixture;
+        std::function<void()> releaseStreams;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                auto response = fallback(request);
+                response.defer = [&releaseStreams](std::function<void()> send) {
+                    releaseStreams = std::move(send);
+                };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-loading.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar loading window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        // The catalog answer is held: the dashed spinner card replaces the rows.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarLoadingCard"),5000);
+        QVERIFY(releaseStreams);
+        QCOMPARE(visibleItem("sidebarLoadingText")->property("text").toString(),QStringLiteral("Loading\u2026"));
+        QCOMPARE(visibleItem("sidebarLoadingText")->property("font").value<QFont>().pixelSize(),14);
+        QCOMPARE(visibleItem("sidebarLoadingText")->property("color").value<QColor>(),QColor("#989898"));
+        auto *spinner = visibleItem("sidebarLoadingSpinner"); QVERIFY(spinner);
+        QCOMPARE(spinner->width(),32.0); QCOMPARE(spinner->height(),32.0);
+        // Mutually exclusive siblings stay hidden while loading shows.
+        QVERIFY(!visibleItem("sidebarErrorCard"));
+        QVERIFY(!visibleItem("sidebarEmptyCard"));
+        QVERIFY(!visibleItem("sidebarPartialBanner"));
+        QVERIFY(!visibleItem("stream-"+streamId));
+        // Releasing the held catalog swaps the card out for the rows.
+        const auto send = std::exchange(releaseStreams,{}); send();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+        QVERIFY(!visibleItem("sidebarLoadingCard"));
+        QVERIFY(!visibleItem("sidebarErrorCard"));
+        QVERIFY(!visibleItem("sidebarEmptyCard"));
+        QVERIFY(!visibleItem("sidebarPartialBanner"));
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarCatalogFailureShowsBlockingErrorCard_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("title");
+        QTest::addColumn<QString>("body");
+        QTest::addRow("en") << QStringLiteral("en") << QStringLiteral("Something went wrong")
+            << QStringLiteral("Could not load the catalog. Request failed (HTTP 503).");
+        QTest::addRow("ru") << QStringLiteral("ru")
+            << QString::fromUtf8("Что-то пошло не так")
+            << QString::fromUtf8("Не удалось загрузить каталог. Ошибка запроса (HTTP 503).");
+    }
+    void sidebarCatalogFailureShowsBlockingErrorCard()
+    {
+        QFETCH(QString, locale); QFETCH(QString, title); QFETCH(QString, body);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return {QJsonArray{}, 503};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-error.ini"));
+        preferences.setLocale(locale); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar error window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        // The catalog walk failed: the blocking card carries the server message.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarErrorCard"),5000);
+        QCOMPARE(visibleItem("sidebarErrorTitle")->property("text").toString(),title);
+        QCOMPARE(visibleItem("sidebarErrorBody")->property("text").toString(),body);
+        QCOMPARE(visibleItem("sidebarErrorTitle")->property("font").value<QFont>().pixelSize(),14);
+        QCOMPARE(visibleItem("sidebarErrorTitle")->property("color").value<QColor>(),QColor("#1b1b1d"));
+        QCOMPARE(visibleItem("sidebarErrorBody")->property("font").value<QFont>().pixelSize(),12);
+        QVERIFY(controller.error().contains(QStringLiteral("HTTP 503"))
+            || controller.error().contains(QString::fromUtf8("HTTP 503")));
+        QVERIFY(!visibleItem("sidebarLoadingCard"));
+        QVERIFY(!visibleItem("sidebarEmptyCard"));
+        QVERIFY(!visibleItem("sidebarPartialBanner"));
+        QVERIFY(!visibleItem("stream-"+streamId));
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarPartialRefreshErrorKeepsRowsAndShowsBanner()
+    {
+        WindowChannelFixture fixture;
+        bool failCatalog = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (failCatalog && request.method == "GET"
+                && request.target.path().endsWith("/streams/"))
+                return {QJsonArray{}, 503};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-partial.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar partial banner window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+        QVERIFY(!visibleItem("sidebarPartialBanner"));
+        // A refresh whose catalog walk fails keeps the rows and raises the banner.
+        failCatalog = true;
+        controller.refresh();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarPartialBanner"),5000);
+        QVERIFY(visibleItem("stream-"+streamId));
+        QCOMPARE(visibleItem("sidebarPartialTitle")->property("text").toString(),
+            QStringLiteral("Some sidebar data could not be refreshed"));
+        QCOMPARE(visibleItem("sidebarPartialLine")->property("text").toString(),
+            QStringLiteral("Could not load the catalog. Request failed (HTTP 503)."));
+        auto *partialLine = visibleItem("sidebarPartialLine"); QVERIFY(partialLine);
+        // Resolve the QML enum in the QML context (no QQuickText include here).
+        QQmlExpression elideExpr(qmlContext(partialLine), partialLine, "Text.ElideRight");
+        QCOMPARE(partialLine->property("elide").toInt(), elideExpr.evaluate().toInt());
+        QVERIFY(!elideExpr.hasError());
+        QVERIFY(!visibleItem("sidebarLoadingCard"));
+        QVERIFY(!visibleItem("sidebarErrorCard"));
+        QVERIFY(!visibleItem("sidebarEmptyCard"));
+        // A successful snapshot refresh clears the banner again.
+        failCatalog = false;
+        controller.refresh();
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("sidebarPartialBanner"),5000);
+        QVERIFY(visibleItem("stream-"+streamId));
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarEmptyStatesRenderContextTitleAndHint_data()
+    {
+        QTest::addColumn<QString>("stateCase"); QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("title"); QTest::addColumn<QString>("hint");
+        struct Row { const char *stateCase; const char *locale; const char *title; const char *hint; };
+        const QVector<Row> rows {
+            {"search","en","No matches","Try a different chat or topic name."},
+            {"search","ru","Ничего не найдено","Попробуйте другое название чата или темы."},
+            {"workspace","en","No workspace chats yet","When Workspace conversations load, they will show up here."},
+            {"workspace","ru","В Workspace пока нет чатов","Когда чаты Workspace загрузятся, они появятся здесь."},
+            {"personal","en","No direct messages yet","Start a DM from the compose menu or directory."},
+            {"personal","ru","Пока нет личных сообщений","Начните личный диалог через меню создания чата или каталог."},
+            {"channels","en","No channels yet","Subscribe to streams you care about to see them here."},
+            {"channels","ru","Пока нет каналов","Подпишитесь на интересующие каналы, чтобы они отображались здесь."},
+            {"folder","en","Folder is empty","Add chats from a chat menu to populate this folder."},
+            {"folder","ru","Папка пуста","Добавьте чаты через меню чата, чтобы заполнить папку."},
+        };
+        for (const auto &row : rows)
+            QTest::addRow("%s-%s", row.stateCase, row.locale)
+                << QString::fromLatin1(row.stateCase) << QString::fromLatin1(row.locale)
+                << QString::fromUtf8(row.title) << QString::fromUtf8(row.hint);
+    }
+    void sidebarEmptyStatesRenderContextTitleAndHint()
+    {
+        QFETCH(QString, stateCase); QFETCH(QString, locale);
+        QFETCH(QString, title); QFETCH(QString, hint);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderStreamB = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        // The folder scene carries real server system folders plus one empty
+        // custom folder (#83 shipped the rail), so the three folder-scoped
+        // empty states are driven for real, not stubbed.
+        MockServer folderServer;
+        folderServer.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha"), windowChannel(folderStreamB,"Beta")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path == "/api/workspace/v1/messenger/streams/"+folderStreamB) return {windowChannel(folderStreamB,"Beta")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        // The workspace-empty scene serves a genuinely empty catalog.
+        MockServer emptyServer;
+        emptyServer.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/streams/") && request.method == "GET")
+                return {QJsonArray{}};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        WindowChannelFixture searchFixture;
+        NativePreferences preferences(directory.filePath("sidebar-empty.ini"));
+        preferences.setLocale(locale); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar empty-state window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        const auto loginThrough = [&](MockServer &server) {
+            controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+            QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+            controller.openProject(projectId);
+        };
+        if (stateCase == "search") {
+            // One stream is visible; an active query that matches nothing asks
+            // for the search miss pair (reference emptySearch precedence).
+            session.login(searchFixture.server.origin(),"synthetic","synthetic");
+            QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
+            window->setProperty("sidebarQuery","nothing-matches");
+        } else if (stateCase == "workspace") {
+            loginThrough(emptyServer);
+        } else {
+            loginThrough(folderServer);
+            QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(),2,2000);
+            const auto cell = stateCase == "personal" ? QStringLiteral("folder-personal")
+                : stateCase == "channels" ? QStringLiteral("folder-channels")
+                : QStringLiteral("folder-") + folderFocus;
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(cell),5000);
+            click(window,visibleItem(cell));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarEmptyCard"),5000);
+        QCOMPARE(visibleItem("sidebarEmptyTitle")->property("text").toString(),title);
+        QCOMPARE(visibleItem("sidebarEmptyHint")->property("text").toString(),hint);
+        QCOMPARE(visibleItem("sidebarEmptyTitle")->property("font").value<QFont>().pixelSize(),14);
+        QCOMPARE(visibleItem("sidebarEmptyHint")->property("font").value<QFont>().pixelSize(),12);
+        QVERIFY(!visibleItem("sidebarLoadingCard"));
+        QVERIFY(!visibleItem("sidebarErrorCard"));
+        QVERIFY(!visibleItem("sidebarPartialBanner"));
+        if (stateCase == "search") QVERIFY(!visibleItem("stream-"+streamId));
+        if (stateCase == "workspace") QVERIFY(controller.streams().isEmpty());
+        if (stateCase == "personal" || stateCase == "channels" || stateCase == "folder")
+            QVERIFY(controller.sidebarStreams().isEmpty());
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
