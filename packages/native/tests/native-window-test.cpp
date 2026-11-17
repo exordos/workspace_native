@@ -27906,6 +27906,55 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
         focusButtonAndPress(Qt::Key_Space);
     }
+
+    void servicesChatButtonShowsFocusIndicatorOnKeyboardFocus()
+    {
+        // Review PR #380 finding (exordy, NativeServicesPage.qml:267): the
+        // keyboard-focusable "Chats & channels" button had no visible focus
+        // indicator, so keyboard users could not see the selected tab stop.
+        // House pattern: native focus rings use the palette "accent" token
+        // bound to activeFocus (Main.qml otpInput :1780-1781 and
+        // sidebarSearch :3101: border.color activeFocus ? colors.accent :
+        // colors["border-subtle"]). The ring is a dedicated element
+        // (servicesChatButtonFocusRing) whose visibility follows the
+        // button's ActiveFocus.
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        auto *button = view("servicesChatButton"); QVERIFY(button);
+        // The search ignores visibility, so a hidden ring is still found.
+        auto *ring = item(window->contentItem(), "servicesChatButtonFocusRing"); QVERIFY(ring);
+        // No keyboard focus => no visible indicator.
+        QTRY_VERIFY_WITH_TIMEOUT(!button->hasActiveFocus(), 5000);
+        QVERIFY2(!ring->property("visible").toBool(),
+            "the focus indicator must stay hidden while the button lacks keyboard focus");
+        // ActiveFocus set on the button => the indicator shows. (activeFocus
+        // is read-only; the write API is setFocus(), the pattern used by the
+        // sibling keyboard-activation case above.)
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            button->setFocus(Qt::OtherFocusReason);
+            return button->hasActiveFocus();
+        })(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(ring->property("visible").toBool(), 5000);
+        // Losing focus hides it again (the composer is not visible while the
+        // services page is up, so release focus on the control itself).
+        button->setFocus(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!button->hasActiveFocus() && !ring->property("visible").toBool(), 5000);
+    }
 };
 
 
