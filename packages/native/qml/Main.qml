@@ -3216,6 +3216,8 @@ ApplicationWindow {
             // workspace_ui 61dacef. Loading | blocking error | empty render as
             // one dashed card in the flow above the rows; the partial-refresh
             // banner is a solid card above the rows while they stay visible.
+            // When the partial banner and the empty card are both visible the
+            // card stacks directly below the banner, never under it.
             // Geometry: wrapper px-3 py-4 (12/16, banner px-3 pb-2), dashed
             // card radius 8 border 1 border-subtle bg bg-elevated/40 (banner
             // bg-elevated/60, solid border); loading card px-3 py-6 gap-3,
@@ -3273,7 +3275,8 @@ ApplicationWindow {
                             c.stroke()
                         }
                     }
-                    Accessible.ignored: true
+                    Accessible.role: Accessible.StatusBar
+                    Accessible.name: String(root.sidebarCatalogState.loadingText || "")
                     ColumnLayout {
                         id: sidebarLoadingContent
                         anchors.top: parent.top
@@ -3360,7 +3363,9 @@ ApplicationWindow {
                             c.stroke()
                         }
                     }
-                    Accessible.ignored: true
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: [String(root.sidebarCatalogState.errorTitle || ""),
+                        String(root.sidebarCatalogState.errorText || "")].filter(part => part.length).join(" ")
                     ColumnLayout {
                         id: sidebarErrorContent
                         anchors.top: parent.top
@@ -3418,7 +3423,9 @@ ApplicationWindow {
                     color: Qt.alpha(root.colors["bg-elevated"], 0.6)
                     border.width: 1
                     border.color: root.colors["border-subtle"]
-                    Accessible.ignored: true
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: [String(root.sidebarCatalogState.partialTitle || ""),
+                        String(root.sidebarCatalogState.errorText || "")].filter(part => part.length).join(" ")
                     RowLayout {
                         id: sidebarPartialRow
                         anchors.left: parent.left
@@ -3478,7 +3485,10 @@ ApplicationWindow {
                     objectName: "sidebarEmptyCard"
                     visible: Boolean(root.sidebarCatalogState.showEmpty)
                     x: 12
-                    y: 16
+                    // Partial refresh error plus an empty (e.g. no-match query)
+                    // list shows both blocks together: stack the card below the
+                    // banner instead of painting over it (review #389 finding 1).
+                    y: sidebarPartialBanner.visible ? sidebarPartialBanner.height + 8 : 16
                     width: sidebarStateBlock.width - 24
                     height: sidebarEmptyContent.implicitHeight + 40
                     Canvas {
@@ -3510,7 +3520,9 @@ ApplicationWindow {
                             c.stroke()
                         }
                     }
-                    Accessible.ignored: true
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: [String(root.sidebarCatalogState.emptyTitle || ""),
+                        String(root.sidebarCatalogState.emptyHint || "")].filter(part => part.length).join(" ")
                     ColumnLayout {
                         id: sidebarEmptyContent
                         anchors.top: parent.top
