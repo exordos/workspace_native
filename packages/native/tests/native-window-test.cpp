@@ -5616,6 +5616,80 @@ mv -Tf "$root/.current-new" "$root/current"
             : QString("No messages here yet...")));
     }
 
+    // exordy review #41: a first page that fits entirely inside the viewport
+    // can never reach the bottom-edge trigger by scrolling, so the marker
+    // chain must continue automatically while a marker remains.
+    void activityStarredShortFirstPageAutoLoadsNextMarker()
+    {
+        class WindowStarredShortFixture final : public WindowChannelFixture {
+        public:
+            int starredPages = 0;
+            QString lastMarker = QStringLiteral("<none>");
+            QJsonArray page1, page2;
+            QJsonObject one(int n)
+            {
+                auto row = message(QStringLiteral("Short starred row %1").arg(n),
+                    QStringLiteral("7b7b7b7b-7b7b-4b7b-8b7b-1%1")
+                        .arg(n, 11, 10, QLatin1Char('0')), topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(n * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredShortFixture()
+            {
+                sourceScene = true;
+                page1 = {one(4), one(3)};
+                page2 = {one(2), one(1)};
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredPages;
+                        lastMarker = query.queryItemValue("page_marker");
+                        if (lastMarker.isEmpty()) {
+                            Response response{page1, 200, 0, {}};
+                            response.headers.insert("X-Pagination-Marker", QByteArray("page2"));
+                            return response;
+                        }
+                        return {page2};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredShortFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("activity-starred"));
+        QTRY_VERIFY(controller.starredVisible());
+        // The short first page (2 rows + marker) cannot overflow the list,
+        // so the bottom-edge trigger can never arrive by scrolling (contentY
+        // stays 0, nothing is scrollable) - and the marker chain still
+        // continues on its own to the exhausted cursor, in exactly one
+        // additional request with the exact marker.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 4, 5000);
+        auto *list = view("starredList"); QVERIFY(list);
+        QCOMPARE(fixture.starredPages, 2);
+        QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
+        QVERIFY(list->property("contentHeight").toReal() <= list->height());
+        QCOMPARE(list->property("contentY").toReal(), 0.0); // the flow never scrolled
+        QTest::qWait(250);
+        QCOMPARE(fixture.starredPages, 2); // the exhausted cursor never re-fires
+    }
+
     // Issue #44: the sidebar Inbox chip opens the page, stream cards render
     // with badges, a topic row selects its conversation and unmounts the
     // page, and closing restores the conversation column. Geometry contract:
