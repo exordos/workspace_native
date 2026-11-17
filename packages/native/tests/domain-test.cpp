@@ -587,6 +587,42 @@ private slots:
         markdown.remove(QStringLiteral("poll_state"));
         QVERIFY(parseMessage(markdown, projectId));
     }
+
+    void avatarSourceMatchesTheReferenceUrnTable()
+    {
+        // Reference: workspace_ui@75bd21f shared/lib/workspace-avatar-urn.lib.ts
+        // (resolveWorkspaceAvatarSource, resolveGravatarUrl, resolveGeneratedAvatarUrl).
+        const auto file = resolveAvatarSource(QStringLiteral("urn:image:aaaaaaaa-0000-4000-8000-000000000001"));
+        QVERIFY(file.kind == AvatarSourceKind::File);
+        QCOMPARE(file.key, QStringLiteral("aaaaaaaa-0000-4000-8000-000000000001"));
+        QVERIFY(file.url.isEmpty()); // File avatars download through the FileClient.
+        const auto gravatar = resolveAvatarSource(QStringLiteral("urn:gravatar:0123456789ABCDEF0123456789abcdef"));
+        QVERIFY(gravatar.kind == AvatarSourceKind::Gravatar);
+        QCOMPARE(gravatar.url,
+            QStringLiteral("https://secure.gravatar.com/avatar/0123456789abcdef0123456789abcdef?d=identicon&s=500"));
+        const auto generated = resolveAvatarSource(QStringLiteral("urn:gavatar:01234567-89ab-4bcd-8ef0-1234567890ab"));
+        QVERIFY(generated.kind == AvatarSourceKind::Gravatar);
+        QCOMPARE(generated.url,
+            QStringLiteral("https://secure.gravatar.com/avatar/0123456789ab4bcd8ef01234567890ab?d=identicon&s=500"));
+        // Null-resolving forms per the reference plus the deliberately deferred
+        // urn:url passthrough (arbitrary external fetch is out of native scope).
+        const QStringList rejected{QStringLiteral("urn:gravatar:xyz"), QStringLiteral("urn:gravatar:"),
+            QStringLiteral("urn:gavatar:01234567-89ab-4bcd-8ef0-1234567890abc"),
+            QStringLiteral("urn:gavatar:0123456789abcdef0123456789abcdef"),
+            QStringLiteral("urn:url:https://example.invalid/a.png"),
+            QStringLiteral("urn:image:0123456789abcdef0123456789abcdef"), QString(),
+            QStringLiteral("urn:image:aaaaaaaa-0000-4000-8000-000000000001/x"),
+            QStringLiteral("URN:IMAGE:aaaaaaaa-0000-4000-8000-000000000001")};
+        for (const auto &value : rejected) QVERIFY(resolveAvatarSource(value).kind == AvatarSourceKind::None);
+        // participantAvatarReference is the projection sanitization gate.
+        QCOMPARE(participantAvatarReference(QJsonValue(QStringLiteral(" urn:gravatar:0123456789ABCDEF0123456789abcdef "))),
+            QStringLiteral("urn:gravatar:0123456789ABCDEF0123456789abcdef")); // sourceTrimmed passthrough.
+        QCOMPARE(participantAvatarReference(QJsonValue(QStringLiteral("urn:image:aaaaaaaa-0000-4000-8000-000000000001"))),
+            QStringLiteral("urn:image:aaaaaaaa-0000-4000-8000-000000000001"));
+        QVERIFY(participantAvatarReference(QJsonValue(QStringLiteral("urn:url:https://example.invalid"))).isEmpty());
+        QVERIFY(participantAvatarReference(QJsonValue(QStringLiteral("urn:gravatar:xyz"))).isEmpty());
+        QVERIFY(participantAvatarReference(QJsonValue(QJsonValue::Null)).isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(DomainTest)

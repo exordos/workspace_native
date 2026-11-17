@@ -55,6 +55,9 @@ QByteArray encoded(const QImage &image, const QByteArray &format = "png", int qu
     return writer.write(image) ? bytes : QByteArray{};
 }
 QString providerKey(const QString &url) { return QUrl(url).path().mid(1); }
+// Gravatar urn forms per workspace_ui@75bd21f workspace-avatar-urn.lib.ts.
+QString gravatarHash() { return QStringLiteral("0123456789abcdef0123456789abcdef"); }
+QString gravatarUrn() { return QStringLiteral("urn:gravatar:") + gravatarHash(); }
 QImage providerImage(QQuickImageProvider &provider, const QString &url, QSize requested = {})
 {
     QSize size; return provider.requestImage(providerKey(url), &size, requested);
@@ -118,6 +121,10 @@ struct Fixture {
     bool offerProjectB = false, holdProjectRefresh = false; int heldRefreshPosts = 0;
     bool holdMetadata = false;
     int metadataStatus = 200, metadataGets = 0, binaryGets = 0;
+    int gravatarStatus = 200, gravatarGets = 0;
+    QByteArray gravatarBytes; // Empty keeps the shared PNG fixture bytes.
+    QStringList gravatarPaths;
+    QList<QByteArray> gravatarAuthorizations;
     QList<QPointer<QTcpSocket>> held;
     QList<std::function<void()>> releases;
     QStringList requestedIds;
@@ -125,12 +132,22 @@ struct Fixture {
     ApiClient api{nullptr, true};
     Session session{&api};
     FileClient files{&api};
-    AvatarImages images{&api, &session, &files};
+    // Loopback transport also lets the gravatar fetch (issue #4) serve fixtures
+    // from this same origin, mirroring the ApiClient test flag.
+    AvatarImages images{&api, &session, &files, true};
     Fixture()
     {
         server.handler = [this](QTcpSocket *socket, const Request &request) {
             const auto path = request.target.path();
             const QString prefix = "/api/workspace/v1/messenger/files/";
+            if (path.startsWith("/avatar/")) {
+                ++gravatarGets;
+                gravatarPaths.append(path + "?" + request.target.query(QUrl::FullyEncoded));
+                gravatarAuthorizations.append(request.headers.value("authorization"));
+                if (gravatarStatus != 200) { ImageServer::reply(socket, QByteArray{}, gravatarStatus); return; }
+                ImageServer::reply(socket, gravatarBytes.isEmpty() ? bytes : gravatarBytes);
+                return;
+            }
             if (!path.startsWith(prefix)) {
                 auto result = sessionResponse(request);
                 if (offerProjectB && path == "/api/core/v1/iam/projects/")
@@ -205,6 +222,10 @@ private slots:
     void newConcurrentMountRetriesTransportFailureAndCoalesces();
     void concurrentMountRetryNotificationIsReentrant_data();
     void concurrentMountRetryNotificationIsReentrant();
+    void gravatarSourceFetchesIdenticonTemplateUnauthenticatedAndMasks();
+    void gravatarVariantsRejectedWithoutNetwork();
+    void gravatarTransportFailureRetriesOnFreshMountOnly();
+    void gravatarOversizedResponseFailsClosed();
 };
 
 void AvatarImagesTest::pureReadsInvalidAndNoOwnerNeverFetch()
@@ -595,6 +616,82 @@ void AvatarImagesTest::concurrentMountRetryNotificationIsReentrant()
     QVERIFY(alive->imageUrl(urn()).isEmpty()); QCOMPARE(f.requestedIds.count(fileId()),1);
     QCOMPARE(f.metadataGets,2); QCOMPARE(f.binaryGets,1);
     alive->release(nested); QCOMPARE(alive->stats().leases,0); QCOMPARE(alive->stats().pipelineJobs,0);
+}
+
+void AvatarImagesTest::gravatarSourceFetchesIdenticonTemplateUnauthenticatedAndMasks()
+{
+    // Reference: workspace_ui@75bd21f workspace-avatar-urn.lib.ts resolveGravatarUrl
+    // and resolveGeneratedAvatarUrl (https://secure.gravatar.com/avatar/<hash>?d=identicon&s=500).
+    Fixture f; QVERIFY(f.start());
+    const auto upper = QStringLiteral("urn:gravatar:") + gravatarHash().toUpper();
+    const auto first = f.images.acquire(gravatarUrn());
+    const auto second = f.images.acquire(upper); // The ts resolver lowercases the hash.
+    QVERIFY(first); QVERIFY(second);
+    QTRY_VERIFY(!f.images.imageUrl(gravatarUrn()).isEmpty());
+    QCOMPARE(f.gravatarGets, 1); QCOMPARE(f.metadataGets, 0); QCOMPARE(f.binaryGets, 0);
+    QCOMPARE(f.gravatarPaths.constFirst(),
+        QString("/avatar/%1?d=identicon&s=500").arg(gravatarHash()));
+    QVERIFY(f.gravatarAuthorizations.constFirst().isEmpty()); // No credentials leave for gravatar.
+    QCOMPARE(f.images.stats().leases, 2); QVERIFY(!f.images.failed(gravatarUrn()));
+    QVERIFY(f.images.imageUrl(upper) == f.images.imageUrl(gravatarUrn())); // One shared entry.
+    std::unique_ptr<QQuickImageProvider> provider(f.images.createImageProvider());
+    const auto url = f.images.imageUrl(gravatarUrn());
+    const auto image = providerImage(*provider, url, {4096, 4096});
+    QCOMPARE(image.size(), QSize(128, 128)); QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
+    QVERIFY(mostly(image.pixelColor(20, 64), Qt::green)); QVERIFY(mostly(image.pixelColor(108, 64), Qt::blue));
+    f.images.release(first); QCOMPARE(f.images.imageUrl(gravatarUrn()), url); f.images.release(second);
+    // The generated form maps the user uuid's dash-free lowercase form into the same template.
+    const auto generated = QStringLiteral("urn:gavatar:01234567-89ab-4bcd-8ef0-1234567890ab");
+    const auto generatedLease = f.images.acquire(generated); QVERIFY(generatedLease);
+    QTRY_COMPARE(f.gravatarGets, 2);
+    QCOMPARE(f.gravatarPaths.last(),
+        QString("/avatar/0123456789ab4bcd8ef01234567890ab?d=identicon&s=500"));
+    f.images.release(generatedLease);
+}
+
+void AvatarImagesTest::gravatarVariantsRejectedWithoutNetwork()
+{
+    Fixture f; QVERIFY(f.start());
+    const auto shortHash = gravatarHash().left(31);
+    for (const auto &value : {QStringLiteral("urn:gravatar:"), QStringLiteral("urn:gravatar:") + shortHash,
+        QStringLiteral("urn:gravatar:") + gravatarHash() + QStringLiteral("0"),
+        QStringLiteral("urn:gravatar:0123456789abcdef0123456789abcdeg"),
+        QStringLiteral("urn:gavatar:not-a-uuid"), QStringLiteral("urn:gavatar:") + gravatarHash(),
+        QStringLiteral("urn:url:https://secure.gravatar.com/avatar/0123456789abcdef0123456789abcdef"),
+        QStringLiteral("URN:GRAVATAR:") + gravatarHash()}) {
+        QCOMPARE(f.images.acquire(value), quint64(0));
+        QVERIFY(f.images.imageUrl(value).isEmpty()); QVERIFY(!f.images.failed(value));
+    }
+    QCOMPARE(f.gravatarGets, 0); QCOMPARE(f.metadataGets, 0); QCOMPARE(f.binaryGets, 0);
+    QCOMPARE(f.images.stats().entries, 0); QCOMPARE(f.images.stats().leases, 0);
+}
+
+void AvatarImagesTest::gravatarTransportFailureRetriesOnFreshMountOnly()
+{
+    Fixture f; QVERIFY(f.start()); f.gravatarStatus = 503;
+    const auto first = f.images.acquire(gravatarUrn()), second = f.images.acquire(gravatarUrn());
+    QVERIFY(first); QVERIFY(second);
+    QTRY_VERIFY(f.images.failed(gravatarUrn())); QCOMPARE(f.gravatarGets, 1);
+    f.gravatarStatus = 200; f.images.release(first);
+    for (int i = 0; i < 1000; ++i) { QVERIFY(f.images.failed(gravatarUrn())); QVERIFY(f.images.imageUrl(gravatarUrn()).isEmpty()); }
+    QCOMPARE(f.gravatarGets, 1); // Pure reads do not constitute a fresh consumer mount.
+    f.images.release(second);
+    const auto freshMount = f.images.acquire(gravatarUrn()); QVERIFY(freshMount);
+    QTRY_COMPARE(f.gravatarGets, 2);
+    QTRY_VERIFY(!f.images.imageUrl(gravatarUrn()).isEmpty()); QVERIFY(!f.images.failed(gravatarUrn()));
+    f.images.release(freshMount);
+}
+
+void AvatarImagesTest::gravatarOversizedResponseFailsClosed()
+{
+    Fixture f; QVERIFY(f.start());
+    f.gravatarBytes = QByteArray(9 * 1024 * 1024, 'x'); // Over the manager remote cap.
+    const auto lease = f.images.acquire(gravatarUrn()); QVERIFY(lease);
+    QTRY_VERIFY(f.images.failed(gravatarUrn())); // Rejected by size cap or by decode admission.
+    QVERIFY(f.images.imageUrl(gravatarUrn()).isEmpty());
+    QCOMPARE(f.images.stats().thumbnails, 0);
+    QTRY_COMPARE(f.images.stats().pipelineJobs, 0);
+    f.images.release(lease);
 }
 
 QTEST_GUILESS_MAIN(AvatarImagesTest)

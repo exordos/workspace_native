@@ -2166,6 +2166,20 @@ private slots:
         QCOMPARE(f.session.publicProfile(), identity);
     }
 
+    void gravatarAvatarReferencesSurviveThePresentationProjection()
+    {
+        // Reference workspace_ui@75bd21f workspace-avatar-urn.lib.ts: a
+        // urn:gravatar value is a real avatar source, so the server's value
+        // must reach every surface instead of being stripped at parse time.
+        const QString gravatar = QStringLiteral("urn:gravatar:0123456789abcdef0123456789abcdef");
+        AvatarReferenceFixture test{QJsonValue(gravatar)}; auto &c = test.direct.fixture.controller;
+        QVERIFY(test.start());
+        QCOMPARE(test.sidebar().value("avatar").toString(), gravatar);
+        QCOMPARE(c.directPeer().value("avatar").toString(), gravatar);
+        QCOMPARE(modelMessage(c, returnedId).value("authorAvatar").toString(), gravatar);
+        QCOMPARE(c.account().value("avatar").toString(), gravatar);
+    }
+
     void ownRealtimeEmailNotifiesAndForeignEmailNeverReplacesTheViewer()
     {
         AvatarReferenceFixture test{QJsonValue(avatarReferenceA)};
