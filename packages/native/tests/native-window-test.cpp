@@ -25960,6 +25960,148 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE_WITH_TIMEOUT(borderWidth(calendarButton), 0.0, 5000);
     }
 
+    // Issue #37: the recent-calls section page matches the reference contract
+    // measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
+    // calls-page.ui.tsx (docs/NATIVE_DESKTOP_CALLS_RECENT_EMPTY.md): header
+    // row gap-2 px-4 pb-2 pt-3 with an 18 px phone glyph in text-muted and a
+    // text-sm font-semibold text-primary heading (key call.recentCalls); state
+    // card m-3 rounded-xl 1 px border-subtle bg-elevated/50 px-4 py-3 text-sm
+    // in text-muted (key call.noRecentCalls); full-width page without a
+    // max-w-narrow-page cap; no loading text and no request on mount
+    // (calls-page.test.tsx).
+    void callsRecentEmptyStateMatchesReferenceContract_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void callsRecentEmptyStateMatchesReferenceContract()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        const bool dark = mode == QLatin1String("dark");
+        const QColor textPrimary = dark ? QColor("#ffffff") : QColor("#1b1b1d");
+        const QColor textMuted = dark ? QColor("#707070") : QColor("#989898");
+        const QColor borderSubtle = dark ? QColor("#33384d") : QColor("#d8e4ef");
+        const QColor bgElevated = dark ? QColor("#222328") : QColor("#ffffff");
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        auto *panel = view("conversationPanel"); QVERIFY(panel);
+        const auto contentWidth = panel->width();
+        const auto contentLeft = pos(panel).x();
+        QVERIFY(contentWidth > 0);
+        // The reference empty page issues no request (calls-page.test.tsx has
+        // no loading state): snapshot every counter so the open is provably
+        // offline, and remember the selection for the no-navigation contract.
+        const auto catalog = fixture.catalogGets, users = fixture.usersGets,
+                   history = fixture.historyGets, canonical = fixture.canonicalGets;
+        const auto selectionBefore = controller.selectedStream();
+        // The native build settings do not introduce the TOP_BAR_CALLS_NAV
+        // gate, so there is deliberately no Calls chip in the top bar; the
+        // section state (reached in production through the whitelisted
+        // /calls deep link) is the entry surface under test.
+        QVERIFY(!view("sectionCallsButton"));
+        controller.showSection(QStringLiteral("calls"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
+        auto *page = view("nativeCallsPage"); QVERIFY(page);
+        // Full-width page: it fills the content slot the conversation used,
+        // same left edge, no narrow-page cap (calls-page.test.tsx:22-36).
+        // The Layout repack that hides the conversation and gives the calls
+        // page the slot lands one pass after the visibility flip.
+        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= contentWidth - 8
+            && qAbs(pos(page).x() - contentLeft) < 8, 5000);
+        QVERIFY2(page->width() >= contentWidth - 8,
+            qPrintable(QStringLiteral("calls page %1 vs conversation %2")
+                .arg(page->width()).arg(contentWidth)));
+        QVERIFY(qAbs(pos(page).x() - contentLeft) < 8);
+        QVERIFY(!view("messageComposer")); // The conversation surfaces are hidden.
+        QTest::qWait(250); // Let any stray late reply land in the counters.
+        QCOMPARE(fixture.catalogGets, catalog);
+        QCOMPARE(fixture.usersGets, users);
+        QCOMPARE(fixture.historyGets, history);
+        QCOMPARE(fixture.canonicalGets, canonical);
+        // No navigation on mount (calls-page.test.tsx navigateSpy contract).
+        QCOMPARE(controller.selectedStream(), selectionBefore);
+        QCOMPARE(controller.section(), QStringLiteral("calls"));
+        // Header row: px-4 pt-3, gap-2 = 8 px, full width minus the 16 px sides.
+        auto *header = view("callsHeaderRow"); QVERIFY(header);
+        QCOMPARE(pos(header).x() - pos(page).x(), 16.0);
+        QCOMPARE(pos(header).y() - pos(page).y(), 12.0);
+        QCOMPARE(header->property("spacing").toInt(), 8);
+        QCOMPARE(header->width(), page->width() - 32.0);
+        auto *glyph = view("callsHeaderGlyph"); QVERIFY(glyph);
+        auto *heading = view("callsHeading"); QVERIFY(heading);
+        // Icon name="phone" size 18 in text-muted.
+        QCOMPARE(glyph->width(), 18.0);
+        QCOMPARE(glyph->height(), 18.0);
+        QCOMPARE(glyph->property("asset").toString(), QStringLiteral("phone.svg"));
+        QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
+        QCOMPARE(pos(glyph).x() - pos(header).x(), 0.0);
+        // h2 text-sm font-semibold text-text-primary (key call.recentCalls).
+        QCOMPARE(heading->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("Последние звонки Jitsi")
+                                          : QString("Recent Jitsi calls"));
+        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::DemiBold);
+        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
+        // gap-2 between the glyph and the title; items-center centering is
+        // font-derived, so it carries a small tolerance.
+        QCOMPARE(pos(heading).x() - (pos(glyph).x() + glyph->width()), 8.0);
+        QVERIFY(qAbs((pos(glyph).y() + glyph->height() / 2)
+            - (pos(heading).y() + heading->height() / 2)) < 1.0);
+        // State card: m-3, rounded-xl, 1 px border-subtle, bg-elevated at 50 %.
+        auto *card = view("callsEmptyCard"); QVERIFY(card);
+        QCOMPARE(pos(card).x() - pos(page).x(), 12.0);
+        QCOMPARE(card->width(), page->width() - 24.0); // m-3 on both sides.
+        QCOMPARE(QQmlProperty::read(card, "radius").toReal(), 12.0);
+        QCOMPARE(QQmlProperty::read(card, "border.width").toReal(), 1.0);
+        QCOMPARE(QQmlProperty::read(card, "border.color").value<QColor>(), borderSubtle);
+        const QColor cardColor = card->property("color").value<QColor>();
+        QCOMPARE(QRgb(cardColor.rgb()) & 0xFFFFFF, QRgb(bgElevated.rgb()) & 0xFFFFFF);
+        QVERIFY(qAbs(cardColor.alphaF() - 0.5) <= 1.0 / 255);
+        // pb-2 (8) above the card edge plus the card's m-3 (12) top margin.
+        QCOMPARE(pos(card).y() - (pos(header).y() + header->height()), 20.0);
+        // Empty text: text-sm text-muted inside px-4 py-3 (key call.noRecentCalls).
+        auto *empty = view("callsEmptyText"); QVERIFY(empty);
+        QCOMPARE(empty->property("text").toString(), locale == QLatin1String("ru")
+            ? QString::fromUtf8("Пока нет недавних звонков Jitsi")
+            : QString("No recent Jitsi calls yet"));
+        QCOMPARE(empty->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(empty->property("color").value<QColor>(), textMuted);
+        QCOMPARE(pos(empty).x() - pos(card).x(), 16.0);
+        QCOMPARE(pos(empty).y() - pos(card).y(), 12.0);
+        QCOMPARE(pos(card).y() + card->height() - (pos(empty).y() + empty->height()), 12.0);
+        // The empty state is the only state: no "loading" text anywhere on
+        // the page (calls-page.test.tsx:49).
+        QVERIFY(!empty->property("text").toString().contains(QStringLiteral("loading"), Qt::CaseInsensitive));
+        QVERIFY(!heading->property("text").toString().contains(QStringLiteral("loading"), Qt::CaseInsensitive));
+        // The Chat chip is the section home; selecting a conversation is chat
+        // navigation (reference: any conversation route maps back to chat).
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeCallsPage") && view("messageComposer"), 5000);
+        controller.showSection(QStringLiteral("calls"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
+        click(window, view("stream-" + streamId));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeCallsPage")
+            && controller.section() == QStringLiteral("chat"), 5000);
+    }
+
     // ---- Issue #7 slice 2: multi-select entry, selection bar, forward modal
     // (docs/NATIVE_DESKTOP_MULTI_FORWARD.md) ----
 private:

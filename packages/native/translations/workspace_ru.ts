@@ -3215,6 +3215,17 @@
         </message>
     </context>
     <context>
+        <name>NativeCallsPage</name>
+        <message>
+            <source>Recent Jitsi calls</source>
+            <translation>Последние звонки Jitsi</translation>
+        </message>
+        <message>
+            <source>No recent Jitsi calls yet</source>
+            <translation>Пока нет недавних звонков Jitsi</translation>
+        </message>
+    </context>
+    <context>
         <name>NativeMediaViewer</name>
         <message>
             <source>Media viewer</source>
