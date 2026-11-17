@@ -5760,6 +5760,84 @@ mv -Tf "$root/.current-new" "$root/current"
             .arg(firstCardTop).arg(retryBottom)));
     }
 
+    // exordy review #41: attacker-controlled author names and stream/topic
+    // metadata must render as plain text - image markup in a name must never
+    // be parsed as rich text (which would fetch an attacker-controlled URL).
+    void activityStarredAuthorAndMetaRenderAsPlainText()
+    {
+        class WindowStarredMarkupFixture final : public WindowChannelFixture {
+        public:
+            QJsonArray all;
+            static QString markup(const QString &label)
+            {
+                return QStringLiteral("<img src=\"http://starred.invalid/%1.png\" />%2").arg(label, label);
+            }
+            QJsonObject one(const QString &id)
+            {
+                auto row = message(QStringLiteral("Markup starred row"), id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredMarkupFixture()
+            {
+                sourceScene = true;
+                // The directory serves the peer with a crafted display name.
+                for (int i = 0; i < users.size(); ++i) {
+                    auto object = users.at(i).toObject();
+                    if (object.value("uuid").toString() == channelPeer)
+                        object["first_name"] = markup("author");
+                    users[i] = object;
+                }
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred"))
+                        return {all};
+                    if (request.target.path().endsWith("/streams/") && request.method == "GET") {
+                        auto response = fallback(request);
+                        auto rows = response.data.toArray();
+                        for (int i = 0; i < rows.size(); ++i) {
+                            auto object = rows.at(i).toObject();
+                            object["name"] = markup("stream");
+                            rows[i] = object;
+                        }
+                        return {rows, response.status, response.delay, response.headers};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredMarkupFixture fixture;
+        const QString id = "7b7b7b7b-7b7b-4b7b-8b7b-300000000001";
+        fixture.all = {fixture.one(id)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("activity-starred"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + id), 5000);
+        // Text.PlainText (Qt::PlainText): the <img> tag is never parsed, the
+        // rendered text stays the literal attacker-provided string.
+        auto *author = view("starred-author-" + id); QVERIFY(author);
+        QCOMPARE(author->property("textFormat").toInt(), int(Qt::PlainText));
+        QCOMPARE(author->property("text").toString(), WindowStarredMarkupFixture::markup("author"));
+        auto *meta = view("starred-meta-" + id); QVERIFY(meta);
+        QCOMPARE(meta->property("textFormat").toInt(), int(Qt::PlainText));
+        QVERIFY(meta->property("text").toString().startsWith(WindowStarredMarkupFixture::markup("stream")));
+    }
+
     // Issue #44: the sidebar Inbox chip opens the page, stream cards render
     // with badges, a topic row selects its conversation and unmounts the
     // page, and closing restores the conversation column. Geometry contract:
