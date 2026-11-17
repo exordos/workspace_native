@@ -106,6 +106,7 @@ FocusScope {
         width: page.width - 32
         text: qsTr("Services will be available here. Integrations are being prepared.")
         textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
         font.pixelSize: 14
         color: page.colors["text-muted"]
     }
@@ -259,6 +260,23 @@ FocusScope {
         radius: 8 // rounded-lg
         color: page.colors["accent"]
         opacity: buttonHover.hovered ? 0.9 : 1.0 // hover:opacity-90
+        // Keyboard access (review PR #380): the reference renders a real
+        // <button>, so the control is a focusable button-like element with
+        // Enter/Space activation - the house pattern from review #170
+        // (SessionSwitcher rows). Presentation stays exactly as measured.
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: chatButtonText.text
+        function activate() { page.goToChats() }
+        Keys.onReturnPressed: (event) => {
+            event.accepted = true;
+            chatButtonRect.activate();
+        }
+        Keys.onSpacePressed: (event) => {
+            event.accepted = true;
+            chatButtonRect.activate();
+        }
+        Accessible.onPressAction: chatButtonRect.activate()
         Text {
             id: chatButtonText
             objectName: "servicesChatButtonText"
@@ -273,7 +291,7 @@ FocusScope {
         MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: page.goToChats()
+            onClicked: chatButtonRect.activate()
         }
     }
 

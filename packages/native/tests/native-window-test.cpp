@@ -27814,6 +27814,98 @@ private slots:
             })(), 5000);
         }
     }
+
+    void servicesHeaderHintWrapsAtMinimumWindowWidth()
+    {
+        // Review PR #380 finding 1: the header hint (settings.servicesPlannedHint,
+        // reference sub mt-1 text-sm text-text-muted, services-page.ui.tsx:88)
+        // is width-constrained and must wrap instead of overflowing the content
+        // slot at the minimum window width, growing the header to contain it.
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(700, 800); // app-window minimum width
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        auto *sub = view("servicesPlannedHint"); QVERIFY(sub);
+        auto *headerBg = view("servicesHeaderBg"); QVERIFY(headerBg);
+        // The hint line is wider than its box at the minimum window width, so
+        // the default NoWrap mode overflows instead of growing the header.
+        QVERIFY2(sub->property("implicitWidth").toReal() > sub->width() + 1.0,
+            qPrintable(QStringLiteral("narrow case did not reproduce: box %1 implicit %2")
+                .arg(sub->width()).arg(sub->property("implicitWidth").toReal())));
+        QVERIFY2(sub->property("wrapMode").toInt() != 0,
+            "the header hint must not stay on the default NoWrap mode");
+        // The wrapped document layout lands one polish round after the
+        // narrow width is applied; poll until the line count settles.
+        QTRY_VERIFY_WITH_TIMEOUT(sub->property("lineCount").toInt() >= 2, 5000);
+        QVERIFY2(sub->property("lineCount").toInt() >= 2,
+            qPrintable(QStringLiteral("hint lines %1 height %2")
+                .arg(sub->property("lineCount").toInt()).arg(sub->height())));
+        // The header rectangle contains the wrapped hint plus the 16 px
+        // bottom padding (py-4 top, mt-1 gap, the wrapped sub, 16 px bottom).
+        QVERIFY2(qAbs(headerBg->height()
+            - (pos(sub).y() - pos(headerBg).y() + sub->height() + 16.0)) < 1.0,
+            qPrintable(QStringLiteral("header %1 hint bottom %2")
+                .arg(headerBg->height()).arg(pos(sub).y() + sub->height())));
+    }
+
+    void servicesChatButtonIsKeyboardActivatable()
+    {
+        // Review PR #380 finding 2: the "Chats & channels" control (the
+        // reference openMessenger button, services-page.ui.tsx:99-105) must be
+        // keyboard-focusable and activatable. House pattern (review #170,
+        // SessionSwitcher rows): activeFocusOnTab + Keys Return/Space +
+        // Accessible.Button.
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        const auto focusButtonAndPress = [&](Qt::Key key) {
+            auto *button = view("servicesChatButton"); QVERIFY(button);
+            // Same pattern as the session-switcher keyboard test: take active
+            // focus on the control, then send the key to the window.
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                button->setFocus(true);
+                return button->hasActiveFocus();
+            })(), 5000);
+            QTest::keyClick(window, key);
+            QTRY_VERIFY_WITH_TIMEOUT(!view("nativeServicesPage") && view("messageComposer"), 5000);
+            QCOMPARE(controller.section(), QStringLiteral("chat"));
+        };
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        auto *button = view("servicesChatButton"); QVERIFY(button);
+        QVERIFY2(button->property("activeFocusOnTab").toBool(),
+            "the Chats & channels button must participate in the tab chain");
+        focusButtonAndPress(Qt::Key_Return);
+        // Space activates as well (button semantics).
+        controller.showSection(QStringLiteral("services"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
+        focusButtonAndPress(Qt::Key_Space);
+    }
 };
 
 
