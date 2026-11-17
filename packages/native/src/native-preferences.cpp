@@ -218,9 +218,11 @@ bool NativePreferences::dark() const
 // (QStyleHints::accessibility() only carries contrast), so read the same
 // preference the web's prefers-reduced-motion media query stands for on
 // Linux: the XDG Settings portal's documented org.freedesktop.appearance
-// reduced-motion key. ReadValue runs with a short timeout so a live-but-slow
-// portal never hangs startup, unknown values mean "no preference" per spec,
-// and SettingChanged keeps the flag live when the user flips the toggle.
+// reduced-motion key. The Settings interface is served by
+// org.freedesktop.portal.Desktop at /org/freedesktop/portal/desktop - Read
+// runs there with a short timeout so a live-but-slow portal never hangs
+// startup, unknown values mean "no preference" per spec, and SettingChanged
+// keeps the flag live when the user flips the toggle.
 // Windows/macOS probes are deliberately out of scope (Linux-only product).
 void NativePreferences::probePortalReducedMotion()
 {
@@ -228,18 +230,18 @@ void NativePreferences::probePortalReducedMotion()
     if (!bus.isConnected())
         return;
     auto read = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
         QStringLiteral("org.freedesktop.portal.Settings"),
-        QStringLiteral("/org/freedesktop/portal/settings"),
-        QStringLiteral("org.freedesktop.portal.Settings"),
-        QStringLiteral("ReadValue"))
+        QStringLiteral("Read"))
         << QStringLiteral("org.freedesktop.appearance") << QStringLiteral("reduced-motion");
     const auto reply = bus.call(read, QDBus::Block, 2000);
     if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty())
         updatePortalReducedMotion(reply.arguments().first().value<QDBusVariant>().variant().toUInt() == 1u);
     // Connect last and ignore failure: without a portal announcing the key the
     // default "no preference" already holds.
-    bus.connect(QStringLiteral("org.freedesktop.portal.Settings"),
-        QStringLiteral("/org/freedesktop/portal/settings"),
+    bus.connect(QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
         QStringLiteral("org.freedesktop.portal.Settings"),
         QStringLiteral("SettingChanged"),
         this, SLOT(onPortalSettingChanged(QString, QString, QDBusVariant)));
