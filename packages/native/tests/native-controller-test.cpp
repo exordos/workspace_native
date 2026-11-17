@@ -4343,7 +4343,13 @@ private slots:
         QVERIFY(test.start()); c.openArchivedChat(archiveId); QTRY_VERIFY(!c.busy());
         c.attachFiles({QUrl::fromLocalFile(input.fileName())}); QCOMPARE(uploads,0);
         c.selectTopic(topicId); QTRY_VERIFY(!c.busy()); QVERIFY(c.canAttach()); c.attachFiles({QUrl::fromLocalFile(input.fileName())});
-        QTRY_VERIFY(!c.fileBusy()); QCOMPARE(uploads,1); QVERIFY(c.draft().contains("urn:file:"+returnedId));
+        QTRY_VERIFY(!c.fileBusy()); QCOMPARE(uploads,1);
+        // Upload-card contract: the verified stream's file reference is staged on the ready card
+        // (it enters the outgoing body at send) instead of being appended to the visible draft.
+        QCOMPARE(c.uploadEntries().size(), 1);
+        const auto staged = c.uploadEntries().first().toMap();
+        QCOMPARE(staged.value("status").toString(), QString("ready"));
+        QVERIFY(staged.value("markdown").toString().contains("urn:file:"+returnedId));
         const auto destination=directory.filePath("saved.txt"); c.downloadFile(returnedId,QUrl::fromLocalFile(destination)); QTRY_VERIFY(!c.fileBusy());
         QCOMPARE(downloads,1); QFile output(destination); QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(),QByteArray("{}"));
     }
@@ -15075,8 +15081,14 @@ private slots:
             QTest::qWait(500);
             QCOMPARE(fixture.controller.draft(), "Keep my text");
         } else {
-            QVERIFY(fixture.controller.draft().contains("urn:file:"));
-            QVERIFY(fixture.controller.notice().contains("ready"));
+            // Upload-card contract: an unfinished transfer survives the same-token renewal and its card
+            // reports ready while the user's text stays untouched in the visible draft; the urn:file
+            // reference rides on the card and enters the outgoing body at send.
+            const auto cards = fixture.controller.uploadEntries();
+            QCOMPARE(cards.size(), 1);
+            QCOMPARE(cards.first().toMap().value("status").toString(), QString("ready"));
+            QVERIFY(cards.first().toMap().value("markdown").toString().contains("urn:file:"));
+            QCOMPARE(fixture.controller.draft(), QString("Keep my text"));
         }
     }
 
