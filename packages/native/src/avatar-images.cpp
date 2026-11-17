@@ -308,6 +308,10 @@ void AvatarImages::cancelNetworkJob(const Job &job)
 void AvatarImages::startRemoteFetch(const QString &scope, quint64 job, const QString &key)
 {
     QNetworkRequest request{remoteUrl(key)};
+    // Pinned origin only: never follow redirects, so a redirect reply can not
+    // carry the avatar hash to an off-origin host (review #4). The reply is
+    // accepted only on a 2xx status below, so any 3xx is a transport failure.
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     request.setTransferTimeout(15000); // A stalled gravatar becomes a transport failure.
     auto *reply = remoteNetwork()->get(request); // No credential, no cookie jar.
     connect(reply, &QNetworkReply::downloadProgress, reply, [reply](qint64 received, qint64) {
