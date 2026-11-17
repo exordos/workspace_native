@@ -180,3 +180,166 @@ flag -> sibling page that hides the conversation column -> controller-enriched
 
 Patch release inside the 0.3.x chain (per #16 policy): no version bump in
 this lane - the release train owner bumps with the milestone batch.
+
+---
+
+# Addendum: Activity reactions collection - unsupported state (issue #43)
+
+Status: approved for implementation.
+Reference revision: `workspace_ui`
+`61dacef78dab2f5d0be76f283bebf49fe29b84af` (measured in source, not screenshots).
+Figma token unavailable - mockups not consulted.
+
+## Scope
+
+The `reactions` activity collection has no data source in the reference: the
+page renders an explicit unsupported state instead of a message list. This
+addendum records the measured state, its tokens, both locale strings and the
+deeplink route policy. Native message reactions
+(`qml/NativeReactionPicker.qml`) are a different surface and are not touched.
+
+## Reference contract (measured)
+
+`packages/web/src/pages/activity/activity-page.ui.tsx`:
+
+- `:74-76` - `getUnsupportedMessage()` returns
+  `t("workspaceMessenger.reactionsUnsupported")`.
+- `:103-109` - `ActivityUnsupportedState()` is
+  `<div className="flex min-h-0 flex-1 items-start p-4 text-sm text-text-muted">`
+  around that single string.
+- `:569-571` - `renderActivityContent()` short-circuits
+  `validFilter === "reactions"` to `<ActivityUnsupportedState />`, before the
+  runtime-context, loading, error and empty branches - so no collection
+  request is issued for `reactions`.
+- `:563, 648-653` - the page still renders `ChatChannelHeader` with
+  `channelName={getActivityTitle("reactions")}` (`activity.reactions`) and
+  `hideTopic`; `ChatChannelHeader` paints the name as
+  `text-sm ... font-semibold text-text-primary`
+  (`packages/web/src/widgets/chat-view/chat-header-channel.ui.tsx:66, 82`),
+  which the native pages already render as the 54 px `bg-elevated` header with
+  a 14 px DemiBold title and a 16 px close button (`NativeStarredPage.qml`).
+
+Measured geometry (Tailwind scale, reference sheet `p-4` = 16 px):
+
+| box | measurement |
+| --- | --- |
+| content padding (`p-4`) | 16 px on all four sides |
+| content alignment (`items-start`) | top-aligned, left-aligned, single line, wraps |
+| content font (`text-sm`) | 14 px (line-height 20 px) |
+| content colour (`text-text-muted`) | see tokens below |
+| header height | 54 px (native header precedent above) |
+| header title | 14 px, semibold, `text-text-primary` |
+
+Behaviour contract: `packages/web/src/pages/activity/activity-page.test.tsx:360`
+("shows an explicit unsupported state for reactions") asserts the rendered text
+and that `fetchWorkspaceStarredMessages` / `fetchMyMentionsPage` are never
+called for this filter.
+
+## Sidebar: no reactions entry
+
+`packages/web/src/widgets/sidebar/sidebar.lib.ts:90-96` -
+`VISIBLE_MY_ACTIVITY_KEYS` is exactly `inbox`, `favorites`, `markedMessages`,
+`mentions`, `drafts`; the comment reads "Only items with live Workspace routes
+are shown in the rail", and `:98-100` keeps hidden items available for their
+routes. So the reactions state is reachable by route only, and the native
+sidebar must keep exactly the 5 visible chips
+(`qml/Main.qml` `sidebarActivity` Repeater) with no reactions chip added.
+
+## Tokens: `text-text-muted` in light and dark
+
+Default palette is `blue-cold` (`packages/web/src/shared/lib/themes/registry.ts:9`
+`defaultPaletteId = "blue-cold"`); `engine.ts:17` picks `palette.light` or
+`palette.dark` per resolved mode.
+
+| token | light | dark | reference source |
+| --- | --- | --- | --- |
+| `text-muted` | `#989898` | `#707070` | `themes/blue-cold.ts:79` (light), `:16` (dark) |
+
+The native theme already carries both values in the default palette
+(`qml/NativeTheme.qml:18` light `#989898`, `:65` dark `#707070`), so the page
+consumes `colors["text-muted"]` and needs no new token.
+
+## i18n (both locales required)
+
+| key | en | ru |
+| --- | --- | --- |
+| `workspaceMessenger.reactionsUnsupported` | Reactions are not connected to Workspace messaging yet. | Реакции пока не подключены к Workspace-мессенджеру. |
+| `activity.reactions` (header title) | Reactions | Реакции |
+
+(`packages/web/src/i18n/locales/en.json:441, 516`,
+`packages/web/src/i18n/locales/ru.json:441, 518`.) Native renders both through
+`qsTr` in the new page and ships the ru forms in
+`packages/native/translations/workspace_ru.ts` (locale catalog guard).
+
+## Deeplink route policy
+
+The reference registers the collection under the project scope only:
+`packages/web/src/app/app-route-definitions.tsx:180` declares
+`project/:projectId/activity/:filter` (`:176` is the `activity/favorites`
+special case), i.e. the absolute route is
+`/org/{org}/project/{project}/activity/{filter}`. There is no top-level
+`/activity/:filter` route.
+
+Native already whitelists that shape:
+`src/native-deeplink.cpp:39` accepts
+`/org/[^/]+/project/[^/]+/.../activity/[^/]+`, and `applyDeepLink` already
+dispatches sibling project routes (`/inbox`, `/feed`) behind the same
+org/project guard (`src/native-controller.cpp:14882-14898`). This lane adds the
+matching `activity/<collection>` branch:
+
+- `workspace::parseActivityRoute()` extracts `org`, `project` and `collection`
+  from the accepted route (same shape as `parseMessageRoute`).
+- the route resolves to the unsupported-state view only for the `reactions`
+  collection; every other collection keeps today's behaviour (the whitelisted
+  route only activates the window) - this lane does not add routes for other
+  collections.
+- the org and project segments must match the signed-in origin and project,
+  exactly like `/inbox` and `/feed`; a foreign org or project is a no-op.
+- a bare `ew://open/activity/reactions` stays rejected: it is not a reference
+  route and the whitelist keeps its documented closure (the shorthand in the
+  issue text resolves to the canonical project-scoped route above).
+
+## Native architecture
+
+- `src/native-deeplink.h/.cpp` - `ActivityRoute{org, project, collection}` and
+  `parseActivityRoute()`.
+- `src/native-controller.h/.cpp` - `reactionsVisible` property,
+  `showReactions()`/`closeReactions()`, `ContentPage::Reactions` added to
+  `closeOtherContentPages` and to the logout/session-reset path (the state
+  holds no data, so reset only clears visibility).
+- `qml/Main.qml` - `NativeActivityUnsupportedPage` as a sibling of the other
+  activity pages, `visible: controller.reactionsVisible`, and
+  `conversation.visible` additionally gated on `!reactionsVisible` (issue #355
+  single-visible-content-page rule); the `sidebarActivity` Repeater is
+  unchanged at 5 chips.
+- `qml/NativeActivityUnsupportedPage.qml` - 54 px header (`title: Reactions`,
+  close button), then the muted 14 px line with 16 px padding, top-aligned;
+  Escape closes like the sibling pages.
+- `translations/workspace_ru.ts` - the two ru strings above.
+
+## Testing plan (TDD, existing CTest groups - no new groups)
+
+`native-native-desktop` (`tests/native-desktop-test.cpp`):
+
+1. `activityRouteExtractionResolvesTheReactionsCollection` - the accepted
+   project-scoped `.../activity/reactions` deeplink extracts
+   `collection == "reactions"` (so the route resolves to the unsupported-state
+   view rather than falling through to the default activity view), other
+   collections extract their own name, and a route without a collection
+   segment extracts nothing.
+
+`native-native-window` (`tests/native-window-test.cpp`, `NativeWindowTest`):
+
+2. `activityReactionsDeeplinkRendersUnsupportedState_data/-()` - en and ru: the
+   deeplink renders the unsupported text, the header title, and no message list
+   (`messageList` not visible); the starred/mentions endpoints are never hit.
+3. `activityReactionsSidebarKeepsFiveVisibleChips` - `sidebarActivity` exposes
+   exactly `inbox`, `favorites`, `starred`, `mentions`, `drafts` and no
+   `activity-reactions` object exists anywhere in the window.
+
+## Out of scope (named)
+
+- Any reactions data source, and the `favorites` chip / activity expand button.
+- Route-to-page wiring for `activity` collections other than `reactions`.
+- `qml/NativeReactionPicker.qml` and `qml/NativeQuickReactions.qml` (message
+  reactions) are untouched.
