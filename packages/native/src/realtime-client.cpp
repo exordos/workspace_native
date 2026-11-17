@@ -201,6 +201,7 @@ void RealtimeClient::resume()
         && !m_durableKey.isEmpty() && !m_epochGeneration.isEmpty())
         m_cursorFlush.start(CursorPersistDelayMs);
     auto saved = m_cursors.constFind(owner);
+    bool restoredFromStore = false;
     if (saved == m_cursors.cend() && m_cursorStore && !m_durableKey.isEmpty()
         && !m_pendingClearKeys.contains(m_durableKey)) {
         // Restore-on-connect: a valid persisted row continues through the
@@ -209,12 +210,34 @@ void RealtimeClient::resume()
         if (const auto restored = m_cursorStore->read(m_durableKey)) {
             m_cursors.insert(owner, {restored->generation, restored->epoch});
             saved = m_cursors.constFind(owner);
+            restoredFromStore = true;
         }
     }
     if (saved == m_cursors.cend()) {
         m_epochGeneration.clear();
         m_epoch = 0;
         baseline();
+    } else if (restoredFromStore) {
+        // Issue #376: transport position and application-model hydration are
+        // separate state. A row read back from the durable store proves the
+        // previous process acknowledged a snapshot, never that this process
+        // published one: the consumer (NativeController) starts every fresh
+        // process with empty catalogs, and catch-up events alone cannot
+        // reconstruct channels that existed before the cursor. Keep the
+        // restored position as the transport resume point (no epoch endpoint
+        // round-trip, issue #15 intact), but require one authorized snapshot
+        // through the same waiting gate the baseline path uses. While the
+        // gate is closed catchUp/nudge/connectSocket stay blocked, so catch-up
+        // cannot deliver events ahead of the catalogs; after the
+        // acknowledgement, catchUp resumes above the restored epoch and
+        // re-delivers every newer event, so events that arrived during the
+        // initial loading are reconciled, never lost. In-memory reconnects
+        // (same live process) skip the snapshot exactly as before.
+        m_epochGeneration = saved->first;
+        m_epoch = saved->second;
+        m_waitingSnapshot = true;
+        setState("snapshot_required");
+        emit snapshotRequired();
     } else {
         m_epochGeneration = saved->first;
         m_epoch = saved->second;
