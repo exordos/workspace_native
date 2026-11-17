@@ -62,6 +62,8 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
+#include <QWindow>
 #include <QQuickImageProvider>
 #include <QRegularExpression>
 #include <QSignalSpy>
@@ -130,6 +132,15 @@ static bool hasVisibleText(QQuickItem *root, const QString &text)
     for (auto *child : root->childItems())
         if (hasVisibleText(child, text)) return true;
     return false;
+}
+
+// #62: re-read the persisted window state (window/x|y|width|height) straight
+// from the settings file; the debounced saver syncs there.
+static QRect savedWindowBounds(const QString &path)
+{
+    const QSettings saved(path, QSettings::IniFormat);
+    return QRect(saved.value("window/x").toInt(), saved.value("window/y").toInt(),
+        saved.value("window/width").toInt(), saved.value("window/height").toInt());
 }
 
 static QQuickItem *fileEntry(QQuickItem *root, const QUrl &url)
@@ -30265,6 +30276,107 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-content-" + windowFavoritesNote), 6000);
         // The freshly created stream also stays out of the ordinary list.
         QVERIFY(!view("stream-" + windowFavoritesStream));
+    }
+
+    // #62: F11 is the only fullscreen surface on Linux/Windows - the reference
+    // View menu's togglefullscreen role lives under a hidden menu bar, and
+    // persistence stores normal bounds + the maximized flag only (the
+    // getNormalBounds rule, main.ts:255-270 of the pinned revision).
+    // See docs/NATIVE_DESKTOP_FULLSCREEN_TOGGLE.md.
+    void f11TogglesFullScreenAndRestoresThePreviousNormalGeometry()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 40, available.y() + 30, 900, 650);
+        window.setGeometry(normal);
+        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
+        // Entering fullscreen must not overwrite the saved normal geometry.
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 3000);
+        // Exiting restores the previous normal state at its geometry.
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 3000);
+        QCOMPARE(savedWindowBounds(path), normal);
+        preferences.attachWindow(nullptr);
+        window.close();
+    }
+
+    void f11FromMaximizedReturnsToMaximizedAndKeepsSavedNormalBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 60, available.y() + 40, 880, 620);
+        window.setGeometry(normal);
+        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        window.showMaximized();
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 3000);
+        QVERIFY(preferences.windowMaximized());
+        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
+        {
+            // Mirror of getNormalBounds: normal size + maximized flag, never
+            // the fullscreen rectangle as the normal size.
+            const QSettings saved(path, QSettings::IniFormat);
+            QCOMPARE(saved.value("window/width").toInt(), 880);
+            QCOMPARE(saved.value("window/height").toInt(), 620);
+            QVERIFY(saved.value("window/maximized").toBool());
+        }
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 3000);
+        {
+            const QSettings saved(path, QSettings::IniFormat);
+            QCOMPARE(saved.value("window/width").toInt(), 880);
+            QCOMPARE(saved.value("window/height").toInt(), 620);
+            QVERIFY(saved.value("window/maximized").toBool());
+        }
+        preferences.attachWindow(nullptr);
+        window.close();
+    }
+
+    void activationRestoresFullScreenAndF11ExitsWithoutOverwritingSavedBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 50, available.y() + 35, 860, 600);
+        window.setGeometry(normal);
+        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        window.showFullScreen();
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
+        window.hide();
+        QVERIFY(!window.isVisible());
+        QTest::qWait(300); // let the unmap settle, as a real tray hide would
+        preferences.activateWindow(); // re-applies Qt::WindowFullScreen (restore path).
+        QTest::qWait(600); // the WM state exchange must land and stay fullscreen
+        QVERIFY2(window.visibility() == QWindow::FullScreen,
+            qPrintable(QStringLiteral("activation did not keep the fullscreen restore (visibility %1)")
+                .arg(int(window.visibility()))));
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 3000);
+        const QSettings saved(path, QSettings::IniFormat);
+        QCOMPARE(saved.value("window/width").toInt(), 860);
+        QCOMPARE(saved.value("window/height").toInt(), 600);
+        QVERIFY(!saved.value("window/maximized").toBool());
+        preferences.attachWindow(nullptr);
+        window.close();
     }
 };
 
