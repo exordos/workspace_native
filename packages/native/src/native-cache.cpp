@@ -336,7 +336,7 @@ std::optional<QJsonArray> NativeCache::sanitize(const Key &key, const QJsonArray
                 if (value.isString() && QDateTime::fromString(value.toString(), Qt::ISODateWithMs).isValid())
                     row.insert(field, value);
             }
-            if (const auto avatar = imageAvatarReference(input.value("avatar")); !avatar.isEmpty()) row.insert("avatar", avatar);
+            if (const auto avatar = participantAvatarReference(input.value("avatar")); !avatar.isEmpty()) row.insert("avatar", avatar); // Issue #4: gravatar forms survive the cache row too.
             break;
         case Kind::Topics:
             if (!parseTopic(input, m_project, key.stream)

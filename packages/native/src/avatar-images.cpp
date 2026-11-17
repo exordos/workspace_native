@@ -13,6 +13,9 @@
 #include <QMutex>
 #include <QPainter>
 #include <QQuickImageProvider>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QUuid>
 #include <limits>
 
@@ -93,8 +96,10 @@ signals:
     void completed(const QString &scope, quint64 job, const QImage &image);
 };
 
-AvatarImages::AvatarImages(ApiClient *api, Session *session, FileClient *files, QObject *parent)
+AvatarImages::AvatarImages(ApiClient *api, Session *session, FileClient *files,
+    bool allowLoopbackHttpForTests, QObject *parent)
     : QObject(parent), m_api(api), m_session(session), m_files(files),
+      m_allowLoopbackHttp(allowLoopbackHttpForTests),
       m_images(std::make_shared<AvatarImageState>()), m_decodeThread(this)
 {
     Q_ASSERT(QCoreApplication::instance() && thread() == QCoreApplication::instance()->thread());
@@ -121,14 +126,16 @@ AvatarImages::~AvatarImages()
     if (m_decoder) disconnect(m_decoder, nullptr, this, nullptr);
     const auto jobs = m_jobs; m_jobs.clear(); m_entries.clear(); m_leases.clear();
     { QMutexLocker lock(&m_images->mutex); m_images->images.clear(); }
-    for (const auto &job : jobs)
-        if (job.phase == JobPhase::Network && job.transfer && m_files) m_files->cancel(job.transfer);
+    for (const auto &job : jobs) cancelNetworkJob(job);
     m_decodeThread.requestInterruption(); m_decodeThread.quit(); m_decodeThread.wait();
 }
 
 QString AvatarImages::uuidFor(const QString &urn) const
 {
-    return imageAvatarReference(urn).mid(10).toLower();
+    // Shared key space: lowercased file uuid, or "g-"+hash for a pinned gravatar
+    // source; the two kinds can never collide (a uuid never starts with "g-").
+    const auto source = resolveAvatarSource(urn);
+    return source.kind == AvatarSourceKind::None ? QString{} : source.key;
 }
 QString AvatarImages::cacheKey(const QString &uuid) const { return m_scope + '/' + uuid; }
 void AvatarImages::eraseImage(const QString &uuid)
@@ -164,7 +171,7 @@ void AvatarImages::refreshScope()
     const QPointer<AvatarImages> guard(this);
     for (auto it = jobs.cbegin(); it != jobs.cend(); ++it) if (it->phase == JobPhase::Network) {
         m_jobs.remove(it.key());
-        if (it->transfer && m_files) m_files->cancel(it->transfer);
+        cancelNetworkJob(*it);
         if (!guard || scope != m_scope) return;
     }
     notifyRevision(); if (!guard || scope != m_scope) return;
@@ -217,7 +224,7 @@ void AvatarImages::release(quint64 token)
     const QPointer<AvatarImages> guard(this);
     if (ticket && job.phase == JobPhase::Network) {
         m_jobs.remove(ticket);
-        if (job.transfer && m_files) m_files->cancel(job.transfer);
+        cancelNetworkJob(job);
         if (!guard) return;
     } // A queued/active decode is bounded but not forcibly interrupted; its result is now unowned.
     drain();
@@ -236,6 +243,11 @@ void AvatarImages::drain()
         const auto job = ++m_nextJob; const auto scope = m_scope, uuid = next.key();
         next->phase = Phase::Network; next->job = job;
         m_jobs.insert(job, Job{scope, uuid, 0, JobPhase::Network});
+        if (uuid.startsWith(QLatin1String("g-"))) {
+            startRemoteFetch(scope, job, uuid); // Pinned gravatar origin, no credentials.
+            if (!guard) return;
+            continue;
+        }
         const auto transfer = m_files->downloadBytes(uuid, [guard, scope, job](const FileResult &result) {
             if (guard) guard->downloaded(scope, job, result);
         });
@@ -263,6 +275,72 @@ void AvatarImages::downloaded(const QString &scope, quint64 job, const FileResul
     }
     ticket->phase = JobPhase::Decode; ticket->transfer = 0; entry->phase = Phase::Decode;
     emit decodeRequested(scope, job, result.bytes);
+    notifyRevision();
+}
+QUrl AvatarImages::remoteUrl(const QString &key) const
+{
+    // The reference pins gravatar to the secure origin template (see domain.cpp
+    // resolveAvatarSource). Production therefore has exactly one destination.
+    QUrl origin{QStringLiteral("https://secure.gravatar.com")};
+    if (m_allowLoopbackHttp && m_api) {
+        const auto server = m_api->server();
+        if (server.scheme() == QLatin1String("http")
+            && (server.host() == QLatin1String("127.0.0.1") || server.host() == QLatin1String("localhost")))
+            origin = server; // QtTest fixture origin, never a developer path.
+    }
+    QUrl url(origin);
+    url.setPath(QStringLiteral("/avatar/") + key.mid(2));
+    url.setQuery(QStringLiteral("d=identicon&s=500"));
+    return url;
+}
+QNetworkAccessManager *AvatarImages::remoteNetwork()
+{
+    if (!m_remote) m_remote = new QNetworkAccessManager(this);
+    return m_remote;
+}
+void AvatarImages::cancelNetworkJob(const Job &job)
+{
+    if (job.phase != JobPhase::Network) return;
+    // A finished or already-aborted reply ignores this call.
+    if (auto *reply = job.remote.data()) reply->abort();
+    else if (job.transfer && m_files) m_files->cancel(job.transfer);
+}
+void AvatarImages::startRemoteFetch(const QString &scope, quint64 job, const QString &key)
+{
+    QNetworkRequest request{remoteUrl(key)};
+    request.setTransferTimeout(15000); // A stalled gravatar becomes a transport failure.
+    auto *reply = remoteNetwork()->get(request); // No credential, no cookie jar.
+    connect(reply, &QNetworkReply::downloadProgress, reply, [reply](qint64 received, qint64) {
+        if (received > MaximumRemoteBytes) reply->abort(); // Bounded response budget.
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, guard = QPointer<AvatarImages>(this), scope, job, reply] {
+        if (!guard) return;
+        const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok = reply->error() == QNetworkReply::NoError && status >= 200 && status < 300
+            && reply->size() <= MaximumRemoteBytes;
+        const QByteArray bytes = ok ? reply->readAll() : QByteArray{};
+        remoteFinished(scope, job, ok, bytes);
+    });
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    if (auto ticket = m_jobs.find(job); ticket != m_jobs.end() && ticket->phase == JobPhase::Network)
+        ticket->remote = reply;
+}
+void AvatarImages::remoteFinished(const QString &scope, quint64 job, bool ok, const QByteArray &bytes)
+{
+    if (m_stopping) return;
+    if (!scopeCurrent()) { refreshScope(); return; }
+    auto ticket = m_jobs.find(job); if (ticket == m_jobs.end() || ticket->phase != JobPhase::Network) return;
+    const auto key = ticket->uuid;
+    auto entry = m_entries.find(key);
+    if (scope != m_scope || entry == m_entries.end() || entry->job != job || !entry->consumers) { m_jobs.erase(ticket); drain(); return; }
+    if (!ok) {
+        m_jobs.erase(ticket); entry->job = 0; entry->phase = Phase::TransportFailed;
+        const QPointer<AvatarImages> guard(this); notifyRevision();
+        if (guard) drain();
+        return;
+    }
+    ticket->phase = JobPhase::Decode; ticket->transfer = 0; entry->phase = Phase::Decode;
+    emit decodeRequested(scope, job, bytes);
     notifyRevision();
 }
 void AvatarImages::decoded(const QString &scope, quint64 job, const QImage &image)

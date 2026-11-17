@@ -17,6 +17,24 @@ QString sourceTrimmed(const QString &value);
 // Display reference only: no URL/credential, no IO, no authority capability.
 QString imageAvatarReference(const QJsonValue &value);
 
+// Resolves a participant avatar urn into exactly one bounded avatar source,
+// mirroring workspace_ui@75bd21f shared/lib/workspace-avatar-urn.lib.ts
+// (resolveWorkspaceAvatarSource). The reference's urn:url passthrough is
+// deliberately deferred for the native client: fetching an arbitrary URL from
+// the process is outside the bounded-avatar trust model and the server never
+// emits it today (docs/NATIVE_DESKTOP_GRAVATAR_PRESENCE.md).
+enum class AvatarSourceKind { None, File, Gravatar };
+struct AvatarSource {
+    AvatarSourceKind kind = AvatarSourceKind::None;
+    QString key; // Shared bounded-cache key: lowercased file uuid or "g-"+hash.
+    QString url; // Pinned Gravatar url for Gravatar; empty for File (FileClient).
+};
+AvatarSource resolveAvatarSource(const QString &urn);
+// Projection sanitizer for presentation/cache fields: an avatar urn that
+// resolves to a real source passes through trimmed, anything else becomes
+// empty. Extends the imageAvatarReference role with the two Gravatar forms.
+QString participantAvatarReference(const QJsonValue &value);
+
 struct Project {
     QString uuid;
     QString name;

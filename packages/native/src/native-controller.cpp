@@ -2954,7 +2954,7 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
     const QString &name, const QJsonObject &row, bool authoritative,
     const UserPresentation &previous)
 {
-    UserPresentation result{name, imageAvatarReference(row.value("avatar")), {}, {}, {},
+    UserPresentation result{name, participantAvatarReference(row.value("avatar")), {}, {}, {},
         sourceTrimmed(row.value("email").toString()), {}, {}, {}};
     result.accountDeactivated = row.value("account_deactivated").toBool();
     result.createdAt = sourceTrimmed(row.value("created_at").toString());
@@ -4460,7 +4460,7 @@ void NativeController::refreshOwnProfileProjection(const QString &user, quint64 
             // This read may predate an upload/reset. Preserve the newer
             // avatar action while still admitting the saved profile fields.
             if (avatarTicket == m_ownAvatarTicket && raw.contains("avatar"))
-                presentation.avatar = imageAvatarReference(raw.value("avatar"));
+                presentation.avatar = participantAvatarReference(raw.value("avatar"));
             m_names.insert(user, presentation);
             m_ownProfileRefresh = false;
         } else {
@@ -4611,7 +4611,7 @@ void NativeController::uploadOwnProfileAvatar(const QString &path)
             return;
         }
         auto presentation = m_names.value(user);
-        presentation.avatar = imageAvatarReference(raw.value("avatar"));
+        presentation.avatar = participantAvatarReference(raw.value("avatar"));
         m_names.insert(user, presentation);
         m_ownAvatarBusy = false;
         m_ownAvatarSettledCount++;
