@@ -195,7 +195,17 @@ FocusScope {
         model: page.rows
         property bool paginationArmed: true
         function checkPagination() {
-            if (contentHeight <= height || contentY < 0) { paginationArmed = true; return }
+            if (contentHeight <= height || contentY < 0) {
+                paginationArmed = true
+                // A page that cannot overflow the viewport never reaches the
+                // bottom edge by scrolling, and there is no other load-more
+                // control, so the marker chain continues on its own while a
+                // marker remains (bounded by canLoadMore and the
+                // pagination-error stop).
+                if (contentHeight > 0 && page.canLoadMore && !page.paginationError)
+                    page.controller.loadMoreStarred()
+                return
+            }
             const distance = contentHeight - height - contentY
             if (distance > 96)
                 paginationArmed = true
@@ -205,6 +215,7 @@ FocusScope {
             }
         }
         onContentYChanged: starredList.checkPagination()
+        onContentHeightChanged: starredList.checkPagination()
         onHeightChanged: starredList.checkPagination()
         onCountChanged: Qt.callLater(() => starredList.checkPagination())
         onMovementEnded: starredList.checkPagination()
