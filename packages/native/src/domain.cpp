@@ -36,6 +36,55 @@ QString imageAvatarReference(const QJsonValue &value)
     return pattern.match(avatar).hasMatch() ? avatar : QString{};
 }
 
+namespace {
+// workspace-avatar-urn.lib.ts WORKSPACE_GAVATAR_URL template (resolveGravatarUrl
+// and resolveGeneratedAvatarUrl): secure origin, identicon default, 500 px.
+QString gravatarAvatarUrl(const QString &hash)
+{
+    return QStringLiteral("https://secure.gravatar.com/avatar/") + hash
+        + QStringLiteral("?d=identicon&s=500");
+}
+} // namespace
+
+AvatarSource resolveAvatarSource(const QString &rawUrn)
+{
+    AvatarSource source;
+    const auto urn = sourceTrimmed(rawUrn);
+    static const QRegularExpression uuidPattern(QStringLiteral(
+        "\\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\z"));
+    static const QRegularExpression hashPattern(QStringLiteral("\\A[0-9a-fA-F]{32}\\z"));
+    if (urn.startsWith(QLatin1String("urn:image:"))) {
+        const auto uuid = urn.mid(10);
+        if (uuidPattern.match(uuid).hasMatch()) { source.kind = AvatarSourceKind::File; source.key = uuid.toLower(); }
+        return source;
+    }
+    if (urn.startsWith(QLatin1String("urn:gravatar:"))) {
+        auto hash = sourceTrimmed(urn.mid(13)).toLower(); // ts: hash.trim().toLowerCase()
+        if (hashPattern.match(hash).hasMatch()) {
+            source.kind = AvatarSourceKind::Gravatar; source.key = QStringLiteral("g-") + hash;
+            source.url = gravatarAvatarUrl(hash);
+        }
+        return source;
+    }
+    if (urn.startsWith(QLatin1String("urn:gavatar:"))) {
+        const auto uuid = urn.mid(12);
+        if (uuidPattern.match(uuid).hasMatch()) {
+            auto hash = uuid.toLower(); hash.remove(QLatin1Char('-')); // resolveGeneratedAvatarUrl
+            source.kind = AvatarSourceKind::Gravatar; source.key = QStringLiteral("g-") + hash;
+            source.url = gravatarAvatarUrl(hash);
+        }
+        return source;
+    }
+    return source; // urn:url and everything else resolve to None.
+}
+
+QString participantAvatarReference(const QJsonValue &value)
+{
+    if (!value.isString()) return {};
+    const auto urn = sourceTrimmed(value.toString());
+    return resolveAvatarSource(urn).kind == AvatarSourceKind::None ? QString{} : urn;
+}
+
 bool validReactionName(const QString &name)
 {
     // Match the web DTO's non-empty String.trim() predicate. NEL is not

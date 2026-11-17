@@ -5,9 +5,12 @@
 #include <QObject>
 #include <QPointer>
 #include <QThread>
+#include <QUrl>
 #include <memory>
 
 class QQuickImageProvider;
+class QNetworkAccessManager;
+class QNetworkReply;
 
 namespace workspace {
 class ApiClient;
@@ -28,11 +31,18 @@ public:
     static constexpr int MaximumPipelineJobs = 2;
     static constexpr int ThumbnailEdge = 128;
     static constexpr qint64 MaximumSourcePixels = 16'000'000;
+    // Issue #4: cap for one pinned-origin gravatar response, well under the
+    // reference's 32 MiB avatar-file cache budget (workspace-avatar.lib.ts).
+    static constexpr qint64 MaximumRemoteBytes = 8 * 1024 * 1024;
     struct Stats {
         int entries = 0, leases = 0, pipelineJobs = 0, queued = 0, decodeJobs = 0, thumbnails = 0;
         qint64 thumbnailBytes = 0;
     };
-    explicit AvatarImages(ApiClient *api, Session *session, FileClient *files, QObject *parent = nullptr);
+    // allowLoopbackHttpForTests mirrors ApiClient: it lets QtTest fixtures pin
+    // the gravatar origin to the loopback server. The production build never
+    // sets it, so gravatar requests always target https://secure.gravatar.com.
+    explicit AvatarImages(ApiClient *api, Session *session, FileClient *files,
+        bool allowLoopbackHttpForTests = false, QObject *parent = nullptr);
     ~AvatarImages() override;
     // 0 means invalid source, no ready owner, or bounded capacity exhausted.
     Q_INVOKABLE quint64 acquire(const QString &urn);
@@ -52,12 +62,18 @@ private:
     enum class Phase { Queued, Network, Decode, Ready, Failed, TransportFailed };
     struct Entry { Phase phase = Phase::Queued; int consumers = 0; quint64 order = 0, touched = 0, job = 0; };
     enum class JobPhase { Network, Decode };
-    struct Job { QString scope, uuid; quint64 transfer = 0; JobPhase phase = JobPhase::Network; };
+    struct Job { QString scope, uuid; quint64 transfer = 0; JobPhase phase = JobPhase::Network;
+        QPointer<QNetworkReply> remote; };
     QByteArray currentOwner() const;
     bool scopeCurrent() const;
     void refreshScope();
     void drain();
     void downloaded(const QString &scope, quint64 job, const FileResult &result);
+    void remoteFinished(const QString &scope, quint64 job, bool ok, const QByteArray &bytes);
+    void startRemoteFetch(const QString &scope, quint64 job, const QString &key);
+    QUrl remoteUrl(const QString &key) const;
+    QNetworkAccessManager *remoteNetwork();
+    void cancelNetworkJob(const Job &job);
     void decoded(const QString &scope, quint64 job, const QImage &image);
     void notifyRevision();
     bool evictOne();
@@ -67,6 +83,8 @@ private:
     QPointer<ApiClient> m_api;
     QPointer<Session> m_session;
     QPointer<FileClient> m_files;
+    QPointer<QNetworkAccessManager> m_remote;
+    bool m_allowLoopbackHttp = false;
     QByteArray m_owner;
     QString m_scope;
     quint64 m_generation = 0, m_revision = 0, m_scopeRevision = 0, m_nextLease = 0, m_nextJob = 0, m_order = 0;
