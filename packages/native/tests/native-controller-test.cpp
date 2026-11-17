@@ -18188,6 +18188,57 @@ private slots:
         QVERIFY(fixture.controller.starredPage().value("rows").toList().isEmpty());
     }
 
+    // exordy review #41: reopening the page while a request is in flight must
+    // not silently drop the mount refresh (activity-page.ui.tsx:283-297
+    // refreshes from the first page on every mount): the refresh is queued and
+    // re-issued once the in-flight response lands.
+    void activityStarredReopenDuringInflightReissuesFirstPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto rows = std::make_shared<QMap<int, QJsonObject>>(
+            QMap<int, QJsonObject>{{1, starredMessage(1)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto holdFirst = std::make_shared<bool>(false);
+        fixture.messages = [rows, queries, gates, holdFirst](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("starred") == "true") {
+                queries->append(query);
+                if (*holdFirst) {
+                    *holdFirst = false;
+                    Response response{starredPageResponse(*rows, request).data, 200, 0, {}};
+                    response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                    return response;
+                }
+            }
+            return starredPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        *holdFirst = true;
+        fixture.controller.showStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        // Re-open while the first page is still in flight: the refresh demand
+        // is recorded instead of dropped by the in-flight guard.
+        fixture.controller.closeStarred();
+        fixture.controller.showStarred();
+        QCOMPARE(queries->size(), 1); // the guard still never runs two fetches
+        // A star lands while the first page is in flight: only a re-issued
+        // first-page fetch can surface it on the reopened page.
+        rows->insert(2, starredMessage(2));
+        for (auto &release : *gates) release();
+        gates->clear();
+        // The queued refresh re-issues the first-page fetch once the
+        // in-flight response lands: without a cursor, with current rows.
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("rows").toList().size() == 2, 4000);
+        int starredRequests = 0;
+        for (const auto &query : *queries)
+            if (query.queryItemValue("starred") == "true")
+                ++starredRequests;
+        QCOMPARE(starredRequests, 2);
+        QVERIFY(!queries->last().hasQueryItem("page_marker"));
+    }
+
     // ---- Project Feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
 
     static QJsonObject feedMessage(int number)
