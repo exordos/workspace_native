@@ -127,8 +127,11 @@ Tailwind sizes used by the page: `text-xl` = 20 px, `text-sm` = 14 px,
   CMake runs it at build time and embeds the output through
   `qt_add_resources(workspace-native-ui native_licenses PREFIX
   /workspace/licenses ...)` at `qrc:/workspace/licenses/licenses.json`, the
-  same generated-resource pattern as the compiled `workspace_ru.qm`. The
-  React app npm dataset is not used.
+  same generated-resource pattern as the compiled `workspace_ru.qm`. Because
+  QML XMLHttpRequest refuses local-file GETs by policy, the page receives the
+  JSON through `NativeController::licensesDatasetJson()` (wired in
+  `Main.qml` as the page's `datasetJson`).
+  The React app npm dataset is not used.
 - Entry surfaces:
   - `NativeAboutDrawer.qml` gains an "Open Source Licenses" entry link
     (`nativeAboutLicensesLink`) below the update card emitting

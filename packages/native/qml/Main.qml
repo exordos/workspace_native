@@ -83,6 +83,10 @@ ApplicationWindow {
         colors: root.colors
         canGoBack: root.aboutFromProfile
         onCloseRequested: root.updatesVisible = false
+        onLicensesRequested: {
+            root.updatesVisible = false;
+            root.controller.showSection("licenses");
+        }
         onBackRequested: {
             root.updatesVisible = false;
             accountPopup.open();
@@ -8288,6 +8292,23 @@ ApplicationWindow {
             }
             Layout.fillWidth: true
             Layout.fillHeight: true
+        }
+
+        // Open Source Licenses page (issue #46,
+        // docs/NATIVE_DESKTOP_LICENSES.md): the reference /licenses route.
+        // Close resolves like the reference tests (licenses-page.ui.test.tsx
+        // lines 47 and 56): history back when a non-chat section preceded
+        // the open, else the messenger home (the native chat section).
+        NativeLicensesPage {
+            colors: root.colors
+            datasetJson: root.controller.licensesDatasetJson()
+            visible: root.controller.section === "licenses"
+            canGoBack: root.controller.sectionBeforeLicenses !== "chat"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            onBackRequested: root.controller.showSection(root.controller.sectionBeforeLicenses)
+            onMessengerHomeRequested: root.controller.showSection("chat")
+            onExternalLinkRequested: url => Qt.openUrlExternally(url)
         }
     }
     component MessageBoundaryRow: Item {

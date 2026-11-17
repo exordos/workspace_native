@@ -204,6 +204,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap mentionsPage READ mentionsPage NOTIFY stateChanged)
     Q_PROPERTY(bool inboxVisible READ inboxVisible NOTIFY stateChanged)
     Q_PROPERTY(QString section READ section NOTIFY stateChanged)
+    // Issue #46: the section that was active before the licenses page opened
+    // (the reference page's "history back" surface; "chat" means no history).
+    Q_PROPERTY(QString sectionBeforeLicenses READ sectionBeforeLicenses NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
@@ -426,6 +429,7 @@ public:
     // switching is exclusive and any conversation navigation returns to
     // "chat" (issues #35, #36, #37).
     QString section() const { return m_section; }
+    QString sectionBeforeLicenses() const { return m_sectionBeforeLicenses; }
     QVariantMap inboxPage() const;
     // Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md): cross-chat
     // "All messages" of the current project, marker-paginated.
@@ -510,6 +514,9 @@ public:
     Q_INVOKABLE void openStarredMessage(const QString &id);
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
+    // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
+    // read from the build-time Qt resource as one JSON string.
+    Q_INVOKABLE QString licensesDatasetJson() const;
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void showReactions();
@@ -1874,7 +1881,8 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses };
+
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
@@ -1925,6 +1933,7 @@ private:
     bool m_starredVisible = false;
     StarredCollection m_starred;
     QString m_section = QStringLiteral("chat");
+    QString m_sectionBeforeLicenses = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
     QSet<QString> m_inboxStaleTopics;
     // Foreground authoritative catalogs fence older background completions.
