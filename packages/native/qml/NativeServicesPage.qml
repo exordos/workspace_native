@@ -295,6 +295,25 @@ FocusScope {
         }
     }
 
+    // Keyboard focus indicator (review PR #380): the native focus rings bind
+    // the palette "accent" token to activeFocus (Main.qml otpInput :1780-1781,
+    // sidebarSearch :3101). The button fill is already `accent`, so the ring
+    // sits as a 3 px outset around the button on the page background where
+    // the accent stroke is visible in both modes. Focus indicator only - the
+    // button's measured presentation is untouched.
+    Rectangle {
+        id: servicesChatButtonFocusRing
+        objectName: "servicesChatButtonFocusRing"
+        anchors.centerIn: chatButtonRect
+        width: chatButtonRect.width + 6
+        height: chatButtonRect.height + 6
+        radius: 8 + 3 // button radius + outset, concentric arc
+        color: "transparent"
+        border.width: 2
+        border.color: page.colors["accent"]
+        visible: chatButtonRect.activeFocus
+    }
+
     // True once the deferred relayout passes have applied stable row
     // heights (tests poll this to read settled grid geometry).
     property bool gridSettled: false
