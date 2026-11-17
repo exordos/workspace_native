@@ -231,6 +231,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool reactionsVisible READ reactionsVisible NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
+    // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): visibility for the
+    // reference anchor transition layer (workspace_ui 61dacef7
+    // workspace-message-anchor-transition.ui.tsx). Pending drives the skeleton
+    // preview zones; the error text drives the retryable failure alert.
+    Q_PROPERTY(bool anchorTransitionPending READ anchorTransitionPending NOTIFY anchorChanged)
+    Q_PROPERTY(QString anchorNavigationError READ anchorNavigationError NOTIFY anchorNavigationErrorChanged)
     Q_PROPERTY(QVariantMap conversationOpening READ conversationOpening NOTIFY stateChanged)
 public:
     explicit NativeController(ApiClient *api, Session *session, QObject *parent = nullptr);
@@ -405,6 +411,9 @@ public:
     QString selectedStream() const { return m_stream; }
     QString selectedTopic() const { return m_topic; }
     QString anchorMessageId() const { return m_anchorMessage; }
+    bool anchorTransitionPending() const
+    { return m_anchorLinkPending && !m_pendingAnchorMessage.isEmpty(); }
+    QString anchorNavigationError() const { return m_anchorNavigationError; }
     QVariantMap conversationOpening() const;
     QString draft() const;
     void setDraft(const QString &text);
@@ -669,6 +678,11 @@ public:
     static QByteArray readClipboardBounded(QIODevice &source);
     Q_INVOKABLE bool copyMessageImage(const QString &id);
     Q_INVOKABLE void openMessageLink(const QString &url);
+    // Issue #107: the failure alert's Retry re-issues the same lookup + bounded
+    // walk; the inline scroll-to-bottom escapes to the conversation tail and
+    // retires the failed presentation (reference onTailNavigationRequested).
+    Q_INVOKABLE void retryAnchorNavigation();
+    Q_INVOKABLE void dismissAnchorNavigation();
     bool profileLinkFailed() const {
         return m_profileLinkFailed && m_profileLinkFailureSelection == m_selection
             && m_profileLinkFailureInbox == m_inboxVisible && m_profileLinkFailureMentions == m_mentionsVisible
@@ -841,6 +855,7 @@ signals:
     // sees it (stateChanged alone does not name this transition).
     void ownAvatarErrorChanged();
     void anchorChanged();
+    void anchorNavigationErrorChanged();
     void conversationMarkedRead(const QString &streamUuid, const QString &topicUuid);
     void savedAccountsChanged();
     void sessionSwitcherChanged();
@@ -909,6 +924,7 @@ private:
     void applyMessageRoute(const QString &org, const QString &project, const QString &message);
     void setAnchorMessage(const QString &id);
     void clearAnchor(const QString &notice = {});
+    void beginAnchorLinkJump(const QString &target);
     bool topicOpeningOwnsPendingAnchor() const;
     void reanchorFromWindow();
     static QString deepLinkUnavailableNotice();
@@ -2056,6 +2072,12 @@ private:
     quint64 m_deepLinkSerial = 0;
     bool m_deepLinkFlushScheduled = false;
     QString m_pendingAnchorMessage;
+    // Issue #107: link-owned jump bookkeeping for the transition layer. Only
+    // message-link anchors (applyMessageRoute / retry) set the flag, so the
+    // service conversation-open automatic anchor keeps its old silent flow.
+    bool m_anchorLinkPending = false;
+    QString m_anchorNavigationError;
+    QString m_failedAnchorLinkTarget;
     std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;

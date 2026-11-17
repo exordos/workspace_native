@@ -528,6 +528,22 @@
             <translation>Нет сообщений для отображения</translation>
         </message>
         <message>
+            <source>Loading message context</source>
+            <translation>Загружаем контекст сообщения</translation>
+        </message>
+        <message>
+            <source>Could not open the selected message</source>
+            <translation>Не удалось открыть выбранное сообщение</translation>
+        </message>
+        <message>
+            <source>The selected message is no longer available in the current workspace.</source>
+            <translation>Выбранное сообщение больше недоступно в текущем рабочем пространстве.</translation>
+        </message>
+        <message>
+            <source>Retry opening message</source>
+            <translation>Повторить открытие сообщения</translation>
+        </message>
+        <message>
             <source>Check your reaction ownership</source>
             <translation>Проверить, добавлена ли вами реакция</translation>
         </message>
