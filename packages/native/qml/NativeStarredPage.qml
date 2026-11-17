@@ -181,7 +181,11 @@ FocusScope {
     ListView {
         id: starredList
         objectName: "starredList"
-        anchors.top: paginationError.visible ? paginationError.bottom : header.bottom
+        // Stay below every visible error control: the retry controls render
+        // above the list in the child order, and anchoring under the header
+        // would let the first card cover and intercept the retry clicks.
+        anchors.top: paginationError.visible ? paginationError.bottom
+            : refreshError.visible ? refreshError.bottom : header.bottom
         anchors.topMargin: 8 // list container p-2 (activity-message-list.ui.tsx:27)
         anchors.bottom: parent.bottom
         anchors.left: parent.left
