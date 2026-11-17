@@ -36,10 +36,11 @@ ApplicationWindow {
     readonly property var messageImages: nativeMessageImages
     // Per-window reveal level; stream expansion itself is persisted by owner.
     property var sidebarTopicRevealLevels: ({})
-    // Issue #107: window-level reduced-motion flag, the native stand-in for the
-    // reference prefers-reduced-motion media query that freezes the skeleton
-    // pulse (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md).
-    property bool prefersReducedMotion: false
+    // Issue #107: the platform reduced-motion preference (XDG Settings portal
+    // org.freedesktop.appearance/reduced-motion, surfaced by NativePreferences),
+    // the native stand-in for the reference prefers-reduced-motion media query
+    // that freezes the skeleton pulse (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md).
+    property bool prefersReducedMotion: root.preferences.prefersReducedMotion
     Connections {
         target: root.controller
         function onStateChanged() {
@@ -5789,6 +5790,8 @@ ApplicationWindow {
                     color: Qt.alpha(root.colors["border-subtle"], 0.40)
                     Accessible.ignored: true
                     SequentialAnimation on opacity {
+                        id: anchorSkeletonPulse
+                        objectName: "anchorSkeletonPulse"
                         loops: Animation.Infinite
                         running: skeletonBubble.shimmer
                         PropertyAnimation { to: 0.5; duration: 1000; easing.type: Easing.InOutSine }
@@ -5859,6 +5862,10 @@ ApplicationWindow {
                                 shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
                             }
                         }
+                        // Reference data-message-preview-placeholder: an empty
+                        // min-h-20 column until a resolved preview bubble
+                        // exists - the placeholder itself never carries a
+                        // skeleton bubble.
                         Item {
                             objectName: "anchorPreviewPlaceholder"
                             Layout.alignment: Qt.AlignHCenter
@@ -5866,15 +5873,6 @@ ApplicationWindow {
                             Layout.maximumWidth: 672
                             Layout.preferredHeight: 80
                             Layout.minimumHeight: 80
-                            // Reference data-message-preview-placeholder: an empty
-                            // min-h-20 column until the preview bubble exists.
-                            AnchorSkeletonBubble {
-                                objectName: "anchorSkeletonBubbleCenter"
-                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
-                                width: Math.min(parent.width, 512)
-                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
-                            }
                         }
                         ColumnLayout {
                             objectName: "anchorSkeletonBottom"

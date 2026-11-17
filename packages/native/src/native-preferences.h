@@ -10,8 +10,10 @@
 #include <QVariantList>
 #include <QStringList>
 #include <functional>
+#include <optional>
 
 class QWindow;
+class QDBusVariant;
 
 namespace workspace {
 
@@ -21,6 +23,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(QString locale READ locale WRITE setLocale NOTIFY localeChanged)
     Q_PROPERTY(bool dark READ dark NOTIFY darkChanged)
+    Q_PROPERTY(bool prefersReducedMotion READ prefersReducedMotion NOTIFY prefersReducedMotionChanged)
     Q_PROPERTY(qreal sidebarPreferredWidth READ sidebarPreferredWidth WRITE setSidebarPreferredWidth NOTIFY sidebarPreferredWidthChanged)
     Q_PROPERTY(bool composerToolbarExpanded READ composerToolbarExpanded WRITE setComposerToolbarExpanded NOTIFY composerToolbarExpandedChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
@@ -47,6 +50,13 @@ public:
     QString mode() const { return m_mode; }
     QString locale() const { return m_locale; }
     bool dark() const;
+    // Issue #107: the platform reduced-motion preference behind the web's
+    // prefers-reduced-motion media query. The XDG Settings portal value
+    // (org.freedesktop.appearance/reduced-motion) unless a test seam pinned it.
+    bool prefersReducedMotion() const { return m_reducedMotionOverride.value_or(m_portalReducedMotion); }
+    // Test seam for the portal probe (like setNowProvider for the clock): pins
+    // the exposed flag to the given value as a portal announcing that key would.
+    void setPrefersReducedMotionOverride(bool reduced);
     qreal sidebarPreferredWidth() const { return m_sidebarWidth; }
     bool composerToolbarExpanded() const { return m_composerToolbarExpanded; }
     QString error() const { return m_error; }
@@ -114,6 +124,7 @@ signals:
     void modeChanged();
     void localeChanged();
     void darkChanged();
+    void prefersReducedMotionChanged();
     void sidebarPreferredWidthChanged();
     void composerToolbarExpandedChanged();
     void errorChanged();
@@ -126,11 +137,21 @@ signals:
     void chatListDensityChanged();
     void chatClickActionChanged();
 
+private slots:
+    // XDG Settings portal SettingChanged (org.freedesktop.appearance
+    // reduced-motion): keeps the exposed flag live when the user flips the
+    // system reduce-motion toggle.
+    void onPortalSettingChanged(const QString &ns, const QString &key, const QDBusVariant &value);
+
 private:
     QString appearanceGroup() const;
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
     void loadChatLayout();
+    void probePortalReducedMotion();
+    void updatePortalReducedMotion(bool reduced);
+    std::optional<bool> m_reducedMotionOverride;
+    bool m_portalReducedMotion = false;
     void loadAppearance();
     void persist();
     void setError(const QString &error);

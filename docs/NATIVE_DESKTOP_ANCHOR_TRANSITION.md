@@ -101,8 +101,13 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   (min(72 %, 512 px), radius 18, 40 % `border-subtle` panel, 60 % bars, 12 px rows).
 - Pulse: `OpacityAnimator` 1 -> 0.5 -> 1, 2 s infinite, `running:
   shimmerActive && anchorSkeletonsVisible`; `shimmerActive` is `!root.prefersReducedMotion`.
-  `prefersReducedMotion` is a window-level flag (native stand-in for the CSS media
-  query; the test harness sets it on the window). The live-region `Text`
+  `prefersReducedMotion` is bound to `NativePreferences.prefersReducedMotion`, the
+  native stand-in for the CSS media query: Qt 6.10 has no reduced-motion hint
+  (`QStyleHints::accessibility()` only carries contrast), so the preferences object
+  reads the XDG Settings portal `org.freedesktop.appearance/reduced-motion` key at
+  startup (`ReadValue`, 2 s timeout, unknown value = no preference per spec) and
+  keeps it live via the `SettingChanged` signal. The test harness pins the same
+  value through that seam. The live-region `Text`
   "Loading message context" renders in place of the old
   bare "Loading…" status while a link jump is pending (the generic empty-conversation
   "Loading…" text stays for non-anchor empties). QML has no live-region attach
@@ -123,8 +128,10 @@ The mock server `Response.defer` gate (tests/mock-server.h) holds the
 `GET /messages/?uuid=` lookup until the test releases it - pending and failed phases are
 triggered by explicit releases, never by sleeps racing the network. Window cases
 (`tests/native-window-test.cpp`): skeleton zones appear after the delay while a link is
-held pending (96 px zones, 80 px placeholder, live-region text), reduced-motion keeps the
-zones static (`shimmerRunning: false`), a failing lookup shows the alert with title/detail
+held pending (96 px zones, empty 80 px placeholder - no skeleton bubble inside it),
+live-region text), reduced-motion keeps the zones static (`shimmerRunning: false` and
+the `anchorSkeletonPulse` animation not running) with the flag driven through the
+preferences portal seam, a failing lookup shows the alert with title/detail
 and Retry, clicking Retry re-issues the lookup (second request observed, overlay replaced
 by the pending skeleton layer, alert returns when the bounded walk lands safely), and the
 scroll-to-bottom button dismisses the overlay.
