@@ -70,6 +70,15 @@ private:
     QTimer m_handshake;
     QTimer m_cursorFlush;
     QHash<QString, QPair<QString, quint64>> m_cursors;
+    // Owners whose snapshot this live process has acknowledged (#376). The
+    // snapshot requirement is application-model hydration state, not
+    // transport state: suspend() clears the transient m_waitingSnapshot
+    // gate, so without this marker a reconnect during an unacknowledged
+    // restore would treat the restored in-memory cursor as already
+    // hydrated and start catch-up ahead of the catalogs (findings
+    // 4599009714/4599009723). Only acknowledgeSnapshot() sets it, and only
+    // the places that discard the owner's cursor clear it.
+    QSet<QString> m_hydratedOwners;
     QString m_durableKey;
     // Durable keys whose delete has not landed yet: an invalidated row under
     // a pending key must not be restored, and every delete keeps being

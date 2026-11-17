@@ -93,6 +93,7 @@ RealtimeClient::RealtimeClient(ApiClient *api, Session *session, QObject *parent
             m_cursorStore->clear(m_durableKey);
         m_durableKey.clear();
         m_cursors.clear();
+        m_hydratedOwners.clear();
         m_owner.clear();
         m_epochGeneration.clear();
         m_epoch = 0;
@@ -176,6 +177,7 @@ void RealtimeClient::resume()
         // cursor that was just wiped (finding 4584028556).
         clearDurableCursor(m_durableKey);
         m_cursors.remove(m_owner);
+        m_hydratedOwners.remove(m_owner);
         discardCursorPersist();
     }
     m_owner = owner;
@@ -201,7 +203,6 @@ void RealtimeClient::resume()
         && !m_durableKey.isEmpty() && !m_epochGeneration.isEmpty())
         m_cursorFlush.start(CursorPersistDelayMs);
     auto saved = m_cursors.constFind(owner);
-    bool restoredFromStore = false;
     if (saved == m_cursors.cend() && m_cursorStore && !m_durableKey.isEmpty()
         && !m_pendingClearKeys.contains(m_durableKey)) {
         // Restore-on-connect: a valid persisted row continues through the
@@ -210,14 +211,13 @@ void RealtimeClient::resume()
         if (const auto restored = m_cursorStore->read(m_durableKey)) {
             m_cursors.insert(owner, {restored->generation, restored->epoch});
             saved = m_cursors.constFind(owner);
-            restoredFromStore = true;
         }
     }
     if (saved == m_cursors.cend()) {
         m_epochGeneration.clear();
         m_epoch = 0;
         baseline();
-    } else if (restoredFromStore) {
+    } else if (!m_hydratedOwners.contains(owner)) {
         // Issue #376: transport position and application-model hydration are
         // separate state. A row read back from the durable store proves the
         // previous process acknowledged a snapshot, never that this process
@@ -232,7 +232,12 @@ void RealtimeClient::resume()
         // acknowledgement, catchUp resumes above the restored epoch and
         // re-delivers every newer event, so events that arrived during the
         // initial loading are reconciled, never lost. In-memory reconnects
-        // (same live process) skip the snapshot exactly as before.
+        // (same live process) skip the snapshot exactly as before, but only
+        // once this process has acknowledged one: m_hydratedOwners tracks
+        // that independently of the connection state, so a suspend()/resume()
+        // during an unacknowledged restore-time snapshot re-arms this gate
+        // instead of treating the restored cursor as hydrated (findings
+        // 4599009714/4599009723).
         m_epochGeneration = saved->first;
         m_epoch = saved->second;
         m_waitingSnapshot = true;
@@ -284,6 +289,7 @@ void RealtimeClient::acknowledgeSnapshot()
     if (!current(m_run, m_generation) || !m_waitingSnapshot)
         return;
     m_waitingSnapshot = false;
+    m_hydratedOwners.insert(m_owner);
     m_cursors.insert(m_owner, {m_epochGeneration, m_epoch});
     scheduleCursorPersist();
     catchUp();
@@ -300,6 +306,9 @@ void RealtimeClient::resynchronize()
     if (!m_wanted || !m_session->ready())
         return;
     m_cursors.remove(m_owner);
+    // A resynchronization invalidates the catalog basis too: the fresh
+    // baseline after it must re-ask for a snapshot in this process.
+    m_hydratedOwners.remove(m_owner);
     // A pruned cursor must not survive either: discard the pending durable
     // write and delete the row before re-baselining, so a restart between
     // here and the next snapshot ack cannot resurrect the pruned position.
