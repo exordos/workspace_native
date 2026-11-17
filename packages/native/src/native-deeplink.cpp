@@ -73,10 +73,10 @@ std::optional<QString> parseExternalDeepLink(const QString &value)
         && (url.path().isEmpty() || url.path() == QLatin1String("/")
             || QRegularExpression("^/org/[^/?#]+/?$").match(url.path(QUrl::FullyEncoded)).hasMatch())) return route;
     if (QRegularExpression("^/org/[^/?#]+/?$").match(route).hasMatch()) return route;
-    if (QRegularExpression("^/(?:calendar|mail|calls|licenses|settings|logs)/?(?:[?#].*)?$")
+    if (QRegularExpression("^/(?:calendar|mail|calls|services|all-services|licenses|settings|logs)/?(?:[?#].*)?$")
             .match(route).hasMatch())
         return route;
-    if (QRegularExpression("^/org/[^/]+/(?:calendar|mail|calls|licenses|settings|logs)/?(?:[?#].*)?$")
+    if (QRegularExpression("^/org/[^/]+/(?:calendar|mail|calls|services|all-services|licenses|settings|logs)/?(?:[?#].*)?$")
             .match(route).hasMatch())
         return route;
     if (projectRoutePattern().match(route).hasMatch()) return route;

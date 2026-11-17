@@ -8270,6 +8270,25 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
+        // Services placeholder hub (issue #45): the reference /services and
+        // /all-services routes render the static planned-services hub
+        // (workspace_ui 61dacef7 services-page.ui.tsx,
+        // app-route-definitions.tsx:166-167,203-204). The top-bar Services
+        // button stays behind the reference build gate
+        // (top-bar.test.tsx:153), so no chip is rendered here either; the
+        // whitelisted deep links are the entry surfaces.
+        NativeServicesPage {
+            colors: root.colors
+            viewportWidth: root.width
+            visible: root.controller.section === "services"
+            onGoToChats: {
+                root.controller.showSection("chat")
+                root.controller.closeDrafts()
+                root.sidebarQuery = ""
+            }
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
     }
     component MessageBoundaryRow: Item {
         property Item readBoundary

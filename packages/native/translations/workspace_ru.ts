@@ -3288,6 +3288,73 @@
         </message>
     </context>
     <context>
+        <name>NativeServicesPage</name>
+        <message>
+            <source>Services</source>
+            <translation>Сервисы</translation>
+        </message>
+        <message>
+            <source>Services will be available here. Integrations are being prepared.</source>
+            <translation>Здесь появятся сервисы. Интеграции уже готовятся.</translation>
+        </message>
+        <message>
+            <source>Knowledge base</source>
+            <translation>База знаний</translation>
+        </message>
+        <message>
+            <source>Internal docs and team playbooks.</source>
+            <translation>Внутренние документы и командные инструкции.</translation>
+        </message>
+        <message>
+            <source>People directory</source>
+            <translation>Справочник сотрудников</translation>
+        </message>
+        <message>
+            <source>Team structure, contacts, and roles.</source>
+            <translation>Структура команды, контакты и роли.</translation>
+        </message>
+        <message>
+            <source>Approvals</source>
+            <translation>Согласования</translation>
+        </message>
+        <message>
+            <source>Requests and approval workflows.</source>
+            <translation>Заявки и процессы согласования.</translation>
+        </message>
+        <message>
+            <source>Document vault</source>
+            <translation>Документы</translation>
+        </message>
+        <message>
+            <source>Contracts, templates, and shared files.</source>
+            <translation>Договоры, шаблоны и общие файлы.</translation>
+        </message>
+        <message>
+            <source>Automation</source>
+            <translation>Автоматизация</translation>
+        </message>
+        <message>
+            <source>Routine process automation and bots.</source>
+            <translation>Автоматизация рутинных процессов и боты.</translation>
+        </message>
+        <message>
+            <source>Integrations</source>
+            <translation>Интеграции</translation>
+        </message>
+        <message>
+            <source>Connections with external SaaS systems.</source>
+            <translation>Подключения к внешним SaaS-системам.</translation>
+        </message>
+        <message>
+            <source>Coming soon</source>
+            <translation>Скоро</translation>
+        </message>
+        <message>
+            <source>Chats &amp; channels</source>
+            <translation>Чаты и каналы</translation>
+        </message>
+    </context>
+    <context>
         <name>NativeMediaViewer</name>
         <message>
             <source>Media viewer</source>
