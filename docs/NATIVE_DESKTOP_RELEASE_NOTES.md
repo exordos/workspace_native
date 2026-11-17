@@ -1,3 +1,24 @@
+# Workspace Native 0.34.0 - Linux development preview
+
+The sidebar chat list now accounts for every catalog state and the Activity
+rail opens into the reference expanded panel:
+
+- A first load without rows shows the dashed spinner card with "Loading...",
+  a failed catalog load replaces the list with the reference blocking error
+  card, and a partial refresh keeps the rows on screen with the
+  "Some sidebar data could not be refreshed" banner above the list. The five
+  reference empty states render in both locales: "No matches" with its hint
+  for a search miss, "No workspace chats yet", "No direct messages yet",
+  "No channels yet" and "Folder is empty". Every state announces its text to
+  assistive technologies.
+- The Activity chevron expands the compact rail into "My Activity": five rows
+  with the reference-colored chips (purple, blue, red, yellow, pink) and
+  unread count badges on inbox and mentions matching the rail badges, with
+  the open state persisted per workspace session. Favorites stays disabled
+  until the favorites page ships.
+
+---
+
 # Workspace Native 0.33.0 - Linux development preview
 
 The Open Source Licenses browser opens from the About drawer and its deep
