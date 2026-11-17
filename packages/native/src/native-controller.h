@@ -1853,6 +1853,10 @@ private:
         QByteArray marker;
         quint64 version = 0;
         bool inflight = false;
+        // A mount (or retry) that arrived while a request was in flight: the
+        // first-page refresh is re-issued once that response lands, so the
+        // reopened page never settles on the pre-reopen snapshot.
+        bool refreshPending = false;
         bool loading = false;
         bool error = false;
         bool paginationError = false;
