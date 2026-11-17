@@ -8945,6 +8945,7 @@ QVariantList NativeController::uploadEntries() const
         rows.append(QVariantMap{{"id", QString::number(task.intent)},
             {"name", task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName},
             {"path", QUrl::fromLocalFile(task.path)}, {"image", QMimeDatabase().mimeTypeForFile(task.uploadName.isEmpty() ? task.path : task.uploadName, QMimeDatabase::MatchExtension).name().startsWith("image/")}, {"size", entry.size}, {"status", entry.status},
+            {"markdown", entry.markdown},
             {"error", entry.error}, {"retryable", entry.retryable}, {"sent", entry.sent}, {"total", entry.total},
             {"alias", imageAlias(entry)}, {"inText", !imageAlias(entry).isEmpty() && (draft().contains(entry.markdown)
                 || draft().contains(QRegularExpression(QRegularExpression::escape(imageAlias(entry)) + QStringLiteral("(?!\\()"))))}});
