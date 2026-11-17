@@ -8226,6 +8226,18 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
+        // Recent-calls section page (issue #37): the reference /call and
+        // /calls routes render the recent-Jitsi-calls page in its empty
+        // state (workspace_ui 61dacef7 calls-page.ui.tsx). Live calling is a
+        // separate decision; the top-bar Calls chip stays behind the
+        // reference TOP_BAR_CALLS_NAV gate, which the native build settings
+        // do not introduce, so no chip is rendered here either.
+        NativeCallsPage {
+            colors: root.colors
+            visible: root.controller.section === "calls"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
     }
     component MessageBoundaryRow: Item {
         property Item readBoundary

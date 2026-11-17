@@ -20082,9 +20082,10 @@ private slots:
         fixture.controller.selectStream(streamId);
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
         // Sections the client cannot render yet are ignored: the Calendar lane
-        // adopts this property without a behavioural surprise.
+        // adopts this property without a behavioural surprise. (Calls moved to
+        // a rendered section in issue #37; services remains the example.)
         fixture.controller.showSection(QStringLiteral("mail"));
-        fixture.controller.showSection(QStringLiteral("calls"));
+        fixture.controller.showSection(QStringLiteral("services"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("mail"));
         fixture.controller.showSection(QStringLiteral("chat"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
@@ -20128,9 +20129,56 @@ private slots:
         QVERIFY(!fixture.controller.draftsVisible() && !fixture.controller.mentionsVisible()
             && !fixture.controller.inboxVisible());
         // Sections the client cannot render yet are still ignored while
-        // calendar is active.
-        fixture.controller.showSection(QStringLiteral("calls"));
+        // calendar is active. (Calls became renderable in issue #37.)
+        fixture.controller.showSection(QStringLiteral("services"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("calendar"));
+        fixture.controller.showSection(QStringLiteral("chat"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+    }
+
+    // Issue #37: the recent-calls page is a rendered section (calls-page.ui.tsx
+    // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af). The reference
+    // top-bar Calls chip sits behind the TOP_BAR_CALLS_NAV build gate
+    // (top-bar.lib.ts:89-91) and the native build settings do not introduce
+    // that gate, so the section state and the whitelisted /calls deep link
+    // (app-route-definitions.tsx:161-162,198-199) are the entry surfaces.
+    void sectionStateRendersRecentCallsSection()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QSignalSpy changes(&fixture.controller, &NativeController::stateChanged);
+        QVERIFY(changes.isValid());
+        fixture.controller.showSection(QStringLiteral("calls"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calls"));
+        QVERIFY(changes.count() >= 1);
+        // Entering the calls section closes the chat content pages, and
+        // re-opening a chat content page exits the calls section.
+        fixture.controller.showInbox();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        QVERIFY(fixture.controller.inboxVisible());
+        fixture.controller.showSection(QStringLiteral("calls"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calls"));
+        QVERIFY(!fixture.controller.inboxVisible());
+        fixture.controller.showMentions();
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        // Selecting a conversation is chat navigation.
+        fixture.controller.showSection(QStringLiteral("calls"));
+        fixture.controller.selectStream(streamId);
+        QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
+        // Calls, mail and calendar hold the same slot: each takes it from the
+        // other and closes the chat content pages.
+        fixture.controller.showSection(QStringLiteral("mail"));
+        fixture.controller.showSection(QStringLiteral("calls"));
+        QCOMPARE(fixture.controller.section(), QStringLiteral("calls"));
+        QVERIFY(!fixture.controller.draftsVisible() && !fixture.controller.mentionsVisible()
+            && !fixture.controller.inboxVisible());
+        // The whitelisted /calls deep link opens the section (the entry
+        // surface while the top-bar chip stays gated off, like /inbox and
+        // /feed). Deferred while the fixture settles, hence QTRY.
+        fixture.controller.showSection(QStringLiteral("chat"));
+        fixture.controller.openMessageLink(QStringLiteral("ew://open/calls"));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.section(), QStringLiteral("calls"), 5000);
         fixture.controller.showSection(QStringLiteral("chat"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }

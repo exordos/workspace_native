@@ -6265,6 +6265,18 @@ void NativeController::showSection(const QString &name)
         m_section = QStringLiteral("calendar");
         emit stateChanged();
     }
+    else if (name == QLatin1String("calls"))
+    {
+        // Issue #37: the reference /call and /calls routes render the
+        // recent-calls page (app-route-definitions.tsx:161-162,198-199).
+        // The top-bar Calls chip stays behind the TOP_BAR_CALLS_NAV build
+        // gate (top-bar.lib.ts:89-91), which the native build settings do
+        // not introduce, so the section state and the whitelisted /calls
+        // deep link are the entry surfaces.
+        closeOtherContentPages(ContentPage::Calls);
+        m_section = QStringLiteral("calls");
+        emit stateChanged();
+    }
     else if (name == QLatin1String("chat"))
     {
         // The Chat button is the section home: the reference route to "/"
@@ -6276,7 +6288,7 @@ void NativeController::showSection(const QString &name)
             emit stateChanged();
         }
     }
-    // Unknown sections (calls/services today) are ignored until the client
+    // Unknown sections (services today) are ignored until the client
     // can render them.
 }
 
@@ -14687,6 +14699,20 @@ void NativeController::applyDeepLink(const QString &url)
         if (match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
             && match.captured(2).compare(m_session->project(), Qt::CaseInsensitive) == 0)
             showFeed();
+        return;
+    }
+    // The reference recent-calls route (issue #37, calls-page.ui.tsx mapped
+    // to /calls at app-route-definitions.tsx:161-162,198-199): the top-bar
+    // Calls chip stays behind the reference TOP_BAR_CALLS_NAV build gate, so
+    // this whitelisted route is the entry surface, like /inbox and /feed
+    // above. The org-prefixed variant carries the same origin guard.
+    static const QRegularExpression callsRoutePattern(
+        "^(?:/org/([^/]+))?/calls/?(?:[?#].*)?$");
+    if (const auto match = callsRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).isEmpty()
+            || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
+                Qt::CaseInsensitive) == 0)
+            showSection(QStringLiteral("calls"));
         return;
     }
     const auto message = workspace::parseMessageRoute(*route);

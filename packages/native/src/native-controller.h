@@ -416,9 +416,9 @@ public:
     QString mentionsFilter() const { return m_mentionsFilter; }
     QVariantMap mentionsPage() const;
     bool inboxVisible() const { return m_inboxVisible; }
-    // Top-bar application section: "chat", "mail" or "calendar"; switching is
-    // exclusive and any conversation navigation returns to "chat"
-    // (issues #35, #36).
+    // Top-bar application section: "chat", "mail", "calendar" or "calls";
+    // switching is exclusive and any conversation navigation returns to
+    // "chat" (issues #35, #36, #37).
     QString section() const { return m_section; }
     QVariantMap inboxPage() const;
     // Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md): cross-chat
@@ -1834,7 +1834,7 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Mail, Calendar };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Mail, Calendar, Calls };
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
