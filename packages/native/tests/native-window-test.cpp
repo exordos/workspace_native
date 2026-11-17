@@ -30,6 +30,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QAccessible>
+#include <QDesktopServices>
+#include <QSignalSpy>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -2889,6 +2891,15 @@ struct WindowStreamColorScene {
         return true;
     }
     QString bgToken() { return window->property("colors").toMap().value("bg").toString(); }
+};
+
+// Issue #46 (docs/NATIVE_DESKTOP_LICENSES.md): captures the https handoff
+// that Qt.openUrlExternally/QDesktopServices performs for package links.
+class LicensesExternalProbe final : public QObject {
+    Q_OBJECT
+public:
+    QList<QUrl> urls;
+    Q_INVOKABLE void open(const QUrl &url) { urls.append(url); }
 };
 
 class NativeWindowTest final : public QObject {
@@ -27954,6 +27965,244 @@ private slots:
         // services page is up, so release focus on the control itself).
         button->setFocus(false);
         QTRY_VERIFY_WITH_TIMEOUT(!button->hasActiveFocus() && !ring->property("visible").toBool(), 5000);
+    }
+
+    // ---- Issue #46: Open Source Licenses page (docs/NATIVE_DESKTOP_LICENSES.md)
+
+    void licensesPageStates_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("en-dark") << QStringLiteral("en") << QStringLiteral("dark");
+        QTest::newRow("ru-light") << QStringLiteral("ru") << QStringLiteral("light");
+        QTest::newRow("ru-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+    void licensesPageStates()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        const bool ru = locale == QLatin1String("ru");
+        const bool dark = mode == QLatin1String("dark");
+        const QColor textPrimary = dark ? QColor("#ffffff") : QColor("#1b1b1d");
+        const QColor textSecondary = dark ? QColor("#999999") : QColor("#787878");
+        const QColor textMuted = dark ? QColor("#707070") : QColor("#989898");
+        const QColor cardBg = dark ? QColor("#282a32") : QColor("#eef5fb");
+        const QColor accent("#7087ff");
+        const QColor onAccent = dark ? QColor("#141517") : QColor("#1b1b1d");
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeGuard = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        auto *panel = view("conversationPanel"); QVERIFY(panel);
+        const auto panelWidth = panel->width();
+        controller.showSection(QStringLiteral("licenses"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
+        auto *page = view("nativeLicensesPage"); QVERIFY(page);
+        // Full-width page (reference root flex w-full, no narrow cap).
+        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= panelWidth - 8, 5000);
+        const auto chipColor = [](QQuickItem *chip) {
+            return qobject_cast<QQuickItem *>(QQmlProperty::read(chip, "background")
+                .value<QObject *>())->property("color").value<QColor>();
+        };
+        const auto chipLabel = [](QQuickItem *chip) { return chip->property("labelText").toString(); };
+        const auto chipTextColor = [](QQuickItem *chip) {
+            return chip->property("contentItem").value<QQuickItem *>()->property("color").value<QColor>();
+        };
+        const auto counterText = [&](const QString &text) {
+            return ru ? text % QStringLiteral(" из 16 пакетов")
+                      : text % QStringLiteral(" of 16 packages");
+        };
+        // Title: text-xl font-semibold text-primary (licenses.title).
+        auto *title = view("licensesTitle"); QVERIFY(title);
+        QCOMPARE(title->property("text").toString(),
+            ru ? QString::fromUtf8("Open Source \xD0\xBB\xD0\xB8\xD1\x86\xD0\xB5\xD0\xBD\xD0\xB7\xD0\xB8\xD0\xB8")
+               : QStringLiteral("Open Source Licenses"));
+        QCOMPARE(title->property("font").value<QFont>().pixelSize(), 20);
+        QCOMPARE(title->property("font").value<QFont>().weight(), QFont::DemiBold);
+        QCOMPARE(title->property("color").value<QColor>(), textPrimary);
+        QCOMPARE(pos(title).x() - pos(page).x(), 24.0); // px-6
+        QCOMPARE(pos(title).y() - pos(page).y(), 16.0); // py-4
+        // Subtitle: text-sm text-muted (licenses.subtitle with the count).
+        auto *subtitle = view("licensesSubtitle"); QVERIFY(subtitle);
+        QCOMPARE(subtitle->property("text").toString(), ru
+            ? QString::fromUtf8("Workspace \xD0\xB8\xD1\x81\xD0\xBF\xD0\xBE\xD0\xBB\xD1\x8C\xD0\xB7\xD1\x83\xD0\xB5\xD1\x82 16 open source \xD0\xBF\xD0\xB0\xD0\xBA\xD0\xB5\xD1\x82\xD0\xBE\xD0\xB2")
+            : QStringLiteral("Workspace uses 16 open source packages"));
+        QCOMPARE(subtitle->property("font").value<QFont>().pixelSize(), 14);
+        QCOMPARE(subtitle->property("color").value<QColor>(), textMuted);
+        // Close button: 36x36 rounded-lg with the close icon (common.close).
+        auto *closeButton = view("licensesClose"); QVERIFY(closeButton);
+        QCOMPARE(closeButton->width(), 36.0);
+        QCOMPARE(closeButton->height(), 36.0);
+        const auto *closeAccessible = QAccessible::queryAccessibleInterface(closeButton);
+        QVERIFY(closeAccessible);
+        QCOMPARE(closeAccessible->text(QAccessible::Name),
+            ru ? QString::fromUtf8("\xD0\x97\xD0\xB0\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82\xD1\x8C")
+               : QStringLiteral("Close"));
+        // Top-8 chips by count (ties keep first-seen dataset order); the 9th
+        // type stays off the rail (licenses-page.ui.tsx slice(0, 8)).
+        const QStringList topTypes = {QStringLiteral("MIT"), QStringLiteral("LGPL-3.0-only"),
+            QStringLiteral("BSD-3-Clause"), QStringLiteral("FTL"), QStringLiteral("Apache-2.0"),
+            QStringLiteral("LGPL-2.1-or-later"), QStringLiteral("blessing"), QStringLiteral("Zlib")};
+        for (const auto &type : topTypes)
+            QVERIFY2(view("licensesChip-" + type), qPrintable(type));
+        QVERIFY(!view("licensesChip-libpng-2.0"));
+        auto *mitChip = view("licensesChip-MIT");
+        QCOMPARE(chipLabel(mitChip), QStringLiteral("MIT (5)"));
+        QCOMPARE(chipLabel(view("licensesChip-LGPL-3.0-only")), QStringLiteral("LGPL-3.0-only (3)"));
+        QCOMPARE(chipLabel(view("licensesChip-BSD-3-Clause")), QStringLiteral("BSD-3-Clause (2)"));
+        QCOMPARE(chipLabel(view("licensesChip-FTL")), QStringLiteral("FTL (1)"));
+        QCOMPARE(mitChip->property("contentItem").value<QQuickItem *>()
+            ->property("font").value<QFont>().pixelSize(), 12);
+        QCOMPARE(chipColor(mitChip), cardBg);
+        QCOMPARE(chipTextColor(mitChip), textSecondary);
+        // Counter line starts fully populated (licenses.packagesOf).
+        auto *counter = view("licensesCounter"); QVERIFY(counter);
+        QCOMPARE(counter->property("text").toString(), counterText(QStringLiteral("16")));
+        QCOMPARE(counter->property("font").value<QFont>().pixelSize(), 12);
+        QCOMPARE(counter->property("color").value<QColor>(), textMuted);
+        // Chip toggle: selected = bg-accent/on-accent, Reset chip appears.
+        click(window, mitChip);
+        QTRY_VERIFY_WITH_TIMEOUT(chipColor(mitChip) == accent, 5000);
+        QCOMPARE(chipTextColor(mitChip), onAccent);
+        QCOMPARE(counter->property("text").toString(), counterText(QStringLiteral("5")));
+        QVERIFY(view("licensesResetChip"));
+        QTRY_COMPARE(view("licensesList")->property("count").toInt(), 5);
+        // Toggle-off on the selected chip clears the filter again (the mouse
+        // stays over the chip after the click, so accept the hover shade too).
+        click(window, view("licensesChip-MIT"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("16")), 5000);
+        const QColor cardBgActive = dark ? QColor("#2c3747") : QColor("#cde6ff");
+        QVERIFY(chipColor(mitChip) == cardBg || chipColor(mitChip) == cardBgActive);
+        QVERIFY(!view("licensesResetChip"));
+        // Reset chip clears the filter from another type too.
+        click(window, view("licensesChip-BSD-3-Clause"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("2")), 5000);
+        click(window, view("licensesResetChip"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("16")), 5000);
+        // Search by name (case-insensitive substring).
+        auto *search = view("licensesSearch"); QVERIFY(search);
+        QCOMPARE(search->property("placeholderText").toString(), ru
+            ? QString::fromUtf8("\xD0\x9F\xD0\xBE\xD0\xB8\xD1\x81\xD0\xBA \xD0\xBF\xD0\xB0\xD0\xBA\xD0\xB5\xD1\x82\xD0\xBE\xD0\xB2\xE2\x80\xA6")
+            : QString::fromUtf8("Search packages\xE2\x80\xA6"));
+        search->setProperty("text", QStringLiteral("md4c"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("1")), 5000);
+        QCOMPARE(view("licensesName-0")->property("text").toString(), QStringLiteral("MD4C"));
+        // Search by publisher.
+        search->setProperty("text", QStringLiteral("The Qt Company"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("3")), 5000);
+        QCOMPARE(view("licensesList")->property("count").toInt(), 3);
+        QCOMPARE(view("licensesName-0")->property("text").toString(), QStringLiteral("Qt 6 QtBase"));
+        // Mixed case keeps matching; the empty result renders no rows with
+        // the 0 of N counter (issue #46 states contract).
+        search->setProperty("text", QStringLiteral("QT6"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("licensesName-0")->property("text").toString() == QStringLiteral("Qt6Keychain"), 5000);
+        search->setProperty("text", QStringLiteral("zzzz-none-matches"));
+        QTRY_VERIFY_WITH_TIMEOUT(counter->property("text").toString() == counterText(QStringLiteral("0")), 5000);
+        QTRY_COMPARE(view("licensesList")->property("count").toInt(), 0);
+        search->setProperty("text", QString());
+        QTRY_COMPARE(view("licensesList")->property("count").toInt(), 16);
+        // Row cells (dataset head: Chromium): accent package link, muted
+        // version/author, card-bg license chip.
+        auto *name0 = view("licensesName-0"); QVERIFY(name0);
+        QCOMPARE(name0->property("text").toString(), QStringLiteral("Chromium (Qt WebEngine)"));
+        QCOMPARE(name0->property("color").value<QColor>(), accent);
+        QCOMPARE(view("licensesVersion-0")->property("text").toString(), QStringLiteral("122.0.6261.128"));
+        QCOMPARE(view("licensesVersion-0")->property("color").value<QColor>(), textMuted);
+        QCOMPARE(view("licensesAuthor-0")->property("text").toString(), QStringLiteral("The Chromium Authors"));
+        QCOMPARE(view("licensesAuthor-0")->property("color").value<QColor>(), textMuted);
+        auto *license0 = view("licensesLicense-0"); QVERIFY(license0);
+        QCOMPARE(QQmlProperty::read(license0, "radius").toReal(), 4.0);
+        QCOMPARE(license0->property("color").value<QColor>(), cardBg);
+        // The plain-text row (SQLite has no repository) is text-primary.
+        search->setProperty("text", QStringLiteral("sqlite"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("licensesName-0")->property("text").toString() == QStringLiteral("SQLite"), 5000);
+        QCOMPARE(view("licensesName-0")->property("color").value<QColor>(), textPrimary);
+        search->setProperty("text", QString());
+        QTRY_COMPARE(view("licensesList")->property("count").toInt(), 16);
+    }
+
+    void licensesCloseResolvesBackVersusMessengerHome()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeGuard = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        // No history (chat home precedes the open): close resolves to the
+        // messenger home (reference test line 47: navigate("/")).
+        controller.showSection(QStringLiteral("licenses"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
+        QVERIFY(!view("nativeLicensesPage")->property("canGoBack").toBool());
+        click(window, view("licensesClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeLicensesPage")
+            && controller.section() == QStringLiteral("chat"), 5000);
+        // History exists (mail preceded the open): close goes back there
+        // (reference test line 56: navigate to the resolved route).
+        controller.showSection(QStringLiteral("mail"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage") == nullptr
+            && view("mailSectionPage") != nullptr, 5000);
+        controller.showSection(QStringLiteral("licenses"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
+        QTRY_VERIFY(view("nativeLicensesPage")->property("canGoBack").toBool());
+        click(window, view("licensesClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeLicensesPage")
+            && controller.section() == QStringLiteral("mail"), 5000);
+    }
+
+    void licensesExternalLinkHandsOffToTheBrowser()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeGuard = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
+        controller.showSection(QStringLiteral("licenses"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
+        // Stub the browser handoff exactly where production hands the URL to
+        // QDesktopServices (Qt.openUrlExternally in Main.qml).
+        LicensesExternalProbe probe;
+        QDesktopServices::setUrlHandler(QStringLiteral("https"), &probe, "open");
+        auto clearHandler = qScopeGuard([] { QDesktopServices::unsetUrlHandler(QStringLiteral("https")); });
+        click(window, view("licensesName-0")); // Chromium row: accent link cell.
+        QTRY_COMPARE_WITH_TIMEOUT(probe.urls.size(), 1, 5000);
+        QCOMPARE(probe.urls.first(), QUrl(QStringLiteral("https://github.com/chromium/chromium")));
+        // The plain-text row (SQLite, no repository) never hands anything off.
+        auto *search = view("licensesSearch");
+        search->setProperty("text", QStringLiteral("sqlite"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("licensesName-0")->property("text").toString() == QStringLiteral("SQLite"), 5000);
+        click(window, view("licensesName-0"));
+        QTest::qWait(250);
+        QCOMPARE(probe.urls.size(), 1);
     }
 };
 

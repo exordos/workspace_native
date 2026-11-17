@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QAccessible>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QPointer>
@@ -316,6 +317,27 @@ Item {
         first->repeatChanged();
         open(false); open(true);
         QCOMPARE(first->restarts, 1);
+    }
+    void licensesEntryLinkEmitsRequestedWithoutTouchingUpdater()
+    {
+        // Issue #46 (docs/NATIVE_DESKTOP_LICENSES.md): the drawer carries an
+        // "Open Source Licenses" entry beside the policy-style rows. It only
+        // emits licensesRequested(); opening the page is the window's job, so
+        // the idle updater stays untouched.
+        QVERIFY2(createDrawer(first.get()), qPrintable(component->errorString()));
+        open(true);
+        auto *link = drawer->findChild<QQuickItem *>(QStringLiteral("nativeAboutLicensesLink"));
+        QVERIFY(link && link->isVisible() && link->isEnabled());
+        const auto *linkAccessible = QAccessible::queryAccessibleInterface(link);
+        QVERIFY(linkAccessible);
+        QCOMPARE(linkAccessible->text(QAccessible::Name), QStringLiteral("Open Source Licenses"));
+        QSignalSpy licensesRequested(drawer, SIGNAL(licensesRequested()));
+        QVERIFY(licensesRequested.isValid());
+        QVERIFY(QMetaObject::invokeMethod(link, "clicked"));
+        QCOMPARE(licensesRequested.size(), 1);
+        QCOMPARE(first->calls, QStringList{});
+        QCOMPARE(first->checks, 0);
+        QCOMPARE(first->installs, 0);
     }
 };
 
