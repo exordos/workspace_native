@@ -17966,6 +17966,228 @@ private slots:
         QVERIFY(fixture.controller.mentionsPage().value("rows").toList().isEmpty());
     }
 
+    // ---- Activity starred messages page (issue #41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md) ----
+
+    static QJsonObject starredMessage(int number)
+    {
+        const auto id = QStringLiteral("7a7a7a7a-7a7a-4a7a-8a7a-")
+            + QString("%1").arg(number, 12, 16, QLatin1Char('0'));
+        auto row = message(QStringLiteral("Starred message %1").arg(number), id);
+        row.insert("starred", true);
+        row.insert("is_own", false);
+        row.insert("read", true);
+        row.insert("created_at", QDateTime::fromString("2026-01-02T10:00:00Z", Qt::ISODate)
+                         .addSecs(number).toString(Qt::ISODateWithMs));
+        return row;
+    }
+
+    // Serves the starred=true message page like the Workspace API:
+    // page_limit caps the page and the continuation cursor rides the
+    // X-Pagination-Marker header (activity-workspace-starred.api.ts:57-71).
+    static Response starredPageResponse(const QMap<int, QJsonObject> &rows, const Request &request)
+    {
+        const auto query = QUrlQuery(request.target);
+        const int limit = qMax(1, query.queryItemValue("page_limit").toInt());
+        const auto marker = query.queryItemValue("page_marker");
+        const int boundary = marker.isEmpty() ? std::numeric_limits<int>::max()
+                                             : marker.right(12).toInt(nullptr, 16);
+        QJsonArray items;
+        bool more = false;
+        for (auto it = rows.cend(); it != rows.cbegin();) {
+            --it;
+            if (it.key() >= boundary)
+                continue;
+            if (items.size() == limit) {
+                more = true;
+                break;
+            }
+            items.append(it.value());
+        }
+        Response response{items, 200, 0, {}};
+        if (more)
+            response.headers.insert("X-Pagination-Marker",
+                items.last().toObject().value("uuid").toString().toUtf8());
+        return response;
+    }
+
+    void activityStarredPageIssuesServerFilteredQuery()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
+            {1, starredMessage(1)}, {2, starredMessage(2)}, {3, starredMessage(3)}});
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return starredPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(!fixture.controller.starredVisible());
+        fixture.controller.showStarred();
+        QVERIFY(fixture.controller.starredVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.starredPage().value("loading").toBool(), 4000);
+
+        // The starred query is exactly the reference contract
+        // (activity-workspace-starred.api.ts:57-64, activity-page.ui.tsx:44):
+        // starred=true, newest-first sort, page_limit=50, no cursor.
+        const auto starredQuery = [&] {
+            for (const auto &query : *queries)
+                if (query.queryItemValue("starred") == "true") return query;
+            return QUrlQuery{};
+        }();
+        QVERIFY(starredQuery.hasQueryItem("starred"));
+        QCOMPARE(starredQuery.queryItemValue("page_limit"), QStringLiteral("50"));
+        QCOMPARE(starredQuery.queryItemValue("sort_key"), QStringLiteral("created_at"));
+        QCOMPARE(starredQuery.queryItemValue("sort_dir"), QStringLiteral("desc"));
+        QVERIFY(!starredQuery.hasQueryItem("page_marker"));
+
+        auto page = fixture.controller.starredPage();
+        const auto list = page.value("rows").toList();
+        QCOMPARE(list.size(), 3);
+        // Newest first (activity-page.ui.tsx:239 sortUniqueActivityMessages reverse).
+        QCOMPARE(list.first().toMap().value("id").toString(),
+            starredMessage(3).value("uuid").toString());
+        QCOMPARE(list.last().toMap().value("id").toString(),
+            starredMessage(1).value("uuid").toString());
+        // Row enrichment for the measured card: author, time and the
+        // markdown flag decide the sender line, the meta line and whether
+        // the forward hover action is enabled.
+        const auto row = list.first().toMap();
+        QVERIFY(!row.value("author").toString().isEmpty());
+        QVERIFY(!row.value("time").toString().isEmpty());
+        QVERIFY(row.value("preview").toString().contains("Starred message 3"));
+        QVERIFY(row.value("markdown").toBool());
+        QVERIFY(!page.value("canLoadMore").toBool());
+        // The pages stay mutually exclusive (issue #54 sidebar rule).
+        QVERIFY(!fixture.controller.mentionsVisible());
+        QVERIFY(!fixture.controller.draftsVisible());
+    }
+
+    void activityStarredPaginationFollowsMarkerNewestFirst()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, starredMessage(n));
+        auto queries = std::make_shared<QVector<QUrlQuery>>();
+        fixture.messages = [rows, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target));
+            return starredPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("rows").toList().size() == 50, 4000);
+        QVERIFY(fixture.controller.starredPage().value("canLoadMore").toBool());
+
+        fixture.controller.loadMoreStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("rows").toList().size() == 60, 4000);
+        QVector<QUrlQuery> starredQueries;
+        for (const auto &query : *queries)
+            if (query.queryItemValue("starred") == "true")
+                starredQueries.append(query);
+        QCOMPARE(starredQueries.size(), 2);
+        // The continuation rode X-Pagination-Marker back into page_marker and
+        // names the oldest row of the first page (key 11 = ...00000000000b).
+        QVERIFY(starredQueries.at(1).hasQueryItem("page_marker"));
+        QCOMPARE(starredQueries.at(1).queryItemValue("page_marker"),
+            starredMessage(11).value("uuid").toString());
+        const auto list = fixture.controller.starredPage().value("rows").toList();
+        QCOMPARE(list.size(), 60);
+        QSet<QString> ids;
+        for (const auto &value : list) ids.insert(value.toMap().value("id").toString());
+        QCOMPARE(ids.size(), 60); // dedupe by uuid (activity-page.ui.tsx:95-98)
+        QCOMPARE(list.first().toMap().value("id").toString(), starredMessage(60).value("uuid").toString());
+        QCOMPARE(list.last().toMap().value("id").toString(), starredMessage(1).value("uuid").toString());
+        QVERIFY(!fixture.controller.starredPage().value("canLoadMore").toBool());
+
+        // Reopening refreshes from the first page - no cursor leak
+        // (activity-page.ui.tsx:283-297 collectionKey reset).
+        const auto totalBefore = queries->size();
+        fixture.controller.closeStarred();
+        QVERIFY(!fixture.controller.starredVisible());
+        fixture.controller.showStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(queries->size() > totalBefore, 4000);
+        for (auto it = queries->cbegin() + totalBefore; it != queries->cend(); ++it)
+            if (it->queryItemValue("starred") == "true")
+                QVERIFY(!it->hasQueryItem("page_marker"));
+    }
+
+    void activityStarredErrorStatesAndRetry()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        auto rows = std::make_shared<QMap<int, QJsonObject>>();
+        for (int n = 1; n <= 60; ++n)
+            rows->insert(n, starredMessage(n));
+        auto failFirst = std::make_shared<bool>(false);
+        auto failMarked = std::make_shared<bool>(false);
+        fixture.messages = [rows, failFirst, failMarked](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("starred") == "true") {
+                if (*failFirst)
+                    return Response{QJsonArray{}, 500, 0, {}};
+                if (*failMarked && query.hasQueryItem("page_marker"))
+                    return Response{QJsonArray{}, 500, 0, {}};
+            }
+            return starredPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        // Initial load error: the list stays empty and owns the error flag
+        // (activity-page.ui.tsx:580-592 error box state).
+        *failFirst = true;
+        fixture.controller.showStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("error").toBool(), 4000);
+        QVERIFY(fixture.controller.starredPage().value("rows").toList().isEmpty());
+        *failFirst = false;
+        fixture.controller.retryStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.starredPage().value("loading").toBool(), 4000);
+        QVERIFY(!fixture.controller.starredPage().value("error").toBool());
+        QCOMPARE(fixture.controller.starredPage().value("rows").toList().size(), 50);
+        QVERIFY(fixture.controller.starredPage().value("canLoadMore").toBool());
+
+        // Pagination error keeps the fetched rows and the retry link refires
+        // the older page with the same cursor (activity-page.ui.tsx:607-615).
+        *failMarked = true;
+        fixture.controller.loadMoreStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("paginationError").toBool(), 4000);
+        QCOMPARE(fixture.controller.starredPage().value("rows").toList().size(), 50);
+        *failMarked = false;
+        fixture.controller.retryStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.starredPage().value("rows").toList().size() == 60, 4000);
+        QVERIFY(!fixture.controller.starredPage().value("paginationError").toBool());
+    }
+
+    void activityStarredStaleOwnerSwitchDiscardsPage()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto rows = std::make_shared<QMap<int, QJsonObject>>(
+            QMap<int, QJsonObject>{{1, starredMessage(1)}});
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto released = std::make_shared<bool>(false);
+        fixture.messages = [rows, gates, released](const Request &request) {
+            const QUrlQuery query(request.target);
+            if (!*released && query.queryItemValue("starred") == "true") {
+                Response response{QJsonArray{}, 200, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            return starredPageResponse(*rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showStarred();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first page is in flight
+        fixture.controller.logout();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.authenticated(), 4000);
+        for (auto &release : *gates) release();
+        gates->clear();
+        *released = true;
+        QTest::qWait(250); // give the late response a chance to misfire
+        QVERIFY(!fixture.controller.starredVisible());
+        QVERIFY(fixture.controller.starredPage().value("rows").toList().isEmpty());
+    }
+
     // ---- Project Feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
 
     static QJsonObject feedMessage(int number)

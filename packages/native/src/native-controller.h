@@ -207,6 +207,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
+    // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
+    Q_PROPERTY(bool starredVisible READ starredVisible NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap starredPage READ starredPage NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
     Q_PROPERTY(QVariantMap conversationOpening READ conversationOpening NOTIFY stateChanged)
@@ -425,6 +428,9 @@ public:
     // "All messages" of the current project, marker-paginated.
     bool feedVisible() const { return m_feedVisible; }
     QVariantMap feedPage() const;
+    // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
+    bool starredVisible() const { return m_starredVisible; }
+    QVariantMap starredPage() const;
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -491,6 +497,13 @@ public:
     Q_INVOKABLE void selectMentionsFilter(const QString &filter);
     Q_INVOKABLE void loadMoreMentions();
     Q_INVOKABLE void retryMentions();
+    // Activity starred page (#41): one starred collection, bottom-edge
+    // pagination and the message-route jump, per the reference contract.
+    Q_INVOKABLE void showStarred();
+    Q_INVOKABLE void closeStarred();
+    Q_INVOKABLE void loadMoreStarred();
+    Q_INVOKABLE void retryStarred();
+    Q_INVOKABLE void openStarredMessage(const QString &id);
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
     Q_INVOKABLE void closeInbox();
@@ -1831,10 +1844,27 @@ private:
     QString mentionPreview(const Message &message) const;
     QString mentionTime(const QDateTime &created) const;
     void resetMentions();
+    // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md):
+    // one collection keyed `starred` (activity-page.ui.tsx:178-247), the
+    // version counter is the collection-key guard and resetStarred() is the
+    // runtime-owner guard (test 952: a stale page must never repopulate).
+    struct StarredCollection {
+        QVector<Message> rows;
+        QByteArray marker;
+        quint64 version = 0;
+        bool inflight = false;
+        bool loading = false;
+        bool error = false;
+        bool paginationError = false;
+        bool hasMore = false;
+    };
+    void loadStarredCollection(bool append);
+    QVariantList starredRows() const;
+    void resetStarred();
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Mail, Calendar, Calls };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Mail, Calendar, Calls };
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
@@ -1881,6 +1911,9 @@ private:
     void hydrateSidebarSearchTopics();
     QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream) const;
     bool m_inboxVisible = false;
+    // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
+    bool m_starredVisible = false;
+    StarredCollection m_starred;
     QString m_section = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
     QSet<QString> m_inboxStaleTopics;
