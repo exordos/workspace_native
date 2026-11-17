@@ -105,9 +105,11 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   native stand-in for the CSS media query: Qt 6.10 has no reduced-motion hint
   (`QStyleHints::accessibility()` only carries contrast), so the preferences object
   reads the XDG Settings portal `org.freedesktop.appearance/reduced-motion` key at
-  startup (`ReadValue`, 2 s timeout, unknown value = no preference per spec) and
-  keeps it live via the `SettingChanged` signal. The test harness pins the same
-  value through that seam. The live-region `Text`
+  startup (service `org.freedesktop.portal.Desktop`, object path
+  `/org/freedesktop/portal/desktop`, interface `org.freedesktop.portal.Settings`,
+  `Read`, 2 s timeout, unknown value = no preference per spec) and
+  keeps it live via the `SettingChanged` signal on that same addressing. The test
+  harness pins the same value through that seam. The live-region `Text`
   "Loading message context" renders in place of the old
   bare "Loading…" status while a link jump is pending (the generic empty-conversation
   "Loading…" text stays for non-anchor empties). QML has no live-region attach
