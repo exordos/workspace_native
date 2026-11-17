@@ -1,6 +1,6 @@
 # Workspace Native 0.31.0 - Linux development preview
 
-Files in the composer become tracked cards, a shared profile link opens the person it names, and the sidebar and direct header show more of the real state:
+Files in the composer become tracked cards, a shared profile link opens the person it names, people show their real photos and presence, and the Calls and Marked-messages pages arrive:
 
 - Composer attachments now get a card per file: live progress, cancel, retry
   and removal, files added by drag-and-drop or pasted straight from the
@@ -10,11 +10,20 @@ Files in the composer become tracked cards, a shared profile link opens the pers
   exactly that person: the profile is taken from the local cache when known,
   the navigation happens once per link, and an unknown target gets the
   reference failure notice instead of a silent no-op.
+- Avatars carry real photos: a Gravatar reference resolves through the
+  bounded avatar pipeline pinned to the Gravatar origin, the fetched photo
+  is masked into the circles that already exist, initials stay as the
+  fallback and a failed fetch retries on the next mount.
 - Channel and group rows in the sidebar paint the avatar background in the
   stream's own color, matching the reference sidebar.
 - A direct chat with a deactivated account shows the deactivated badge on the
   partner avatar in the header instead of the presence dot, with the
   reference badge geometry and accessibility name in both locales.
+- The Calls section opens its reference page: the recent Jitsi calls list
+  with an honest empty state when no call has happened yet.
+- Marked messages join the Activity surfaces: a starred page, paged with
+  markers and auto-loading its first page, opens the conversation any row
+  came from.
 
 ---
 
