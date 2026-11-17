@@ -1,3 +1,28 @@
+# Workspace Native 0.32.0 - Linux development preview
+
+The Services section opens its placeholder hub, the Activity reactions route
+answers honestly that reactions are not connected yet, and a restart with a
+saved realtime cursor reopens the chats instead of leaving them empty:
+
+- The Services section opens the reference placeholder hub: service cards in
+  the reference grid (3 columns on wide windows, 2 then 1 as the window
+  narrows) each carry their planned-status chip, the header hint wraps instead
+  of overflowing at minimum width, and the "Chats & channels" button is fully
+  keyboard-operable with a visible focus ring and returns to the messenger.
+  Services open through their deep link and from the sidebar entry.
+- The Activity reactions collection route shows the reference unsupported
+  state in both locales ("Reactions are not connected to Workspace messaging
+  yet.") instead of falling through to the default activity view, and leaving
+  for a conversation closes that view cleanly. Message reactions themselves are
+  unchanged.
+- After a restart that restores the durable realtime cursor, the fresh
+  controller always bootstraps from an acknowledged authorized snapshot: chats
+  no longer stay empty until a manual refresh, and a reconnect while the
+  restore snapshot is still in flight keeps waiting for its acknowledgement
+  before any catch-up starts.
+
+---
+
 # Workspace Native 0.31.0 - Linux development preview
 
 Files in the composer become tracked cards, a shared profile link opens the person it names, people show their real photos and presence, and the Calls and Marked-messages pages arrive:
