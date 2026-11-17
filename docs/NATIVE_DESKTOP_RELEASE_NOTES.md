@@ -1,3 +1,18 @@
+# Workspace Native 0.33.0 - Linux development preview
+
+The Open Source Licenses browser opens from the About drawer and its deep
+link, matching the reference page in both locales:
+
+- The Licenses page renders the native client's own third-party dependencies:
+  the top eight license-type chips with package counts (toggle-off and a Reset
+  pill included), case-insensitive search over package name and publisher, the
+  "{filtered} of {total} packages" counter, and a sticky-header table whose
+  package cells link out only when a repository exists. Closing resolves like
+  the reference: back to the section that preceded the open, otherwise the
+  messenger home.
+
+---
+
 # Workspace Native 0.32.0 - Linux development preview
 
 The Services section opens its placeholder hub, the Activity reactions route
