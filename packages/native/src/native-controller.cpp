@@ -6237,6 +6237,8 @@ void NativeController::closeOtherContentPages(ContentPage keep)
         closeFeed();
     if (keep != ContentPage::Starred)
         closeStarred();
+    if (keep != ContentPage::Reactions)
+        closeReactions();
     if (keep != ContentPage::Mail)
         resetChatSection(); // callers emit stateChanged()
 }
@@ -6864,6 +6866,31 @@ void NativeController::resetStarred()
 {
     m_starredVisible = false;
     m_starred = StarredCollection{};
+}
+
+// ---- Activity reactions unsupported state (#43) ----
+//
+// The reference has no reactions activity collection: activity-page.ui.tsx
+// :569-571 short-circuits the reactions filter to ActivityUnsupportedState and
+// issues no request (activity-page.test.tsx:360), and the rail keeps the entry
+// hidden (sidebar.lib.ts:90-96), so the /activity/reactions route is the only
+// way in. There is therefore no state to hold beyond "the page is open".
+
+void NativeController::showReactions()
+{
+    if (!authenticated())
+        return;
+    closeOtherContentPages(ContentPage::Reactions);
+    m_reactionsVisible = true;
+    emit stateChanged();
+}
+
+void NativeController::closeReactions()
+{
+    if (!m_reactionsVisible)
+        return;
+    m_reactionsVisible = false;
+    emit stateChanged();
 }
 
 // ---- Project feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----
@@ -10363,6 +10390,7 @@ void NativeController::reset()
     resetStarred();
     resetInbox();
     resetFeed();
+    m_reactionsVisible = false;
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();
     if (!guard) return;
@@ -14909,6 +14937,18 @@ void NativeController::applyDeepLink(const QString &url)
             || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
                 Qt::CaseInsensitive) == 0)
             showSection(QStringLiteral("calls"));
+        return;
+    }
+    // The reference activity route carries its collection segment
+    // (app-route-definitions.tsx:180, activity-page.ui.tsx:563-571). Only the
+    // reactions collection has a native view today: it renders the reference
+    // unsupported state. Other collections keep today's behaviour (the
+    // whitelisted route only activates the window) until their own issue lands.
+    if (const auto activity = workspace::parseActivityRoute(*route)) {
+        if (activity->collection == QLatin1String("reactions")
+            && activity->org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) == 0
+            && activity->project.compare(m_session->project(), Qt::CaseInsensitive) == 0)
+            showReactions();
         return;
     }
     const auto message = workspace::parseMessageRoute(*route);

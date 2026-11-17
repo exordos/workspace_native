@@ -3666,6 +3666,7 @@ ApplicationWindow {
             visible: !root.controller.draftsVisible && !root.controller.mentionsVisible
                 && !root.controller.inboxVisible && !root.controller.feedVisible
                 && !root.controller.starredVisible
+                && !root.controller.reactionsVisible
                 && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -8198,6 +8199,18 @@ ApplicationWindow {
                 root.starredForwardIds = [messageUuid]
                 forwardDialog.open()
             }
+        }
+        // Activity reactions unsupported state (#43): the reference has no
+        // reactions activity collection, so the /activity/reactions route
+        // renders the muted single-line state (docs addendum). There is
+        // deliberately no sidebar chip: the reference keeps reactions out of
+        // VISIBLE_MY_ACTIVITY_KEYS (sidebar.lib.ts:90-96).
+        NativeActivityUnsupportedPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.reactionsVisible
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
         NativeInboxPage {
             controller: root.controller

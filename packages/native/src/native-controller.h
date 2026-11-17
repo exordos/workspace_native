@@ -210,6 +210,9 @@ class NativeController final : public QObject {
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     Q_PROPERTY(bool starredVisible READ starredVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap starredPage READ starredPage NOTIFY stateChanged)
+    // Activity reactions unsupported state (#43, addendum to
+    // docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md): route-only, no data, no chip.
+    Q_PROPERTY(bool reactionsVisible READ reactionsVisible NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
     Q_PROPERTY(QVariantMap conversationOpening READ conversationOpening NOTIFY stateChanged)
@@ -431,6 +434,7 @@ public:
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool starredVisible() const { return m_starredVisible; }
     QVariantMap starredPage() const;
+    bool reactionsVisible() const { return m_reactionsVisible; }
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -508,6 +512,8 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
+    Q_INVOKABLE void showReactions();
+    Q_INVOKABLE void closeReactions();
     Q_INVOKABLE void showFeed();
     Q_INVOKABLE void closeFeed();
     Q_INVOKABLE void loadMoreFeed();
@@ -1868,7 +1874,7 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Mail, Calendar, Calls };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls };
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
@@ -1950,6 +1956,7 @@ private:
         bool hasMore() const { return !marker.isEmpty(); }
     };
     bool m_feedVisible = false;
+    bool m_reactionsVisible = false;
     FeedState m_feed;
     void loadFeedPage(bool append);
     void interruptFeedRequest();
