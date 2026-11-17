@@ -29637,6 +29637,159 @@ private slots:
         QCOMPARE(controller.selectedStream(),streamId);
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+    // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): a message link for a
+    // message outside the loaded window shows the reference skeleton preview zones
+    // (workspace_ui 61dacef7 workspace-message-anchor-transition.ui.tsx) while the
+    // anchor resolves, keeps them static under a reduced-motion flag, and turns a
+    // failing resolution into an in-list alert whose Retry re-issues the fetch.
+    // The held lookup (Response.defer) makes the phases deterministic - no sleeps.
+    void anchorJumpSkeletonPreview_data()
+    {
+        QTest::addColumn<bool>("reducedMotion");
+        QTest::newRow("animated") << false;
+        QTest::newRow("reduced-motion") << true;
+    }
+
+    void anchorJumpSkeletonPreview()
+    {
+        QFETCH(bool, reducedMotion);
+        MockServer server;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en"));
+        const QString target = "88888888-8888-4888-8888-888888888888";
+        QString lookupMode = QStringLiteral("hold");
+        int lookupCount = 0;
+        std::function<void()> pendingLookup;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const QUrlQuery query(request.target);
+                if (query.hasQueryItem("uuid")) {
+                    ++lookupCount;
+                    if (lookupMode == QLatin1String("hold")) {
+                        Response response;
+                        response.defer = [&](std::function<void()> send) { pendingLookup = std::move(send); };
+                        return response;
+                    }
+                    if (lookupMode == QLatin1String("missing")) return Response{QJsonArray{}};
+                    return Response{QJsonArray{message("Deep anchor body", target)}};
+                }
+                return Response{QJsonArray{message("Loaded row")}};
+            }
+            if (path.endsWith("/streams/") && request.method == "GET")
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Anchor fixtures"}, {"encryption", false}}}};
+            if (path.endsWith("/stream_topics/") && request.method == "GET")
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Anchors"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.setRealtimeMode(true);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *content = window->contentItem();
+        QTRY_VERIFY(item(content, "message-" + messageId));
+        const auto deepLink = "ew://open/org/127.0.0.1-"
+            + QString::number(server.origin().port())
+            + "/project/" + projectId + "/message/" + target;
+        window->setProperty("prefersReducedMotion", reducedMotion);
+        QVERIFY(controller.anchorNavigationError().isEmpty());
+        QVERIFY(controller.anchorTransitionPending() == false);
+        controller.openMessageLink(deepLink);
+        // The transition layer covers the list while the held lookup is pending.
+        auto *layer = item(content, "anchorTransitionLayer"); QVERIFY(layer);
+        QTRY_VERIFY_WITH_TIMEOUT(layer->isVisible(), 1500);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.anchorTransitionPending(), 1500);
+        // Skeleton zones appear after the 100 ms preview delay (reference :122-131)
+        // with the reference min-h-24 / min-h-20 geometry.
+        auto *topZone = item(content, "anchorSkeletonTop"); QVERIFY(topZone);
+        auto *bottomZone = item(content, "anchorSkeletonBottom"); QVERIFY(bottomZone);
+        auto *topBubble = item(content, "anchorSkeletonBubbleTopPeer"); QVERIFY(topBubble);
+        auto *placeholder = item(content, "anchorPreviewPlaceholder"); QVERIFY(placeholder);
+        QTRY_VERIFY_WITH_TIMEOUT(topBubble->isVisible(), 1000);
+        QVERIFY(bottomZone->isVisible());
+        QVERIFY(topZone->height() >= 96);
+        QVERIFY(bottomZone->height() >= 96);
+        QVERIFY(placeholder->height() >= 80);
+        auto *status = item(content, "anchorLoadingStatus"); QVERIFY(status);
+        QVERIFY(status->isVisible());
+        QCOMPARE(status->property("text").toString(), QStringLiteral("Loading message context"));
+        // Reference :29-35: prefers-reduced-motion keeps the rows but drops the pulse.
+        QCOMPARE(layer->property("shimmerActive").toBool(), !reducedMotion);
+        auto *ownTopBubble = item(content, "anchorSkeletonBubbleTopOwn"); QVERIFY(ownTopBubble);
+        QCOMPARE(ownTopBubble->property("shimmerRunning").toBool(), !reducedMotion);
+        // A failing lookup lands on the alert instead of a silent fallback.
+        lookupMode = QStringLiteral("missing");
+        QVERIFY(pendingLookup);
+        pendingLookup(); pendingLookup = {};
+        auto *overlay = item(content, "anchorErrorOverlay"); QVERIFY(overlay);
+        QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 2000);
+        QCOMPARE(item(content, "anchorErrorTitle")->property("text").toString(),
+            QStringLiteral("Could not open the selected message"));
+        QCOMPARE(item(content, "anchorErrorDetail")->property("text").toString(),
+            QStringLiteral("The requested message is unavailable."));
+        QCOMPARE(controller.anchorNavigationError(),
+            QStringLiteral("The requested message is unavailable."));
+        QVERIFY(layer->isVisible());
+        QVERIFY(!topBubble->isVisible()); // Skeletons retire once the jump failed.
+        QVERIFY(controller.anchorMessageId().isEmpty());
+        if (reducedMotion) {
+            // Static fallback done; the tail escape closes the failed presentation.
+            click(window, item(content, "anchorScrollToBottom"));
+            QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
+            QVERIFY(controller.anchorNavigationError().isEmpty());
+            return;
+        }
+        // Retry re-issues the same lookup (reference onRetry). With the target
+        // resolvable this time, the around window lands the anchor and the
+        // alert is replaced by the resolved highlight row.
+        auto *retry = item(content, "anchorRetryButton"); QVERIFY(retry);
+        QVERIFY(retry->isVisible());
+        lookupMode = QStringLiteral("found");
+        click(window, retry);
+        QTRY_COMPARE_WITH_TIMEOUT(lookupCount, 2, 2000);
+        QVERIFY(controller.anchorNavigationError().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), target, 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
+        auto *highlight = item(content, "messageHighlight-" + target); QVERIFY(highlight);
+        QVERIFY(highlight->isVisible());
+        // A next failing jump (unknown target) re-arms the retryable alert, and
+        // the inline scroll-to-bottom escapes to the conversation tail from there.
+        const QString missingTarget = "99999999-9999-4999-8999-999999999999";
+        const auto missingDeepLink = "ew://open/org/127.0.0.1-"
+            + QString::number(server.origin().port())
+            + "/project/" + projectId + "/message/" + missingTarget;
+        lookupMode = QStringLiteral("missing");
+        QTRY_VERIFY_WITH_TIMEOUT(controller.busy() == false, 3000);
+        controller.openMessageLink(missingDeepLink);
+        QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 3000);
+        QVERIFY(controller.anchorMessageId().isEmpty()); // The fresh jump cleared the highlight.
+        click(window, item(content, "anchorScrollToBottom"));
+        QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
+        QVERIFY(controller.anchorNavigationError().isEmpty());
+        QVERIFY(controller.anchorMessageId().isEmpty());
+    }
 };
 
 

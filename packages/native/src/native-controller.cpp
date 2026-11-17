@@ -15442,29 +15442,32 @@ void NativeController::flushPendingDeepLink(bool settle)
     applyDeepLink(url);
 }
 
-void NativeController::applyMessageRoute(const QString &org, const QString &project,
-                                         const QString &target)
+void NativeController::beginAnchorLinkJump(const QString &target)
 {
-    // The current preview binds one server origin and one project token; a link
-    // for another organization or project lands safely without navigation.
-    if (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
-        || project.compare(m_session->project(), Qt::CaseInsensitive) != 0) {
-        clearAnchor(deepLinkUnavailableNotice());
-        return;
-    }
+    // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): the jump owns a
+    // visible transition phase until the anchor resolves or the bounded walk
+    // lands in the safe place. Retry re-enters here so it re-issues the exact
+    // same lookup + walk the reference's onRetry re-runs.
     retireConversationOpening();
+    if (!m_anchorNavigationError.isEmpty() || !m_failedAnchorLinkTarget.isEmpty()) {
+        m_anchorNavigationError.clear();
+        m_failedAnchorLinkTarget.clear();
+        emit anchorNavigationErrorChanged();
+    }
+    m_anchorLinkPending = true;
     m_pendingAnchorMessage = target;
     m_pendingAnchorStream = m_stream;
     m_pendingAnchorTopic = m_topic;
     m_anchorBudget = 8;
     m_anchorAroundTried = false;
+    emit anchorChanged();
     if (findMessage(target)) {
         reanchorFromWindow();
         return;
     }
-    request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", target}},
+    request("GET", messenger + "/messages/", {}, {{"project_id", m_session->project()}, {"uuid", target}},
         [this, target](const ApiResult &result) {
-        if (m_pendingAnchorMessage != target) return;
+        if (m_pendingAnchorMessage != target || !m_anchorLinkPending) return;
         const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
         const auto parsed = rows.isEmpty() ? std::optional<Message>{}
             : parseMessage(rows.first().toObject(), m_session->project());
@@ -15487,6 +15490,32 @@ void NativeController::applyMessageRoute(const QString &org, const QString &proj
     });
 }
 
+void NativeController::retryAnchorNavigation()
+{
+    const QString target = m_failedAnchorLinkTarget;
+    if (target.isEmpty() || !authenticated() || m_pendingAnchorMessage == target) return;
+    beginAnchorLinkJump(target); // Clears the alert and re-issues the fetch.
+}
+
+void NativeController::dismissAnchorNavigation()
+{
+    if (m_anchorNavigationError.isEmpty() && m_failedAnchorLinkTarget.isEmpty()) return;
+    clearAnchor(); // The user escaped to the tail: keep the safe landing, retire the alert.
+}
+
+void NativeController::applyMessageRoute(const QString &org, const QString &project,
+                                         const QString &target)
+{
+    // The current preview binds one server origin and one project token; a link
+    // for another organization or project lands safely without navigation.
+    if (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
+        || project.compare(m_session->project(), Qt::CaseInsensitive) != 0) {
+        clearAnchor(deepLinkUnavailableNotice());
+        return;
+    }
+    beginAnchorLinkJump(target);
+}
+
 void NativeController::setAnchorMessage(const QString &id)
 {
     if (m_anchorMessage == id) return;
@@ -15497,6 +15526,12 @@ void NativeController::setAnchorMessage(const QString &id)
 void NativeController::clearAnchor(const QString &notice)
 {
     const bool automaticOpening = m_conversationOpening.automaticAnchor;
+    // Issue #107: a link jump cancelled by a notice records the retryable
+    // failure the transition layer shows; a plain clear (user navigation, new
+    // link, retry, tail escape) retires any previous failure state.
+    const bool hadLinkJump = m_anchorLinkPending && !m_pendingAnchorMessage.isEmpty();
+    const QString failedTarget = m_pendingAnchorMessage;
+    m_anchorLinkPending = false;
     m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
@@ -15507,10 +15542,19 @@ void NativeController::clearAnchor(const QString &notice)
     const bool hadAnchor = !m_anchorMessage.isEmpty();
     m_anchorMessage.clear();
     const QPointer<NativeController> guard(this);
-    if (hadAnchor) emit anchorChanged();
+    if (hadAnchor || hadLinkJump) emit anchorChanged();
     if (!guard) return;
     if (automaticOpening) finishConversationOpening({}, true);
     if (!guard) return;
+    const bool hadError = !m_anchorNavigationError.isEmpty();
+    if (!notice.isEmpty() && hadLinkJump) {
+        m_anchorNavigationError = notice;
+        m_failedAnchorLinkTarget = failedTarget;
+    } else {
+        m_anchorNavigationError.clear();
+        m_failedAnchorLinkTarget.clear();
+    }
+    if (hadError || !m_anchorNavigationError.isEmpty()) emit anchorNavigationErrorChanged();
     if (!notice.isEmpty()) {
         m_notice = notice;
         emit stateChanged();
@@ -15542,11 +15586,14 @@ void NativeController::reanchorFromWindow()
     }
     if (findMessage(m_pendingAnchorMessage)) {
         const auto target = m_pendingAnchorMessage;
+        const bool hadLinkJump = m_anchorLinkPending;
+        m_anchorLinkPending = false;
         m_pendingAnchorMessage.clear();
         m_pendingAnchorStream.clear();
         m_pendingAnchorTopic.clear();
         m_anchorBudget = 0;
         m_pendingAnchorParsed.reset();
+        if (hadLinkJump) emit anchorChanged(); // The transition layer retires.
         if (m_conversationOpening.automaticAnchor) {
             m_conversationOpening.automaticAnchor = false;
             finishConversationOpening(target);

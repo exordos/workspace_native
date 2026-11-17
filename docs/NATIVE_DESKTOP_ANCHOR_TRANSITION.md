@@ -103,9 +103,11 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   shimmerActive && anchorSkeletonsVisible`; `shimmerActive` is `!root.prefersReducedMotion`.
   `prefersReducedMotion` is a window-level flag (native stand-in for the CSS media
   query; the test harness sets it on the window). The live-region `Text`
-  "Loading message context" (`Accessible.live: Active`) renders in place of the old
+  "Loading message context" renders in place of the old
   bare "Loading…" status while a link jump is pending (the generic empty-conversation
-  "Loading…" text stays for non-anchor empties).
+  "Loading…" text stays for non-anchor empties). QML has no live-region attach
+  property, so the sr-only text carries `Accessible.role: Accessible.StaticText`
+  with its name, matching how the repo exposes other status lines.
 - Failed: `anchorErrorOverlay` at 16 px insets from bottom/sides, radius 8, 1 px
   `border-subtle`, `bg-elevated`, 12/8 px padding, `Accessible.role: AlertMessage`;
   title "Could not open the selected message" (14 px Medium `notice-base`), detail line

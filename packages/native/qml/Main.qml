@@ -36,6 +36,10 @@ ApplicationWindow {
     readonly property var messageImages: nativeMessageImages
     // Per-window reveal level; stream expansion itself is persisted by owner.
     property var sidebarTopicRevealLevels: ({})
+    // Issue #107: window-level reduced-motion flag, the native stand-in for the
+    // reference prefers-reduced-motion media query that freezes the skeleton
+    // pulse (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md).
+    property bool prefersReducedMotion: false
     Connections {
         target: root.controller
         function onStateChanged() {
@@ -5766,6 +5770,236 @@ ApplicationWindow {
                             id: scrollUnreadText
                             anchors.centerIn: parent; text: root.countText(messageList.unreadCount)
                             font.pixelSize: 12; color: root.colors["badge-text"]
+                        }
+                    }
+                }
+                // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): the reference
+                // anchor transition layer (workspace_ui 61dacef7
+                // workspace-message-anchor-transition.ui.tsx) covers the list while a
+                // message-link anchor resolves: skeleton preview zones after a 100 ms
+                // delay, and a retryable in-list alert when the jump failed.
+                component AnchorSkeletonBubble: Rectangle {
+                    id: skeletonBubble
+                    required property bool shimmer
+                    // Static fallback keeps the rows and drops the pulse
+                    // (reference :29-35 prefers-reduced-motion).
+                    readonly property bool shimmerRunning: shimmer
+                    height: 76
+                    radius: 18
+                    color: Qt.alpha(root.colors["border-subtle"], 0.40)
+                    Accessible.ignored: true
+                    SequentialAnimation on opacity {
+                        loops: Animation.Infinite
+                        running: skeletonBubble.shimmer
+                        PropertyAnimation { to: 0.5; duration: 1000; easing.type: Easing.InOutSine }
+                        PropertyAnimation { to: 1.0; duration: 1000; easing.type: Easing.InOutSine }
+                    }
+                    Column {
+                        x: 12; y: 12
+                        width: parent.width - 24
+                        spacing: 8
+                        Rectangle { width: parent.width / 3; height: 12; radius: 6; color: Qt.alpha(root.colors["border-subtle"], 0.60) }
+                        Rectangle { width: parent.width; height: 12; radius: 6; color: Qt.alpha(root.colors["border-subtle"], 0.60) }
+                        Rectangle { width: parent.width * 2 / 3; height: 12; radius: 6; color: Qt.alpha(root.colors["border-subtle"], 0.60) }
+                    }
+                }
+                Item {
+                    id: anchorTransitionLayer
+                    objectName: "anchorTransitionLayer"
+                    parent: messageList
+                    anchors.fill: parent
+                    z: 30
+                    readonly property bool failure: root.controller.anchorNavigationError.length > 0
+                    readonly property bool pending: root.controller.anchorTransitionPending
+                    readonly property bool shimmerActive: !root.prefersReducedMotion
+                    property bool anchorSkeletonsVisible: false
+                    visible: pending || failure
+                    Rectangle {
+                        anchors.fill: parent
+                        color: root.colors.bg
+                    }
+                    // Reference :122-131: skeleton rows appear 100 ms after the jump
+                    // intent, re-armed per intent, so an instant jump never flashes them.
+                    Timer {
+                        id: anchorSkeletonDelay
+                        interval: 100
+                        onTriggered: anchorTransitionLayer.anchorSkeletonsVisible = true
+                    }
+                    Connections {
+                        target: root.controller
+                        function onAnchorChanged() {
+                            if (root.controller.anchorTransitionPending && !anchorTransitionLayer.failure) {
+                                anchorTransitionLayer.anchorSkeletonsVisible = false;
+                                anchorSkeletonDelay.restart();
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 16; anchors.rightMargin: 16
+                        anchors.topMargin: 24; anchors.bottomMargin: 24
+                        spacing: 16
+                        Item { Layout.fillWidth: true; Layout.fillHeight: true }
+                        ColumnLayout {
+                            objectName: "anchorSkeletonTop"
+                            Layout.fillWidth: true
+                            spacing: 12
+                            AnchorSkeletonBubble {
+                                objectName: "anchorSkeletonBubbleTopPeer"
+                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
+                                Layout.alignment: Qt.AlignLeft
+                                Layout.preferredWidth: Math.min(anchorTransitionLayer.width * 0.72, 512)
+                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
+                            }
+                            AnchorSkeletonBubble {
+                                objectName: "anchorSkeletonBubbleTopOwn"
+                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
+                                Layout.alignment: Qt.AlignRight
+                                Layout.preferredWidth: Math.min(anchorTransitionLayer.width * 0.72, 512)
+                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
+                            }
+                        }
+                        Item {
+                            objectName: "anchorPreviewPlaceholder"
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 672
+                            Layout.preferredHeight: 80
+                            Layout.minimumHeight: 80
+                            // Reference data-message-preview-placeholder: an empty
+                            // min-h-20 column until the preview bubble exists.
+                            AnchorSkeletonBubble {
+                                objectName: "anchorSkeletonBubbleCenter"
+                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
+                                width: Math.min(parent.width, 512)
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
+                            }
+                        }
+                        ColumnLayout {
+                            objectName: "anchorSkeletonBottom"
+                            Layout.fillWidth: true
+                            spacing: 12
+                            AnchorSkeletonBubble {
+                                objectName: "anchorSkeletonBubbleBottomOwn"
+                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
+                                Layout.alignment: Qt.AlignRight
+                                Layout.preferredWidth: Math.min(anchorTransitionLayer.width * 0.72, 512)
+                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
+                            }
+                            AnchorSkeletonBubble {
+                                objectName: "anchorSkeletonBubbleBottomPeer"
+                                visible: anchorTransitionLayer.anchorSkeletonsVisible && !anchorTransitionLayer.failure
+                                Layout.alignment: Qt.AlignLeft
+                                Layout.preferredWidth: Math.min(anchorTransitionLayer.width * 0.72, 512)
+                                shimmer: anchorTransitionLayer.shimmerActive && anchorTransitionLayer.anchorSkeletonsVisible
+                            }
+                        }
+                        Item { Layout.fillWidth: true; Layout.fillHeight: true }
+                    }
+                    Text {
+                        objectName: "anchorLoadingStatus"
+                        visible: anchorTransitionLayer.pending && !anchorTransitionLayer.failure
+                        x: 0; y: 0
+                        width: 1; height: 1
+                        opacity: 0 // reference sr-only role=status
+                        text: qsTr("Loading message context")
+                        Accessible.name: text
+                        Accessible.role: Accessible.StaticText
+                    }
+                    Column {
+                        objectName: "anchorFailedActions"
+                        visible: anchorTransitionLayer.failure
+                        anchors.left: parent.left; anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.bottomMargin: 16
+                        spacing: 8
+                        Rectangle {
+                            id: anchorErrorOverlay
+                            objectName: "anchorErrorOverlay"
+                            width: parent.width
+                            radius: 8
+                            color: root.colors["bg-elevated"]
+                            border.width: 1
+                            border.color: root.colors["border-subtle"]
+                            height: Math.max(anchorErrorDetail.y + anchorErrorDetail.height + 8,
+                                anchorRetryButton.implicitHeight + 16)
+                            Accessible.role: Accessible.AlertMessage
+                            Accessible.name: anchorErrorTitle.text + ". " + anchorErrorDetail.text
+                            Text {
+                                id: anchorErrorTitle
+                                objectName: "anchorErrorTitle"
+                                x: 12; y: 8
+                                width: Math.max(0, anchorErrorOverlay.width - anchorRetryButton.implicitWidth - 36)
+                                text: qsTr("Could not open the selected message")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 14
+                                font.weight: Font.Medium
+                                color: root.colors["notice-base"]
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                id: anchorErrorDetail
+                                objectName: "anchorErrorDetail"
+                                x: 12
+                                anchors.top: anchorErrorTitle.bottom
+                                width: anchorErrorTitle.width
+                                text: root.controller.anchorNavigationError.length
+                                    ? root.controller.anchorNavigationError
+                                    : qsTr("The selected message is no longer available in the current workspace.")
+                                textFormat: Text.PlainText
+                                font.pixelSize: 12
+                                color: root.colors["notice-base"]
+                                wrapMode: Text.WordWrap
+                            }
+                            Button {
+                                id: anchorRetryButton
+                                objectName: "anchorRetryButton"
+                                anchors.right: parent.right; anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                padding: 0
+                                text: qsTr("Retry opening message")
+                                contentItem: Text {
+                                    text: anchorRetryButton.text
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 12
+                                    font.weight: Font.Medium
+                                    color: root.colors["on-accent"]
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    radius: 8
+                                    color: root.colors.accent
+                                    border.width: anchorRetryButton.visualFocus ? 2 : 0
+                                    border.color: root.colors["accent-soft"]
+                                }
+                                implicitWidth: contentItem.implicitWidth + 24
+                                implicitHeight: contentItem.implicitHeight + 12
+                                onClicked: root.controller.retryAnchorNavigation()
+                                Accessible.name: text
+                            }
+                        }
+                        Item {
+                            width: parent.width
+                            height: 40
+                            NativeIconButton {
+                                objectName: "anchorScrollToBottom"
+                                anchors.right: parent.right
+                                width: 40; height: 40; glyphSize: 20; cornerRadius: 8
+                                colors: root.colors; asset: "chevron-down.svg"
+                                help: qsTr("Scroll to bottom")
+                                background: Rectangle {
+                                    radius: 8; color: root.colors["bg-elevated"]
+                                    border.width: 1
+                                    border.color: root.colors["border-subtle"]
+                                }
+                                icon.color: root.colors["text-primary"]
+                                onClicked: {
+                                    root.controller.dismissAnchorNavigation();
+                                    messageList.scrollToLatest();
+                                }
+                            }
                         }
                     }
                 }
