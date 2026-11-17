@@ -8,12 +8,101 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWindow>
+#include <QDBusAbstractAdaptor>
+#include <QDBusConnection>
+#include <QDir>
+#include <QFile>
+#include <QDBusError>
+#include <QDBusVariant>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QProcess>
 #include <algorithm>
 #include <limits>
 
 using namespace workspace;
+
+namespace {
+// Stand-in for the XDG Desktop Portal Settings service at its real D-Bus
+// addressing (service org.freedesktop.portal.Desktop, object path
+// /org/freedesktop/portal/desktop, interface org.freedesktop.portal.Settings):
+// Read(ns, key) answers org.freedesktop.appearance/reduced-motion with the
+// pinned value, and SetReducedMotion mirrors a user flipping the system
+// toggle by emitting SettingChanged the way the portal does.
+class FakeSettingsPortal final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Settings")
+public:
+    explicit FakeSettingsPortal(QObject *root) : QDBusAbstractAdaptor(root) {}
+public slots:
+    Q_SCRIPTABLE QDBusVariant Read(const QString &ns, const QString &key)
+    {
+        if (ns == QLatin1String("org.freedesktop.appearance")
+            && key == QLatin1String("reduced-motion"))
+            return QDBusVariant(QVariant(m_reducedMotion));
+        return QDBusVariant(QVariant(QStringLiteral("unexpected-key")));
+    }
+    Q_SCRIPTABLE void SetReducedMotion(int value)
+    {
+        m_reducedMotion = value;
+        emit SettingChanged(QStringLiteral("org.freedesktop.appearance"),
+            QStringLiteral("reduced-motion"), QDBusVariant(QVariant(value)));
+    }
+signals:
+    void SettingChanged(const QString &ns, const QString &key, const QDBusVariant &value);
+private:
+    int m_reducedMotion = 1;
+};
+
+// The reduced-motion probe talks to the session bus, so this binary brings up
+// its own private bus before main(): a real session bus may already host the
+// actual xdg-desktop-portal (the fake could never own its name) or none at
+// all. The bus config is minimal - no <standard_session_servicedirs/>, so the
+// daemon can never auto-activate the real portal behind a test's fake. If
+// dbus-daemon is unavailable the bus stays whatever the environment provides
+// and the portal case skips itself via the isConnected guard.
+class PortalProbeBus
+{
+public:
+    PortalProbeBus()
+    {
+        const QString config = QDir::temp().filePath(
+            QStringLiteral("workspace-native-portal-test-bus.conf"));
+        QFile configFile(config);
+        if (configFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            configFile.write(
+                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
+                " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
+                "<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>"
+                "<policy context=\"default\">"
+                "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
+                "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
+                "</policy></busconfig>");
+            configFile.close();
+        } else {
+            return;
+        }
+        m_daemon.start(QStringLiteral("dbus-daemon"),
+            {QStringLiteral("--config-file=") + config, QStringLiteral("--print-address")});
+        if (!m_daemon.waitForStarted(5000) || !m_daemon.waitForReadyRead(5000))
+            return;
+        const auto address = QString::fromUtf8(m_daemon.readAllStandardOutput())
+            .trimmed().split(QLatin1Char(',')).first();
+        if (address.startsWith(QLatin1String("unix:")) || address.startsWith(QLatin1String("tcp:")))
+            qputenv("DBUS_SESSION_BUS_ADDRESS", address.toUtf8());
+    }
+    ~PortalProbeBus()
+    {
+        m_daemon.terminate();
+        if (!m_daemon.waitForFinished(3000))
+            m_daemon.kill();
+    }
+private:
+    QProcess m_daemon;
+};
+const PortalProbeBus portalProbeBus;
+} // namespace
 
 class NativePreferencesTest final : public QObject {
     Q_OBJECT
@@ -611,6 +700,50 @@ private slots:
         NativePreferences sanitized(path);
         QCOMPARE(sanitized.chatListDensity(), QStringLiteral("general"));
         QCOMPARE(sanitized.chatClickAction(), QStringLiteral("stream"));
+    }
+    // Issue #107, exordy #387 round 2: the reduced-motion probe must address
+    // the XDG Settings portal the way the portal spec does - D-Bus service
+    // org.freedesktop.portal.Desktop, object path /org/freedesktop/portal/
+    // desktop, interface org.freedesktop.portal.Settings, Read(namespace, key)
+    // returning a variant - and keep the SettingChanged watch on that same
+    // addressing. Namespace and key stay org.freedesktop.appearance /
+    // reduced-motion, and an unknown value means "no preference".
+    void prefersReducedMotionFollowsTheXDGSettingsPortal()
+    {
+        auto bus = QDBusConnection::sessionBus();
+        QVERIFY2(bus.isConnected(), "the portal probe needs a session bus");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        // Claim the portal name before anything else can (the bus driver would
+        // otherwise auto-activate the real portal behind the fake), then
+        // answer Read there. The name must go through
+        // QDBusConnection::registerService(), not a raw driver RequestName:
+        // QtDBus only dispatches calls addressed to names this connection
+        // registered itself.
+        QObject root;
+        auto *portal = new FakeSettingsPortal(&root);
+        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"),
+            &root, QDBusConnection::ExportAdaptors));
+        QVERIFY2(bus.registerService(QStringLiteral("org.freedesktop.portal.Desktop")),
+            qPrintable(bus.lastError().message()));
+        {
+            NativePreferences reduced(path);
+            QVERIFY2(reduced.prefersReducedMotion(),
+                "the probe must read reduced-motion via Read on the portal's real D-Bus address");
+            QSignalSpy changed(&reduced, &NativePreferences::prefersReducedMotionChanged);
+            // Live watch: the portal announces the toggle back to 0 (no
+            // preference), then to an unknown value that must not count as
+            // reduced motion either.
+            QMetaObject::invokeMethod(portal, "SetReducedMotion", Q_ARG(int, 0));
+            QTRY_COMPARE_WITH_TIMEOUT(changed.count(), 1, 3000);
+            QVERIFY(!reduced.prefersReducedMotion());
+            QMetaObject::invokeMethod(portal, "SetReducedMotion", Q_ARG(int, 2));
+            QTest::qWait(300);
+            QCOMPARE(changed.count(), 1);
+            QVERIFY(!reduced.prefersReducedMotion());
+        }
+        bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
+        bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
     }
 };
 
