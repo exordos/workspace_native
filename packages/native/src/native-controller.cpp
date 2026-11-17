@@ -8508,6 +8508,16 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(this, &NativeController::snapshotReloaded, this, [this] {
         if (m_bootstrapError) { m_bootstrapError = false; emit stateChanged(); }
     });
+    // Issue #100: the sidebar catalog state map re-derives whenever any input
+    // moves - catalog rows, folder scope, sidebar search - which is exactly
+    // the fan-out of these three signals; the map's own error transitions
+    // emit the notification directly.
+    connect(this, &NativeController::streamsChanged, this,
+        &NativeController::sidebarCatalogStateChanged);
+    connect(this, &NativeController::foldersChanged, this,
+        &NativeController::sidebarCatalogStateChanged);
+    connect(this, &NativeController::sidebarStreamsChanged, this,
+        &NativeController::sidebarCatalogStateChanged);
     m_connectionCountdown.setInterval(1000);
     connect(&m_connectionCountdown, &QTimer::timeout, this, [this] {
         if (m_rateLimitedUntilMs <= QDateTime::currentMSecsSinceEpoch()) {
@@ -10507,6 +10517,9 @@ void NativeController::reset()
     m_before.clear();
     m_after.clear();
     m_error.clear();
+    // Issue #100: the catalog-scoped sidebar error is per-owner state too; a
+    // stale card must not survive into the next account's bootstrap.
+    m_sidebarError.clear();
     // Sign-out must not keep a banner alive across accounts (#146).
     m_bootstrapError = false;
     m_transportOffline = false;
@@ -12338,6 +12351,67 @@ QVariantList NativeController::sidebarStreams() const
     return result;
 }
 
+QVariantMap NativeController::sidebarCatalogState() const
+{
+    // Issue #100. Mirrors the reference state machine measured in
+    // docs/NATIVE_DESKTOP_SIDEBAR_STATES.md: sidebar-workspace.ui.tsx:662-699
+    // (display counts, visibility flags, empty resolver 140-177) with the
+    // shell's loading derivation from sidebar-shell.ui.tsx:226-233.
+    QVariantMap state;
+    if (!authenticated())
+        return state;
+    const auto shown = sidebarStreams();
+    const bool queryActive = !m_sidebarSearchQuery.isEmpty();
+    const bool hasError = !m_sidebarError.isEmpty();
+    const bool loading = !m_catalogVerified && !hasError;
+    const bool hasSpecificEmptyContext = queryActive || !m_streams.isEmpty();
+    const bool shownEmpty = shown.isEmpty();
+    state.insert(QStringLiteral("showLoading"), loading && shownEmpty);
+    state.insert(QStringLiteral("showBlockingError"),
+        hasError && shownEmpty && !hasSpecificEmptyContext);
+    state.insert(QStringLiteral("showPartialError"),
+        hasError && (!shownEmpty || hasSpecificEmptyContext));
+    state.insert(QStringLiteral("showEmpty"),
+        !loading && shownEmpty && (!hasError || hasSpecificEmptyContext));
+    state.insert(QStringLiteral("errorText"), m_sidebarError);
+    if (state.value(QStringLiteral("showLoading")).toBool())
+        state.insert(QStringLiteral("loadingText"), tr("Loading…"));
+    if (hasError) {
+        if (state.value(QStringLiteral("showBlockingError")).toBool())
+            state.insert(QStringLiteral("errorTitle"), tr("Something went wrong"));
+        else
+            state.insert(QStringLiteral("partialTitle"),
+                tr("Some sidebar data could not be refreshed"));
+    }
+    if (state.value(QStringLiteral("showEmpty")).toBool()) {
+        // resolveWorkspaceSidebarEmptyState (sidebar-workspace.ui.tsx:140-177).
+        QString systemType;
+        for (const auto &row : m_folders)
+            if (row.uuid == selectedFolder()) { systemType = row.systemType; break; }
+        if (queryActive)
+            state.insert(QStringLiteral("emptyTitle"), tr("No matches")),
+            state.insert(QStringLiteral("emptyHint"),
+                tr("Try a different chat or topic name."));
+        else if (m_streams.isEmpty())
+            state.insert(QStringLiteral("emptyTitle"), tr("No workspace chats yet")),
+            state.insert(QStringLiteral("emptyHint"),
+                tr("When Workspace conversations load, they will show up here."));
+        else if (systemType == QStringLiteral("personal"))
+            state.insert(QStringLiteral("emptyTitle"), tr("No direct messages yet")),
+            state.insert(QStringLiteral("emptyHint"),
+                tr("Start a DM from the compose menu or directory."));
+        else if (systemType == QStringLiteral("channels"))
+            state.insert(QStringLiteral("emptyTitle"), tr("No channels yet")),
+            state.insert(QStringLiteral("emptyHint"),
+                tr("Subscribe to streams you care about to see them here."));
+        else
+            state.insert(QStringLiteral("emptyTitle"), tr("Folder is empty")),
+            state.insert(QStringLiteral("emptyHint"),
+                tr("Add chats from a chat menu to populate this folder."));
+    }
+    return state;
+}
+
 QVariantList NativeController::topics() const
 {
     return topicRows(m_topics, currentStream());
@@ -13520,6 +13594,11 @@ void NativeController::reloadSnapshot()
     interruptChannelCreations();
     interruptDirectChats();
     m_error.clear();
+    // Issue #100: the reference clears the catalog model error when a new
+    // snapshot walk starts (sidebar-shell.ui.tsx:226-233); the sidebar card
+    // then re-derives from the fresh walk's outcome.
+    m_sidebarError.clear();
+    emit sidebarCatalogStateChanged();
     markCacheStale();
     if (m_realtimeMode) m_syncBlocked = true;
     m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
@@ -13559,6 +13638,8 @@ void NativeController::reloadSnapshot()
             if (!parsed || ids.contains(parsed->uuid) || (authoritative && parsed->archived
                 && !creationStreamDto(value.toObject(), m_session->project(), m_session->user(), false))) {
                 report(tr("The server returned an invalid channel list."));
+                m_sidebarError = m_error; // issue #100: feed the blocking card
+                emit sidebarCatalogStateChanged();
                 return false;
             }
             ids.insert(parsed->uuid);
@@ -13569,6 +13650,7 @@ void NativeController::reloadSnapshot()
         if (!chatGuard) return false;
         m_streams = streams;
         m_catalogVerified = authoritative;
+        if (authoritative) m_sidebarError.clear(); // issue #100: fresh catalog clears the card
         emit streamsChanged();
         emit callCryptoStateChanged(); // catalog encryption rows moved
         if (authoritative && !m_stream.isEmpty()) {
@@ -13587,7 +13669,16 @@ void NativeController::reloadSnapshot()
         if (authoritative) finishSnapshotPart(1);
         notifyTrustChanged();
         return true;
-    }, true);
+    }, true, [this, catalog] {
+        // Issue #100: the streams walk reached its failure terminal. Under the
+        // still-current epoch the only such terminal is collection()'s report
+        // call ("Could not load the catalog. <status>"), so m_error carries
+        // exactly the reference's catalog-model error text here; a stale
+        // epoch's drop stays silent, matching the caller's epoch guards.
+        if (catalog != m_catalog) return;
+        m_sidebarError = m_error;
+        emit sidebarCatalogStateChanged();
+    });
     cachedCollection({NativeCache::Kind::Users, {}, {}, {}}, "/api/workspace/v1/users/", {},
         [this, catalog](const QJsonArray &rows, bool authoritative) {
         if (catalog != m_catalog) return false;

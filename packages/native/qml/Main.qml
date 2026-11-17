@@ -548,6 +548,9 @@ ApplicationWindow {
     property string sidebarQuery: ""
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
     onNormalizedSidebarQueryChanged: root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
+    // Issue #100: the reference sidebar catalog state machine projection
+    // (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md).
+    readonly property var sidebarCatalogState: root.controller.sidebarCatalogState
     property date calendarDate: new Date()
     // Issue #7 slice 2 (docs/NATIVE_DESKTOP_MULTI_FORWARD.md): message
     // multi-select for forwarding. The reference keeps the selection as a set
@@ -3209,11 +3212,358 @@ ApplicationWindow {
                     }
                 }
             }
+            // Issue #100: reference sidebar-workspace.ui.tsx:827-870 at
+            // workspace_ui 61dacef. Loading | blocking error | empty render as
+            // one dashed card in the flow above the rows; the partial-refresh
+            // banner is a solid card above the rows while they stay visible.
+            // Geometry: wrapper px-3 py-4 (12/16, banner px-3 pb-2), dashed
+            // card radius 8 border 1 border-subtle bg bg-elevated/40 (banner
+            // bg-elevated/60, solid border); loading card px-3 py-6 gap-3,
+            // error/empty card px-3 py-5 gap-2 with 18 px icons, 14 px medium
+            // titles and max-w-[220px] 12 px muted second lines.
+            readonly property real sidebarLoadingInset: sidebarLoadingCard.visible ? sidebarLoadingCard.height + 32 : 0
+            readonly property real sidebarErrorInset: sidebarErrorCard.visible ? sidebarErrorCard.height + 32 : 0
+            readonly property real sidebarEmptyInset: sidebarEmptyCard.visible ? sidebarEmptyCard.height + 32 : 0
+            readonly property real sidebarPartialInset: sidebarPartialBanner.visible ? sidebarPartialBanner.height + 8 : 0
+            Item {
+                id: sidebarStateBlock
+                objectName: "sidebarStateBlock"
+                x: 0
+                width: parent.width
+                y: root.normalizedSidebarQuery.length ? 60 : 104
+                height: Math.max(sidebarLoadingCard.visible ? sidebarLoadingCard.y + sidebarLoadingCard.height + 16 : 0,
+                    sidebarErrorCard.visible ? sidebarErrorCard.y + sidebarErrorCard.height + 16 : 0,
+                    sidebarEmptyCard.visible ? sidebarEmptyCard.y + sidebarEmptyCard.height + 16 : 0,
+                    sidebarPartialBanner.visible ? sidebarPartialBanner.height + 8 : 0)
+                Accessible.ignored: true
+                Item {
+                    id: sidebarLoadingCard
+                    objectName: "sidebarLoadingCard"
+                    visible: Boolean(root.sidebarCatalogState.showLoading)
+                    x: 12
+                    y: 16
+                    width: sidebarStateBlock.width - 24
+                    height: sidebarLoadingContent.implicitHeight + 48
+                    Canvas {
+                        // border-dashed border-subtle rounded-lg bg-bg-elevated/40
+                        // (Qt Rectangle has no dashed border; Canvas draws it).
+                        anchors.fill: parent
+                        onPaint: {
+                            const c = getContext("2d")
+                            c.reset()
+                            c.fillStyle = Qt.alpha(root.colors["bg-elevated"], 0.4)
+                            c.strokeStyle = root.colors["border-subtle"]
+                            c.lineWidth = 1
+                            c.setLineDash([4, 3])
+                            // Qt's Canvas 2D subset has no roundRect: arcTo path.
+                            const w = parent.width - 1
+                            const h = parent.height - 1
+                            const r = 8
+                            c.beginPath()
+                            c.moveTo(0.5 + r, 0.5)
+                            c.lineTo(w - r + 0.5, 0.5)
+                            c.arcTo(w + 0.5, 0.5, w + 0.5, r + 0.5, r)
+                            c.lineTo(w + 0.5, h - r + 0.5)
+                            c.arcTo(w + 0.5, h + 0.5, w - r + 0.5, h + 0.5, r)
+                            c.lineTo(r + 0.5, h + 0.5)
+                            c.arcTo(0.5, h + 0.5, 0.5, h - r + 0.5, r)
+                            c.lineTo(0.5, r + 0.5)
+                            c.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
+                            c.fill()
+                            c.stroke()
+                        }
+                    }
+                    Accessible.ignored: true
+                    ColumnLayout {
+                        id: sidebarLoadingContent
+                        anchors.top: parent.top
+                        anchors.topMargin: 24
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 12
+                        Accessible.ignored: true
+                        Canvas {
+                            // Spinner size=lg: 32 px ring, 2 px stroke, full
+                            // ring border-subtle + top accent arc (the CSS
+                            // border-t-accent edge), 1 s rotation.
+                            id: sidebarLoadingSpinner
+                            objectName: "sidebarLoadingSpinner"
+                            width: 32
+                            height: 32
+                            Layout.alignment: Qt.AlignHCenter
+                            Accessible.ignored: true
+                            onPaint: {
+                                const c = getContext("2d")
+                                c.reset()
+                                c.lineWidth = 2
+                                c.strokeStyle = root.colors["border-subtle"]
+                                c.beginPath()
+                                c.arc(16, 16, 15, 0, Math.PI * 2)
+                                c.stroke()
+                                c.strokeStyle = root.colors["accent"]
+                                c.beginPath()
+                                c.arc(16, 16, 15, Math.PI, Math.PI * 2)
+                                c.stroke()
+                            }
+                            RotationAnimator on rotation {
+                                from: 0
+                                to: 360
+                                duration: 1000
+                                loops: Animation.Infinite
+                                running: sidebarLoadingCard.visible
+                            }
+                        }
+                        Text {
+                            id: sidebarLoadingText
+                            objectName: "sidebarLoadingText"
+                            Layout.alignment: Qt.AlignHCenter
+                            text: String(root.sidebarCatalogState.loadingText || "")
+                            font.pixelSize: 14
+                            color: root.colors["text-muted"]
+                            Accessible.ignored: true
+                        }
+                    }
+                }
+                Item {
+                    id: sidebarErrorCard
+                    objectName: "sidebarErrorCard"
+                    visible: Boolean(root.sidebarCatalogState.showBlockingError)
+                    x: 12
+                    y: 16
+                    width: sidebarStateBlock.width - 24
+                    height: sidebarErrorContent.implicitHeight + 40
+                    Canvas {
+                        // border-dashed border-subtle rounded-lg bg-bg-elevated/40
+                        // (Qt Rectangle has no dashed border; Canvas draws it).
+                        anchors.fill: parent
+                        onPaint: {
+                            const c = getContext("2d")
+                            c.reset()
+                            c.fillStyle = Qt.alpha(root.colors["bg-elevated"], 0.4)
+                            c.strokeStyle = root.colors["border-subtle"]
+                            c.lineWidth = 1
+                            c.setLineDash([4, 3])
+                            // Qt's Canvas 2D subset has no roundRect: arcTo path.
+                            const w = parent.width - 1
+                            const h = parent.height - 1
+                            const r = 8
+                            c.beginPath()
+                            c.moveTo(0.5 + r, 0.5)
+                            c.lineTo(w - r + 0.5, 0.5)
+                            c.arcTo(w + 0.5, 0.5, w + 0.5, r + 0.5, r)
+                            c.lineTo(w + 0.5, h - r + 0.5)
+                            c.arcTo(w + 0.5, h + 0.5, w - r + 0.5, h + 0.5, r)
+                            c.lineTo(r + 0.5, h + 0.5)
+                            c.arcTo(0.5, h + 0.5, 0.5, h - r + 0.5, r)
+                            c.lineTo(0.5, r + 0.5)
+                            c.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
+                            c.fill()
+                            c.stroke()
+                        }
+                    }
+                    Accessible.ignored: true
+                    ColumnLayout {
+                        id: sidebarErrorContent
+                        anchors.top: parent.top
+                        anchors.topMargin: 20
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 8
+                        Accessible.ignored: true
+                        Image {
+                            objectName: "sidebarErrorIcon"
+                            width: 18
+                            height: 18
+                            Layout.alignment: Qt.AlignHCenter
+                            source: "qrc:/workspace/icons/info.svg"
+                            sourceSize.width: 18
+                            sourceSize.height: 18
+                            asynchronous: false
+                            layer.enabled: true
+                            layer.effect: MultiEffect {
+                                colorizationColor: root.colors["notice-base"]
+                                colorization: 1.0
+                            }
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            objectName: "sidebarErrorTitle"
+                            Layout.alignment: Qt.AlignHCenter
+                            text: String(root.sidebarCatalogState.errorTitle || "")
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: root.colors["text-primary"]
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            objectName: "sidebarErrorBody"
+                            Layout.alignment: Qt.AlignHCenter
+                            width: Math.min(220, sidebarStateBlock.width - 48)
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: String(root.sidebarCatalogState.errorText || "")
+                            font.pixelSize: 12
+                            color: root.colors["text-muted"]
+                            Accessible.ignored: true
+                        }
+                    }
+                }
+                Rectangle {
+                    id: sidebarPartialBanner
+                    objectName: "sidebarPartialBanner"
+                    visible: Boolean(root.sidebarCatalogState.showPartialError)
+                    x: 12
+                    y: 0
+                    width: sidebarStateBlock.width - 24
+                    height: sidebarPartialRow.implicitHeight + 16
+                    radius: 8
+                    color: Qt.alpha(root.colors["bg-elevated"], 0.6)
+                    border.width: 1
+                    border.color: root.colors["border-subtle"]
+                    Accessible.ignored: true
+                    RowLayout {
+                        id: sidebarPartialRow
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        anchors.topMargin: 8
+                        spacing: 8
+                        Accessible.ignored: true
+                        Image {
+                            objectName: "sidebarPartialIcon"
+                            width: 16
+                            height: 16
+                            Layout.topMargin: 2
+                            Layout.alignment: Qt.AlignTop
+                            source: "qrc:/workspace/icons/info.svg"
+                            sourceSize.width: 16
+                            sourceSize.height: 16
+                            asynchronous: false
+                            layer.enabled: true
+                            layer.effect: MultiEffect {
+                                colorizationColor: root.colors["notice-base"]
+                                colorization: 1.0
+                            }
+                            Accessible.ignored: true
+                        }
+                        ColumnLayout {
+                            id: sidebarPartialColumn
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 0
+                            Accessible.ignored: true
+                            Text {
+                                objectName: "sidebarPartialTitle"
+                                Layout.fillWidth: true
+                                text: String(root.sidebarCatalogState.partialTitle || "")
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                                color: root.colors["text-primary"]
+                                Accessible.ignored: true
+                            }
+                            Text {
+                                objectName: "sidebarPartialLine"
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                text: String(root.sidebarCatalogState.errorText || "")
+                                font.pixelSize: 12
+                                color: root.colors["text-muted"]
+                                Accessible.ignored: true
+                            }
+                        }
+                    }
+                }
+                Item {
+                    id: sidebarEmptyCard
+                    objectName: "sidebarEmptyCard"
+                    visible: Boolean(root.sidebarCatalogState.showEmpty)
+                    x: 12
+                    y: 16
+                    width: sidebarStateBlock.width - 24
+                    height: sidebarEmptyContent.implicitHeight + 40
+                    Canvas {
+                        // border-dashed border-subtle rounded-lg bg-bg-elevated/40
+                        // (Qt Rectangle has no dashed border; Canvas draws it).
+                        anchors.fill: parent
+                        onPaint: {
+                            const c = getContext("2d")
+                            c.reset()
+                            c.fillStyle = Qt.alpha(root.colors["bg-elevated"], 0.4)
+                            c.strokeStyle = root.colors["border-subtle"]
+                            c.lineWidth = 1
+                            c.setLineDash([4, 3])
+                            // Qt's Canvas 2D subset has no roundRect: arcTo path.
+                            const w = parent.width - 1
+                            const h = parent.height - 1
+                            const r = 8
+                            c.beginPath()
+                            c.moveTo(0.5 + r, 0.5)
+                            c.lineTo(w - r + 0.5, 0.5)
+                            c.arcTo(w + 0.5, 0.5, w + 0.5, r + 0.5, r)
+                            c.lineTo(w + 0.5, h - r + 0.5)
+                            c.arcTo(w + 0.5, h + 0.5, w - r + 0.5, h + 0.5, r)
+                            c.lineTo(r + 0.5, h + 0.5)
+                            c.arcTo(0.5, h + 0.5, 0.5, h - r + 0.5, r)
+                            c.lineTo(0.5, r + 0.5)
+                            c.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
+                            c.fill()
+                            c.stroke()
+                        }
+                    }
+                    Accessible.ignored: true
+                    ColumnLayout {
+                        id: sidebarEmptyContent
+                        anchors.top: parent.top
+                        anchors.topMargin: 20
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 8
+                        Accessible.ignored: true
+                        Image {
+                            objectName: "sidebarEmptyIcon"
+                            width: 18
+                            height: 18
+                            Layout.alignment: Qt.AlignHCenter
+                            source: "qrc:/workspace/icons/chat_bubble.svg"
+                            sourceSize.width: 18
+                            sourceSize.height: 18
+                            asynchronous: false
+                            layer.enabled: true
+                            layer.effect: MultiEffect {
+                                colorizationColor: root.colors["text-muted"]
+                                colorization: 1.0
+                            }
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            objectName: "sidebarEmptyTitle"
+                            Layout.alignment: Qt.AlignHCenter
+                            text: String(root.sidebarCatalogState.emptyTitle || "")
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
+                            color: root.colors["text-primary"]
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            objectName: "sidebarEmptyHint"
+                            Layout.alignment: Qt.AlignHCenter
+                            width: Math.min(220, sidebarStateBlock.width - 48)
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: String(root.sidebarCatalogState.emptyHint || "")
+                            font.pixelSize: 12
+                            color: root.colors["text-muted"]
+                            Accessible.ignored: true
+                        }
+                    }
+                }
+            }
             ListView {
                 id: streamList
                 objectName: "streamList"
                 anchors.top: parent.top
-                anchors.topMargin: root.normalizedSidebarQuery.length ? 60 : 104
+                anchors.topMargin: (root.normalizedSidebarQuery.length ? 60 : 104)
+                    + sidebar.sidebarLoadingInset + sidebar.sidebarErrorInset
+                    + sidebar.sidebarEmptyInset + sidebar.sidebarPartialInset
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right

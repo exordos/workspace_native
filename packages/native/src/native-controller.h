@@ -143,6 +143,10 @@ class NativeController final : public QObject {
     // projection over the stream catalog.
     Q_PROPERTY(QVariantList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList sidebarStreams READ sidebarStreams NOTIFY sidebarStreamsChanged)
+    // Issue #100: the reference sidebar state machine (loading card, blocking
+    // error card, partial-refresh banner, five empty states) measured in
+    // docs/NATIVE_DESKTOP_SIDEBAR_STATES.md.
+    Q_PROPERTY(QVariantMap sidebarCatalogState READ sidebarCatalogState NOTIFY sidebarCatalogStateChanged)
     Q_PROPERTY(QStringList expandedSidebarStreams READ expandedSidebarStreams NOTIFY sidebarExpansionChanged)
     Q_PROPERTY(QString selectedFolder READ selectedFolder NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList topics READ topics NOTIFY topicsChanged)
@@ -371,6 +375,7 @@ public:
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
+    QVariantMap sidebarCatalogState() const;
     QStringList expandedSidebarStreams() const { return m_expandedSidebarStreams; }
     Q_INVOKABLE QVariantMap sidebarTopicState(const QString &stream, bool includeRows) const;
     Q_INVOKABLE void requestSidebarTopics(const QString &stream);
@@ -825,6 +830,7 @@ signals:
     void streamsChanged();
     void foldersChanged();
     void sidebarStreamsChanged();
+    void sidebarCatalogStateChanged();
     void folderSelected();
     void folderAddRequested();
     void callCryptoStateChanged();
@@ -1566,6 +1572,10 @@ private:
     bool m_cacheProtection = false;
     bool m_cacheHydrated = false;
     bool m_catalogVerified = false;
+    // Issue #100: catalog-scoped error text (reference messenger.error): the
+    // failed streams walk feeds it, a snapshot reload or an authoritative
+    // delivery clears it; it never carries unrelated action failures.
+    QString m_sidebarError;
     bool m_usersVerified = false;
     bool m_topicsVerified = false;
     bool m_topicSeedUnverified = false;

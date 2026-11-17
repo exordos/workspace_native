@@ -2077,6 +2077,54 @@
             <translation>Не удалось загрузить каталог. %1</translation>
         </message>
         <message>
+            <source>Loading…</source>
+            <translation>Загрузка…</translation>
+        </message>
+        <message>
+            <source>Some sidebar data could not be refreshed</source>
+            <translation>Часть данных боковой панели не обновилась</translation>
+        </message>
+        <message>
+            <source>No matches</source>
+            <translation>Ничего не найдено</translation>
+        </message>
+        <message>
+            <source>Try a different chat or topic name.</source>
+            <translation>Попробуйте другое название чата или темы.</translation>
+        </message>
+        <message>
+            <source>No workspace chats yet</source>
+            <translation>В Workspace пока нет чатов</translation>
+        </message>
+        <message>
+            <source>When Workspace conversations load, they will show up here.</source>
+            <translation>Когда чаты Workspace загрузятся, они появятся здесь.</translation>
+        </message>
+        <message>
+            <source>No direct messages yet</source>
+            <translation>Пока нет личных сообщений</translation>
+        </message>
+        <message>
+            <source>Start a DM from the compose menu or directory.</source>
+            <translation>Начните личный диалог через меню создания чата или каталог.</translation>
+        </message>
+        <message>
+            <source>No channels yet</source>
+            <translation>Пока нет каналов</translation>
+        </message>
+        <message>
+            <source>Subscribe to streams you care about to see them here.</source>
+            <translation>Подпишитесь на интересующие каналы, чтобы они отображались здесь.</translation>
+        </message>
+        <message>
+            <source>Folder is empty</source>
+            <translation>Папка пуста</translation>
+        </message>
+        <message>
+            <source>Add chats from a chat menu to populate this folder.</source>
+            <translation>Добавьте чаты через меню чата, чтобы заполнить папку.</translation>
+        </message>
+        <message>
             <source>The server returned an invalid pagination cursor.</source>
             <translation>Сервер вернул недопустимый курсор пагинации.</translation>
         </message>
