@@ -5690,6 +5690,76 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(fixture.starredPages, 2); // the exhausted cursor never re-fires
     }
 
+    // exordy review #41: while the refresh-error retry control is visible the
+    // list must stay anchored below it, so the first card never covers or
+    // intercepts clicks on the retry control.
+    void activityStarredRefreshErrorKeepsListBelowRetryControl()
+    {
+        class WindowStarredRefreshFixture final : public WindowChannelFixture {
+        public:
+            bool failNext = false;
+            QJsonArray all;
+            QJsonObject one(const QString &id, int minute)
+            {
+                auto row = message(QStringLiteral("Refresh starred %1").arg(minute), id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredRefreshFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        if (failNext)
+                            return {QJsonArray{}, 500, 0, {}};
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredRefreshFixture fixture;
+        const QString olderId = "7b7b7b7b-7b7b-4b7b-8b7b-200000000001";
+        const QString newerId = "7b7b7b7b-7b7b-4b7b-8b7b-200000000002";
+        fixture.all = {fixture.one(olderId, 30), fixture.one(newerId, 40)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("activity-starred"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + newerId), 5000);
+        // Reopen while the refresh fails: the cached rows stay and the refresh
+        // retry control becomes visible (activity-page.ui.tsx refreshError).
+        fixture.failNext = true;
+        click(window, view("starredCloseButton"));
+        QTRY_VERIFY(!controller.starredVisible());
+        click(window, view("activity-starred"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starredRefreshError"), 5000);
+        auto *firstCard = view("starred-card-" + newerId); QVERIFY(firstCard);
+        auto *retry = view("starredRefreshError"); QVERIFY(retry);
+        // Geometry oracle: starred-card top must sit at or below the
+        // starredRefreshError bottom, never covering the retry control.
+        const auto retryBottom = retry->mapToItem(window->contentItem(), QPointF(0, retry->height())).y();
+        const auto firstCardTop = firstCard->mapToItem(window->contentItem(), QPointF{}).y();
+        QVERIFY2(firstCardTop >= retryBottom, qPrintable(QStringLiteral(
+            "starred-card top %1 sits above starredRefreshError bottom %2")
+            .arg(firstCardTop).arg(retryBottom)));
+    }
+
     // Issue #44: the sidebar Inbox chip opens the page, stream cards render
     // with badges, a topic row selects its conversation and unmounts the
     // page, and closing restores the conversation column. Geometry contract:
