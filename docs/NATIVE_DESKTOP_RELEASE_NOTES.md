@@ -1,3 +1,23 @@
+# Workspace Native 0.31.0 - Linux development preview
+
+Files in the composer become tracked cards, a shared profile link opens the person it names, and the sidebar and direct header show more of the real state:
+
+- Composer attachments now get a card per file: live progress, cancel, retry
+  and removal, files added by drag-and-drop or pasted straight from the
+  clipboard, and a send that waits for every upload while the text stays
+  editable. A reopened edit with a leading attachment keeps its reply tab.
+- A shared profile link (#user/<uuid>) opens the native profile drawer for
+  exactly that person: the profile is taken from the local cache when known,
+  the navigation happens once per link, and an unknown target gets the
+  reference failure notice instead of a silent no-op.
+- Channel and group rows in the sidebar paint the avatar background in the
+  stream's own color, matching the reference sidebar.
+- A direct chat with a deactivated account shows the deactivated badge on the
+  partner avatar in the header instead of the presence dot, with the
+  reference badge geometry and accessibility name in both locales.
+
+---
+
 # Workspace Native 0.30.0 - Linux development preview
 
 Sign-in gains its own one-time-code step, and the sidebar learns to browse several chats at once:
