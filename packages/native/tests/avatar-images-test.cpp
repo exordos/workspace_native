@@ -111,6 +111,13 @@ public:
             + QByteArray::number(bytes.size()) + "\r\n\r\n" + bytes);
         socket->disconnectFromHost();
     }
+    static void replyRedirect(QTcpSocket *socket, const QByteArray &location, int status)
+    {
+        if (!socket || socket->state() != QAbstractSocket::ConnectedState) return;
+        socket->write("HTTP/1.1 " + QByteArray::number(status) + " Test\r\nLocation: " + location
+            + "\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket->disconnectFromHost();
+    }
 };
 
 struct Fixture {
@@ -125,6 +132,10 @@ struct Fixture {
     QByteArray gravatarBytes; // Empty keeps the shared PNG fixture bytes.
     QStringList gravatarPaths;
     QList<QByteArray> gravatarAuthorizations;
+    // Off-origin witness: a second listener records any request that escapes
+    // the pinned origin, so a followed redirect cannot pass unnoticed.
+    int gravatarRedirectStatus = 0; QString gravatarRedirectLocation;
+    ImageServer leak; QStringList leakPaths;
     QList<QPointer<QTcpSocket>> held;
     QList<std::function<void()>> releases;
     QStringList requestedIds;
@@ -137,6 +148,10 @@ struct Fixture {
     AvatarImages images{&api, &session, &files, true};
     Fixture()
     {
+        leak.handler = [this](QTcpSocket *socket, const Request &request) {
+            leakPaths.append(request.target.path());
+            ImageServer::reply(socket, bytes);
+        };
         server.handler = [this](QTcpSocket *socket, const Request &request) {
             const auto path = request.target.path();
             const QString prefix = "/api/workspace/v1/messenger/files/";
@@ -144,6 +159,10 @@ struct Fixture {
                 ++gravatarGets;
                 gravatarPaths.append(path + "?" + request.target.query(QUrl::FullyEncoded));
                 gravatarAuthorizations.append(request.headers.value("authorization"));
+                if (gravatarRedirectStatus) {
+                    ImageServer::replyRedirect(socket, gravatarRedirectLocation.toUtf8(), gravatarRedirectStatus);
+                    return;
+                }
                 if (gravatarStatus != 200) { ImageServer::reply(socket, QByteArray{}, gravatarStatus); return; }
                 ImageServer::reply(socket, gravatarBytes.isEmpty() ? bytes : gravatarBytes);
                 return;
@@ -226,6 +245,8 @@ private slots:
     void gravatarVariantsRejectedWithoutNetwork();
     void gravatarTransportFailureRetriesOnFreshMountOnly();
     void gravatarOversizedResponseFailsClosed();
+    void gravatarOffOriginRedirectRejected_data();
+    void gravatarOffOriginRedirectRejected();
 };
 
 void AvatarImagesTest::pureReadsInvalidAndNoOwnerNeverFetch()
@@ -691,6 +712,36 @@ void AvatarImagesTest::gravatarOversizedResponseFailsClosed()
     QVERIFY(f.images.imageUrl(gravatarUrn()).isEmpty());
     QCOMPARE(f.images.stats().thumbnails, 0);
     QTRY_COMPARE(f.images.stats().pipelineJobs, 0);
+    f.images.release(lease);
+}
+
+void AvatarImagesTest::gravatarOffOriginRedirectRejected_data()
+{
+    QTest::addColumn<int>("status");
+    QTest::newRow("http-302") << 302;
+    QTest::newRow("http-307") << 307;
+}
+
+void AvatarImagesTest::gravatarOffOriginRedirectRejected()
+{
+    // The pinned-origin fetch must never follow a redirect off the gravatar
+    // origin (review #4): the avatar hash must not reach another host, and a
+    // redirect reply falls back exactly like any other transport failure.
+    QFETCH(int, status);
+    Fixture f; QVERIFY(f.start());
+    f.gravatarRedirectStatus = status;
+    f.gravatarRedirectLocation = f.leak.origin().toString() + "/off-origin-leak";
+    const auto lease = f.images.acquire(gravatarUrn()); QVERIFY(lease);
+    QStringList failures;
+    if (!QTest::qWaitFor([this, &f] { return f.images.failed(gravatarUrn()); }, 3000))
+        failures << QString("redirect %1 did not fall back to the failure state").arg(status);
+    QTest::qWait(250); // Grace window for any followed redirect to reach the witness listener.
+    if (!f.images.imageUrl(gravatarUrn()).isEmpty()) failures << QStringLiteral("off-origin bytes were published as the avatar");
+    if (f.gravatarGets != 1) failures << QString("gravatar origin saw %1 requests, expected 1").arg(f.gravatarGets);
+    if (!f.leakPaths.isEmpty()) failures << QString("off-origin host received %1").arg(f.leakPaths.join(QLatin1Char(',')));
+    for (const auto &failure : failures) qWarning().noquote() << failure;
+    const QStringList expected;
+    QCOMPARE(failures, expected);
     f.images.release(lease);
 }
 
