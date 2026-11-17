@@ -28800,6 +28800,65 @@ private slots:
         QVERIFY(!view("activityRowBadge-inbox"));
         QVERIFY(!view("activityRowBadge-favorites"));
     }
+
+    // Issue #101 review: the chat-list push-down must follow the ACTUAL visible
+    // activity panel, not the raw open flag. A search hides the panel, so an
+    // expanded-but-hidden panel may not keep its gap above the search results:
+    // the chat list must return to exactly the search-correct top it had while
+    // the panel was closed.
+    void activityPanelExpandedSearchRemovesChatListGap()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-panel-search.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity search teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-drafts")); // compact rail visible, panel closed
+        auto *chatList = item(window->contentItem(), "streamList"); QVERIFY(chatList);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        const auto closedTop = chatList->y();
+        const auto type = [&](const QByteArray &text) {
+            for (const auto key : text) QTest::keyClick(window, key);
+        };
+        const auto clearTyped = [&] {
+            for (int i = 0; i < 6; ++i) QTest::keyClick(window, Qt::Key_Backspace);
+        };
+        // Search with the panel closed: the chat list sits at the search top.
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        type("review");
+        QTRY_VERIFY(search->property("text").toString() == QStringLiteral("review"));
+        QVERIFY(!view("sidebarActivityPanel")); // the query hides the panel
+        const auto searchTop = chatList->y();
+        QVERIFY2(searchTop < closedTop,
+            qPrintable(QStringLiteral("search top %1 did not rise above closed top %2").arg(searchTop).arg(closedTop)));
+        // Clearing restores the closed panel layout.
+        clearTyped();
+        QTRY_VERIFY(search->property("text").toString().isEmpty());
+        QTRY_VERIFY(chatList->y() == closedTop);
+        // Expand the panel: the chat list is pushed down (visible panel).
+        click(window, view("activityExpandButton"));
+        QTRY_VERIFY(controller.activityOpen());
+        QTRY_VERIFY(view("activityHeader"));
+        QTRY_VERIFY2(chatList->y() >= closedTop + 200,
+            qPrintable(QStringLiteral("expanded chat list top %1 not pushed down").arg(chatList->y())));
+        // Search again with the panel expanded: the panel hides, so the chat
+        // list must sit at the same search-correct top as with the panel
+        // closed (the hidden panel may not contribute its expanded gap).
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        type("review");
+        QTRY_VERIFY(search->property("text").toString() == QStringLiteral("review"));
+        QVERIFY(!view("sidebarActivityPanel"));
+        QCOMPARE(chatList->y(), searchTop);
+    }
 };
 
 

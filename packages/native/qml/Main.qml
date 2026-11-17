@@ -3160,8 +3160,11 @@ ApplicationWindow {
                 // Push-down applied to streamList while the expanded list
                 // replaces the 32 px compact rail (reference flow: the chat
                 // list follows the panel, sidebar-activity-view.ui.tsx).
+                // #101 review: gate on the ACTUAL visible state, not the raw
+                // open flag - a search hides this panel, and a hidden panel
+                // must not keep its gap above the search results.
                 readonly property int expandedDelta:
-                    open ? Math.round(sidebarActivityExpanded.implicitHeight) - 32 : 0
+                    open && visible ? Math.round(sidebarActivityExpanded.implicitHeight) - 32 : 0
                 RowLayout {
                     id: sidebarActivity
                     objectName: "sidebarActivity"
