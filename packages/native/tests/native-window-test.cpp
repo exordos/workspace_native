@@ -14714,7 +14714,9 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(search->property("leftPadding").toReal(), qreal(9));
             QCOMPARE(search->property("topPadding").toReal(), qreal(3));
             auto *create = item(content, "createChatButton");
-            auto *activity = item(content, "sidebarActivity");
+            // #101: the rail is the compact row of the activity panel column;
+            // the panel keeps the y=64 slot and the 32 px closed height.
+            auto *activity = item(content, "sidebarActivityPanel");
             QVERIFY(create && activity);
             QVERIFY(create->isEnabled()); // Ordinary channel creation now owns this source entry.
             QCOMPARE(create->width(), qreal(32));
@@ -28204,7 +28206,6 @@ private slots:
         QTest::qWait(250);
         QCOMPARE(probe.urls.size(), 1);
     }
-
     // ---- Issue #100: sidebar catalog states (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md) ----
     // The reference sidebar-workspace.ui.tsx:662-699 state machine over the
     // mock server's defer/response hooks: a held catalog answers the loading
@@ -28610,6 +28611,194 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
         }
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+    // Issue #101: the chevron toggles the expanded "My Activity" list with
+    // reference geometry (46 px rows, 30 px colored chips), the chat list is
+    // pushed down instead of overlapped, rows route to the existing pages,
+    // and favorites stays disabled until #70 lands.
+    void activityPanelExpandedListTogglesRoutesAndDisabledFavorites()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-panel.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity panel teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-drafts")); // compact rail visible
+        auto *expand = view("activityExpandButton"); QVERIFY(expand);
+        QVERIFY(expand->isEnabled()); // #101: no longer a disabled placeholder
+        QVERIFY(!view("sidebarActivityExpanded")); // collapsed by default
+        auto *chatList = item(window->contentItem(), "streamList"); QVERIFY(chatList);
+        const auto closedTop = chatList->y();
+        click(window, expand);
+        QTRY_VERIFY(controller.activityOpen());
+        QTRY_VERIFY(view("activityHeader"));
+        QVERIFY(hasVisibleText(window->contentItem(), "My Activity"));
+        QVERIFY(view("sidebarActivityList"));
+        for (const auto *id : {"inbox", "favorites", "starred", "mentions", "drafts"})
+            QVERIFY(view(QString("activityRow-%1").arg(id)));
+        // Reference card geometry: 46 px rows (30 px chip + p-2), 30 px chips.
+        QCOMPARE(view("activityRow-starred")->height(), qreal(46));
+        auto *chip = view("activityChip-inbox"); QVERIFY(chip);
+        QCOMPARE(chip->width(), qreal(30)); QCOMPARE(chip->height(), qreal(30));
+        // MY_ACTIVITY chip fills (blue-cold.ts:60-66, identical light+dark).
+        const QColor expected[]{QColor("#8d6dff"), QColor("#4b98e6"), QColor("#f04c4c"),
+            QColor("#ffd633"), QColor("#f458d2")};
+        const QStringList order{"inbox", "favorites", "starred", "mentions", "drafts"};
+        for (int i = 0; i < order.size(); ++i)
+        {
+            auto *bg = item(window->contentItem(), "activityChipBg-" + order.at(i));
+            QVERIFY(bg);
+            QCOMPARE(bg->property("color").value<QColor>(), expected[i]);
+        }
+        // favorites keeps its disabled state until #70 lands.
+        QVERIFY(!view("activityRow-favorites")->isEnabled());
+        QVERIFY(!view("activityChip-favorites")->isEnabled());
+        QVERIFY(view("activityRow-mentions")->isEnabled());
+        // The chat list is pushed down instead of overlapped (reference flow).
+        QTRY_VERIFY2(chatList->y() >= closedTop + 200,
+            qPrintable(QStringLiteral("chat list top %1 stayed under the panel").arg(chatList->y())));
+        // Row navigation opens the existing native page for the row.
+        click(window, view("activityRow-inbox"));
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        // The active route keeps the bg-bg-elevated/60 fill on its card.
+        QCOMPARE(view("activityRow-inbox")->property("color").value<QColor>().name(),
+            QStringLiteral("#ffffff"));
+        // The chevron-up collapses the panel and restores the compact rail.
+        click(window, view("activityCollapseButton"));
+        QTRY_VERIFY(!controller.activityOpen());
+        QTRY_VERIFY(view("activity-drafts"));
+        QCOMPARE(chatList->y(), closedTop);
+    }
+
+    // Issue #101: open/closed state persists per workspace session
+    // (sidebar-config.model.ts activityOpen): the same preferences scope
+    // restores the expanded list without another click.
+    void activityPanelOpenStateRestoresOnSecondSession()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("activity-persist.ini");
+        // One workspace scope (same server, user and project) shared by both
+        // sessions: the per-session preference applies to that scope only.
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto viewRoot = [](QQuickWindow *window, const QString &name)
+        { return visibleItem(window->contentItem(), name); };
+        {
+            NativePreferences preferences(path);
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+            QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+            QTRY_VERIFY(viewRoot(window, "activity-drafts"));
+            click(window, viewRoot(window, "activityExpandButton"));
+            QTRY_VERIFY(controller.activityOpen());
+            QTRY_VERIFY(viewRoot(window, "activityHeader"));
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Activity persistence teardown", __FILE__, __LINE__);
+        }
+        {
+            NativePreferences preferences(path);
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Activity persistence teardown", __FILE__, __LINE__);
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+            QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+            // Restored expanded with no interaction (same workspace session).
+            QTRY_VERIFY(controller.activityOpen());
+            QTRY_VERIFY(viewRoot(window, "activityHeader"));
+            QVERIFY(!viewRoot(window, "activity-drafts")); // compact rail hidden
+            // Collapsing again persists closed for later sessions.
+            click(window, viewRoot(window, "activityHeader"));
+            QTRY_VERIFY(!controller.activityOpen());
+        }
+        {
+            NativePreferences preferences(path);
+            ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+            QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Activity persistence teardown", __FILE__, __LINE__);
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+            QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+            QTRY_VERIFY(!controller.activityOpen());
+            QTRY_VERIFY(viewRoot(window, "activity-drafts"));
+        }    }
+
+    // Issue #101: the compact rail badge follows the unread-mentions index
+    // (hidden while null/zero) and appears once the index has loaded for the
+    // current session; the expanded list repeats the same rule per row.
+    void activityCompactRailShowsUnreadMentionsBadgeOnceIndexed()
+    {
+        class WindowActivityMentionBadgeFixture final : public WindowChannelFixture {
+        public:
+            // Declaration order matters: the constructor body uses unreadId.
+            QString unreadId = QStringLiteral("77777777-7777-4777-8777-000000000009");
+            QJsonArray all;
+            WindowActivityMentionBadgeFixture()
+            {
+                sourceScene = true;
+                auto row = message("Review needed", unreadId, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = false;
+                row["mentioned"] = true;
+                all.append(row);
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("mentioned"))
+                        return {all};
+                    return fallback(request);
+                };
+            }
+        };
+        WindowActivityMentionBadgeFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-badge.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity badge teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-mentions"));
+        // The unread-mentions index has not been walked yet: count is null,
+        // so no badge may render on the compact rail (badges hide at zero).
+        QVERIFY(!view("activityBadge-mentions"));
+        click(window, view("activity-mentions"));
+        QTRY_VERIFY(controller.mentionsVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(controller.activityMentionsCount() == 1, 5000);
+        auto *badge = view("activityBadge-mentions"); QVERIFY(badge);
+        QCOMPARE(badge->childItems().first()->property("text").toString(), QStringLiteral("1"));
+        click(window, view("mentionsCloseButton"));
+        QTRY_VERIFY(!controller.mentionsVisible());
+        QVERIFY(view("activityBadge-mentions")); // badge survives page close
+        // The expanded list repeats the badge rule on the mentions row and
+        // only there (inbox count stays unknown/zero for this scene).
+        click(window, view("activityExpandButton"));
+        QTRY_VERIFY(view("activityRowBadge-mentions"));
+        QVERIFY(!view("activityRowBadge-inbox"));
+        QVERIFY(!view("activityRowBadge-favorites"));
     }
 };
 

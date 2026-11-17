@@ -279,6 +279,23 @@ void NativePreferences::recordOwnStatusAway(const QString &owner, bool away)
     m_settings.sync(); // Source writeManualStatus is best effort after a successful response.
 }
 
+bool NativePreferences::loadActivityOpen(const QString &owner)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()) return false;
+    // Absent means closed (sidebar-config.model.ts DEFAULT_CONFIG.activityOpen).
+    return m_settings.value("sidebar/owners/" + owner + "/activityOpen", false).toBool();
+}
+
+void NativePreferences::recordActivityOpen(const QString &owner, bool open)
+{
+    static const QRegularExpression hash("^[0-9a-f]{64}$");
+    if (owner.size() != 64 || !hash.match(owner).hasMatch()) return;
+    const auto key = "sidebar/owners/" + owner + "/activityOpen";
+    if (open) m_settings.setValue(key, true); else m_settings.remove(key);
+    m_settings.sync(); // Same persistence contract as recordExpandedStreams.
+}
+
 QString NativePreferences::settingsGroup() const
 {
     return m_owner.isEmpty() ? QStringLiteral("settings/anonymous")

@@ -214,6 +214,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
+    // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
+    // state persisted per workspace session, plus the compact-rail counts.
+    // Counts use -1 for "not known yet" (the reference null): no badge renders.
+    Q_PROPERTY(bool activityOpen READ activityOpen WRITE setActivityOpen NOTIFY activityOpenChanged)
+    Q_PROPERTY(int activityInboxCount READ activityInboxCount NOTIFY foldersChanged)
+    Q_PROPERTY(int activityMentionsCount READ activityMentionsCount NOTIFY stateChanged)
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     Q_PROPERTY(bool starredVisible READ starredVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap starredPage READ starredPage NOTIFY stateChanged)
@@ -430,6 +436,16 @@ public:
     QString mentionsFilter() const { return m_mentionsFilter; }
     QVariantMap mentionsPage() const;
     bool inboxVisible() const { return m_inboxVisible; }
+    // Activity panel (#101). Inbox count mirrors the reference All-folder
+    // unread (selectMessengerSidebarActivityCounts); the mentions count is
+    // the unread-mentions index size, null until the index is loaded
+    // (sidebar-workspace-activity.ui.tsx owner-key gate).
+    bool activityOpen() const { return m_activityOpen; }
+    void setActivityOpen(bool open);
+    int activityInboxCount() const;
+    int activityMentionsCount() const;
+    // count-format.lib.ts formatCount with UNREAD_COUNT_DISPLAY_LIMIT = 1000.
+    Q_INVOKABLE QString activityBadgeLabel(int count) const;
     // Top-bar application section: "chat", "mail", "calendar" or "calls";
     // switching is exclusive and any conversation navigation returns to
     // "chat" (issues #35, #36, #37).
@@ -796,6 +812,7 @@ public:
 signals:
     void otpCodeRejected();
     void sidebarExpansionChanged();
+    void activityOpenChanged();
     // Empty stream means a placement change may have affected several streams.
     void sidebarTopicsChanged(const QString &stream);
     void profileLinkStarted();
@@ -1928,6 +1945,9 @@ private:
     QString m_sidebarSearchQuery;
     QString m_sidebarExpansionOwner;
     QStringList m_expandedSidebarStreams;
+    // Activity panel open state for the current session owner (#101);
+    // default closed, like sidebar-config.model.ts DEFAULT_CONFIG.
+    bool m_activityOpen = false;
     QStringList m_sidebarTopicPending;
     QSet<QString> m_sidebarTopicHydrating;
     bool m_restoringSidebarRoute = false;

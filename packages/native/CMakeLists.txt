@@ -145,6 +145,8 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
     reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
+    # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
+    mail_activity home_filled marker drafts chevron-up
     at bell bell_off person_add
     stylus images files border_color links business_center handshake account_circle group
     globe_location_pin schedule calendar_month celebration videos poll send block)

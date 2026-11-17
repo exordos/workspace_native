@@ -3148,67 +3148,257 @@ ApplicationWindow {
                 help: qsTr("New chat")
                 onClicked: root.openChannelForm(visualFocus)
             }
-            RowLayout {
-                id: sidebarActivity
-                objectName: "sidebarActivity"
+            ColumnLayout {
+                id: sidebarActivityPanel
+                objectName: "sidebarActivityPanel"
                 x: 8
                 y: 64
                 width: parent.width - 16
-                height: root.normalizedSidebarQuery.length ? 0 : 32
-                visible: height > 0
-                spacing: 8
-                Repeater {
-                    model: [
-                        { id: "inbox", asset: "mail_activity_compact.svg", size: 20, name: qsTr("Inbox") },
-                        { id: "favorites", asset: "home.svg", size: 18, name: qsTr("Favorites") },
-                        { id: "starred", asset: "marker_outline.svg", size: 18, name: qsTr("Starred messages") },
-                        { id: "mentions", asset: "alternate_email.svg", size: 20, name: qsTr("Mentions") },
-                        { id: "drafts", asset: "drafts_compact.svg", size: 18, name: qsTr("Drafts") }
-                    ]
-                    delegate: NativeIconButton {
-                        required property var modelData
-                        objectName: "activity-" + modelData.id
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        Layout.preferredHeight: 32
-                        enabled: modelData.id === "drafts" || modelData.id === "mentions"
-                            || modelData.id === "inbox" || modelData.id === "starred"
-                        selected: modelData.id === "drafts" && root.controller.draftsVisible
-                            || modelData.id === "mentions" && root.controller.mentionsVisible
-                            || modelData.id === "inbox" && root.controller.inboxVisible
-                            || modelData.id === "starred" && root.controller.starredVisible
-                        asset: modelData.asset
-                        glyphSize: modelData.size
-                        help: modelData.id === "drafts" || modelData.id === "mentions"
-                            || modelData.id === "inbox" || modelData.id === "starred"
-                            ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
-                        onClicked: {
-                            if (modelData.id === "drafts") root.controller.showDrafts();
-                            else if (modelData.id === "mentions") root.controller.showMentions();
-                            else if (modelData.id === "inbox") root.controller.showInbox();
-                            else if (modelData.id === "starred") root.controller.showStarred();
+                spacing: 0
+                visible: !root.normalizedSidebarQuery.length
+                readonly property bool open: root.controller.activityOpen
+                // Push-down applied to streamList while the expanded list
+                // replaces the 32 px compact rail (reference flow: the chat
+                // list follows the panel, sidebar-activity-view.ui.tsx).
+                readonly property int expandedDelta:
+                    open ? Math.round(sidebarActivityExpanded.implicitHeight) - 32 : 0
+                RowLayout {
+                    id: sidebarActivity
+                    objectName: "sidebarActivity"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 32
+                    visible: !sidebarActivityPanel.open
+                    spacing: 8
+                    Repeater {
+                        model: [
+                            { id: "inbox", asset: "mail_activity_compact.svg", size: 20, name: qsTr("Inbox") },
+                            { id: "favorites", asset: "home.svg", size: 18, name: qsTr("Favorites") },
+                            { id: "starred", asset: "marker_outline.svg", size: 18, name: qsTr("Starred messages") },
+                            { id: "mentions", asset: "alternate_email.svg", size: 20, name: qsTr("Mentions") },
+                            { id: "drafts", asset: "drafts_compact.svg", size: 18, name: qsTr("Drafts") }
+                        ]
+                        delegate: NativeIconButton {
+                            id: railItem
+                            required property var modelData
+                            objectName: "activity-" + modelData.id
+                            colors: root.colors
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredHeight: 32
+                            enabled: modelData.id === "drafts" || modelData.id === "mentions"
+                                || modelData.id === "inbox" || modelData.id === "starred"
+                            selected: modelData.id === "drafts" && root.controller.draftsVisible
+                                || modelData.id === "mentions" && root.controller.mentionsVisible
+                                || modelData.id === "inbox" && root.controller.inboxVisible
+                                || modelData.id === "starred" && root.controller.starredVisible
+                            asset: modelData.asset
+                            glyphSize: modelData.size
+                            help: modelData.id === "drafts" || modelData.id === "mentions"
+                                || modelData.id === "inbox" || modelData.id === "starred"
+                                ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
+                            onClicked: {
+                                if (modelData.id === "drafts") root.controller.showDrafts();
+                                else if (modelData.id === "mentions") root.controller.showMentions();
+                                else if (modelData.id === "inbox") root.controller.showInbox();
+                                else if (modelData.id === "starred") root.controller.showStarred();
+                            }
+                            background: Rectangle {
+                                radius: 6
+                                color: root.colors[parent.selected ? "card-bg-active" : "card-bg"]
+                                border.width: parent.visualFocus ? 1 : 0
+                                border.color: root.colors.accent
+                            }
+                            // Compact count badge (#101): only inbox and
+                            // mentions carry counts (sidebar-activity-view
+                            // countForActivityKey + the workspace container
+                            // passing drafts/markedMessages null); hidden at
+                            // zero and while unknown (-1), pinned top-right,
+                            // Badge size sm with the 1000 cap.
+                            readonly property int activityCount:
+                                modelData.id === "inbox" ? root.controller.activityInboxCount
+                                    : modelData.id === "mentions" ? root.controller.activityMentionsCount : -1
+                            Rectangle {
+                                objectName: "activityBadge-" + railItem.modelData.id
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                visible: railItem.activityCount > 0
+                                height: 16
+                                width: Math.max(16, railBadgeLabel.implicitWidth + 8)
+                                radius: 8
+                                color: root.colors["sidebar-unread"]
+                                Text {
+                                    id: railBadgeLabel
+                                    anchors.centerIn: parent
+                                    text: root.controller.activityBadgeLabel(railItem.activityCount)
+                                    font.pixelSize: 10
+                                    color: root.colors["text-primary"]
+                                }
+                            }
                         }
+                    }
+                    NativeIconButton {
+                        objectName: "activityExpandButton"
+                        colors: root.colors
+                        Layout.preferredWidth: 32
+                        Layout.preferredHeight: 32
+                        enabled: root.controller.authenticated
+                        asset: "chevron-down.svg"
+                        glyphSize: 16
+                        icon.color: root.colors["text-muted"]
+                        help: qsTr("My Activity")
+                        onClicked: root.controller.activityOpen = true
                         background: Rectangle {
                             radius: 6
-                            color: root.colors[parent.selected ? "card-bg-active" : "card-bg"]
-                            border.width: parent.visualFocus ? 1 : 0
-                            border.color: root.colors.accent
+                            color: root.colors["card-bg"]
                         }
                     }
                 }
-                NativeIconButton {
-                    objectName: "activityExpandButton"
-                    colors: root.colors
-                    Layout.preferredWidth: 32
-                    Layout.preferredHeight: 32
-                    enabled: false
-                    asset: "chevron-down.svg"
-                    glyphSize: 16
-                    help: qsTr("Activity is not implemented yet")
-                    background: Rectangle {
-                        radius: 6
-                        color: root.colors["card-bg"]
+                ColumnLayout {
+                    id: sidebarActivityExpanded
+                    objectName: "sidebarActivityExpanded"
+                    Layout.fillWidth: true
+                    spacing: 0
+                    visible: sidebarActivityPanel.open
+                    Item {
+                        // Header button: label + chevron-up collapses the
+                        // panel (reference t("nav.activity") text-base
+                        // font-semibold row, px-1 py-1).
+                        id: activityHeader
+                        objectName: "activityHeader"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 32
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: root.controller.activityOpen = false
+                        }
+                        RowLayout {
+                            anchors.fill: parent
+                            spacing: 4
+                            Text {
+                                text: qsTr("My Activity")
+                                font.pixelSize: 16
+                                font.weight: Font.DemiBold
+                                color: root.colors["text-primary"]
+                                Layout.leftMargin: 4
+                            }
+                            Item { Layout.fillWidth: true }
+                            NativeIconButton {
+                                objectName: "activityCollapseButton"
+                                colors: root.colors
+                                Layout.preferredWidth: 24
+                                Layout.preferredHeight: 24
+                                Layout.rightMargin: 4
+                                asset: "chevron-up.svg"
+                                glyphSize: 16
+                                icon.color: root.colors["text-muted"]
+                                help: qsTr("My Activity")
+                                background: Item {}
+                                onClicked: root.controller.activityOpen = false
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        objectName: "sidebarActivityList"
+                        Layout.fillWidth: true
+                        Layout.topMargin: 8
+                        spacing: 4
+                        Repeater {
+                            model: [
+                                { id: "inbox", asset: "mail_activity.svg", chip: "indicator-purple", name: qsTr("Inbox") },
+                                { id: "favorites", asset: "home_filled.svg", chip: "indicator-blue", name: qsTr("Favorites") },
+                                { id: "starred", asset: "marker.svg", chip: "indicator-red", name: qsTr("Marked messages") },
+                                { id: "mentions", asset: "alternate_email.svg", chip: "indicator-yellow", name: qsTr("Mentions") },
+                                { id: "drafts", asset: "drafts.svg", chip: "indicator-pink", name: qsTr("Drafts") }
+                            ]
+                            delegate: Rectangle {
+                                // Expanded row (reference rounded-lg bg-card-bg
+                                // p-2 gap-3; active route bg-bg-elevated/60;
+                                // 30x30 chip with a 24 px white glyph; badge
+                                // only for inbox/mentions with the 1000 cap).
+                                id: activityRow
+                                required property var modelData
+                                objectName: "activityRow-" + modelData.id
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 46
+                                radius: 8
+                                readonly property bool enabledItem: modelData.id !== "favorites"
+                                readonly property bool routeActive: modelData.id === "inbox" && root.controller.inboxVisible
+                                    || modelData.id === "mentions" && root.controller.mentionsVisible
+                                    || modelData.id === "drafts" && root.controller.draftsVisible
+                                    || modelData.id === "starred" && root.controller.starredVisible
+                                readonly property int activityCount:
+                                    modelData.id === "inbox" ? root.controller.activityInboxCount
+                                        : modelData.id === "mentions" ? root.controller.activityMentionsCount : -1
+                                enabled: enabledItem
+                                opacity: enabledItem ? 1 : 0.7
+                                color: routeActive ? Qt.alpha(root.colors["bg-elevated"], 0.6)
+                                    : rowPointer.containsMouse && enabledItem ? root.colors["card-bg-active"]
+                                    : root.colors["card-bg"]
+                                function route() {
+                                    if (modelData.id === "inbox") root.controller.showInbox();
+                                    else if (modelData.id === "mentions") root.controller.showMentions();
+                                    else if (modelData.id === "drafts") root.controller.showDrafts();
+                                    else if (modelData.id === "starred") root.controller.showStarred();
+                                }
+                                MouseArea {
+                                    id: rowPointer
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: activityRow.enabledItem
+                                    onClicked: activityRow.route()
+                                }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    spacing: 12
+                                    NativeIconButton {
+                                        // Icon chip: the white 24 px glyph
+                                        // matches the reference text-white.
+                                        objectName: "activityChip-" + activityRow.modelData.id
+                                        colors: root.colors
+                                        Layout.preferredWidth: 30
+                                        Layout.preferredHeight: 30
+                                        padding: 0
+                                        glyphSize: 24
+                                        asset: activityRow.modelData.asset
+                                        icon.color: "#ffffff"
+                                        enabled: activityRow.enabledItem
+                                        help: activityRow.enabledItem
+                                            ? activityRow.modelData.name
+                                            : qsTr("%1 is not implemented yet").arg(activityRow.modelData.name)
+                                        background: Rectangle {
+                                            objectName: "activityChipBg-" + activityRow.modelData.id
+                                            radius: 15
+                                            color: root.colors[activityRow.modelData.chip]
+                                        }
+                                        onClicked: activityRow.route()
+                                    }
+                                    Text {
+                                        objectName: "activityRowLabel-" + activityRow.modelData.id
+                                        text: activityRow.modelData.name
+                                        color: root.colors["text-primary"]
+                                        font.pixelSize: 14
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    Rectangle {
+                                        objectName: "activityRowBadge-" + activityRow.modelData.id
+                                        visible: activityRow.activityCount > 0
+                                        Layout.preferredWidth: Math.max(20, activityRowBadgeLabel.implicitWidth + 12)
+                                        Layout.preferredHeight: 20
+                                        radius: 10
+                                        color: root.colors["sidebar-unread"]
+                                        Text {
+                                            id: activityRowBadgeLabel
+                                            anchors.centerIn: parent
+                                            text: root.controller.activityBadgeLabel(activityRow.activityCount)
+                                            font.pixelSize: 11
+                                            color: root.colors["badge-text"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3576,6 +3766,7 @@ ApplicationWindow {
                 anchors.topMargin: (root.normalizedSidebarQuery.length ? 60 : 104)
                     + sidebar.sidebarLoadingInset + sidebar.sidebarErrorInset
                     + sidebar.sidebarEmptyInset + sidebar.sidebarPartialInset
+                    + sidebarActivityPanel.expandedDelta
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right

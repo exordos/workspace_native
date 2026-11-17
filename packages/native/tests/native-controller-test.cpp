@@ -28818,6 +28818,82 @@ private slots:
         QCOMPARE(posts, 0);
         QVERIFY(!fixture.controller.forwardPending());
     }
+
+    // ---- Issue #101: activity panel counts, badge cap, per-session state ----
+
+    void activityBadgeLabelCapsUnreadCountsAtDisplayLimit()
+    {
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        // count-format.lib.ts formatCount(count, UNREAD_COUNT_DISPLAY_LIMIT=1000):
+        // strictly above 1000 compacts into whole thousands (1001 -> "1k+").
+        QCOMPARE(controller.activityBadgeLabel(0), QStringLiteral("0"));
+        QCOMPARE(controller.activityBadgeLabel(999), QStringLiteral("999"));
+        QCOMPARE(controller.activityBadgeLabel(1000), QStringLiteral("1000"));
+        QCOMPARE(controller.activityBadgeLabel(1001), QStringLiteral("1k+"));
+        QCOMPARE(controller.activityBadgeLabel(2999), QStringLiteral("2k+"));
+        QCOMPARE(controller.activityBadgeLabel(3000), QStringLiteral("3k+"));
+    }
+
+    void activityInboxCountFollowsAllFolderUnread()
+    {
+        FolderRailFixture f;
+        // Not authenticated yet: the reference count is null (-1 natively),
+        // so no badge may render (selectMessengerSidebarActivityCounts).
+        QCOMPARE(f.controller.activityInboxCount(), -1);
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 7, 0),
+            folderRailFolder(channelsFolder, "Channels", "channels", 2, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.activityInboxCount(), 7, 4000);
+    }
+
+    void activityMentionsCountStaysNullUntilIndexLoaded()
+    {
+        FolderRailFixture f;
+        QCOMPARE(f.controller.activityMentionsCount(), -1);
+        QVERIFY(f.start());
+        // The unread-mentions index has not been walked for this owner yet,
+        // so the reference count stays null (sidebar-workspace-activity
+        // .ui.tsx owner-key gate): no badge before the first mentions load.
+        QCOMPARE(f.controller.activityMentionsCount(), -1);
+    }
+
+    void activityOpenStatePersistsPerWorkspaceSession()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("activity.ini");
+        NativePreferences preferences(path);
+        FolderRailFixture f;
+        f.controller.usePreferences(&preferences);
+        QVERIFY(f.start());
+        // Default closed (sidebar-config.model.ts DEFAULT_CONFIG).
+        QVERIFY(!f.controller.activityOpen());
+        QSignalSpy opened(&f.controller, &NativeController::activityOpenChanged);
+        f.controller.setActivityOpen(true);
+        QCOMPARE(opened.count(), 1);
+        f.controller.setActivityOpen(true);
+        QCOMPARE(opened.count(), 1); // unchanged state emits nothing
+        const auto owner = conversationPreferenceOwner(f.server.origin());
+        NativePreferences reopened(path);
+        QVERIFY(reopened.loadActivityOpen(owner));
+        // Another workspace session keeps its own (closed) state.
+        QVERIFY(!reopened.loadActivityOpen(
+            conversationPreferenceOwner(QUrl::fromUserInput("https://elsewhere.example"))));
+        // A fresh session for the same workspace scope (same origin, user and
+        // project => identical creation owner key) restores the open panel.
+        ApiClient otherApi(nullptr, true);
+        Session otherSession(&otherApi);
+        NativeController otherController(&otherApi, &otherSession);
+        otherController.usePreferences(&reopened);
+        otherController.login(f.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(otherController.projects().size(), 1);
+        otherController.openProject(projectId);
+        QTRY_VERIFY(otherController.activityOpen());
+        // Collapsing overwrites the persisted state with closed.
+        otherController.setActivityOpen(false);
+        NativePreferences closed(path);
+        QVERIFY(!closed.loadActivityOpen(owner));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
