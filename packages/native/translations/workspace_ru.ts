@@ -799,6 +799,14 @@
             <translation>Отмеченные сообщения</translation>
         </message>
         <message>
+            <source>My Activity</source>
+            <translation>Моя активность</translation>
+        </message>
+        <message>
+            <source>Marked messages</source>
+            <translation>Отмеченные сообщения</translation>
+        </message>
+        <message>
             <source>Mentions</source>
             <translation>Упоминания</translation>
         </message>

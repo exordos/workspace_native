@@ -12210,9 +12210,48 @@ void NativeController::prepareSidebarExpansion()
     m_sidebarTopicHydrating.clear();
     m_expandedSidebarStreams = m_statusPreferences && !owner.isEmpty()
         ? m_statusPreferences->loadExpandedStreams(owner) : QStringList{};
+    // Per-session activity panel state (#101, sidebar-config.model.ts
+    // activityOpen): reloaded whenever the workspace session owner changes.
+    m_activityOpen = m_statusPreferences && !owner.isEmpty()
+        ? m_statusPreferences->loadActivityOpen(owner) : false;
     const QPointer<NativeController> guard(this);
     emit sidebarExpansionChanged();
+    emit activityOpenChanged();
     if (guard) hydrateExpandedSidebarStreams();
+}
+
+void NativeController::setActivityOpen(bool open)
+{
+    if (m_activityOpen == open) return;
+    m_activityOpen = open;
+    const auto owner = creationOwnerKey();
+    if (m_statusPreferences && !owner.isEmpty())
+        m_statusPreferences->recordActivityOpen(owner, open);
+    emit activityOpenChanged();
+}
+
+int NativeController::activityInboxCount() const
+{
+    // selectMessengerSidebarActivityCounts: the system "all" folder unread,
+    // null (-1) while the folder rail has not produced the all row yet.
+    if (!authenticated()) return -1;
+    for (const auto &row : m_folders)
+        if (row.systemType == QLatin1String("all")) return row.unread;
+    return -1;
+}
+
+int NativeController::activityMentionsCount() const
+{
+    // sidebar-workspace-activity.ui.tsx:27-29: the unread-mentions index size
+    // once loaded for the current owner, null (-1) before that.
+    return authenticated() && m_mentionIndexReady ? m_unreadMentions.size() : -1;
+}
+
+QString NativeController::activityBadgeLabel(int count) const
+{
+    // count-format.lib.ts formatCount(count, UNREAD_COUNT_DISPLAY_LIMIT):
+    // strictly above 1000 compacts into whole thousands ("1k+", "2k+").
+    return count > 1000 ? QStringLiteral("%1k+").arg(count / 1000) : QString::number(count);
 }
 
 void NativeController::hydrateExpandedSidebarStreams()

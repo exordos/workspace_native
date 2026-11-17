@@ -57,6 +57,11 @@ public:
     // Explicit settings I/O actions; never called from a QML/read-only getter.
     bool loadOwnStatusAway(const QString &owner);
     void recordOwnStatusAway(const QString &owner, bool away);
+    // Activity panel open/closed state (#101, sidebar-config.model.ts
+    // activityOpen): per-workspace-session, default closed like the reference
+    // DEFAULT_CONFIG. Same per-owner storage pattern as manualAway.
+    bool loadActivityOpen(const QString &owner);
+    void recordActivityOpen(const QString &owner, bool open);
     QStringList loadLastConversation(const QString &owner);
     void recordLastConversation(const QString &owner, const QString &stream, const QString &topic);
     QStringList loadExpandedStreams(const QString &owner);
