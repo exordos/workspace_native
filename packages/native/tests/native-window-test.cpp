@@ -9434,7 +9434,10 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         QTRY_COMPARE(session.projects().size(), 1);
         perfPhase("sign-in", clock.restart());
-        click(window, item(content, "project-" + projectId));
+        // Issue #60: the single discovered project is preselected; the wizard
+        // commits through the project step's Login button.
+        QTRY_VERIFY(item(content, "projectLoginButton")->isEnabled());
+        click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         perfPhase("project-open", clock.restart());
         click(window, item(content, "stream-" + streamId));
@@ -11657,8 +11660,8 @@ mv -Tf "$root/.current-new" "$root/current"
         item(content, "passwordInput")->setProperty("text", "synthetic-password");
         click(window, item(content, "signInButton"));
         QTRY_COMPARE(controller.projects().size(), 1);
-        QTRY_VERIFY(item(content, "project-" + projectId));
-        click(window, item(content, "project-" + projectId));
+        QTRY_VERIFY(item(content, "projectSelect"));
+        click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "profileDisplayName"), 1000);
         // A committed sign-in persists the organization origin for future suggestions.
@@ -16623,6 +16626,325 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "userInput"));
         window->close();
     }
+    // --- Issue #60: project step (dropdown, empty state, linked-message guard) ---
+    // Measured against the reference at 61dacef78dab2f5d0be76f283bebf49fe29b84af:
+    // login-page-project-form.ui.tsx (Select h-10 px-3 rounded-lg, notice banner
+    // px-3 py-2 text-sm), login-page.ui.tsx:303-318 and 376-392 (preselect and
+    // enforcement), login-page.test.tsx rows 487/537/552/570/581.
+
+    void loginProjectStepDropdownMatchesTheReference_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void loginProjectStepDropdownMatchesTheReference()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        MockServer server;
+        const QString labeledProject = "44444444-4444-4444-8444-444444444444";
+        const QString plainProject = "55555555-5555-5555-8555-555555555555";
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            if (path.endsWith("/iam/projects/"))
+                return Response{QJsonArray{
+                    QJsonObject{{"uuid", projectId}, {"name", "Customer support"},
+                        {"organization", QJsonObject{{"name", "Example organization"}}},
+                        {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", labeledProject}, {"name", "Second row"},
+                        {"organization", QJsonObject{{"name", "Example organization"}}},
+                        {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", plainProject}, {"name", "Support team"},
+                        {"status", "ACTIVE"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "projectSelect"));
+        // Step hint and the FormField label (auth.projectStepHint, auth.selectProject).
+        QCOMPARE(item(content, "loginDescription")->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("Выберите проект, который хотите открыть.")
+            : QString("Choose the project you want to open."));
+        QCOMPARE(item(content, "projectStepLabel")->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Проект") : QString("Project"));
+        // The first project is preselected with the organization suffix (U+2014
+        // separator, login-page-project-form.ui.tsx:46-56).
+        auto *select = item(content, "projectSelect");
+        QCOMPARE(select->property("displayText").toString(),
+            QString::fromUtf8("Customer support \xE2\x80\x94 Example organization"));
+        // Select trigger geometry: h-10 px-3 rounded-lg (listbox.lib.ts:6-9).
+        QCOMPARE(select->height(), qreal(40));
+        QVERIFY(select->width() > 100);
+        QCOMPARE(QQmlProperty(select, "radius").read().toReal(), 8.);
+        // Submit is enabled once a selection exists and shows the step copy
+        // auth.login / auth.loginLoading.
+        auto *submit = item(content, "projectLoginButton");
+        QVERIFY(submit->isEnabled());
+        QCOMPARE(submit->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Войти") : QString("Login"));
+        // Options: label with the organization when known, plain name otherwise.
+        click(window, select);
+        QTRY_VERIFY(item(content, "projectOption-" + projectId));
+        QTRY_VERIFY(item(content, "projectOption-" + labeledProject));
+        QTRY_VERIFY(item(content, "projectOption-" + plainProject));
+        QCOMPARE(item(content, "projectOption-" + projectId)->property("text").toString(),
+            QString::fromUtf8("Customer support \xE2\x80\x94 Example organization"));
+        QCOMPARE(item(content, "projectOption-" + labeledProject)->property("text").toString(),
+            QString::fromUtf8("Second row \xE2\x80\x94 Example organization"));
+        QCOMPARE(item(content, "projectOption-" + plainProject)->property("text").toString(),
+            QString("Support team"));
+        QCOMPARE(item(content, "projectOption-" + plainProject)->height() >= 36., true); // min-h-9
+        click(window, item(content, "projectOption-" + plainProject));
+        QTRY_COMPARE(select->property("displayText").toString(), QString("Support team"));
+        // A wrong selection reverts before submitting: pick the first project
+        // again so the mock identity (introspection pins `projectId`) commits.
+        click(window, select);
+        QTRY_VERIFY(item(content, "projectOption-" + projectId));
+        click(window, item(content, "projectOption-" + projectId));
+        QTRY_VERIFY(submit->isEnabled());
+        click(window, submit);
+        QTRY_VERIFY(controller.authenticated());
+        QVERIFY(!item(content, "loginTitle")->isVisible());
+        window->close();
+    }
+
+    void loginProjectStepSingleProjectIsPreselected()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "projectSelect"));
+        // Reference test 537: the only project is selected without any input.
+        QCOMPARE(item(content, "projectSelect")->property("displayText").toString(),
+            QString("Synthetic project"));
+        auto *submit = item(content, "projectLoginButton");
+        QVERIFY(submit->isEnabled());
+        // The legacy full-width button Repeater is gone.
+        QCOMPARE(itemCountWithPrefix(content, "project-"), 0);
+        click(window, submit);
+        QTRY_VERIFY(controller.authenticated());
+        window->close();
+    }
+
+    void loginProjectStepZeroProjectsBlocksTheStep_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en");
+        QTest::newRow("ru") << QString("ru");
+    }
+    void loginProjectStepZeroProjectsBlocksTheStep()
+    {
+        QFETCH(QString, locale);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        MockServer server;
+        server.handler = [](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            if (path.endsWith("/iam/projects/"))
+                return Response{QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        // Reference test 581: blocking notice only, no Select, no submit.
+        QTRY_VERIFY(visibleItem("noProjectsBanner"));
+        QCOMPARE(item(content, "noProjectsText")->property("text").toString(), locale == "ru"
+            ? QString::fromUtf8("У вашего аккаунта нет доступа к проектам этой организации.")
+            : QString("Your account does not have access to any projects in this organization."));
+        QVERIFY(!visibleItem("projectSelect"));
+        QVERIFY(!visibleItem("projectLoginButton"));
+        QCOMPARE(controller.error(), QString());
+        QVERIFY(!controller.authenticated());
+        // The wizard back affordance returns to the organization step.
+        click(window, item(content, "projectBackButton"));
+        QTRY_VERIFY(item(content, "serverInput"));
+        QVERIFY(!controller.authenticated());
+        window->close();
+    }
+
+    void loginProjectStepLinkedProjectIsPreselectedAndEnforced()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        const QString linkedProject = "44444444-4444-4444-8444-444444444444";
+        const QString messageUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            if (path.endsWith("/iam/projects/"))
+                return Response{QJsonArray{
+                    QJsonObject{{"uuid", projectId}, {"name", "Customer support"},
+                        {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", linkedProject}, {"name", "Product"},
+                        {"status", "ACTIVE"}}}};
+            if (path.endsWith("/actions/introspect"))
+                return Response{QJsonObject{{"user_info", QJsonObject{{"uuid", userId}}},
+                    {"project_id", linkedProject}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        // The reference drives the whole flow from the message-link route.
+        controller.openMessageLink(QStringLiteral("ew://open/org/%1/project/%2/message/%3")
+            .arg(workspace::orgRouteIdFromOrigin(server.origin()), linkedProject, messageUuid));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "projectSelect"));
+        // Reference test 552: the linked project is preselected ("Product").
+        QTRY_COMPARE(item(content, "projectSelect")->property("displayText").toString(),
+            QString("Product"));
+        // Reference contract at login-page.ui.tsx:385-392: submitting a
+        // different project shows the wrongAccount copy and completes nothing.
+        auto *select = item(content, "projectSelect");
+        click(window, select);
+        QTRY_VERIFY(item(content, "projectOption-" + projectId));
+        click(window, item(content, "projectOption-" + projectId));
+        QTRY_COMPARE(select->property("displayText").toString(), QString("Customer support"));
+        click(window, item(content, "projectLoginButton"));
+        QTRY_VERIFY(item(content, "projectErrorBanner")->property("visible").toBool());
+        QCOMPARE(item(content, "projectErrorText")->property("text").toString(),
+            QString("Sign in to an account for the organization and project in this link."));
+        QVERIFY(!controller.authenticated());
+        // The right selection commits; the parked link survives for the flush.
+        click(window, select);
+        QTRY_VERIFY(item(content, "projectOption-" + linkedProject));
+        click(window, item(content, "projectOption-" + linkedProject));
+        QVERIFY(item(content, "projectLoginButton")->isEnabled());
+        click(window, item(content, "projectLoginButton"));
+        QTRY_VERIFY(controller.authenticated());
+        QCOMPARE(session.project(), linkedProject);
+        window->close();
+    }
+
+    void loginProjectStepLinkedTargetOutsideTheLogin_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::newRow("missing-project") << QString("missing-project");
+        QTest::newRow("wrong-organization") << QString("wrong-organization");
+    }
+    void loginProjectStepLinkedTargetOutsideTheLogin()
+    {
+        QFETCH(QString, kind);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        const QString missingProject = "99999999-9999-4999-8999-999999999999";
+        const QString messageUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        const QString org = kind == QLatin1String("wrong-organization")
+            ? QStringLiteral("elsewhere.example.com")
+            : workspace::orgRouteIdFromOrigin(server.origin());
+        const QString project = kind == QLatin1String("missing-project")
+            ? missingProject : projectId;
+        controller.openMessageLink(QStringLiteral("ew://open/org/%1/project/%2/message/%3")
+            .arg(org, project, messageUuid));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        // Reference enterProjectStep (login-page.ui.tsx:306-314): the wizard
+        // returns to the organization step with the wrongAccount copy and the
+        // login never completes; nothing navigates to the message either.
+        QTRY_COMPARE_WITH_TIMEOUT(controller.error(),
+            QString("Sign in to an account for the organization and project in this link."), 5000);
+        QVERIFY(!controller.authenticated());
+        QVERIFY(!session.ready());
+        QTRY_VERIFY(item(content, "serverInput"));
+        QVERIFY(!item(content, "projectSelect"));
+        // The rejected attempt keeps no live credentials in the wizard.
+        QCOMPARE(session.project(), QString());
+        window->close();
+    }
+
     void existingEditAttachmentCardsLoadFailAndRemove_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("failed"); QTest::addColumn<bool>("typeRemoval");
@@ -29084,7 +29406,8 @@ private slots:
         auto *content = window->contentItem();
         session.login(origin, "synthetic-user", "synthetic-password");
         QTRY_COMPARE(session.projects().size(), 1);
-        click(window, item(content, "project-" + projectId));
+        QTRY_VERIFY(item(content, "projectLoginButton")->isEnabled());
+        click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setMode("light");
         click(window, item(content, "stream-" + streamId));
@@ -29197,7 +29520,8 @@ private slots:
             // while its own delayed catalog requests are still pending.
             session.login(origin, "second-synthetic-user", "synthetic-password");
             QTRY_COMPARE(session.projects().size(), 1);
-            click(window, item(content, "project-" + projectId));
+            QTRY_VERIFY(item(content, "projectLoginButton")->isEnabled());
+            click(window, item(content, "projectLoginButton"));
             QVERIFY(controller.messages().isEmpty());
             QVERIFY(controller.streams().isEmpty());
             QVERIFY(!item(content, "message-" + messageId));

@@ -8671,7 +8671,36 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_busy = busy;
         emit stateChanged();
     });
-    connect(session, &Session::projectsAvailable, this, &NativeController::stateChanged);
+    connect(session, &Session::projectsAvailable, this, [this] {
+        // Issue #60 (reference enterProjectStep, login-page.ui.tsx:303-318):
+        // before the wizard may show the project step, a parked message link
+        // must match the discovered organization and contain the linked
+        // project; otherwise the wizard returns to the organization step with
+        // the wrongAccount copy and the login never completes. The rejected
+        // attempt keeps no live token (the reference simply discards the
+        // prepared login); saved identities and any committed session survive.
+        if (authenticated()) {
+            emit stateChanged();
+            return;
+        }
+        QString org;
+        QString target;
+        if (linkedMessageTarget(&org, &target)) {
+            bool hasProject = false;
+            for (const auto &project : m_session->projects())
+                hasProject = hasProject || project.uuid == target;
+            if (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
+                || !hasProject) {
+                m_session->detach();
+                m_loginStep = QStringLiteral("organization");
+                m_error = tr("Sign in to an account for the organization and project in this link.");
+                emit stateChanged();
+                return;
+            }
+        }
+        m_loginStep = QStringLiteral("project");
+        emit stateChanged();
+    });
     connect(api, &ApiClient::sessionChanged, this, [this] {
         const QPointer<NativeController> lookupGuard(this);
         // Transport callbacks from the previous generation will not settle.
@@ -10280,6 +10309,11 @@ void NativeController::backToOrganization()
 {
     if (authenticated())
         return;
+    // Issue #60: leaving the project step drops the not-yet-committed login,
+    // mirroring the reference discarding its prepared login; saved vault
+    // identities and any already-committed session stay untouched.
+    if (m_loginStep == QLatin1String("project"))
+        m_session->detach();
     m_pendingOrganizationOrigin.clear();
     m_error.clear();
     m_loginStep = QStringLiteral("organization");
@@ -10303,8 +10337,28 @@ void NativeController::selectDefaultOrganization()
 
 void NativeController::openProject(const QString &id)
 {
+    // Reference handleProjectSubmit (login-page.ui.tsx:385-392): with a parked
+    // message link, a selection that is not the linked project - or a signed-in
+    // organization that is not the link's - shows the wrongAccount copy and
+    // completes nothing. The parked link stays parked for a later matching login.
+    if (!authenticated()) {
+        QString org;
+        QString target;
+        if (linkedMessageTarget(&org, &target)
+            && (org.compare(workspace::orgRouteIdFromOrigin(m_api->server()), Qt::CaseInsensitive) != 0
+                || target != id.toLower())) {
+            m_error = tr("Sign in to an account for the organization and project in this link.");
+            emit stateChanged();
+            return;
+        }
+        m_error.clear();
+    }
     if (id != m_session->project())
         reset();
+    if (!authenticated() && !m_session->projects().isEmpty())
+        // reset() rewinds the wizard state; the project step must stay shown
+        // when a submit attempt has to settle or retry.
+        m_loginStep = QStringLiteral("project");
     m_session->selectProject(id);
 }
 
@@ -11318,8 +11372,40 @@ QVariantList NativeController::projects() const
 {
     QVariantList result;
     for (const auto &project : m_session->projects())
-        result.append(QVariantMap{{"id", project.uuid}, {"name", project.name}});
+        // displayLabel mirrors the reference option label
+        // (login-page-project-form.ui.tsx:46-56): "name - organizationName"
+        // (em dash) when the organization is known, else the bare name.
+        result.append(QVariantMap{{"id", project.uuid}, {"name", project.name},
+            {"organizationName", project.organizationName},
+            {"displayLabel", project.organizationName.isEmpty() ? project.name
+                : project.name + QStringLiteral(" \u2014 ") + project.organizationName}});
     return result;
+}
+
+bool NativeController::linkedMessageTarget(QString *org, QString *project) const
+{
+    *org = *project = QString{};
+    if (m_pendingDeepLink.isEmpty()) return false;
+    const auto route = workspace::parseExternalDeepLink(m_pendingDeepLink);
+    if (!route.has_value()) return false;
+    const auto message = workspace::parseMessageRoute(*route);
+    if (!message.has_value()) return false;
+    *org = message->org;
+    *project = message->project.toLower();
+    return true;
+}
+
+QString NativeController::projectPreselection() const
+{
+    // Reference login-page.ui.tsx:316: the linked-message project when the
+    // discovered list contains it, else the first project.
+    QString org;
+    QString target;
+    if (linkedMessageTarget(&org, &target))
+        for (const auto &project : m_session->projects())
+            if (project.uuid == target) return project.uuid;
+    const auto &projects = m_session->projects();
+    return projects.isEmpty() ? QString{} : projects.first().uuid;
 }
 
 QVariantList NativeController::savedAccounts() const

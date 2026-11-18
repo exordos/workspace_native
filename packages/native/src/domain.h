@@ -38,6 +38,9 @@ QString participantAvatarReference(const QJsonValue &value);
 struct Project {
     QString uuid;
     QString name;
+    // Issue #60 (reference workspace-auth.lib.ts:509-516): trimmed
+    // organization.name from the IAM row; empty when absent or blank.
+    QString organizationName;
 };
 
 struct StreamCryptoMetadata {

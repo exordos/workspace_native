@@ -1100,6 +1100,95 @@ private slots:
         QVERIFY(!session.ready());
         QVERIFY(session.projects().isEmpty());
     }
+
+    // Issue #60 (reference login-page-project-form.ui.tsx:46-56 and
+    // workspace-auth.lib.ts:509-516 at 61dacef7): the IAM row's trimmed
+    // organization.name is the option's organization label; blank or absent
+    // organization names leave the project unlabelled.
+    void projectDiscoveryParsesOrganizationLabels()
+    {
+        MockServer server;
+        const QString labeledProject = "33333333-3333-4333-8333-333333333331";
+        const QString blankOrgProject = "33333333-3333-4333-8333-333333333332";
+        server.handler = [&](const Request &request) {
+            if (request.target.path().endsWith("/iam/projects/"))
+                return Response{QJsonArray{
+                    QJsonObject{{"uuid", projectId}, {"name", "Customer support"},
+                        {"organization", QJsonObject{{"name", " Example organization "}}},
+                        {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", labeledProject}, {"name", "Second row"},
+                        {"organization", QJsonObject{{"name", "Another organization"}}},
+                        {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", blankOrgProject}, {"name", "Product"},
+                        {"organization", QJsonObject{{"name", "   "}}}, {"status", "ACTIVE"}},
+                    QJsonObject{{"uuid", "33333333-3333-4333-8333-333333333334"},
+                        {"name", "Support team"}, {"status", "ACTIVE"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy failures(&session, &Session::error);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 4);
+        QCOMPARE(session.projects()[0].organizationName, QString("Example organization"));
+        QCOMPARE(session.projects()[1].organizationName, QString("Another organization"));
+        QVERIFY(session.projects()[2].organizationName.isEmpty());
+        QVERIFY(session.projects()[3].organizationName.isEmpty());
+        QVERIFY(failures.isEmpty());
+    }
+
+    // Issue #60 zero-project row (reference lines 23-37 and test 581): an empty
+    // accessible list settles the discovery like a success so the wizard can
+    // render the blocking notice; it is not a transport/parse failure.
+    void emptyProjectListSettlesWithoutFailure()
+    {
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/iam/projects/"))
+                return Response{QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy failures(&session, &Session::error);
+        QSignalSpy available(&session, &Session::projectsAvailable);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_VERIFY(available.count() >= 1);
+        QVERIFY(session.projects().isEmpty());
+        QVERIFY(failures.isEmpty());
+        QVERIFY(!session.ready());
+        QVERIFY(!session.otpRequired());
+        // The token is kept for the empty-state wizard surface (back affordance),
+        // so authenticated requests still carry the bearer credential.
+        bool probeFinished = false;
+        QByteArray authorization;
+        server.handler = [&](const Request &request) {
+            authorization = request.headers.value("authorization");
+            probeFinished = true;
+            return Response{QJsonObject{}};
+        };
+        api.request("GET", "/credential-probe", {}, {}, [&](const ApiResult &) { probeFinished = true; });
+        QTRY_VERIFY(probeFinished);
+        QCOMPARE(authorization, QByteArray("Bearer synthetic-base-token"));
+    }
+
+    // Issue #60 single-project row (reference test 537): exactly one project is
+    // discovered as a normal single-row list for the preselect contract.
+    void singleProjectDiscoverySettlesTheStep()
+    {
+        MockServer server;
+        server.handler = [](const Request &request) { return sessionResponse(request); };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        QSignalSpy failures(&session, &Session::error);
+        QSignalSpy available(&session, &Session::projectsAvailable);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        QCOMPARE(session.projects()[0].uuid, projectId);
+        QVERIFY(session.projects()[0].organizationName.isEmpty());
+        QTRY_VERIFY(available.count() >= 1);
+        QVERIFY(failures.isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(SessionTest)

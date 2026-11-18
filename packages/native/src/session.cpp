@@ -483,13 +483,29 @@ void Session::discoverProjects()
             const auto json = value.toObject();
             const auto id = json.value("uuid").toString().toLower();
             const auto name = json.value("name").toString();
+            // Reference workspaceProjectFromIamDto: the option's organization
+            // label is the trimmed organization.name; blank names stay unset.
+            const auto organizationName =
+                json.value("organization").toObject().value("name").toString().trimmed();
             if (isUuid(id) && !name.isEmpty() && !seen.contains(id)) {
                 seen.insert(id);
-                m_projects.append({id, name});
+                m_projects.append({id, name, organizationName});
             }
         }
         if (m_projects.isEmpty()) {
-            failProjectDiscovery(tr("No accessible Workspace projects were returned."));
+            // Issue #60 (reference lines 23-37 and test 581): an empty
+            // accessible list is a settled result the wizard renders as the
+            // blocking notice; only transport/parse failures fail the login.
+            const bool hadChallenge = !m_otpBody.isEmpty();
+            m_otpBody = {};
+            m_otpServer = QUrl{};
+            m_otpInFlight = false;
+            const QPointer<Session> emptyGuard(this);
+            if (hadChallenge) emit otpChallengeChanged();
+            if (!emptyGuard || attempt != m_attempt) return;
+            emit busyChanged(false);
+            if (!emptyGuard || attempt != m_attempt) return;
+            emit projectsAvailable();
             return;
         }
         const bool hadChallenge = !m_otpBody.isEmpty();

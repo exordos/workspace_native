@@ -125,6 +125,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
+qml/NativeSelect.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
