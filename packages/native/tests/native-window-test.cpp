@@ -30017,6 +30017,7 @@ private slots:
         QCOMPARE(page->property("pingState").toString(), QString("error"));
         QCOMPARE(finished.count(), 1);
         QCOMPARE(visibleItem("diagnosticsPingLabel")->property("text").toString(), QString("Unreachable"));
+        api.setAccessToken("rotated-token"); // a credential under the new generation so the probe really dispatches
         holdPing=false; // the next ping answers immediately
         click(window, visibleItem("diagnosticsPingButton")); // not stuck: usable again
         QCOMPARE(page->property("pingState").toString(), QString("loading"));
