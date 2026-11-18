@@ -18376,6 +18376,115 @@ private slots:
         QCOMPARE(*posts, 1);
     }
 
+    // exordy review 4614001531: a create still in flight when the user
+    // navigates away must still land in the catalog, but it must NOT re-open
+    // the Favorites route the user left (the callback's openSelfStream used
+    // to re-select the self stream and re-set favoritesVisible).
+    void favoritesEnsureInFlightNavigateAwayKeepsCatalogButStaysClosed()
+    {
+        Fixture fixture;
+        const QString otherStreamId = QStringLiteral("e5e5e5e5-e5e5-4e5e-8e5e-000000000005");
+        auto posts = std::make_shared<int>(0);
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, gates, selfStream, otherStreamId](const Request &request) {
+            if (request.method == "POST") {
+                ++*posts;
+                Response response{selfStream, 201, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", otherStreamId}, {"project_id", projectId},
+                    {"name", "Second channel"}, {"encryption", false}}};
+            return Response{rows};
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the create is in flight
+        // The user navigates to a different ordinary chat while the create is
+        // in flight (selectStream leaves the favorites route, mirroring route
+        // unmount).
+        fixture.controller.selectStream(otherStreamId);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.selectedStream() == otherStreamId, 2000);
+        QVERIFY(!fixture.controller.favoritesVisible());
+        // The create response lands: the stream must reach the catalog ...
+        auto catalogHasSelf = [&fixture] {
+            for (const auto &value : fixture.controller.streams())
+                if (value.toMap().value("id").toString() == selfStreamId) return true;
+            return false;
+        };
+        for (auto &release : *gates) release();
+        QTRY_VERIFY_WITH_TIMEOUT((catalogHasSelf()), 2000);
+        // ... and the same callback must not re-open Favorites or steal the
+        // selection the user made after leaving.
+        QVERIFY(!fixture.controller.favoritesVisible());
+        QCOMPARE(fixture.controller.selectedStream(), otherStreamId);
+        // A later reopen uses the catalog entry: no second create, lands ready.
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(*posts, 1);
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+    }
+
+    // exordy review 4614001539: leaving Favorites clears its status; reopening
+    // while an earlier ensure is still in flight hits the per-generation dedup
+    // early-return and must still show the loading state, not an empty page.
+    void favoritesReopenDuringInflightEnsureRestoresLoading()
+    {
+        Fixture fixture;
+        auto posts = std::make_shared<int>(0);
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, gates, selfStream](const Request &request) {
+            if (request.method == "POST") {
+                ++*posts;
+                Response response{selfStream, 201, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}};
+            return Response{rows};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the create is in flight
+        // Leaving the route clears its view state (route unmount).
+        fixture.controller.closeFavorites();
+        QVERIFY(fixture.controller.favoritesStatus().isEmpty());
+        // Reopening while the earlier ensure is still in flight reuses the one
+        // request per generation ...
+        fixture.controller.showFavorites();
+        QVERIFY(fixture.controller.favoritesVisible());
+        QCOMPARE(*posts, 1);
+        // ... and must show the spinner again (the dedup early-return used to
+        // leave the status cleared, so the page showed neither).
+        QVERIFY(fixture.controller.favoritesStatus() == QStringLiteral("loading"));
+        // The in-flight create then completes the reopened page normally.
+        for (auto &release : *gates) release();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+        QCOMPARE(*posts, 1);
+    }
+
     void favoritesEnsureFailureSetsErrorAndRetryRecovers()
     {
         Fixture fixture;
