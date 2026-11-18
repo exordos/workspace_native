@@ -170,3 +170,7 @@ RU `"Общий чат"` (`ru.json:467`).
 - `native-native-locale`: catalog guard for the new `General Chat: %1` string.
 - Live server acceptance per `docs/LIVE_ACCEPTANCE.md` flow with the seeded
   `settings/app` keys, recorded in the PR `## Live verification` section.
+  In the QSettings INI (`~/.config/Exordos/Workspace Native Preview/preferences.ini`)
+  the two-level key is the section `[settings]` with the single-backslash escape
+  `app\chatListDensity=compact` / `app\chatClickAction=latestTopic`; a doubled
+  backslash parses as a literal key and is silently ignored by QSettings.
