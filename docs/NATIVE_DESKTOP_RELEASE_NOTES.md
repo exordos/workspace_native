@@ -1,3 +1,27 @@
+# Workspace Native 0.37.0 - Linux development preview
+
+The folder rail becomes fully editable and the diagnostics page gains the
+reference session log viewer:
+
+- Folders are created, renamed and deleted from the rail: the create and
+  rename modals carry the name field and the color picker with a live
+  preview, the delete asks through the reference confirmation dialog,
+  system folders stay non-editable with rename and delete disabled in the
+  context menu, failures land as toasts, and the rail updates incrementally
+  without a full refetch - a stored black folder color stays distinct from
+  an unset one in the rename prefill.
+- The session log viewer opens over the diagnostics page and appends entries
+  live: the search box with the level, scope and runtime filters narrows the
+  list under a reset control and the "X of Y" results label, a recent-errors
+  block stays open while the visible window has errors, Clear empties to the
+  reference empty state, Download exports a pretty JSON array with entry
+  payloads passed through the logger redaction, warn and error rows carry
+  their reference side tints, transport API failures reach the log with
+  their failure reason, and a failing export reports its error inside the
+  modal instead of overflowing it.
+
+---
+
 # Workspace Native 0.36.0 - Linux development preview
 
 The profile menu gains the runtime diagnostics page, F11 toggles fullscreen
