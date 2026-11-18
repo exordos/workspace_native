@@ -87,11 +87,17 @@ ComboBox {
             border.color: control.colors["border-subtle"]
         }
         contentItem: ListView {
+            objectName: "nativeSelectListView"
             clip: true
             implicitHeight: Math.min(288, contentHeight)
-            // Qt Basic ComboBox pattern: the view measures its content so the
-            // popup bounds itself to it (and every delegate is instantiated).
-            height: contentHeight
+            // The view fills the popup's available area (the popup bounds
+            // itself to `implicitHeight`, capped at 300 px), so options past
+            // the cap stay inside the scroll range. Binding the height to
+            // `contentHeight` instead leaves `interactive` false whenever the
+            // binding re-fires after the popup's own layout (late delegate
+            // incubation or a model change while open) and the overflowing
+            // options become unreachable.
+            height: selectPopup.availableHeight
             model: selectPopup.visible ? control.delegateModel : null
             currentIndex: control.highlightedIndex
             boundsBehavior: Flickable.StopAtBounds
