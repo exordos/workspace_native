@@ -42,6 +42,12 @@ class NativePreferences final : public QObject {
     // Persisted globally like the reference settings blob, not per owner.
     Q_PROPERTY(QString chatListDensity READ chatListDensity WRITE setChatListDensity NOTIFY chatListDensityChanged)
     Q_PROPERTY(QString chatClickAction READ chatClickAction WRITE setChatClickAction NOTIFY chatClickActionChanged)
+    // Issue #85 (docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md): the folder rail
+    // layout and the system-folder visibility toggle (settings.model.ts
+    // folderRailLayout/showSystemFolders). Persisted globally like the #102
+    // chat list layout keys, not per owner.
+    Q_PROPERTY(QString folderRailLayout READ folderRailLayout WRITE setFolderRailLayout NOTIFY folderRailLayoutChanged)
+    Q_PROPERTY(bool showSystemFolders READ showSystemFolders WRITE setShowSystemFolders NOTIFY showSystemFoldersChanged)
 public:
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
@@ -93,6 +99,13 @@ public:
     QString chatClickAction() const { return m_chatClickAction; }
     void setChatListDensity(const QString &density);
     void setChatClickAction(const QString &action);
+    // Issue #85: strict reference resolvers - the layout only stays "vertical"
+    // on the exact token (settings.model.ts resolveFolderRailLayout), the
+    // visibility flag is accepted only as a strict boolean.
+    QString folderRailLayout() const { return m_folderRailLayout; }
+    bool showSystemFolders() const { return m_showSystemFolders; }
+    void setFolderRailLayout(const QString &layout);
+    void setShowSystemFolders(bool show);
     // Mention frecency (mention-frecency.lib.ts): decayed pick counts per user,
     // partitioned by the opaque caller scope (the controller's creation owner,
     // which stays valid on loopback fixtures where the HTTPS vault owner is empty).
@@ -136,6 +149,8 @@ signals:
     void authIdleTimeoutChanged();
     void chatListDensityChanged();
     void chatClickActionChanged();
+    void folderRailLayoutChanged();
+    void showSystemFoldersChanged();
 
 private slots:
     // XDG Settings portal SettingChanged (org.freedesktop.appearance
@@ -161,6 +176,7 @@ private:
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
     void loadChatLayout();
+    void loadFolderRail();
     void probePortalReducedMotion();
     void updatePortalReducedMotion(bool reduced);
     std::optional<bool> m_reducedMotionOverride;
@@ -209,6 +225,8 @@ private:
     QString m_authIdleTimeout = QStringLiteral("3d");
     QString m_chatListDensity = QStringLiteral("general");
     QString m_chatClickAction = QStringLiteral("stream");
+    QString m_folderRailLayout = QStringLiteral("vertical");
+    bool m_showSystemFolders = true;
     QRect m_normalGeometry;
     // #62 round 3: the bounds the window had while maximized, recorded from
     // live (ungated) geometry signals. The WM's unmaximize hop lands on
