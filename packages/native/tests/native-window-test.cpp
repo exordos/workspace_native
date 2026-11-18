@@ -29609,6 +29609,32 @@ private slots:
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.selectedTopic().isEmpty());
         QCOMPARE(controller.selectedStream(),streamId);
+        // PR #396 review: the reference avatar is an <a>, so it is natively
+        // keyboard-focusable and assistive-technology activatable
+        // (sidebar-workspace.ui.tsx:455-462). The native avatar action must expose a
+        // focus policy, the accessible Press action, and real keyboard activation -
+        // not only the pointer.
+        QVERIFY((avatar->focusPolicy() & Qt::TabFocus) == Qt::TabFocus);
+        auto *actions = iface->actionInterface(); QVERIFY(actions);
+        QVERIFY(actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
+        // Assistive-technology route: the accessible Press action opens the stream.
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.selectedTopic(),secondTopicId);
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(controller.selectedStream(),streamId);
+        // Keyboard route: Space on the focused avatar opens the stream.
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.selectedTopic(),secondTopicId);
+        avatar->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(avatar->hasActiveFocus());
+        QTest::keyClick(window,Qt::Key_Space);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(controller.selectedStream(),streamId);
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 };
