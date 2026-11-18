@@ -16338,22 +16338,25 @@ mv -Tf "$root/.current-new" "$root/current"
 
     // Issue #61: the registration entry appears in the credentials step only
     // when the organization advertises an https registration URL; http and
-    // javascript values never render the block.
+    // javascript values never render the block. The ru rows also pin catalog
+    // delivery of the auth.registrationHint/auth.register copies.
     void loginRegistrationEntryFollowsServerSettings_data()
     {
+        QTest::addColumn<QString>("locale");
         QTest::addColumn<QString>("advertised"); // empty string: the field is absent
         QTest::addColumn<bool>("present");
-        QTest::newRow("https") << QString("https://reg.example/signup") << true;
-        QTest::newRow("absent") << QString() << false;
-        QTest::newRow("http") << QString("http://reg.example/signup") << false;
-        QTest::newRow("javascript") << QString("javascript:alert(1)") << false;
+        QTest::newRow("en-https") << QString("en") << QString("https://reg.example/signup") << true;
+        QTest::newRow("ru-https") << QString("ru") << QString("https://reg.example/signup") << true;
+        QTest::newRow("en-absent") << QString("en") << QString() << false;
+        QTest::newRow("en-http") << QString("en") << QString("http://reg.example/signup") << false;
+        QTest::newRow("ru-javascript") << QString("ru") << QString("javascript:alert(1)") << false;
     }
     void loginRegistrationEntryFollowsServerSettings()
     {
-        QFETCH(QString, advertised); QFETCH(bool, present);
+        QFETCH(QString, locale); QFETCH(QString, advertised); QFETCH(bool, present);
         QTemporaryDir preferencesDirectory;
         NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
-        preferences.setLocale("en");
+        preferences.setLocale(locale);
         MockServer server;
         server.handler = [&advertised](const Request &request) {
             if (request.target.path().endsWith("/server_settings")) {
@@ -16388,8 +16391,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(hint);
         auto *button = item(content, "registerButton");
         QVERIFY(button);
-        QCOMPARE(hint->property("text").toString(), QString("No account?"));
-        QCOMPARE(button->property("text").toString(), QString("Register"));
+        QCOMPARE(hint->property("text").toString(),
+                 locale == QLatin1String("ru") ? QString("Нет аккаунта?") : QString("No account?"));
+        QCOMPARE(button->property("text").toString(),
+                 locale == QLatin1String("ru") ? QString("Зарегистрироваться") : QString("Register"));
         // Reference test 363: the anchor carries exactly the advertised href.
         QCOMPARE(button->property("url").toString(), advertised);
         // Measured anchor: h-9 (36 px) full-width box below the sign-in button.
