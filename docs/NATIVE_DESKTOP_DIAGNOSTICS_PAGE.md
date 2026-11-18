@@ -459,3 +459,181 @@ catalog guards pass.
   source selects narrow the list live with the "x of y entries" label;
   search narrows further; Reset filters restores; Clear switches to the
   empty state and disables itself; Export opens the save dialog.
+
+## Memory panel (issue #52)
+
+Issue: #52 (part of #49). Same reference sha as the page section above. Figma
+token unavailable - mockups not consulted; the reference code is the oracle.
+
+### Reference contract (measured) - `packages/web/src/pages/logs/logs-page-memory.ui.tsx`
+
+- Polling (`logs-page-memory.ui.tsx:11`): `MEMORY_POLL_INTERVAL_MS = 3000`; the
+  section refreshes on mount and on every interval tick while mounted
+  (`:60-65`), plus on `refreshToken` bumps (`:67-70`).
+- Section shell (`:71-83`): `rounded-lg border border-border-subtle bg-card-bg
+  p-3` (radius 8, 12px padding); heading row `mb-2 flex items-center gap-2`
+  with the `settings.diagnosticsMemory` title `text-xs font-medium
+  text-text-primary` (12px medium) and a `text-[11px] text-text-muted` "..."
+  loading marker while a fetch is in flight.
+- Unavailable state (`:86-90`): when no metric exists and nothing is loading, a
+  `text-[11px] text-text-muted` paragraph renders
+  `settings.diagnosticsMemoryUnavailable` and the section header stays.
+- Metric cards (`:96-124`): grid `gap-2 sm:grid-cols-2 lg:grid-cols-3`
+  (8px gaps; 2 columns from 640px, 3 from 1024px). Each card renders only
+  when its metric exists (capability flags `capabilities.jsHeapAvailable`,
+  `deviceMemoryAvailable`, `processMetricsAvailable`). `MemoryCard`
+  (`:218-224`): `rounded-md border border-border-subtle bg-bg px-2 py-1.5`
+  (radius 6, 8px/6px padding), label `text-[11px] text-text-muted`, value
+  `text-sm font-medium text-text-primary` (14px medium), optional detail
+  `text-[11px] text-text-muted`. Cards in the Electron dataset: JS heap
+  (value + "Heap limit" detail), Total app memory (`totalWorkingSetKb`),
+  System free memory (freeKb + "<total> total" detail), Device RAM.
+- Progress bar (`:126-146`): label row `text-[11px] text-text-muted` with the
+  metric name left and the integer percent right (`justify-between`); track
+  `h-1.5 overflow-hidden rounded-full bg-bg` (6px tall) with
+  `role=progressbar`, `aria-valuemin=0`, `aria-valuemax=100`,
+  `aria-valuenow=<percent>`; fill `h-full rounded-full bg-accent
+  transition-[width]` with `width: <percent>%`. Percent math
+  (`shared/lib/diagnostics-memory.lib.ts:84-91`): `used/limit*100`, rounded,
+  clamped to 0..100; null when the limit is missing.
+- Process table (`:160-197`): header label `text-[11px] font-medium
+  text-text-primary`; scroller `overflow-x-auto`; table `w-full min-w-[420px]
+  border-collapse text-[11px] text-text-muted`; header row `border-b
+  border-border-subtle text-left` with columns Type / PID / Working set /
+  Peak / CPU (CPU is the `settings.diagnosticsMemoryCpu` key, the other four
+  are literal strings in the reference); every cell `font-mono px-1 py-1`
+  (4px/4px padding); rows separated by `border-b border-border-subtle/60`.
+  CPU renders `cpuPercent.toFixed(1) + "%"` and an em dash when null
+  (`:210-214`).
+- Byte formatting: `formatBytes`/`formatKilobytes`
+  (`shared/lib/format-bytes.lib.ts:16-31`): units B/KB/MB/GB, 1024 base,
+  precision 0 for bytes, 1 decimal when the value is >= 10, else 2 decimals
+  ("8.00 MB", "512.0 MB", "8.00 GB total").
+- Dataset source: Electron IPC `diagnostics:getMemorySnapshot`
+  (`packages/electron/src/main.ts`): per-process `workingSetSize`,
+  `peakWorkingSetSize`, `percentCPUUsage`, system total/free KB and
+  `totalWorkingSetKb`; collected into the `DiagnosticsMemorySnapshot` shape in
+  `shared/lib/diagnostics-memory.lib.ts:15-40` (collectedAt, runtime, jsHeap,
+  deviceMemoryGb, electron{totalWorkingSetKb, system{totalKb, freeKb},
+  processes[], renderer, main}, capabilities).
+- i18n: `settings.diagnosticsMemory*` keys exist in both locale files
+  (`en.json:1216-1226`, `ru.json:1228-1238`): Memory / JS heap (this tab) /
+  Heap limit / Device RAM (estimate) / Total app memory / System free memory
+  / Processes / CPU / unavailable text.
+
+### Native design
+
+New small provider `NativeMemoryDiagnostics` in
+`packages/native/src/native-diagnostics.h/.cpp` (namespace
+`workspace::diagnostics`), procfs reads gated on `Q_OS_LINUX` exactly like
+`NativeLogging::memorySnapshot()`:
+
+- `/proc/self/status`: `VmRSS` -> working set (kB), `VmHWM` -> peak working
+  set (kB, the kernel-monotonic peak; the provider additionally clamps the
+  reported peak to be monotonic across polls so a shrinking fixture can never
+  lower it).
+- `/proc/meminfo`: `MemTotal`, `MemFree`, `MemAvailable` (kB).
+- `/proc/self/stat` (`utime`/`stime`, `starttime`) plus `/proc/uptime`:
+  cumulative CPU percent since process start - the same semantics as
+  Chromium `PercentCPUUsage`, which is what the Electron IPC reports. Null
+  when either source is missing or malformed.
+- `setProcRoot(path)` injects the fixture root (tests drive exact values;
+  mirrors the existing `NativeLogging::setProcRoot` seam). The controller
+  exposes `diagnosticsMemorySnapshot()` (Q_INVOKABLE, used by the QML poll)
+  and a `setDiagnosticsMemoryProcRoot` seam.
+
+Snapshot map (what the `memory` key of `diagnosticsSnapshot()` carries and
+what `diagnosticsMemorySnapshot()` returns):
+
+```
+{
+  "collectedAt": ISO-8601 UTC,
+  "runtime": "native",
+  "system": { "totalKb": n, "freeKb": n, "availableKb": n },
+  "app": { "workingSetKb": n, "peakWorkingSetKb": n, "totalWorkingSetKb": n },
+  "processes": [ { "type": "Main", "pid": n, "workingSetKb": n,
+                   "peakWorkingSetKb": n, "cpuPercent": double|null } ],
+  "capabilities": { "processMetricsAvailable": bool,
+                    "systemMemoryAvailable": bool }
+}
+```
+
+Malformed or missing input: every value falls back to 0, `processes` is empty,
+both capability flags are false, and the panel renders the unavailable state
+(`MemTotal > MemAvailable > 0` is the availability rule for system memory).
+
+`NativeController::diagnosticsSnapshot()` no longer gates the `memory` key on
+`m_logging`; it always delegates to this provider (the panel needs metrics
+even with file logging off). `NativeLogging::memorySnapshot()` keeps its
+accepted shape for its own consumers. The clock-driven `memory.collectedAt`
+and the process-state values are excluded from the snapshot-export equality
+case, which now pins the memory provider to a fixed fixture root.
+
+### Panel layout mapping (compact native shape)
+
+- Section: existing `diagnosticsMemoryCard` block upgraded from the two-line
+  summary to the full reference section; `radius: 8`, `border-subtle`,
+  `card-bg`, p-3 (12px). Heading `diagnosticsMemoryTitle` (12px medium) plus
+  `diagnosticsMemoryLoadingMarker` ("<U+2026>") while a poll is in flight
+  (logs-page-memory.ui.tsx:74-83).
+- Cards: `diagnosticsMemoryMetricGrid` Grid, spacing 8 (gap-2), columns
+  1 / 2 (page >= 640) / 3 (page >= 1024) (logs-page-memory.ui.tsx:96,
+  Tailwind sm/lg). Each `diagnosticsMemoryMetric-<key>`: radius 6,
+  border-subtle on `bg`, px-2 py-1.5; label 11px muted, value 14px medium
+  primary, optional detail 11px muted (logs-page-memory.ui.tsx:218-224).
+  Rendered cards: "Total app memory" (`totalWorkingSetKb`, gated on
+  `processMetricsAvailable`) and "System free memory" (`freeKb`, detail
+  "<total> total", gated on `systemMemoryAvailable`).
+- Progress bar: track `diagnosticsMemoryBarTrack` 6px tall, radius 3, on `bg`
+  (h-1.5 rounded-full bg-bg); fill `diagnosticsMemoryBarFill` anchored left,
+  `accent`, width = track width * percent / 100; label row "Memory usage" +
+  integer percent, 11px muted (logs-page-memory.ui.tsx:126-146). The
+  Accessible role is ProgressBar with value 0..100.
+- Process table: label "Processes" 11px medium, then header row and one row
+  per process, minimum width 420 (min-w-[420px]), cells 11px monospace with
+  4px horizontal / 4px vertical padding, 1px bottom border border-subtle
+  (logs-page-memory.ui.tsx:160-197). CPU cell uses one decimal + percent, em
+  dash when null (logs-page-memory.ui.tsx:210-214).
+- Unavailable: `diagnosticsMemoryUnavailableText` renders "Memory metrics are
+  not available in this build." (the native reading of
+  `settings.diagnosticsMemoryUnavailable`; the reference string names the
+  browser, which this client is not) whenever neither capability flag is set
+  and no poll is in flight.
+
+### Polling contract
+
+`memoryPollIntervalMs` defaults to 3000 (MEMORY_POLL_INTERVAL_MS,
+logs-page-memory.ui.tsx:11) and is injectable so window tests drive ticks
+without waiting on wall clock. `diagnosticsMemoryPollTimer` (repeat) starts
+when the diagnostics section becomes visible and stops when it leaves, so the
+poll never runs in another section; the first snapshot is pulled immediately
+on becoming visible (reference refreshes on mount). Each tick bumps
+`memoryPollTicks` (test seam) and calls `controller.diagnosticsMemorySnapshot()`.
+
+### Declared deviations (dataset only; layout parity)
+
+- Single-process table row: the reference lists Electron child processes
+  (Browser/GPU/Utility/Tab); this client is one process, so the table renders
+  exactly one `Main` row with the same five columns. No fake rows.
+- No JS heap and no Device RAM cards: Qt exposes no Chromium heap and no
+  `navigator.deviceMemory`; capability gating hides both
+  (logs-page-memory.ui.tsx:96-124 renders cards only when the metric exists).
+- The progress bar tracks system memory utilization
+  (`(MemTotal - MemAvailable) / MemTotal`) because the JS heap metric it
+  mirrors in the reference has no native equivalent. Same percent math and
+  visual contract as `getJsHeapUtilizationPercent`
+  (diagnostics-memory.lib.ts:84-91).
+- CPU percent semantics: cumulative CPU since process start (Chromium
+  PercentCPUUsage), computed from `/proc/self/stat` + `/proc/uptime`.
+
+### i18n (new `NativeDiagnosticsPage` catalog entries)
+
+New English source strings (context `NativeDiagnosticsPage`): "Total app
+memory", "System free memory", "%1 total", "Memory usage", "Processes",
+"Type", "PID", "Working set", "Peak", "CPU". The Russian translations follow
+the reference locale wording (settings.diagnosticsMemory* entries in the
+reference ru.json: card labels, "Processes", "CPU"); the remaining column
+headers get short Russian readings. The actual strings live in
+`packages/native/translations/workspace_ru.ts`; `native-native-locale`
+guards that every extracted source string has one reviewed translation that
+preserves its arguments, and vice versa.
