@@ -801,6 +801,12 @@ void NativePreferences::toggleWindowFullscreen()
     // the screen moves to a different shape and stays legitimate.
     m_fullscreenRestoreInFlight = exiting;
     m_fullscreenSnapshot = exiting ? m_window->geometry() : QRect();
+    // #62 round 5 (review cid 4611449708): the enter side of the same rule.
+    // Until the FullScreen state atom lands, geometry signals alone may be
+    // the WM placing the window at the fullscreen shape, not the window
+    // settling there; the enter flag keeps those frames out of the saved
+    // normal geometry for normal windows too (recaptureLiveWindowState).
+    m_fullscreenEnterInFlight = !exiting;
     m_fullscreenGateSettle.stop();
     m_fullscreenGateCap.start();
     if (exiting) {
@@ -832,6 +838,10 @@ void NativePreferences::finishFullscreenGate()
 {
     m_fullscreenGateSettle.stop();
     m_fullscreenGateCap.stop();
+    // #62 round 5: the transition is over, settled or abandoned; from here on
+    // a WindowNoState frame is the window's own state again, recaptured by
+    // the rules above rather than treated as an enter transition.
+    m_fullscreenEnterInFlight = false;
     if (!m_fullscreenPending) return;
     m_fullscreenPending = false;
     if (!m_window) return;
@@ -861,9 +871,19 @@ void NativePreferences::recaptureLiveWindowState()
         // #62 round 4: keep the release snapshot fresh while the window is
         // actually fullscreen; the release hop frame equals this shape.
         m_fullscreenSnapshot = m_window->geometry();
+        // #62 round 5: the fullscreen state atom has arrived; the enter is no
+        // longer in flight, so later restores are judged as exits.
+        m_fullscreenEnterInFlight = false;
         return;
     }
     if (state != Qt::WindowNoState) return;
+    // #62 round 5 (review cid 4611449708): while an enter is in flight a
+    // WindowNoState frame still lacks the FullScreen state atom - the WM may
+    // deliver the fullscreen configure first - so it is the transition, not
+    // settled normal bounds: persisting it would save the fullscreen rect as
+    // the normal geometry (and dropping the maximized flag with it). This
+    // covers normal windows; the maximized hop keeps its own guards below.
+    if (m_fullscreenEnterInFlight) return;
     // #62 round 3 (review cid 4609403368) + round 4 (review on its size
     // guard): WindowNoState only describes a settled window when the window
     // is not still wearing a transition shape. The WM hop passes through

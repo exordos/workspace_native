@@ -224,6 +224,15 @@ private:
     // (recaptureLiveWindowState).
     QRect m_fullscreenSnapshot;
     bool m_fullscreenRestoreInFlight = false;
+    // #62 round 5 (review cid 4611449708): the enter-side mirror of the
+    // release flag above. Set while F11 is taking a window INTO fullscreen and
+    // cleared once the FullScreen state atom has been observed (or the gate
+    // ends). A WM may deliver the fullscreen configure before the fullscreen
+    // state; while the enter is in flight, any WindowNoState re-capture lacks
+    // that atom, so it is still the transition frame, not settled normal
+    // bounds, and must not move the saved geometry or clear the maximized
+    // flag (recaptureLiveWindowState).
+    bool m_fullscreenEnterInFlight = false;
     bool m_windowMaximized = false;
     // #62 round 2: true while a fullscreen transition is in flight. The gate
     // covers the WM's transient unmaximize/restore hop so it never reaches
