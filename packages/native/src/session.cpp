@@ -2,6 +2,7 @@
 
 #include <QJsonArray>
 #include <QSet>
+#include <QUrl>
 #include <algorithm>
 
 namespace workspace {
@@ -374,6 +375,27 @@ void Session::requestLoginToken(const QJsonObject &body, const QString &otp)
     }, true, headers);
 }
 
+// Reference normalizeLoginRegistrationUrl (login-registration-url.lib.ts at
+// 61dacef7): keep the advertised value only when it parses and its protocol is
+// exactly https:; empty, http, javascript and garbage collapse to null and the
+// registration entry stays hidden (issue #61). The strict QUrl parse is
+// deliberately fail-closed where the WHATWG parser recovers a missing
+// authority ("https:/host", "https:///x"): the native client hides the block
+// instead of opening a URL the server did not cleanly advertise. The kept
+// value is the trimmed advertised string; see
+// docs/NATIVE_DESKTOP_LOGIN_REGISTRATION.md.
+QString normalizeLoginRegistrationUrl(const QString &value)
+{
+    const auto trimmed = value.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QUrl url(trimmed, QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty()
+        || url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) != 0)
+        return {};
+    return trimmed;
+}
+
 void Session::fetchOrganizationSettings(const QUrl &origin,
     std::function<void(bool ok, QVariantMap settings, QString error)> done)
 {
@@ -395,8 +417,11 @@ void Session::fetchOrganizationSettings(const QUrl &origin,
         QVariantMap settings;
         for (auto it = json.begin(); it != json.end(); ++it)
             if (it.key() == QLatin1String("realm_name") || it.key() == QLatin1String("realm_icon")
-                || it.key() == QLatin1String("registration_url"))
-                settings.insert(it.key(), it.value().isString() ? it.value().toString() : QString{});
+                || it.key() == QLatin1String("registration_url")) {
+                const auto value = it.value().isString() ? it.value().toString() : QString{};
+                settings.insert(it.key(), it.key() == QLatin1String("registration_url")
+                    ? normalizeLoginRegistrationUrl(value) : value);
+            }
         done(true, settings, QString{});
     }, true);
 }
