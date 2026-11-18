@@ -1101,6 +1101,66 @@ private slots:
         QVERIFY(session.projects().isEmpty());
     }
 
+    // Issue #61 (reference login-registration-url.lib.ts at 61dacef7): the
+    // session stores registration_url only when it parses as an https URL;
+    // every other advertised value collapses to the empty string and the
+    // registration entry stays hidden.
+    void loginRegistrationUrlNormalization_data()
+    {
+        QTest::addColumn<QString>("advertised");
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("https") << QStringLiteral("https://reg.example/signup")
+            << QStringLiteral("str") << QStringLiteral("https://reg.example/signup");
+        QTest::newRow("trimmed") << QStringLiteral("  https://reg.example/signup ")
+            << QStringLiteral("str") << QStringLiteral("https://reg.example/signup");
+        QTest::newRow("missing") << QString()
+            << QStringLiteral("omit") << QString();
+        QTest::newRow("empty") << QStringLiteral("")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("whitespace") << QStringLiteral("   ")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("http") << QStringLiteral("http://reg.example/signup")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("javascript") << QStringLiteral("javascript:alert(1)")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("garbage") << QStringLiteral("not a url")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("relative") << QStringLiteral("reg.example/signup")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("empty-host") << QStringLiteral("https://")
+            << QStringLiteral("str") << QString();
+        QTest::newRow("number") << QStringLiteral("42")
+            << QStringLiteral("num") << QString();
+    }
+    void loginRegistrationUrlNormalization()
+    {
+        QFETCH(QString, advertised); QFETCH(QString, kind); QFETCH(QString, expected);
+        MockServer server;
+        server.handler = [&advertised, &kind](const Request &request) {
+            if (request.target.path().endsWith("/server_settings")) {
+                QJsonObject payload{{"result", "success"}, {"realm_name", "Acme Realm"}};
+                if (kind == QLatin1String("str"))
+                    payload.insert("registration_url", advertised);
+                else if (kind == QLatin1String("num"))
+                    payload.insert("registration_url", 42);
+                return Response{payload};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        bool called = false;
+        QVariantMap settings;
+        session.fetchOrganizationSettings(server.origin(), [&](bool ok, QVariantMap values, QString) {
+            called = true;
+            settings = ok ? values : QVariantMap{};
+        });
+        QTRY_VERIFY(called);
+        QCOMPARE(settings.value("registration_url").toString(), expected);
+        QVERIFY(!session.ready());
+    }
+
     // Issue #60 (reference login-page-project-form.ui.tsx:46-56 and
     // workspace-auth.lib.ts:509-516 at 61dacef7): the IAM row's trimmed
     // organization.name is the option's organization label; blank or absent

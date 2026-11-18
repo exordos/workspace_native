@@ -10235,10 +10235,12 @@ void NativeController::discoverOrganization(const QString &text)
             settings.insert(QStringLiteral("realmName"), raw.value(QLatin1String("realm_name")).toString());
             settings.insert(QStringLiteral("realmIconUrl"),
                 resolveRealmIconUrl(originKey, raw.value(QLatin1String("realm_icon")).toString()));
-            // Reference normalizeLoginRegistrationUrl: https-only.
-            const auto registration = raw.value(QLatin1String("registration_url")).toString().trimmed();
+            // Session::fetchOrganizationSettings already applied the reference
+            // normalizeLoginRegistrationUrl https-only rule at the
+            // server_settings parse site (issue #61); pass the kept value
+            // (empty string when the entry must stay hidden) through unchanged.
             settings.insert(QStringLiteral("registrationUrl"),
-                registration.startsWith(QLatin1String("https://")) ? registration : QString{});
+                raw.value(QLatin1String("registration_url")).toString());
             m_organizationSettings = settings;
             // The reference submits `new URL(realm).origin` after a check, so
             // downstream login sees exactly what was checked.
