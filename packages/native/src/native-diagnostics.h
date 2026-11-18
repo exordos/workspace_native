@@ -214,4 +214,33 @@ private:
     QString m_runtimeLabel;
 };
 
+// Issue #52: the small procfs memory provider feeding the diagnostics memory
+// panel (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel" section).
+// Procfs reads stay gated on Q_OS_LINUX exactly like
+// NativeLogging::memorySnapshot(); non-Linux builds keep the same key set
+// with zeros and both capability flags false, which the panel renders as the
+// unavailable state. The reported peak working set is additionally clamped
+// monotonic across polls so a regressing VmHWM can never lower it.
+// Malformed or missing sources fall back to zeros, an empty processes list
+// and capability flags false (the unavailable fallback).
+class NativeMemoryDiagnostics final {
+public:
+    // Injects the fixture proc root (test seam mirroring
+    // NativeLogging::setProcRoot); resets the monotonic peak clamp so a new
+    // root always starts its own peak history.
+    void setProcRoot(QString procRoot);
+    QString procRoot() const { return m_procRoot; }
+
+    // Collects one snapshot: { collectedAt, runtime: "native",
+    // system{totalKb, freeKb, availableKb}, app{workingSetKb,
+    // peakWorkingSetKb, totalWorkingSetKb}, processes[{type "Main", pid,
+    // workingSetKb, peakWorkingSetKb, cpuPercent|null}],
+    // capabilities{processMetricsAvailable, systemMemoryAvailable} }.
+    QVariantMap snapshot() const;
+
+private:
+    QString m_procRoot = QStringLiteral("/proc");
+    mutable qint64 m_peakWorkingSetKb = 0; // monotonic across polls
+};
+
 } // namespace workspace::diagnostics
