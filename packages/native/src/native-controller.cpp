@@ -2970,6 +2970,9 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
     result.status = row.value("status").toString();
     result.statusText = sourceTrimmed(row.value("status_text").toString());
     result.statusEmoji = sourceTrimmed(row.value("status_emoji").toString());
+    // Issue #88: contract null unless the row carries a display string.
+    result.lastSeen = row.value("last_seen").isString()
+        ? sourceTrimmed(row.value("last_seen").toString()) : QString();
     qint64 updatedAt = 0; // Source user.model getTimestamp: invalid/missing date is zero.
     if (row.value("updated_at").isString()) {
         const auto date = QDateTime::fromString(row.value("updated_at").toString(), Qt::ISODateWithMs);
@@ -2984,6 +2987,7 @@ NativeController::UserPresentation NativeController::makeUserPresentation(
         result.status = previous.status;
         result.statusText = previous.statusText;
         result.statusEmoji = previous.statusEmoji;
+        result.lastSeen = previous.lastSeen;
         return result;
     }
     result.presenceUpdatedAt = updatedAt;
@@ -3027,6 +3031,12 @@ QString NativeController::userStatusLabel(const QString &id) const
 {
     if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
     return m_names.value(id).statusLabel;
+}
+
+QString NativeController::userLastSeen(const QString &id) const
+{
+    if (!authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return {};
+    return m_names.value(id).lastSeen;
 }
 
 QString NativeController::userAvatar(const QString &id) const
@@ -3445,6 +3455,14 @@ QVariantMap NativeController::directPeer() const
     choice["avatar"] = userAvatar(id);
     choice["presence"] = userPresence(id);
     choice["accountDeactivated"] = userAccountDeactivated(id);
+    // Issue #88 caption inputs (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md).
+    // customStatus is the combined custom status with its emoji, shown
+    // as-is by resolveDmStatusText; lastSeen is the last-seen display
+    // string, contract null when empty. typing is deliberately not
+    // projected: none of the handled realtime kinds carries it, and the
+    // projection never invents facts.
+    choice["customStatus"] = userStatusLabel(id);
+    choice["lastSeen"] = userLastSeen(id);
     return choice;
 }
 

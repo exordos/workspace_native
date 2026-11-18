@@ -64,6 +64,12 @@
         <name>Main</name>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Account deactivated</source><translation>Пользователь заблокирован</translation></message>
+        <!-- Issue #88 (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md): reference
+             chat.typing and presence.lastSeen plus a11y.openUserProfile
+             wording at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af. -->
+        <message><source>Typing</source><translation>Печатает</translation></message>
+        <message><source>last seen %1</source><translation>был(а) %1</translation></message>
+        <message><source>Open profile: %1</source><translation>Открыть профиль: %1</translation></message>
         <message><source>Select</source><translation>Выбрать</translation></message>
         <message><source>Deselect</source><translation>Снять выделение</translation></message>
         <message><source>Selected: %1</source><translation>Выбрано: %1</translation></message>
