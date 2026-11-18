@@ -1759,6 +1759,60 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        // Issue #61 (reference login-page.ui.tsx:524-536): the
+                        // block renders only when organization discovery kept an
+                        // https registration URL (normalized at the Session parse
+                        // site); a press hands the URL to the system default
+                        // browser, mirroring the reference target=_blank anchor.
+                        Loader {
+                            Layout.fillWidth: true
+                            active: (root.controller.organizationSettings.registrationUrl || "").length > 0
+                            sourceComponent: ColumnLayout {
+                                objectName: "registrationBlock"
+                                spacing: 8
+                                Text {
+                                    objectName: "registrationHintText"
+                                    Layout.fillWidth: true
+                                    text: qsTr("No account?")
+                                    textFormat: Text.PlainText
+                                    color: root.colors["text-muted"]
+                                    font.pixelSize: 14
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                                NativeButton {
+                                    id: registerButton
+                                    objectName: "registerButton"
+                                    colors: root.colors
+                                    Layout.fillWidth: true
+                                    implicitHeight: 36
+                                    horizontalPadding: 16
+                                    font.pixelSize: 14
+                                    font.weight: Font.Medium
+                                    readonly property string url:
+                                        root.controller.organizationSettings.registrationUrl || ""
+                                    text: qsTr("Register")
+                                    contentItem: Text {
+                                        text: registerButton.text
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-primary"]
+                                        font: registerButton.font
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        readonly property color tone: root.colors["bg-elevated"]
+                                        radius: 8
+                                        color: registerButton.hovered
+                                            ? Qt.rgba(tone.r, tone.g, tone.b, 0.6) : tone
+                                        border.width: registerButton.visualFocus ? 2 : 1
+                                        border.color: registerButton.visualFocus
+                                            ? root.colors.accent : root.colors["border-subtle"]
+                                    }
+                                    Accessible.name: registerButton.text
+                                    onClicked: Qt.openUrlExternally(registerButton.url)
+                                }
+                            }
+                        }
                     }
                 }
                 Loader {

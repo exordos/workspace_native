@@ -16336,6 +16336,69 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    // Issue #61: the registration entry appears in the credentials step only
+    // when the organization advertises an https registration URL; http and
+    // javascript values never render the block.
+    void loginRegistrationEntryFollowsServerSettings_data()
+    {
+        QTest::addColumn<QString>("advertised"); // empty string: the field is absent
+        QTest::addColumn<bool>("present");
+        QTest::newRow("https") << QString("https://reg.example/signup") << true;
+        QTest::newRow("absent") << QString() << false;
+        QTest::newRow("http") << QString("http://reg.example/signup") << false;
+        QTest::newRow("javascript") << QString("javascript:alert(1)") << false;
+    }
+    void loginRegistrationEntryFollowsServerSettings()
+    {
+        QFETCH(QString, advertised); QFETCH(bool, present);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        server.handler = [&advertised](const Request &request) {
+            if (request.target.path().endsWith("/server_settings")) {
+                QJsonObject payload{{"result", "success"}, {"realm_name", "Acme Realm"}};
+                if (!advertised.isEmpty())
+                    payload.insert("registration_url", advertised);
+                return Response{payload};
+            }
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        QVERIFY(item(content, "signInButton"));
+        if (!present) {
+            // Reference test 377: the credentials form is shown, and neither
+            // the hint nor the Register button exists at all.
+            QVERIFY(!item(content, "registrationBlock"));
+            QVERIFY(!item(content, "registerButton"));
+            return;
+        }
+        auto *hint = item(content, "registrationHintText");
+        QVERIFY(hint);
+        auto *button = item(content, "registerButton");
+        QVERIFY(button);
+        QCOMPARE(hint->property("text").toString(), QString("No account?"));
+        QCOMPARE(button->property("text").toString(), QString("Register"));
+        // Reference test 363: the anchor carries exactly the advertised href.
+        QCOMPARE(button->property("url").toString(), advertised);
+        // Measured anchor: h-9 (36 px) full-width box below the sign-in button.
+        QCOMPARE(button->height(), qreal(36));
+        QCOMPARE(button->width(), item(content, "userInput")->width());
+        QVERIFY(button->mapToScene(QPointF()).y()
+            > item(content, "signInButton")->mapToScene(QPointF()).y());
+    }
+
     void loginOtpAppearsOnlyAfterChallenge_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
