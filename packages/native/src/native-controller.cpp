@@ -7101,8 +7101,13 @@ void NativeController::ensureSelfStream()
     const auto key = owner + QStringLiteral(":generation:") + QString::number(generation);
     // One in-flight ensure per runtime generation; repeated calls reuse it
     // (workspace-self-chat.hook.ts:48-56).
-    if (m_selfStreamEnsures.contains(key))
+    if (m_selfStreamEnsures.contains(key)) {
+        // Reusing the in-flight request must still restore the loading view
+        // state: leaving the page cleared it (leaveFavorites), so without
+        // this the reopened page shows neither content nor a spinner.
+        m_favoritesStatus = QStringLiteral("loading");
         return;
+    }
     m_favoritesStatus = QStringLiteral("loading");
     m_favoritesError.clear();
     const auto ticket = ++m_favoritesEnsureSeq;
@@ -7134,8 +7139,14 @@ void NativeController::ensureSelfStream()
         ++m_streamRevision;
         persistStreams();
         emit streamsChanged();
-        openSelfStream(parsed->uuid, parsed->defaultTopic);
-        emit stateChanged();
+        // The catalog update above always lands; opening the stream belongs
+        // to the initiating Favorites route only. If the user navigated away
+        // while the create was in flight, re-selecting here would reopen the
+        // page they left and steal their navigation.
+        if (m_favoritesVisible) {
+            openSelfStream(parsed->uuid, parsed->defaultTopic);
+            emit stateChanged();
+        }
     });
     emit stateChanged();
 }
