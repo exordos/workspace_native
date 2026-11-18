@@ -1297,6 +1297,34 @@
         <source>The message may already have been sent. Discard its pending status and keep the current draft?</source>
         <translation>Возможно, сообщение уже отправлено. Удалить его из очереди и сохранить текущий черновик?</translation>
     </message>
+    <message>
+        <source>Create folder</source>
+        <translation>Создать папку</translation>
+    </message>
+    <message>
+        <source>Rename folder</source>
+        <translation>Переименовать папку</translation>
+    </message>
+    <message>
+        <source>Folder name</source>
+        <translation>Название папки</translation>
+    </message>
+    <message>
+        <source>Color</source>
+        <translation>Цвет</translation>
+    </message>
+    <message>
+        <source>Preview</source>
+        <translation>Пример</translation>
+    </message>
+    <message>
+        <source>Delete folder?</source>
+        <translation>Удалить папку?</translation>
+    </message>
+    <message>
+        <source>Are you sure you want to delete &quot;%1&quot;?</source>
+        <translation>Вы уверены, что хотите удалить «%1»?</translation>
+    </message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -2631,6 +2659,18 @@
     <message>
         <source>Only text messages can be forwarded.</source>
         <translation>Пересылать можно только текстовые сообщения.</translation>
+    </message>
+    <message>
+        <source>Could not create folder</source>
+        <translation>Не удалось создать папку</translation>
+    </message>
+    <message>
+        <source>Could not update folder</source>
+        <translation>Не удалось обновить папку</translation>
+    </message>
+    <message>
+        <source>Could not delete folder</source>
+        <translation>Не удалось удалить папку</translation>
     </message>
 </context>
     <context>
