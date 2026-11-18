@@ -12568,7 +12568,13 @@ void NativeController::loadFolders()
             row.systemType = folderRailSystemType(uuid, reported, index, fixedAllPresent);
             const auto color = raw.contains("backgroundColorValue")
                 ? raw.value("backgroundColorValue") : raw.value("background_color_value");
-            row.color = quint32(color.toDouble()) & 0x00ffffffu;
+            // Reference adaptMessengerFolder (messenger-adapters.lib.ts):
+            // `dto.background_color_value ?? null`. A missing or null DTO
+            // value is unset (nullopt), a numeric one - 0x00000000 black
+            // included - keeps its RGB part (review cid 4616033386).
+            row.color = color.isDouble()
+                ? std::optional<quint32>(quint32(color.toDouble()) & 0x00ffffffu)
+                : std::nullopt;
             row.unread = qMax(0, (raw.contains("unreadCount")
                 ? raw.value("unreadCount") : raw.value("unread_count")).toInt());
             const auto items = raw.contains("folderItems")
@@ -12681,7 +12687,9 @@ QVariantList NativeController::folders() const
     QVariantList result;
     for (const auto &row : m_folders)
         result.append(QVariantMap{{"key", row.key}, {"id", row.uuid}, {"title", row.title},
-            {"systemType", row.systemType}, {"color", row.color}, {"unreadCount", row.unread},
+            {"systemType", row.systemType},
+            {"color", row.color ? QVariant(*row.color) : QVariant()},
+            {"unreadCount", row.unread},
             {"streamIds", row.streamIds}, {"synthesized", row.synthesized}});
     return result;
 }
