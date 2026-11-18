@@ -1608,6 +1608,25 @@ struct KeyManagementRestart {
     }
 };
 
+inline const QString selfStreamId = "d0d0d0d0-d0d0-4d0d-8d0d-000000000001";
+inline const QString selfDefaultTopic = "d1d1d1d1-d1d1-4d1d-8d1d-111111111111";
+
+QJsonObject selfChatStreamDto()
+{
+    auto row = creationChannel(selfStreamId, "Personal notes");
+    row["private"] = true;
+    row["direct_user_uuid"] = userId;
+    row["default_topic_uuid"] = selfDefaultTopic;
+    return row;
+}
+
+QJsonObject selfDefaultTopicDto()
+{
+    auto row = creationTopic(selfDefaultTopic, selfStreamId, "Personal notes");
+    row["is_default"] = true;
+    return row;
+}
+
 class NativeControllerTest final : public QObject {
     Q_OBJECT
 public:
@@ -18253,6 +18272,193 @@ private slots:
                 ++starredRequests;
         QCOMPARE(starredRequests, 2);
         QVERIFY(!queries->last().hasQueryItem("page_marker"));
+    }
+
+    // ---- Favorites self-chat (issue #70, docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md) ----
+    //
+    // Reference contract (workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af):
+    // workspace-self-chat.hook.ts:48-76 (ensure direct stream with self,
+    // "Personal notes", one in-flight request per runtime generation),
+    // messenger-self-chat.lib.ts:8-18 (isPrivate && directUserUuid === user),
+    // messenger-sidebar.lib.ts:560,592,616,656 and sidebar-shell.ui.tsx:124
+    // (self stream filtered from every ordinary chat projection).
+
+    void favoritesEnsureCreatesSelfStreamOnceAndReuses()
+    {
+        Fixture fixture;
+        auto posts = std::make_shared<int>(0);
+        auto postBodies = std::make_shared<QVector<QJsonObject>>();
+        auto postStatus = std::make_shared<int>(201);
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, postBodies, postStatus, selfStream](const Request &request) {
+            if (request.method == "POST") {
+                ++*posts;
+                postBodies->append(request.body);
+                return Response{selfStream, *postStatus, 0, {}};
+            }
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}};
+            if (*posts > 0) rows.append(selfStream);
+            return Response{rows};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(!fixture.controller.favoritesVisible());
+        fixture.controller.showFavorites();
+        QVERIFY(fixture.controller.favoritesVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        // The reference create body (messenger-create-chat-actions.lib.ts:202-217
+        // through workspace-self-chat.hook.ts:53-60): "Personal notes", empty
+        // description, source_name native, direct_user_uuid = the session user.
+        QCOMPARE(*posts, 1);
+        QCOMPARE(postBodies->first().value("name").toString(), QStringLiteral("Personal notes"));
+        QCOMPARE(postBodies->first().value("description").toString(), QString{});
+        QCOMPARE(postBodies->first().value("source_name").toString(), QStringLiteral("native"));
+        QCOMPARE(postBodies->first().value("direct_user_uuid").toString(), userId);
+        // ready lands on the self stream's default topic (hook ready route:
+        // {streamUuid, topicUuid}).
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+        QCOMPARE(fixture.controller.selectedTopic(), selfDefaultTopic);
+        // Repeated calls reuse the catalog entry: no second create request,
+        // still ready on the same route.
+        fixture.controller.closeFavorites();
+        QVERIFY(!fixture.controller.favoritesVisible());
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(*posts, 1);
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+        QCOMPARE(fixture.controller.selectedTopic(), selfDefaultTopic);
+    }
+
+    void favoritesEnsureDeduplicatesConcurrentCallsPerGeneration()
+    {
+        Fixture fixture;
+        auto posts = std::make_shared<int>(0);
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, gates, selfStream](const Request &request) {
+            if (request.method == "POST") {
+                ++*posts;
+                Response response{selfStream, 201, 0, {}};
+                response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return response;
+            }
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}};
+            return Response{rows};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the create is in flight
+        // Repeated calls while in flight reuse the one request per generation
+        // (ensureRequestsByRuntimeKey, workspace-self-chat.hook.ts:48-56).
+        fixture.controller.showFavorites();
+        fixture.controller.retryFavorites();
+        QCOMPARE(*posts, 1);
+        QVERIFY(fixture.controller.favoritesStatus() == QStringLiteral("loading"));
+        for (auto &release : *gates) release();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(*posts, 1);
+    }
+
+    void favoritesEnsureFailureSetsErrorAndRetryRecovers()
+    {
+        Fixture fixture;
+        auto posts = std::make_shared<int>(0);
+        auto postStatus = std::make_shared<int>(500);
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, postStatus, selfStream](const Request &request) {
+            if (request.method == "POST") {
+                ++*posts;
+                if (*postStatus != 201) return Response{QJsonObject{{"detail", "nope"}}, *postStatus, 0, {}};
+                return Response{selfStream, 201, 0, {}};
+            }
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}};
+            return Response{rows};
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("error"), 4000);
+        // The reference error card copy is favorites.loadError regardless of
+        // the transport detail (chat-page.ui.tsx:56-65).
+        QVERIFY(!fixture.controller.favoritesError().isEmpty());
+        QVERIFY(fixture.controller.favoritesVisible());
+        QCOMPARE(*posts, 1);
+        // Retry starts a fresh request (the settled entry is dropped,
+        // workspace-self-chat.hook.ts:63-68).
+        *postStatus = 201;
+        fixture.controller.retryFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(*posts, 2);
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+        QCOMPARE(fixture.controller.selectedTopic(), selfDefaultTopic);
+    }
+
+    void favoritesSelfStreamIsHiddenFromOrdinaryLists()
+    {
+        Fixture fixture;
+        auto posts = std::make_shared<int>(0);
+        auto selfStream = selfChatStreamDto();
+        const auto fallbackTopics = fixture.topics;
+        fixture.topics = [this, fallbackTopics](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == selfStreamId)
+                return Response{QJsonArray{selfDefaultTopicDto()}};
+            if (!fallbackTopics) return Response{QJsonArray{QJsonObject{{"uuid", topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"}}}};
+            return fallbackTopics(request);
+        };
+        fixture.streams = [posts, selfStream](const Request &request) {
+            if (request.method == "POST") ++*posts;
+            QJsonArray rows{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}}, selfStream};
+            return Response{rows};
+        };
+        // One ordinary row is visible; the self stream never enters any
+        // sidebar/folder projection (messenger-sidebar.lib.ts:560,592,616,656).
+        QVERIFY(fixture.start({}, 2));
+        const auto ids = [](const QVariantList &rows) {
+            QStringList result;
+            for (const auto &value : rows) result.append(value.toMap().value("id").toString());
+            return result;
+        };
+        // streams() keeps the lookup row (header/encryption lookups resolve it);
+        // only the sidebar and folder projections drop it.
+        auto catalogIds = ids(fixture.controller.streams());
+        catalogIds.sort();
+        const QStringList expectedCatalog{streamId, selfStreamId}; // sorted by id (3333... < d0d0...)
+        QCOMPARE(catalogIds, expectedCatalog);
+        QCOMPARE(ids(fixture.controller.sidebarStreams()), QStringList{streamId});
+        // A Personal notes stream created by any client still opens through
+        // Favorites without any create request.
+        fixture.controller.showFavorites();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.favoritesStatus() == QStringLiteral("ready"), 4000);
+        QCOMPARE(*posts, 0);
+        QCOMPARE(fixture.controller.selectedStream(), selfStreamId);
+        QCOMPARE(ids(fixture.controller.sidebarStreams()), QStringList{streamId});
     }
 
     // ---- Project Feed page (#38, docs/NATIVE_DESKTOP_FEED.md) ----

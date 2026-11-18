@@ -107,6 +107,11 @@ ApplicationWindow {
         anchors.topMargin: root.controller.authenticated ? 4 : 8
         anchors.bottom: parent.bottom
         colors: root.colors
+        // Favorites forces the right drawer closed when it mounts
+        // (chat-page.ui.tsx:40-42 setRightDrawerOpen(false) plus
+        // useCloseFavoritesRightDrawer; issue #70).
+        readonly property bool favoritesActive: root.controller.favoritesVisible
+        onFavoritesActiveChanged: if (favoritesActive) rightDrawer.close()
         NativeChannelInfo {
             id: channelInfoLayer
             objectName: "channelInfoLayer"
@@ -3408,22 +3413,21 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredHeight: 32
-                            enabled: modelData.id === "drafts" || modelData.id === "mentions"
-                                || modelData.id === "inbox" || modelData.id === "starred"
+                            enabled: true
                             selected: modelData.id === "drafts" && root.controller.draftsVisible
                                 || modelData.id === "mentions" && root.controller.mentionsVisible
                                 || modelData.id === "inbox" && root.controller.inboxVisible
                                 || modelData.id === "starred" && root.controller.starredVisible
+                                || modelData.id === "favorites" && root.controller.favoritesVisible
                             asset: modelData.asset
                             glyphSize: modelData.size
-                            help: modelData.id === "drafts" || modelData.id === "mentions"
-                                || modelData.id === "inbox" || modelData.id === "starred"
-                                ? modelData.name : qsTr("%1 is not implemented yet").arg(modelData.name)
+                            help: modelData.name
                             onClicked: {
                                 if (modelData.id === "drafts") root.controller.showDrafts();
                                 else if (modelData.id === "mentions") root.controller.showMentions();
                                 else if (modelData.id === "inbox") root.controller.showInbox();
                                 else if (modelData.id === "starred") root.controller.showStarred();
+                                else if (modelData.id === "favorites") root.controller.showFavorites();
                             }
                             background: Rectangle {
                                 radius: 6
@@ -3544,11 +3548,12 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 46
                                 radius: 8
-                                readonly property bool enabledItem: modelData.id !== "favorites"
+                                readonly property bool enabledItem: true
                                 readonly property bool routeActive: modelData.id === "inbox" && root.controller.inboxVisible
                                     || modelData.id === "mentions" && root.controller.mentionsVisible
                                     || modelData.id === "drafts" && root.controller.draftsVisible
                                     || modelData.id === "starred" && root.controller.starredVisible
+                                    || modelData.id === "favorites" && root.controller.favoritesVisible
                                 readonly property int activityCount:
                                     modelData.id === "inbox" ? root.controller.activityInboxCount
                                         : modelData.id === "mentions" ? root.controller.activityMentionsCount : -1
@@ -3562,6 +3567,7 @@ ApplicationWindow {
                                     else if (modelData.id === "mentions") root.controller.showMentions();
                                     else if (modelData.id === "drafts") root.controller.showDrafts();
                                     else if (modelData.id === "starred") root.controller.showStarred();
+                                    else if (modelData.id === "favorites") root.controller.showFavorites();
                                 }
                                 MouseArea {
                                     id: rowPointer
@@ -3586,9 +3592,7 @@ ApplicationWindow {
                                         asset: activityRow.modelData.asset
                                         icon.color: "#ffffff"
                                         enabled: activityRow.enabledItem
-                                        help: activityRow.enabledItem
-                                            ? activityRow.modelData.name
-                                            : qsTr("%1 is not implemented yet").arg(activityRow.modelData.name)
+                                        help: activityRow.modelData.name
                                         background: Rectangle {
                                             objectName: "activityChipBg-" + activityRow.modelData.id
                                             radius: 15
@@ -4531,6 +4535,7 @@ ApplicationWindow {
                 && !root.controller.inboxVisible && !root.controller.feedVisible
                 && !root.controller.starredVisible
                 && !root.controller.reactionsVisible
+                && !(root.controller.favoritesVisible && root.controller.favoritesStatus !== "ready")
                 && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -4542,8 +4547,27 @@ ApplicationWindow {
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
                 color: root.colors["bg-elevated"]
+                // Favorites presentation (issue #70): ChatFavoritesHeader shows only
+                // the h1 title - text-base font-semibold text-text-primary
+                // (chat-header-favorites.ui.tsx:5-10); the ordinary topic/direct/
+                // encrypted titles and the header actions stay hidden.
+                Text {
+                    objectName: "favoritesConversationHeader"
+                    visible: root.controller.favoritesVisible
+                    anchors.left: parent.left
+                    anchors.leftMargin: 20
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, parent.width - 40)
+                    text: qsTr("Favorites")
+                    textFormat: Text.PlainText
+                    color: root.colors["text-primary"]
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
                 RowLayout {
                     visible: !root.controller.isDirectConversation && !root.encryptedConversation
+                        && !root.controller.favoritesVisible
                     x: 20
                     y: 8
                     height: 20
@@ -4572,6 +4596,7 @@ ApplicationWindow {
                 RowLayout {
                     objectName: "encryptedConversationHeader"
                     visible: root.encryptedConversation && !root.controller.isDirectConversation
+                        && !root.controller.favoritesVisible
                     x: 20; y: 12; height: 42
                     // Source shell: horizontal20 plus existing side-panel36.
                     width: parent.width - 76
@@ -4653,7 +4678,7 @@ ApplicationWindow {
                 }
                 RowLayout {
                     objectName: "directConversationHeader"
-                    visible: root.controller.isDirectConversation
+                    visible: root.controller.isDirectConversation && !root.controller.favoritesVisible
                     x: 20
                     y: 8
                     height: 40
@@ -4761,6 +4786,9 @@ ApplicationWindow {
                     }
                 }
                 Row {
+                    // The favorites header carries no actions (ChatHeaderShell renders
+                    // the empty ChatHeaderActions for ChatFavoritesHeader, issue #70).
+                    visible: !root.controller.favoritesVisible
                     anchors.right: parent.right
                     anchors.rightMargin: 20
                     anchors.verticalCenter: parent.verticalCenter
@@ -9300,6 +9328,17 @@ ApplicationWindow {
             controller: root.controller
             colors: root.colors
             visible: root.controller.reactionsVisible
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+        }
+        // Favorites self-chat page (#70, docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md):
+        // the reference renders the header with either the spinner or the
+        // error card (chat-page.ui.tsx:46-70); the ready state renders the
+        // conversation column itself with the favorites header presentation.
+        NativeFavoritesPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.favoritesVisible && root.controller.favoritesStatus !== "ready"
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

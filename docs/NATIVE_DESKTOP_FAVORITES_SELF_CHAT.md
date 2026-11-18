@@ -91,11 +91,12 @@ only fidelity source.
   into the stream catalog (reference `upsertStream`), and opened; the default
   topic comes from the DTO, with one `GET /stream_topics/?stream_uuid=` pass as
   the fallback (reference `findWorkspaceDefaultTopic`).
-- List filtering: `NativeController::streams()` (the projection behind
-  `sidebarStreams`, the folder membership filter and global topic search)
-  skips self-chat rows exactly like the reference list filters above; the
-  conversation surface still resolves the selected self stream because the
-  filter lives in the projection, not in the catalog.
+- List filtering: `NativeController::sidebarStreams()` drops self-chat rows,
+  and `streams()` keeps them. The reference filters the sidebar projections, not
+  the catalog (`messenger-sidebar.lib.ts:560,592,616,656`); keeping `streams()`
+  complete is what lets header title, encryption and unread lookups resolve the
+  selected self stream while the ordinary lists stay clean. `isFavoritesSelfStream`
+  is the single predicate used by both the filter and the ensure flow.
 - `favoritesError` surfaces the reference copy: `tr("Could not open
   Favorites.")` (favorites.loadError). `app.loading` maps to the existing
   `tr("Loading…")` catalog entry; `app.retry` maps to `tr("Try again")`.
@@ -143,9 +144,10 @@ catalog completeness): the favorites header title
   - `favoritesEnsureFailureSetsErrorAndRetryRecovers` - POST 500 -> `error`
     status with the reference copy; `retryFavorites` succeeds and opens.
   - `favoritesSelfStreamIsHiddenFromOrdinaryLists` - a catalog with a
-    "Personal notes" self stream: `streams()` / `sidebarStreams()` omit it
-    while an ordinary stream remains; folder membership projection also omits
-    it; opening Favorites uses the catalog entry with zero POSTs.
+    "Personal notes" self stream: `sidebarStreams()` omits it while an
+    ordinary stream remains; `streams()` still carries it for lookup purposes;
+    folder membership projection also omits it; opening Favorites uses the
+    catalog entry with zero POSTs.
 - `native-native-window` (tests/native-window-test.cpp, inside
   `NativeWindowTest`):
   - `favoritesChipOpensSelfChatConversation` - the enabled chip opens the

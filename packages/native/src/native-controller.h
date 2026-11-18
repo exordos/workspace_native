@@ -230,6 +230,12 @@ class NativeController final : public QObject {
     // Activity reactions unsupported state (#43, addendum to
     // docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md): route-only, no data, no chip.
     Q_PROPERTY(bool reactionsVisible READ reactionsVisible NOTIFY stateChanged)
+    // Favorites self-chat (#70, docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md):
+    // the "Personal notes" stream of the verified user, opened only through
+    // the Favorites chip; status is "" | "loading" | "ready" | "error".
+    Q_PROPERTY(bool favoritesVisible READ favoritesVisible NOTIFY stateChanged)
+    Q_PROPERTY(QString favoritesStatus READ favoritesStatus NOTIFY stateChanged)
+    Q_PROPERTY(QString favoritesError READ favoritesError NOTIFY stateChanged)
     Q_PROPERTY(bool cacheStale READ cacheStale NOTIFY stateChanged)
     Q_PROPERTY(QString anchorMessageId READ anchorMessageId NOTIFY anchorChanged)
     // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): visibility for the
@@ -473,6 +479,9 @@ public:
     bool starredVisible() const { return m_starredVisible; }
     QVariantMap starredPage() const;
     bool reactionsVisible() const { return m_reactionsVisible; }
+    bool favoritesVisible() const { return m_favoritesVisible; }
+    QString favoritesStatus() const { return m_favoritesStatus; }
+    QString favoritesError() const { return m_favoritesError; }
 
     Q_INVOKABLE void login(const QString &server, const QString &user,
                            const QString &password, const QString &otp);
@@ -547,6 +556,12 @@ public:
     Q_INVOKABLE void loadMoreStarred();
     Q_INVOKABLE void retryStarred();
     Q_INVOKABLE void openStarredMessage(const QString &id);
+    // Favorites self-chat page (#70): ensure/find the "Personal notes"
+    // direct stream with self and open it with the favorites presentation
+    // (workspace-self-chat.hook.ts, chat-page.ui.tsx FavoritesPage).
+    Q_INVOKABLE void showFavorites();
+    Q_INVOKABLE void closeFavorites();
+    Q_INVOKABLE void retryFavorites();
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
@@ -1949,7 +1964,7 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses, Diagnostics };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses, Diagnostics, Favorites };
 
     // Issue #50: diagnostics collector helpers (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     workspace::diagnostics::SessionLogSummary diagnosticsLogSummary() const;
@@ -1957,6 +1972,14 @@ private:
 
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
+    // Reference detection (messenger-self-chat.lib.ts:8-18): isPrivate with
+    // direct_user_uuid equal to the verified session user; the archived row
+    // still counts as self-chat for every ordinary list projection.
+    std::optional<Stream> findSelfStream() const;
+    void runFavoritesFlow();
+    void ensureSelfStream();
+    void openSelfStream(const QString &streamUuid, const QString &preferredTopic);
+    void leaveFavorites();
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
     // stream/topic/created_at are needed for the read-boundary and scope clears
     // of activity-realtime-applier.lib.ts:55-105.
@@ -2007,6 +2030,14 @@ private:
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool m_starredVisible = false;
     StarredCollection m_starred;
+    // Favorites self-chat (#70). m_selfStreamEnsures deduplicates one
+    // in-flight create per runtime generation (workspace-self-chat.hook.ts:36,
+    // 48-56); the entry drops when the request settles (lines 63-68).
+    bool m_favoritesVisible = false;
+    QString m_favoritesStatus, m_favoritesError;
+    QHash<QString, quint64> m_selfStreamEnsures;
+    quint64 m_favoritesEnsureSeq = 0;
+    quint64 m_favoritesWatch = 0;
     QString m_section = QStringLiteral("chat");
     QString m_sectionBeforeLicenses = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
