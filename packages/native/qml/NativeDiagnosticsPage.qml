@@ -1061,16 +1061,27 @@ FocusScope {
         // destination left the user without a file or an error. The inline
         // red line follows the page's existing inline-state pattern (the ping
         // / copy feedback states) and clears on the next attempt or reopen.
+        //
+        // Review 4617359914 on #411: the line was anchored to the right of the
+        // results label with no right bound and no wrapping, so its recovery
+        // instructions ran past the popup edge at narrow widths. It now flows
+        // on its own row below the results label, bounded by the popup content
+        // width with the same 12 px side margins the neighbouring blocks use,
+        // and wraps instead of growing sideways.
         Text {
             id: logsExportErrorText
             objectName: "logsExportError"
             visible: page.logsExportState === "error"
-            anchors.top: logsResultsLabel.top
-            anchors.left: logsResultsLabel.right
-            anchors.leftMargin: 8
+            anchors.top: logsResultsLabel.bottom
+            anchors.topMargin: visible ? 4 : 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
             text: qsTr("The logs could not be exported to the selected location. Pick another folder and try again.")
             font.pixelSize: 11 // text-[11px]
             color: page.colors["indicator-red"]
+            wrapMode: Text.Wrap // wraps within the popup, so the row grows in height
         }
 
         // "Recent errors" block (open by default, only when present):
@@ -1079,7 +1090,9 @@ FocusScope {
             id: logsRecentErrorsBlock
             objectName: "logsRecentErrorsBlock"
             visible: page.logsRecentErrors.length > 0
-            anchors.top: logsResultsLabel.bottom
+            // Flows below the export-error row when it is showing, so the
+            // wrapped error line (review 4617359914) gets its own height.
+            anchors.top: logsExportErrorText.visible ? logsExportErrorText.bottom : logsResultsLabel.bottom
             anchors.topMargin: visible ? 6 : 0
             anchors.left: parent.left
             anchors.right: parent.right
