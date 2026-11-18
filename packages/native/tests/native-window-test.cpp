@@ -31444,6 +31444,87 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(goodPath), 4000);
         QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("logsExportError"), 4000);
     }
+
+    // Review 4617359914 on #411: the export-error line started after the
+    // results label with no right bound and no wrapping, so on a narrow
+    // modal the recovery instructions fell outside the popup. The label
+    // must stay fully inside the popup content area, bounded by its width
+    // and wrapping onto as many lines as it needs.
+    void diagnosticsLogViewerModalExportErrorWrapsWithinNarrowModal()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Export error wrap teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        // Narrow the window so the popup ends up narrower than the error
+        // line's natural single-row width (popup tracks the overlay width).
+        window->resize(420, 760);
+        QTRY_COMPARE_WITH_TIMEOUT(window->width(), 420, 4000);
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        controller.clearSessionLog();
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Exportable line"));
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsExportButton"), 4000);
+        auto *saveDialog=window->findChild<QObject*>("diagnosticsLogsSaveDialog"); QVERIFY(saveDialog);
+        // Same forced-failure path as the actionable-error case: a parent
+        // folder that does not exist cannot be written.
+        const auto unwritable=directory.filePath("missing-parent/session-logs.json");
+        QVERIFY(saveDialog->setProperty("selectedFile", QUrl::fromLocalFile(unwritable)));
+        QMetaObject::invokeMethod(saveDialog, "accepted");
+        QVERIFY(!QFile::exists(unwritable));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsExportError"), 4000);
+        auto *error=visibleItem("logsExportError"); QVERIFY(error);
+        auto *popupContent=error->parentItem(); QVERIFY(popupContent);
+        // The shipped Window minimumWidth (700) clamps the platform window in
+        // a windowed session, so constrain the popup itself: the error label
+        // must honor the popup's own width at any modal width.
+        QObject *logsModal=nullptr;
+        const auto modalCandidates=window->findChildren<QObject*>("logsModal");
+        for (auto *candidate:modalCandidates)
+            if (!qobject_cast<QQuickItem*>(candidate)) { logsModal=candidate; break; }
+        QVERIFY2(logsModal, "logsModal popup object not found");
+        logsModal->setProperty("width", 300); // drops the overlay-width binding
+        QTRY_VERIFY_WITH_TIMEOUT(popupContent->width()<=301, 2000);
+        QVERIFY2(error->width()>0, qPrintable(QStringLiteral("label width=%1").arg(error->width())));
+        // The whole label stays inside the popup content area's scene rect.
+        const auto popupTopLeft=popupContent->mapToScene(QPointF(0,0));
+        const auto popupBottomRight=popupContent->mapToScene(
+            QPointF(popupContent->width(), popupContent->height()));
+        const auto errorTopLeft=error->mapToScene(QPointF(0,0));
+        const auto errorBottomRight=error->mapToScene(QPointF(error->width(), error->height()));
+        QVERIFY2(errorTopLeft.x()>=popupTopLeft.x()-1
+                &&errorBottomRight.x()<=popupBottomRight.x()+1,
+            qPrintable(QStringLiteral("x error=[%1..%2] popup=[%3..%4]")
+                .arg(errorTopLeft.x()).arg(errorBottomRight.x())
+                .arg(popupTopLeft.x()).arg(popupBottomRight.x())));
+        QVERIFY2(errorTopLeft.y()>=popupTopLeft.y()-1
+                &&errorBottomRight.y()<=popupBottomRight.y()+1,
+            qPrintable(QStringLiteral("y error=[%1..%2] popup=[%3..%4]")
+                .arg(errorTopLeft.y()).arg(errorBottomRight.y())
+                .arg(popupTopLeft.y()).arg(popupBottomRight.y())));
+        // The label width is bounded by the popup width minus both margins.
+        QVERIFY2(error->width()<=popupContent->width()-20,
+            qPrintable(QStringLiteral("label=%1 popup content=%2")
+                .arg(error->width()).arg(popupContent->width())));
+        // Wrapping is actually engaged: a wrap mode is set and the label
+        // grew past a single line's height to fit the bounded width.
+        QVERIFY2(error->property("wrapMode").toInt()!=0, "export error label does not wrap (Text.NoWrap)");
+        const QFont errorFont=error->property("font").value<QFont>();
+        QVERIFY(errorFont.pixelSize()>0);
+        QVERIFY2(error->height()>QFontMetricsF(errorFont).height(),
+            qPrintable(QStringLiteral("height=%1 single line=%2")
+                .arg(error->height()).arg(QFontMetricsF(errorFont).height())));
+    }
 };
 
 
