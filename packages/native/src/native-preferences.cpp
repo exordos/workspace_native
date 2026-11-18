@@ -827,6 +827,26 @@ void NativePreferences::noteFullscreenGateSignal()
     // moving for the settle interval; any further WM movement re-arms it.
     if (!m_window) { finishFullscreenGate(); return; }
     const auto state = m_window->windowState();
+    // #62 round 6 (review cid 4612931182): the FullScreen state observation
+    // is recorded the moment the signal arrives, not when recapture next
+    // runs. Once the atom has been seen the enter is over: a later WM
+    // restore is settled user geometry, so the enter flag must already be
+    // retired when the immediate save recaptures it. A window leaving
+    // fullscreen after the observation is then judged by the release rule,
+    // so arm that rule from the first observation: Qt confirms the atom
+    // locally before the fullscreen configure lands, so seed the shape with
+    // the screen geometry and let live fullscreen-sized signals refine it.
+    if (state == Qt::WindowFullScreen) {
+        if (m_fullscreenEnterInFlight) m_fullscreenRestoreInFlight = true;
+        m_fullscreenEnterInFlight = false;
+        const auto *screen = m_window->screen();
+        const auto geometry = m_window->geometry();
+        const bool filled = screen
+            && geometry.width() >= screen->geometry().width()
+            && geometry.height() >= screen->geometry().height();
+        if (filled) m_fullscreenSnapshot = geometry;
+        else if (screen) m_fullscreenSnapshot = screen->geometry();
+    }
     const bool reachedTarget = m_fullscreenAwaitingExit
         ? (m_fullscreenExitMaximized ? state == Qt::WindowMaximized : state == Qt::WindowNoState)
         : state == Qt::WindowFullScreen;
@@ -838,10 +858,13 @@ void NativePreferences::finishFullscreenGate()
 {
     m_fullscreenGateSettle.stop();
     m_fullscreenGateCap.stop();
-    // #62 round 5: the transition is over, settled or abandoned; from here on
-    // a WindowNoState frame is the window's own state again, recaptured by
-    // the rules above rather than treated as an enter transition.
-    m_fullscreenEnterInFlight = false;
+    // #62 round 6 (review cid 4611449708): the gate release - the cap in
+    // particular - must not clear the enter guard one statement before the
+    // recapture below, or a fullscreen transition whose state transition
+    // lags gets persisted as normal bounds by this very call. Only the
+    // FullScreen state observation retires the guard (noteFullscreenGateSignal);
+    // if that atom never arrived, the frame still lacks it and stays the
+    // transition for the recapture below and for any later save on this gate.
     if (!m_fullscreenPending) return;
     m_fullscreenPending = false;
     if (!m_window) return;

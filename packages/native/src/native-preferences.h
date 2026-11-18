@@ -215,20 +215,22 @@ private:
     // exactly these bounds as WindowNoState, so matching them marks a
     // transition rather than a settled user change (recaptureLiveWindowState).
     QRect m_maximizedGeometry;
-    // #62 round 4: the fullscreen shape the window wore when F11 released
-    // fullscreen, plus the in-flight flag for the restore sequence that
-    // release starts. A screen-filling WindowNoState counts as the WM hop
-    // only while that restore is in flight and the frame still equals this
-    // snapshot; a user-settled normal window may legitimately fill the
-    // screen, and its moves differ in shape and recapture normally
-    // (recaptureLiveWindowState).
+    // #62 round 4: the fullscreen shape the window wears, plus the in-flight
+    // flag for the restore sequence a release starts (F11 release, or the
+    // first FullScreen observation of an enter - round 6). A screen-filling
+    // WindowNoState counts as the WM hop only while that restore is in flight
+    // and the frame still equals this snapshot; a user-settled normal window
+    // may legitimately fill the screen, and its moves differ in shape and
+    // recapture normally (recaptureLiveWindowState).
     QRect m_fullscreenSnapshot;
     bool m_fullscreenRestoreInFlight = false;
     // #62 round 5 (review cid 4611449708): the enter-side mirror of the
     // release flag above. Set while F11 is taking a window INTO fullscreen and
-    // cleared once the FullScreen state atom has been observed (or the gate
-    // ends). A WM may deliver the fullscreen configure before the fullscreen
-    // state; while the enter is in flight, any WindowNoState re-capture lacks
+    // cleared when the FullScreen state observation arrives (round 6:
+    // recorded in noteFullscreenGateSignal the moment the signal lands, not
+    // at gate end - the cap must not retire it early, review cid 4611449708).
+    // A WM may deliver the fullscreen configure before the fullscreen state;
+    // while the enter is in flight, any WindowNoState re-capture lacks
     // that atom, so it is still the transition frame, not settled normal
     // bounds, and must not move the saved geometry or clear the maximized
     // flag (recaptureLiveWindowState).
