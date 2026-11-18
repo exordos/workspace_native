@@ -29,6 +29,7 @@
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QSignalSpy>
+#include <ctime>
 #include <QDBusConnection>
 #include <QDBusAbstractAdaptor>
 #include <QProcess>
@@ -28956,6 +28957,41 @@ private slots:
         QCOMPARE(summary.recentErrors.first().level, QStringLiteral("fatal"));
     }
 
+    // Review 4611502317 on #404: the parser stripped the 'Z' suffix before
+    // parsing, so Qt read the stamp in the machine-local zone. Recent errors
+    // could be missed (east of UTC shifts stamps into the past) or stay
+    // recent for hours (west of UTC shifts them into the future). Pin a
+    // non-UTC zone so the regression fails for the right reason on any host.
+    void diagnosticsSessionLogRecentWindowParsesStampsInUtcAcrossLocalZones()
+    {
+        using namespace workspace::diagnostics;
+        const QByteArray previousZone = qgetenv("TZ");
+        const auto restoreZone = qScopeGuard([previousZone] { qputenv("TZ", previousZone); tzset(); });
+        Q_UNUSED(restoreZone);
+        const qint64 base = QDateTime::fromString(
+            QStringLiteral("2026-01-02T12:00:00.000Z"), Qt::ISODateWithMs).toMSecsSinceEpoch();
+        const qint64 now = base + 30 * 1000; // "recent-a" is 30 s old, "outside-b" is 16 min old
+        const QString text = QStringLiteral(
+            "2026-01-02T11:44:00.000Z critical: outside-b\n"
+            "2026-01-02T12:00:00.000Z fatal: recent-a");
+        for (const auto *zone : { "Etc/GMT+5", "Etc/GMT-5" }) {
+            qputenv("TZ", zone);
+            tzset();
+            // Sanity: the pinned zone must really reach QDateTime, otherwise
+            // a UTC-only host would hide the regression instead of exposing it.
+            const auto shift = QDateTime::fromString(
+                QStringLiteral("2026-01-02T12:00:00.000"), Qt::ISODateWithMs).toMSecsSinceEpoch() - base;
+            QVERIFY2(shift == qint64(5) * 3600 * 1000 || shift == -qint64(5) * 3600 * 1000,
+                QByteArray(zone) + ": the pinned zone did not take effect for Qt");
+            const auto summary = parseSessionLog(text, now);
+            QCOMPARE(summary.errorCount, 2);
+            QCOMPARE(summary.recentErrorCount, 1); // only "recent-a" sits in the 15 min window
+            QCOMPARE(summary.recentErrors.size(), 1);
+            if (summary.recentErrors.size() == 1)
+                QCOMPARE(summary.recentErrors.first().message, QStringLiteral("recent-a"));
+        }
+    }
+
     void diagnosticsLatencySummaryMatchesReferencePercentiles()
     {
         using namespace workspace::diagnostics;
@@ -29064,6 +29100,50 @@ private slots:
         controller.pingServer();
         QTest::qWait(250);
         QCOMPARE(finished.count(), 0);
+    }
+
+    // Review 4611502344 on #404: a ping in flight when the API generation
+    // changes (token loss, account or server switch) never sees its transport
+    // callback — the request wrapper drops retired callbacks — so the
+    // in-flight flag and the page's loading state used to stay stuck forever.
+    // The generation bump must settle the ping as a failed probe and free the
+    // guard so later pings can dispatch again.
+    void diagnosticsPingSettlesWhenGenerationBumpRetiresTheCallback()
+    {
+        Fixture f;
+        int pingGets = 0;
+        std::function<void()> release;
+        f.streams = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("page_limit") != QLatin1String("1"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}}}};
+            ++pingGets;
+            Response response{QJsonArray{}};
+            response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return response;
+        };
+        QVERIFY(f.start());
+        QSignalSpy finished(&f.controller, &NativeController::pingFinished);
+        f.controller.pingServer();
+        QVERIFY(QTest::qWaitFor([&] { return pingGets == 1; }, 2000));
+        QCOMPARE(finished.count(), 0); // the answer is held by the gate
+        f.api.clearSession(); // token/session change: the bump retires the callback
+        QCOMPARE(finished.count(), 1); // the bump settles the ping as a failed probe
+        QCOMPARE(finished.first().at(0).toBool(), false);
+        QCOMPARE(finished.first().at(1).toInt(), -1);
+        if (release)
+            release(); // the retired answer must not settle the ping a second time
+        QTest::qWait(200);
+        QCOMPARE(finished.count(), 1);
+        // The single-probe guard is freed: a fresh ping dispatches under the
+        // new generation and settles normally.
+        f.controller.pingServer();
+        QVERIFY(QTest::qWaitFor([&] { return pingGets == 2; }, 2000));
+        QVERIFY(release);
+        release();
+        QVERIFY(finished.wait(2000));
+        QCOMPARE(finished.count(), 2);
+        QCOMPARE(finished.at(1).at(0).toBool(), true);
     }
 };
 
