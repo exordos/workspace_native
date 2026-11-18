@@ -3943,6 +3943,12 @@ ApplicationWindow {
                 delegate: Column {
                     id: streamDelegate
                     required property var modelData
+                    // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the two
+                    // persisted reference settings drive the row ladder and the click
+                    // target; section 1.1/1.2 of the design doc holds the measurements.
+                    readonly property bool compactDensity: root.preferences.chatListDensity === "compact"
+                    readonly property bool opensLatestTopic: root.preferences.chatClickAction === "latestTopic"
+                    readonly property string previewTopic: String(streamDelegate.modelData.previewTopic || "")
                     // workspace_ui 61dacef sidebar-message-preview.ui.tsx: sender in the
                     // sidebar-sender token + ": " + body in text-secondary, one 20 px line.
                     property var sidebarTopicState: ({ known: false, count: 0, rows: [] })
@@ -3986,11 +3992,23 @@ ApplicationWindow {
                         colors: root.colors
                         objectName: "stream-" + streamDelegate.modelData.id
                         width: parent.width
-                        height: 60
-                        padding: 10
-                        horizontalPadding: 10
-                        verticalPadding: 10
-                        onClicked: { root.controller.closeDrafts(); root.controller.selectStream(streamDelegate.modelData.id); }
+                        // Compact: 6 px (py-1.5) + the tallest content line; the avatar
+                        // only occupies the line box in latestTopic mode at the sm size
+                        // (6 + 32 + 6), the plain compact box is 6 + 20 + 6 (design doc 1.1).
+                        height: streamDelegate.compactDensity ? (streamDelegate.opensLatestTopic ? 44 : 32) : 60
+                        padding: streamDelegate.compactDensity ? 6 : 10
+                        horizontalPadding: streamDelegate.compactDensity ? 8 : 10
+                        verticalPadding: streamDelegate.compactDensity ? 6 : 10
+                        onClicked: {
+                            root.controller.closeDrafts();
+                            // Reference sidebar-workspace.ui.tsx:455: the latestTopic body
+                            // link is `stream.preview?.route ?? stream.route`; the native
+                            // last-message topic pointer plays the route role.
+                            if (streamDelegate.opensLatestTopic && streamDelegate.previewTopic.length)
+                                root.controller.openTopic(streamDelegate.previewTopic, streamDelegate.modelData.id);
+                            else
+                                root.controller.selectStream(streamDelegate.modelData.id);
+                        }
                         onHoveredChanged: if (hovered)
                             root.controller.requestSidebarTopics(streamDelegate.modelData.id)
                         onActiveFocusChanged: if (activeFocus)
@@ -4017,11 +4035,20 @@ ApplicationWindow {
                             border.color: root.colors.accent
                         }
                         contentItem: RowLayout {
-                            spacing: 12
+                            objectName: "streamRowLayout-" + streamDelegate.modelData.id
+                            spacing: streamDelegate.compactDensity ? 8 : 12
                             Rectangle {
-                                implicitWidth: 40
-                                implicitHeight: 40
-                                radius: 20
+                                objectName: "streamAvatar-" + streamDelegate.modelData.id
+                                // showAvatar: !compact in the general click config and always
+                                // true in latestTopic, where the avatar is the sm size in
+                                // compact density (sidebar-workspace.ui.tsx:417,452,457).
+                                visible: !streamDelegate.compactDensity || streamDelegate.opensLatestTopic
+                                Accessible.role: Accessible.Button
+                                Accessible.name: streamDelegate.opensLatestTopic
+                                    ? qsTr("General Chat: %1").arg(root.streamDisplayName(streamDelegate.modelData)) : ""
+                                implicitWidth: streamDelegate.compactDensity ? 32 : 40
+                                implicitHeight: streamDelegate.compactDensity ? 32 : 40
+                                radius: streamDelegate.compactDensity ? 16 : 20
                                 // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md):
                                 // reference sidebar-workspace.ui.tsx:512-519 paints the
                                 // non-direct row with resolveAvatarBackgroundColor(stream.color)
@@ -4059,6 +4086,17 @@ ApplicationWindow {
                                     color: root.colors["text-primary"]
                                     font.pixelSize: 16
                                 }
+                                MouseArea {
+                                    // In latestTopic mode the avatar stays a separate link
+                                    // above the body overlay and opens the stream itself
+                                    // (reference Link to stream.route at z-10, line 494-501).
+                                    anchors.fill: parent
+                                    enabled: streamDelegate.opensLatestTopic
+                                    onClicked: {
+                                        root.controller.closeDrafts();
+                                        root.controller.selectStream(streamDelegate.modelData.id);
+                                    }
+                                }
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true
@@ -4082,8 +4120,11 @@ ApplicationWindow {
                                 Row {
                                     // The line box stays mounted empty so every row keeps the
                                     // measured 60 px height (reference min-h-5 rule).
+                                    // In compact density the reference drops the preview
+                                    // entirely (sidebar-workspace.ui.tsx:536).
                                     id: streamPreviewLine
                                     objectName: "streamPreviewLine-" + streamDelegate.modelData.id
+                                    visible: !streamDelegate.compactDensity
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 20
                                     spacing: 0
@@ -4113,8 +4154,10 @@ ApplicationWindow {
                             }
                             ColumnLayout {
                                 // workspace_ui 61dacef sidebar-chat-row-meta.ui.tsx: a 40 px
-                                // min-width column, badge on top, timestamp at the bottom.
-                                Layout.minimumWidth: 40
+                                // min-width column, badge on top, timestamp at the bottom;
+                                // compact switches it to min-w-8 and suppresses the time line
+                                // (showTime = !compact).
+                                Layout.minimumWidth: streamDelegate.compactDensity ? 32 : 40
                                 Layout.fillHeight: true
                                 spacing: 0
                                 Item {
@@ -4157,7 +4200,7 @@ ApplicationWindow {
                                 Text {
                                     objectName: "streamTime-" + streamDelegate.modelData.id
                                     Layout.alignment: Qt.AlignBottom | Qt.AlignRight
-                                    visible: text.length > 0
+                                    visible: text.length > 0 && !streamDelegate.compactDensity
                                     text: String(streamDelegate.modelData.rowTime || "")
                                     textFormat: Text.PlainText
                                     color: root.colors["text-muted"]
@@ -4182,7 +4225,9 @@ ApplicationWindow {
                             colors: root.colors
                             objectName: "topic-" + modelData.id
                             width: streamList.width
-                            height: 56
+                            // Compact: py-1.5 (6 px) + the single 20 px title line, the
+                            // preview line is dropped by the reference (sidebar-workspace.ui.tsx:231).
+                            height: streamDelegate.compactDensity ? 32 : 56
                             padding: 0
                             horizontalPadding: 0
                             verticalPadding: 0
@@ -4209,17 +4254,24 @@ ApplicationWindow {
                                     topicUnread.visible ? topicUnread.width : 0,
                                     topicTime.visible ? topicTime.implicitWidth : 0)
                                 Rectangle {
-                                    x: 38
+                                    objectName: "topicBar-" + topicButton.modelData.id
+                                    // pl-[38px] / pl-9 with the 3 px bar self-stretching to
+                                    // the text block height (36 + 3 + 12 = 53 normal,
+                                    // 36 + 3 + 8 = 47 compact, sidebarTopicRowLinkClass).
+                                    x: streamDelegate.compactDensity ? 36 : 38
                                     width: 3
-                                    height: 40
+                                    height: streamDelegate.compactDensity ? 20 : 40
                                     anchors.verticalCenter: parent.verticalCenter
                                     radius: 2
                                     color: root.colors["icon-base"]
                                 }
                                 Text {
-                                    x: 53
-                                    y: 8
-                                    width: topicRowSurface.width - 61 - topicRowSurface.metaWidth
+                                    objectName: "topicTitle-" + topicButton.modelData.id
+                                    x: streamDelegate.compactDensity ? 47 : 53
+                                    y: streamDelegate.compactDensity ? 6 : 8
+                                    // pr-2 (8 px) stays the right inset in both densities.
+                                    width: topicRowSurface.width - (streamDelegate.compactDensity ? 55 : 61)
+                                        - topicRowSurface.metaWidth
                                     text: String(topicButton.modelData.name).startsWith("#") ? topicButton.modelData.name : "#" + topicButton.modelData.name
                                     textFormat: Text.PlainText
                                     font.pixelSize: 14
@@ -4232,9 +4284,11 @@ ApplicationWindow {
                                 }
                                 Row {
                                     // Same preview contract as the stream row: the 20 px line
-                                    // box stays mounted when the row has no last message.
+                                    // box stays mounted when the row has no last message, and
+                                    // the whole line is suppressed in compact density.
                                     id: topicPreviewLine
                                     objectName: "topicPreviewLine-" + topicButton.modelData.id
+                                    visible: !streamDelegate.compactDensity
                                     x: 53
                                     y: 28
                                     width: topicRowSurface.width - 61 - topicRowSurface.metaWidth
@@ -4267,7 +4321,7 @@ ApplicationWindow {
                                     id: topicUnread
                                     anchors.right: parent.right
                                     anchors.rightMargin: 8
-                                    y: 8
+                                    y: streamDelegate.compactDensity ? 6 : 8
                                     width: visible ? Math.max(20, topicUnreadText.implicitWidth + 8) : 0
                                     height: 20
                                     visible: Number(topicButton.modelData.unread) > 0
@@ -4288,7 +4342,8 @@ ApplicationWindow {
                                     anchors.right: topicRowSurface.right
                                     anchors.rightMargin: 8
                                     y: 28
-                                    visible: text.length > 0
+                                    // showTime = !compact (sidebar-chat-row-meta.ui.tsx).
+                                    visible: text.length > 0 && !streamDelegate.compactDensity
                                     text: String(topicButton.modelData.rowTime || "")
                                     textFormat: Text.PlainText
                                     color: root.colors["text-muted"]
@@ -4301,7 +4356,7 @@ ApplicationWindow {
                         id: showMoreTopics
                         objectName: "showMoreTopics-" + streamDelegate.modelData.id
                         visible: !root.normalizedSidebarQuery.length && streamDelegate.expanded && streamDelegate.nextAction.length > 0
-                        width: streamList.width; height: visible ? 36 : 0
+                        width: streamList.width; height: visible ? (streamDelegate.compactDensity ? 32 : 36) : 0
                         colors: root.colors
                         text: streamDelegate.nextAction === "collapse" ? qsTr("Hide extra topics")
                             : streamDelegate.nextAction === "completed" ? qsTr("Show completed topics (%1)").arg(streamDelegate.hiddenCount)
@@ -4315,7 +4370,9 @@ ApplicationWindow {
                         }
                         contentItem: Item {
                             Text {
-                                x: 39; width: parent.width - 70; height: parent.height
+                                // pl-6 (24) + the bar spacer (3) + gap-3 / gap-2.
+                                x: streamDelegate.compactDensity ? 35 : 39
+                                width: parent.width - 70; height: parent.height
                                 text: showMoreTopics.text; textFormat: Text.PlainText
                                 color: root.colors["text-primary"]; font.pixelSize: 14; font.weight: Font.Medium
                                 verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight

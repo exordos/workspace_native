@@ -83,6 +83,7 @@
             <translation>Подтвердить код</translation>
         </message>
         <message><source>Expand topics</source><translation>Развернуть темы</translation></message>
+        <message><source>General Chat: %1</source><translation>Общий чат: %1</translation></message>
         <message><source>Collapse topics</source><translation>Свернуть темы</translation></message>
         <message><source>Hide extra topics</source><translation>Скрыть лишние темы</translation></message>
         <message><source>Show completed topics (%1)</source><translation>Показать завершённые темы (%1)</translation></message>

@@ -29367,6 +29367,250 @@ private slots:
         QVERIFY(!view("sidebarActivityPanel"));
         QCOMPARE(chatList->y(), searchTop);
     }
+
+    // --- issue #102: chat list density and click action ---
+    // docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md measures the reference ladder in
+    // workspace_ui 61dacef sidebar-chat-row-layout.lib.ts / sidebar-chat-row-meta.ui.tsx
+    // / sidebar-workspace.ui.tsx. This helper attaches a last-message pointer to the
+    // stream list/detail and default-topic DTOs of the source scene (a pointer the
+    // projection can resolve); the message uuid selects which topic the pointer lands on.
+    static void attachStreamLastMessage(WindowChannelFixture &fixture, const QString &lastMessage)
+    {
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback, lastMessage](const Request &request) -> Response {
+            const auto path = request.target.path();
+            auto response = fallback(request);
+            if (request.method != "GET") return response;
+            const bool streamRoute = path.endsWith("/streams/")
+                || path.endsWith("/streams/" + streamId)
+                || path.endsWith("/stream_topics/") || path.endsWith("/stream_topics/" + topicId);
+            if (!streamRoute) return response;
+            if (response.data.isArray()) {
+                QJsonArray patched;
+                for (const auto &value : response.data.toArray()) {
+                    auto row = value.toObject();
+                    if (row.value("uuid").toString() == streamId || row.value("uuid").toString() == topicId)
+                        row["last_message_uuid"] = lastMessage;
+                    patched.append(row);
+                }
+                response.data = patched;
+            } else if (response.data.isObject()
+                && response.data.toObject().value("uuid").toString() == streamId) {
+                auto row = response.data.toObject();
+                row["last_message_uuid"] = lastMessage;
+                response.data = row;
+            }
+            return response;
+        };
+    }
+
+    void sidebarCompactDensityCollapsesTheMeasuredRowLadder()
+    {
+        WindowChannelFixture fixture;
+        attachStreamLastMessage(fixture, "81000000-0000-4000-8000-000000000001");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chat-density-compact.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setChatListDensity("compact");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Compact density window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        // Stream row, compact density with the default stream click mode: py-1.5 (6 px)
+        // plus one 20 px content line, avatar suppressed (sidebar-workspace.ui.tsx:452
+        // showAvatar: !compact), gap-2 and px-2 from sidebarChatRowLinkClass(compact).
+        auto *row = visibleItem("stream-"+streamId); QVERIFY(row);
+        QCOMPARE(row->height(),32);
+        QCOMPARE(row->property("verticalPadding").toReal(),6.0);
+        QCOMPARE(row->property("horizontalPadding").toReal(),8.0);
+        auto *rowLayout = visibleItem("streamRowLayout-"+streamId); QVERIFY(rowLayout);
+        QCOMPARE(rowLayout->property("spacing").toReal(),8.0);
+        auto *avatar = item(window->contentItem(),"streamAvatar-"+streamId); QVERIFY(avatar);
+        QVERIFY(!avatar->isVisible());
+        // The preview line (sidebar-workspace.ui.tsx:536 {!compact && preview}) and the
+        // time column (sidebar-chat-row-meta.ui.tsx showTime = !compact) stay mounted but
+        // suppressed; the time text still hydrates, proving suppression not absence.
+        auto *previewLine = item(window->contentItem(),"streamPreviewLine-"+streamId); QVERIFY(previewLine);
+        QVERIFY(!previewLine->isVisible());
+        auto *streamTime = item(window->contentItem(),"streamTime-"+streamId); QVERIFY(streamTime);
+        QTRY_VERIFY_WITH_TIMEOUT(!streamTime->property("text").toString().isEmpty(),4000);
+        QVERIFY(!streamTime->isVisible());
+        // Topic row, compact: py-1.5 + the single 20 px title line, pl-9 (36 px) with
+        // the 3 px bar and gap-2, so the title starts at 47 px (sidebarTopicRowLinkClass(compact)).
+        QVERIFY(visibleItem("topic-"+topicId));
+        QCOMPARE(visibleItem("topic-"+topicId)->height(),32);
+        auto *topicBar = item(window->contentItem(),"topicBar-"+topicId); QVERIFY(topicBar);
+        QCOMPARE(topicBar->property("x").toReal(),36.0);
+        QCOMPARE(topicBar->height(),20);
+        auto *topicTitle = item(window->contentItem(),"topicTitle-"+topicId); QVERIFY(topicTitle);
+        QCOMPARE(topicTitle->property("x").toReal(),47.0);
+        QCOMPARE(topicTitle->property("y").toReal(),6.0);
+        auto *topicPreview = item(window->contentItem(),"topicPreviewLine-"+topicId); QVERIFY(topicPreview);
+        QVERIFY(!topicPreview->isVisible()); // sidebar-workspace.ui.tsx:231
+        auto *topicTime = item(window->contentItem(),"topicTime-"+topicId); QVERIFY(topicTime);
+        QTRY_VERIFY_WITH_TIMEOUT(!topicTime->property("text").toString().isEmpty(),4000);
+        QVERIFY(!topicTime->isVisible());
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarCompactDensityKeepsTheAvatarInLatestTopicMode()
+    {
+        // The latestTopic config keeps showAvatar: true in every density
+        // (sidebar-workspace.ui.tsx:457) at the sm size (avatar.tsx w-8 = 32 px), so the
+        // compact row box becomes 6 + 32 + 6 = 44 px while everything else stays compact.
+        WindowChannelFixture fixture;
+        attachStreamLastMessage(fixture, "81000000-0000-4000-8000-000000000001");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chat-density-compact-latest.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setChatListDensity("compact");
+        preferences.setChatClickAction("latestTopic");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Compact latestTopic window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        auto *row = visibleItem("stream-"+streamId); QVERIFY(row);
+        QCOMPARE(row->height(),44);
+        auto *avatar = visibleItem("streamAvatar-"+streamId); QVERIFY(avatar);
+        QCOMPARE(avatar->width(),32.0);
+        auto *iface = QAccessible::queryAccessibleInterface(avatar); QVERIFY(iface);
+        QCOMPARE(iface->text(QAccessible::Name),QStringLiteral("General Chat: Product team"));
+        auto *previewLine = item(window->contentItem(),"streamPreviewLine-"+streamId); QVERIFY(previewLine);
+        QVERIFY(!previewLine->isVisible()); // density suppression is independent of the click mode
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void sidebarNormalDensityKeepsTheMeasuredLadder()
+    {
+        WindowChannelFixture fixture;
+        attachStreamLastMessage(fixture, "81000000-0000-4000-8000-000000000001");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chat-density-normal.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Normal density window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        // The default density is unchanged: 10 px padding + the 40 px md avatar
+        // (avatar.tsx md w-10) is the accepted 60 px box, gap-3 spacing, and both the
+        // preview line and the time column render (docs section 1.1 normal column).
+        auto *row = visibleItem("stream-"+streamId); QVERIFY(row);
+        QCOMPARE(row->height(),60);
+        QCOMPARE(row->property("verticalPadding").toReal(),10.0);
+        QCOMPARE(row->property("horizontalPadding").toReal(),10.0);
+        auto *rowLayout = visibleItem("streamRowLayout-"+streamId); QVERIFY(rowLayout);
+        QCOMPARE(rowLayout->property("spacing").toReal(),12.0);
+        auto *avatar = visibleItem("streamAvatar-"+streamId); QVERIFY(avatar);
+        QCOMPARE(avatar->width(),40.0);
+        const QString previewText = QStringLiteral("General discussion stays in this channel view.");
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *text = visibleItem("streamPreviewText-"+streamId);
+            return text && text->property("text").toString() == previewText;
+        })(), 4000);
+        QVERIFY(visibleItem("streamTime-"+streamId));
+        QVERIFY(visibleItem("topic-"+topicId));
+        QCOMPARE(visibleItem("topic-"+topicId)->height(),56);
+        auto *topicBar = item(window->contentItem(),"topicBar-"+topicId); QVERIFY(topicBar);
+        QCOMPARE(topicBar->property("x").toReal(),38.0); // pl-[38px]
+        auto *topicTitle = item(window->contentItem(),"topicTitle-"+topicId); QVERIFY(topicTitle);
+        QCOMPARE(topicTitle->property("x").toReal(),53.0); // 38 + 3 bar + 12 gap
+        QVERIFY(visibleItem("topicPreviewLine-"+topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *text = visibleItem("topicTime-"+topicId);
+            return text && !text->property("text").toString().isEmpty();
+        })(), 4000);
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void chatClickActionLatestTopicOpensTheLastMessageTopic()
+    {
+        WindowChannelFixture fixture;
+        // The third source-scene message belongs to the Planning topic.
+        attachStreamLastMessage(fixture, "81000000-0000-4000-8000-000000000003");
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chat-click-latest.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setChatClickAction("latestTopic");
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Latest-topic click window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
+        QTRY_VERIFY(visibleItem("stream-"+streamId));
+        // Reference sidebar-workspace.ui.tsx:446-462: the latestTopic body link is
+        // `stream.preview?.route ?? stream.route`. While the last message is unknown the
+        // body click falls back to the stream itself.
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.selectedStream(),streamId);
+        QTRY_VERIFY(controller.selectedTopic().isEmpty());
+        // Once the message hydrates, the row carries the last-message topic pointer.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &value : controller.streams()) {
+                const auto row = value.toMap();
+                if (row.value("id").toString() == streamId)
+                    return row.value("previewTopic").toString() == secondTopicId;
+            }
+            return false;
+        })(), 5000);
+        // The body click now opens the topic of the last message.
+        click(window,visibleItem("stream-"+streamId));
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.selectedTopic(),secondTopicId);
+        // The avatar stays a separate link that opens the stream with the reference
+        // aria-label format `${chat.generalChat}: ${title}` (sidebar-workspace.ui.tsx:458).
+        auto *avatar = visibleItem("streamAvatar-"+streamId); QVERIFY(avatar);
+        auto *iface = QAccessible::queryAccessibleInterface(avatar); QVERIFY(iface);
+        QCOMPARE(iface->text(QAccessible::Name),QStringLiteral("General Chat: Product team"));
+        click(window,avatar);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(controller.selectedTopic().isEmpty());
+        QCOMPARE(controller.selectedStream(),streamId);
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
