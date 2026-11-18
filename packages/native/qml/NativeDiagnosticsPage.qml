@@ -152,6 +152,132 @@ FocusScope {
         return Math.round(value / 1024) + " KiB";
     }
 
+    // ---- Memory panel state (issue #52, logs-page-memory.ui.tsx) ---------
+    // Reference poll constant MEMORY_POLL_INTERVAL_MS = 3000
+    // (logs-page-memory.ui.tsx:11); injectable so window tests drive ticks
+    // without waiting on wall clock.
+    property int memoryPollIntervalMs: 3000
+    property var memory: null
+    property bool memoryLoading: true
+    property int memoryPollTicks: 0 // test seam for the poll timer
+
+    readonly property bool memoryHasAnyMetric: {
+        if (page.memory === null)
+            return false;
+        const capabilities = page.memory.capabilities || {};
+        return capabilities.processMetricsAvailable === true
+            || capabilities.systemMemoryAvailable === true;
+    }
+
+    // Card grid breakpoints: gap-2 sm:grid-cols-2 lg:grid-cols-3
+    // (logs-page-memory.ui.tsx:96; Tailwind sm=640 lg=1024).
+    readonly property int memoryGridColumns:
+        page.width >= 1024 ? 3 : (page.width >= 640 ? 2 : 1)
+
+    // Same percent math as getJsHeapUtilizationPercent
+    // (diagnostics-memory.lib.ts:84-91): round, clamp 0..100; the native
+    // dataset uses system memory (used = MemTotal - MemAvailable) because
+    // Qt exposes no Chromium heap (declared deviation).
+    readonly property int memoryUsagePercent: {
+        if (page.memory === null)
+            return -1;
+        const capabilities = page.memory.capabilities || {};
+        if (capabilities.systemMemoryAvailable !== true)
+            return -1;
+        const system = page.memory.system || {};
+        const total = Number(system.totalKb || 0);
+        const available = Number(system.availableKb || 0);
+        if (total <= 0)
+            return -1;
+        const percent = Math.round((total - available) / total * 100);
+        return Math.min(100, Math.max(0, percent));
+    }
+
+    function memoryCards() {
+        const memory = page.memory;
+        const cards = [];
+        if (!memory)
+            return cards;
+        const capabilities = memory.capabilities || {};
+        const app = memory.app || {};
+        const system = memory.system || {};
+        // Cards render only when their metric exists (capability gating,
+        // logs-page-memory.ui.tsx:96-124); the JS heap and device RAM cards
+        // have no Qt runtime source and stay hidden (design doc deviations).
+        if (capabilities.processMetricsAvailable === true)
+            cards.push({ key: "app", label: qsTr("Total app memory"),
+                value: page.formatKilobytes(Number(app.totalWorkingSetKb || 0)),
+                detail: "" });
+        if (capabilities.systemMemoryAvailable === true)
+            cards.push({ key: "systemFree", label: qsTr("System free memory"),
+                value: page.formatKilobytes(Number(system.freeKb || 0)),
+                detail: qsTr("%1 total")
+                    .arg(page.formatKilobytes(Number(system.totalKb || 0))) });
+        return cards;
+    }
+
+    function memoryProcesses() {
+        const source = page.memory ? page.memory.processes : null;
+        const processes = [];
+        // A QVariantList arriving through a var property is not guaranteed to
+        // be a native JS array, so copy element-by-element into one.
+        if (source) {
+            const size = Number(source.length || 0);
+            for (let index = 0; index < size; ++index)
+                processes.push(source[index]);
+        }
+        return processes;
+    }
+
+    function refreshMemory() {
+        // One poll tick (logs-page-memory.ui.tsx:31-45): the provider mirrors
+        // the reference collector; a failed read returns capability flags
+        // false, which the panel renders as the unavailable state.
+        page.memoryLoading = true;
+        page.memory = page.controller.diagnosticsMemorySnapshot();
+        page.memoryLoading = false;
+    }
+
+    // Port of formatBytes/formatKilobytes (format-bytes.lib.ts:21-31):
+    // B/KB/MB/GB base 1024, 0 decimals for bytes, 1 at value >= 10, else 2.
+    function formatBytes(bytes) {
+        let value = Number(bytes);
+        if (!Number.isFinite(value) || value <= 0)
+            return "0 B";
+        const units = ["B", "KB", "MB", "GB"];
+        let unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024;
+            ++unit;
+        }
+        const precision = unit === 0 ? 0 : (value >= 10 ? 1 : 2);
+        return value.toFixed(precision) + " " + units[unit];
+    }
+
+    function formatKilobytes(kilobytes) {
+        return page.formatBytes(Number(kilobytes) * 1024);
+    }
+
+    // Reference formatCpuPercent (logs-page-memory.ui.tsx:210-214): one
+    // decimal plus percent sign, em dash when the source is null.
+    function formatMemoryCpuPercent(cpuPercent) {
+        if (cpuPercent === null || cpuPercent === undefined
+                || !Number.isFinite(Number(cpuPercent)))
+            return "\u2014";
+        return Number(cpuPercent).toFixed(1) + "%";
+    }
+
+    Timer {
+        id: memoryPoll
+        objectName: "diagnosticsMemoryPollTimer"
+        interval: page.memoryPollIntervalMs
+        repeat: true
+        onTriggered: {
+            page.memoryPollTicks += 1;
+            page.refreshMemory();
+        }
+    }
+
     function cardTitle(key) {
         switch (key) {
         case "connection": return qsTr("Connection");
@@ -323,8 +449,24 @@ FocusScope {
         onTriggered: if (page.visible) page.refresh()
     }
 
-    onVisibleChanged: if (visible) page.refresh()
-    Component.onCompleted: if (visible) page.refresh()
+    onVisibleChanged: {
+        if (visible) {
+            page.refresh();
+            page.refreshMemory();
+            memoryPoll.start();
+        } else {
+            memoryPoll.stop(); // poll only while the section is visible
+        }
+    }
+    Component.onCompleted: {
+        if (visible) {
+            page.refresh();
+            page.refreshMemory();
+            memoryPoll.start();
+        }
+    }
+    onMemoryPollIntervalMsChanged:
+        if (memoryPoll.running) { memoryPoll.stop(); memoryPoll.start(); }
 
     component HeaderButton: Rectangle {
         id: headerButton
@@ -455,58 +597,278 @@ FocusScope {
             width: content.width - 16
             spacing: 8
 
-            // Memory block from the accepted #77 provider (reference
-            // logs-page-memory.ui.tsx section in the compact native shape:
-            // total app memory + system free from the /proc snapshot).
+            // Memory panel (issue #52, reference logs-page-memory.ui.tsx;
+            // docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel").
+            // Section shell: rounded-lg border border-border-subtle bg-card-bg p-3
+            // (logs-page-memory.ui.tsx:71).
             Rectangle {
                 objectName: "diagnosticsMemoryCard"
                 width: column.width
-                height: memoryColumn.height + 24 // p-3
-                radius: 8
+                height: memorySectionColumn.implicitHeight + 24 // p-3
+                radius: 8 // rounded-lg (logs-page-memory.ui.tsx:71)
                 color: page.colors["card-bg"]
                 border.color: page.colors["border-subtle"]
                 border.width: 1
                 Column {
-                    id: memoryColumn
-                    x: 12
+                    id: memorySectionColumn
+                    x: 12 // p-3
                     y: 12
                     width: parent.width - 24
-                    spacing: 2
-                    Text {
-                        objectName: "diagnosticsMemoryTitle"
-                        text: qsTr("Memory")
-                        font.pixelSize: 12
-                        font.weight: Font.Medium
-                        color: page.colors["text-primary"]
-                    }
-                    Repeater {
-                        id: memoryRepeater
-                        model: {
-                            const memory = (page.snapshot && page.snapshot.memory) || null;
-                            const rows = [];
-                            if (memory) {
-                                const main = memory.main || {};
-                                const system = memory.system || {};
-                                if (main.rss !== undefined && Number(main.rss) > 0)
-                                    rows.push(qsTr("Total app memory: %1")
-                                        .arg(page.formatMegabytes(Number(main.rss), false)));
-                                if (system.free !== undefined && Number(system.free) > 0)
-                                    rows.push(qsTr("System free memory: %1")
-                                        .arg(page.formatMegabytes(Number(system.free), true)));
-                            }
-                            if (rows.length === 0)
-                                rows.push(qsTr("Memory metrics are not available in this build."));
-                            return rows;
+                    spacing: 8 // space-y-2 (logs-page-memory.ui.tsx:85)
+
+                    // Heading + inline loading marker (logs-page-memory.ui.tsx:74-83).
+                    Row {
+                        spacing: 8 // flex items-center gap-2
+                        Text {
+                            objectName: "diagnosticsMemoryTitle"
+                            text: qsTr("Memory")
+                            font.pixelSize: 12 // text-xs
+                            font.weight: Font.Medium // font-medium
+                            color: page.colors["text-primary"]
                         }
-                        delegate: Text {
-                            required property var modelData
-                            required property int index
-                            objectName: "diagnosticsMemoryLine-" + index
-                            text: modelData
-                            font.pixelSize: 11
-                            lineHeight: 15
-                            lineHeightMode: Text.FixedHeight
+                        Text {
+                            objectName: "diagnosticsMemoryLoadingMarker"
+                            visible: page.memoryLoading
+                            text: "\u2026"
+                            font.pixelSize: 11 // text-[11px]
                             color: page.colors["text-muted"]
+                        }
+                    }
+
+                    // Unavailable state (logs-page-memory.ui.tsx:86-90): the
+                    // text replaces the metrics and the header stays.
+                    Text {
+                        objectName: "diagnosticsMemoryUnavailableText"
+                        visible: page.memory !== null && !page.memoryLoading
+                                 && !page.memoryHasAnyMetric
+                        text: qsTr("Memory metrics are not available in this build.")
+                        width: memorySectionColumn.width
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                        lineHeight: 15
+                        lineHeightMode: Text.FixedHeight
+                        color: page.colors["text-muted"]
+                    }
+
+                    Column {
+                        objectName: "diagnosticsMemoryMetricsBlock"
+                        visible: page.memoryHasAnyMetric
+                        width: memorySectionColumn.width
+                        spacing: 8
+
+                        // Metric cards: grid gap-2 sm:grid-cols-2 lg:grid-cols-3
+                        // (logs-page-memory.ui.tsx:96; Tailwind sm=640 lg=1024).
+                        Grid {
+                            objectName: "diagnosticsMemoryMetricGrid"
+                            width: memorySectionColumn.width
+                            columns: page.memoryGridColumns
+                            spacing: 8 // gap-2
+                            Repeater {
+                                model: page.memoryCards()
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    objectName: "diagnosticsMemoryMetric-" + modelData.key
+                                    width: (memorySectionColumn.width
+                                            - 8 * (page.memoryGridColumns - 1))
+                                           / page.memoryGridColumns
+                                    height: metricColumn.implicitHeight + 12 // py-1.5
+                                    radius: 6 // rounded-md (logs-page-memory.ui.tsx:218)
+                                    color: page.colors["bg"]
+                                    border.color: page.colors["border-subtle"]
+                                    border.width: 1
+                                    Column {
+                                        id: metricColumn
+                                        x: 8 // px-2
+                                        y: 6 // py-1.5
+                                        width: parent.width - 16
+                                        Text {
+                                            objectName: "diagnosticsMemoryMetric-"
+                                                + modelData.key + "-label"
+                                            text: modelData.label
+                                            font.pixelSize: 11 // text-[11px]
+                                            color: page.colors["text-muted"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryMetric-"
+                                                + modelData.key + "-value"
+                                            text: modelData.value
+                                            font.pixelSize: 14 // text-sm
+                                            font.weight: Font.Medium // font-medium
+                                            color: page.colors["text-primary"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryMetric-"
+                                                + modelData.key + "-detail"
+                                            text: modelData.detail
+                                            visible: modelData.detail !== ""
+                                            font.pixelSize: 11 // text-[11px]
+                                            color: page.colors["text-muted"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Progress bar (logs-page-memory.ui.tsx:126-146): label
+                        // row text-[11px], track h-1.5 rounded-full bg-bg, fill
+                        // h-full rounded-full bg-accent width = percent.
+                        Column {
+                            objectName: "diagnosticsMemoryBarBlock"
+                            visible: page.memoryUsagePercent >= 0
+                            width: memorySectionColumn.width
+                            spacing: 4 // mb-1
+                            Item {
+                                width: memorySectionColumn.width
+                                height: 15
+                                Text {
+                                    anchors.left: parent.left
+                                    text: qsTr("Memory usage")
+                                    font.pixelSize: 11
+                                    color: page.colors["text-muted"]
+                                }
+                                Text {
+                                    objectName: "diagnosticsMemoryBarPercent"
+                                    anchors.right: parent.right
+                                    text: page.memoryUsagePercent >= 0
+                                          ? page.memoryUsagePercent + "%" : ""
+                                    font.pixelSize: 11
+                                    color: page.colors["text-muted"]
+                                }
+                            }
+                            Rectangle {
+                                id: barTrack
+                                objectName: "diagnosticsMemoryBarTrack"
+                                width: memorySectionColumn.width
+                                height: 6 // h-1.5
+                                radius: 3 // rounded-full
+                                color: page.colors["bg"]
+                                // role=progressbar aria-valuemin 0 aria-valuemax 100
+                                // (logs-page-memory.ui.tsx:131-135); the integer
+                                // percent is exposed by the label row and the
+                                // fill ratio (this Qt build has no
+                                // Accessible.value attached property).
+                                Accessible.role: Accessible.ProgressBar
+                                Accessible.name: qsTr("Memory usage")
+                                Rectangle {
+                                    objectName: "diagnosticsMemoryBarFill"
+                                    width: barTrack.width * page.memoryUsagePercent / 100
+                                    height: parent.height
+                                    radius: 3 // rounded-full
+                                    color: page.colors["accent"]
+                                }
+                            }
+                        }
+
+                        // Process table (logs-page-memory.ui.tsx:160-197): the
+                        // declared deviation renders the single Main row with
+                        // the reference five columns, cells font-mono px-1 py-1.
+                        Column {
+                            objectName: "diagnosticsMemoryProcessesBlock"
+                            visible: page.memoryProcesses().length > 0
+                            width: memorySectionColumn.width
+                            spacing: 0
+                            Text {
+                                objectName: "diagnosticsMemoryProcessesLabel"
+                                text: qsTr("Processes")
+                                font.pixelSize: 11 // text-[11px] font-medium
+                                font.weight: Font.Medium
+                                color: page.colors["text-primary"]
+                                bottomPadding: 4 // mb-1
+                            }
+                            Row {
+                                objectName: "diagnosticsMemoryTableHeader"
+                                width: memorySectionColumn.width
+                                Text { objectName: "diagnosticsMemoryTableHeader-type";
+                                    text: qsTr("Type"); width: 96
+                                    leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                    font.pixelSize: 11; font.weight: Font.Medium
+                                    color: page.colors["text-primary"] }
+                                Text { objectName: "diagnosticsMemoryTableHeader-pid";
+                                    text: qsTr("PID"); width: 64
+                                    leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                    font.pixelSize: 11; font.weight: Font.Medium
+                                    color: page.colors["text-primary"] }
+                                Text { objectName: "diagnosticsMemoryTableHeader-workingSet";
+                                    text: qsTr("Working set"); width: 96
+                                    leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                    font.pixelSize: 11; font.weight: Font.Medium
+                                    color: page.colors["text-primary"] }
+                                Text { objectName: "diagnosticsMemoryTableHeader-peak";
+                                    text: qsTr("Peak"); width: 96
+                                    leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                    font.pixelSize: 11; font.weight: Font.Medium
+                                    color: page.colors["text-primary"] }
+                                Text { objectName: "diagnosticsMemoryTableHeader-cpu";
+                                    text: qsTr("CPU")
+                                    width: Math.max(56, memorySectionColumn.width - 256)
+                                    leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                    font.pixelSize: 11; font.weight: Font.Medium
+                                    color: page.colors["text-primary"] }
+                            }
+                            Rectangle { // border-b border-border-subtle header rule
+                                width: memorySectionColumn.width
+                                height: 1
+                                color: page.colors["border-subtle"]
+                            }
+                            Repeater {
+                                model: page.memoryProcesses()
+                                delegate: Column {
+                                    required property var modelData
+                                    required property int index
+                                    objectName: "diagnosticsMemoryProcessRow-" + index
+                                    width: memorySectionColumn.width
+                                    spacing: 0
+                                    Row {
+                                        width: memorySectionColumn.width
+                                        Text {
+                                            objectName: "diagnosticsMemoryProcessCell" + index + "-type"
+                                            text: String(modelData.type)
+                                            width: 96
+                                            leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                            font.pixelSize: 11; font.family: "monospace"
+                                            color: page.colors["text-primary"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryProcessCell" + index + "-pid"
+                                            text: String(modelData.pid)
+                                            width: 64
+                                            leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                            font.pixelSize: 11; font.family: "monospace"
+                                            color: page.colors["text-muted"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryProcessCell" + index + "-workingSet"
+                                            text: page.formatKilobytes(Number(modelData.workingSetKb))
+                                            width: 96
+                                            leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                            font.pixelSize: 11; font.family: "monospace"
+                                            color: page.colors["text-muted"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryProcessCell" + index + "-peak"
+                                            text: page.formatKilobytes(Number(modelData.peakWorkingSetKb))
+                                            width: 96
+                                            leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                            font.pixelSize: 11; font.family: "monospace"
+                                            color: page.colors["text-muted"]
+                                        }
+                                        Text {
+                                            objectName: "diagnosticsMemoryProcessCell" + index + "-cpu"
+                                            text: page.formatMemoryCpuPercent(modelData.cpuPercent)
+                                            width: Math.max(56, memorySectionColumn.width - 256)
+                                            leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
+                                            font.pixelSize: 11; font.family: "monospace"
+                                            color: page.colors["text-muted"]
+                                        }
+                                    }
+                                    Rectangle { // border-border-subtle/60 row rule
+                                        width: memorySectionColumn.width
+                                        height: 1
+                                        color: page.colors["border-subtle"]
+                                        opacity: 0.6
+                                    }
+                                }
+                            }
                         }
                     }
                 }

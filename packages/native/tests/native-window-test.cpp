@@ -30055,6 +30055,145 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
     }
 
+    // Issue #52 (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel"):
+    // the panel renders reference-formatted value cards, a progress bar whose
+    // fill width tracks used/limit, and the single-process table row. Data
+    // comes from the controller's procfs provider driven by a fixture root.
+    void diagnosticsMemoryPanelRendersCardsBarAndProcessRow()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto proc = directory.filePath("proc");
+        QVERIFY(QDir(proc).mkpath(QStringLiteral("self")));
+        const auto writeProc=[&](const QString &name, const QByteArray &body){
+            QFile file(proc + name); QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(body); };
+        writeProc(QStringLiteral("/self/status"), QByteArrayLiteral(
+            "Name:\tworkspace-native\nPid:\t4242\nVmSize:\t   20480 kB\n"
+            "VmHWM:\t   9216 kB\nVmRSS:\t   8192 kB\nThreads:\t7\n"));
+        writeProc(QStringLiteral("/meminfo"), QByteArrayLiteral(
+            "MemTotal:        8388608 kB\nMemFree:          524288 kB\n"
+            "MemAvailable:    4194304 kB\n"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        controller.setDiagnosticsMemoryProcRoot(proc);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Memory panel teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        QVERIFY(visibleItem("diagnosticsMemoryCard"));
+        // Metric cards (logs-page-memory.ui.tsx:96-124 with MemoryCard
+        // :218-224); byte values follow formatBytes/formatKilobytes
+        // (format-bytes.lib.ts:21-31): 8192 kB -> "8.00 MB", 524288 kB ->
+        // "512.0 MB", 8388608 kB -> "8.00 GB total".
+        QVERIFY(visibleItem("diagnosticsMemoryMetricGrid"));
+        QVERIFY(visibleItem("diagnosticsMemoryMetric-app"));
+        QCOMPARE(visibleItem("diagnosticsMemoryMetric-app-value")->property("text").toString(),
+                 QString("8.00 MB"));
+        QVERIFY(visibleItem("diagnosticsMemoryMetric-systemFree"));
+        QCOMPARE(visibleItem("diagnosticsMemoryMetric-systemFree-value")->property("text").toString(),
+                 QString("512.0 MB"));
+        QCOMPARE(visibleItem("diagnosticsMemoryMetric-systemFree-detail")->property("text").toString(),
+                 QString("8.00 GB total"));
+        // Progress bar (logs-page-memory.ui.tsx:126-146): used/limit =
+        // (MemTotal - MemAvailable)/MemTotal = (8388608-4194304)/8388608 = 50.
+        // The fill width must track that ratio (aria-valuemin 0 / max 100).
+        auto *track=visibleItem("diagnosticsMemoryBarTrack"); QVERIFY(track);
+        auto *fill=visibleItem("diagnosticsMemoryBarFill"); QVERIFY(fill);
+        QCOMPARE(visibleItem("diagnosticsMemoryBarPercent")->property("text").toString(),
+                 QString("50%"));
+        const qreal fillRatio=fill->property("width").toReal()/track->property("width").toReal();
+        QVERIFY2(qAbs(fillRatio-0.5)<0.02, qPrintable(QStringLiteral("fill ratio %1").arg(fillRatio)));
+        // Process table (logs-page-memory.ui.tsx:160-197): the declared
+        // single-process deviation renders one Main row; with no stat/uptime
+        // sources the CPU cell is the em dash of formatCpuPercent
+        // (logs-page-memory.ui.tsx:210-214).
+        QVERIFY(visibleItem("diagnosticsMemoryProcessesLabel"));
+        QCOMPARE(visibleItem("diagnosticsMemoryProcessCell0-type")->property("text").toString(),
+                 QString("Main"));
+        QCOMPARE(visibleItem("diagnosticsMemoryProcessCell0-pid")->property("text").toString(),
+                 QString::number(QCoreApplication::applicationPid()));
+        QCOMPARE(visibleItem("diagnosticsMemoryProcessCell0-workingSet")->property("text").toString(),
+                 QString("8.00 MB"));
+        QCOMPARE(visibleItem("diagnosticsMemoryProcessCell0-peak")->property("text").toString(),
+                 QString("9.00 MB"));
+        QCOMPARE(visibleItem("diagnosticsMemoryProcessCell0-cpu")->property("text").toString(),
+                 QString("\u2014"));
+    }
+
+    // Issue #52 poll contract: the reference constant is 3000 ms
+    // (logs-page-memory.ui.tsx:11) and the interval is injectable so this
+    // case drives two ticks without sleeping near 3 s wall clock; leaving the
+    // diagnostics section must stop the timer.
+    void diagnosticsMemoryPanelPollsWhileVisibleAndStopsOnLeave()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Memory poll teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        QCOMPARE(page->property("memoryPollIntervalMs").toInt(), 3000);
+        auto *timer=page->findChild<QObject*>("diagnosticsMemoryPollTimer"); QVERIFY(timer);
+        QCOMPARE(timer->property("running").toBool(), true);
+        const int ticksBefore=page->property("memoryPollTicks").toInt();
+        page->setProperty("memoryPollIntervalMs", 50);
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("memoryPollTicks").toInt() >= ticksBefore + 2, 4000);
+        // Leaving the section stops the poll (the reference clears its
+        // interval on unmount, logs-page-memory.ui.tsx:60-65).
+        controller.showSection(QStringLiteral("chat"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()!=QStringLiteral("diagnostics"), 4000);
+        QCOMPARE(timer->property("running").toBool(), false);
+        const int parkedTicks=page->property("memoryPollTicks").toInt();
+        QTest::qWait(300);
+        QCOMPARE(page->property("memoryPollTicks").toInt(), parkedTicks);
+    }
+
+    // Issue #52 unavailability: an injected provider failure (empty proc
+    // fixture root) renders settings.diagnosticsMemoryUnavailable instead of
+    // the cards (logs-page-memory.ui.tsx:86-90).
+    void diagnosticsMemoryPanelUnavailableReplacesMetrics()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        controller.setDiagnosticsMemoryProcRoot(directory.filePath("absent-proc"));
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Memory unavailable teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *unavailable=visibleItem("diagnosticsMemoryUnavailableText"); QVERIFY(unavailable);
+        QCOMPARE(unavailable->property("text").toString(),
+                 QString("Memory metrics are not available in this build."));
+        QVERIFY(!visibleItem("diagnosticsMemoryMetric-app"));
+        QVERIFY(!visibleItem("diagnosticsMemoryBarTrack"));
+        QVERIFY(!visibleItem("diagnosticsMemoryProcessCell0-type"));
+        // The section header stays visible in the unavailable state.
+        QVERIFY(visibleItem("diagnosticsMemoryTitle"));
+    }
+
     // Review 4611502344 on #404: an API-generation change (token loss,
     // account/server switch) drops the in-flight ping callback, so the page
     // used to sit in loading forever. The bump must settle the ping as a

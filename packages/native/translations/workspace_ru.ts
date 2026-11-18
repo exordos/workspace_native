@@ -4668,8 +4668,16 @@
         <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
         <message><source>Memory</source><translation>Память</translation></message>
         <message><source>Memory metrics are not available in this build.</source><translation>Метрики памяти недоступны в этой сборке.</translation></message>
-        <message><source>Total app memory: %1</source><translation>Память приложения: %1</translation></message>
-        <message><source>System free memory: %1</source><translation>Свободная RAM системы: %1</translation></message>
+        <message><source>Total app memory</source><translation>Память приложения</translation></message>
+        <message><source>System free memory</source><translation>Свободная RAM системы</translation></message>
+        <message><source>%1 total</source><translation>%1 всего</translation></message>
+        <message><source>Memory usage</source><translation>Использование памяти</translation></message>
+        <message><source>Processes</source><translation>Процессы</translation></message>
+        <message><source>Type</source><translation>Тип</translation></message>
+        <message><source>PID</source><translation>PID</translation></message>
+        <message><source>Working set</source><translation>Рабочий набор</translation></message>
+        <message><source>Peak</source><translation>Пик</translation></message>
+        <message><source>CPU</source><translation>CPU</translation></message>
         <message><source>Refresh</source><translation>Обновить</translation></message>
         <message><source>Copy connection report</source><translation>Копировать отчёт о подключении</translation></message>
         <message><source>Copy snapshot</source><translation>Скопировать снимок</translation></message>
