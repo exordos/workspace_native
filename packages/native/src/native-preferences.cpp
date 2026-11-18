@@ -727,6 +727,14 @@ void NativePreferences::attachWindow(QWindow *window)
 void NativePreferences::saveWindow()
 {
     if (!m_window || !m_normalGeometry.isValid()) return;
+    // #62 round 2 (review follow-up): this slot also fires immediately from
+    // aboutToQuit and from the attachWindow(nullptr) detach, while a
+    // fullscreen transition gate may still defer updates. The stored state
+    // is then the pre-transition one, so re-capture the live window exactly
+    // like the gate release does. Only the window's current state is read,
+    // never the suppressed hop events, so the transient-hop protection
+    // stays intact.
+    if (m_fullscreenPending) recaptureLiveWindowState();
     m_windowSaveTimer.stop();
     m_settings.setValue("window/x", m_normalGeometry.x());
     m_settings.setValue("window/y", m_normalGeometry.y());
@@ -816,18 +824,26 @@ void NativePreferences::finishFullscreenGate()
     if (!m_fullscreenPending) return;
     m_fullscreenPending = false;
     if (!m_window) return;
-    // Re-capture where the window actually ended up. Signals suppressed
-    // during the gate include legitimate user moves and restores that raced
-    // the transition; the live window is the only correct source, and a
-    // still-fullscreen or minimized window (cap expiry) keeps the saved
-    // normal geometry and maximized flag untouched.
+    recaptureLiveWindowState();
+    m_windowSaveTimer.start();
+}
+
+// #62 round 2: the one place that reads where the window actually is right
+// now. Signals suppressed during the gate include legitimate user moves and
+// restores that raced the transition; the live window is the only correct
+// source, and a still-fullscreen or minimized window (cap expiry, or an
+// immediate save mid-transition) keeps the saved normal geometry and
+// maximized flag untouched. Used by the gate release and, through saveWindow,
+// by immediate saves that land while the gate is still open.
+void NativePreferences::recaptureLiveWindowState()
+{
+    if (!m_window) return;
     const auto state = m_window->windowState();
     if (state == Qt::WindowMaximized) m_windowMaximized = true;
     else if (state == Qt::WindowNoState && m_window->width() >= 700 && m_window->height() >= 600) {
         m_windowMaximized = false;
         m_normalGeometry = m_window->geometry();
     }
-    m_windowSaveTimer.start();
 }
 
 namespace {
