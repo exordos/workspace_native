@@ -485,6 +485,10 @@ FocusScope {
                         enabled: page.pingState !== "loading"
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: {
+                            // Issue #50 review 4611502346: stop the previous
+                            // ping's feedback reset first, otherwise the stale
+                            // timer clears this ping's loading state mid-flight.
+                            pingReset.stop();
                             page.pingState = "loading";
                             page.pingLatencyMs = -1;
                             page.controller.pingServer();
