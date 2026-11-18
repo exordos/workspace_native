@@ -210,6 +210,11 @@ private:
     QString m_chatListDensity = QStringLiteral("general");
     QString m_chatClickAction = QStringLiteral("stream");
     QRect m_normalGeometry;
+    // #62 round 3: the bounds the window had while maximized, recorded from
+    // live (ungated) geometry signals. The WM's unmaximize hop lands on
+    // exactly these bounds as WindowNoState, so matching them marks a
+    // transition rather than a settled user change (recaptureLiveWindowState).
+    QRect m_maximizedGeometry;
     bool m_windowMaximized = false;
     // #62 round 2: true while a fullscreen transition is in flight. The gate
     // covers the WM's transient unmaximize/restore hop so it never reaches

@@ -704,7 +704,9 @@ void NativePreferences::attachWindow(QWindow *window)
     const auto geometryChanged = [this] {
         if (!m_window) return;
         if (m_fullscreenPending) { noteFullscreenGateSignal(); return; }
-        if (m_window->windowState() == Qt::WindowNoState
+        if (m_window->windowState() == Qt::WindowMaximized)
+            m_maximizedGeometry = m_window->geometry();
+        else if (m_window->windowState() == Qt::WindowNoState
             && m_window->width() >= 700 && m_window->height() >= 600)
             m_normalGeometry = m_window->geometry();
         m_windowSaveTimer.start();
@@ -839,10 +841,34 @@ void NativePreferences::recaptureLiveWindowState()
 {
     if (!m_window) return;
     const auto state = m_window->windowState();
-    if (state == Qt::WindowMaximized) m_windowMaximized = true;
-    else if (state == Qt::WindowNoState && m_window->width() >= 700 && m_window->height() >= 600) {
+    if (state == Qt::WindowMaximized) {
+        // Do not record geometry here: the state change can be confirmed
+        // while the window still fills the screen; m_maximizedGeometry is
+        // only ever fed by ungated geometryChanged signals on real bounds.
+        m_windowMaximized = true;
+        return;
+    }
+    if (state != Qt::WindowNoState) return;
+    // #62 round 3 (review cid 4609403368): WindowNoState only describes a
+    // settled window when the window is not still wearing a transition
+    // shape. The WM hop passes through NoState in two shapes: entering
+    // fullscreen the WM unmaximizes onto the very bounds the window had
+    // while maximized, and exiting the state change lands while the window
+    // still fills the screen, before the restore configure arrives.
+    // Mirroring the reference getNormalBounds rule, neither may enter the
+    // saved normal geometry or clear the maximized flag. A settled user
+    // move or restore has its own, smaller geometry, so it is still
+    // captured exactly as before.
+    const auto geometry = m_window->geometry();
+    if (m_windowMaximized && m_maximizedGeometry.isValid() && geometry == m_maximizedGeometry)
+        return;
+    const auto *screen = m_window->screen();
+    if (screen && geometry.width() >= screen->geometry().width()
+        && geometry.height() >= screen->availableGeometry().height())
+        return;
+    if (geometry.width() >= 700 && geometry.height() >= 600) {
         m_windowMaximized = false;
-        m_normalGeometry = m_window->geometry();
+        m_normalGeometry = geometry;
     }
 }
 
