@@ -754,6 +754,71 @@ private slots:
         QCOMPARE(sanitized.chatListDensity(), QStringLiteral("general"));
         QCOMPARE(sanitized.chatClickAction(), QStringLiteral("stream"));
     }
+
+    // docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md (issue #85): the reference
+    // resolvers (workspace_ui 61dacef settings.model.ts) keep folderRailLayout
+    // on "vertical" only for the exact "vertical" token (anything else is
+    // "horizontal") and showSystemFolders strictly on true/false (anything
+    // else keeps the default true). A virgin store starts vertical/shown and
+    // both keys live in the global settings/app scope, like the #102 chat
+    // list layout keys. Access is via meta-object so a missing property is a
+    // test failure, not a compile error.
+    void folderRailLayoutAndSystemFoldersPersistGloballyWithStrictDefaults()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("folder-rail.ini");
+        {
+            NativePreferences preferences(path);
+            const auto layout = preferences.metaObject()->property(
+                preferences.metaObject()->indexOfProperty("folderRailLayout"));
+            const auto showSystem = preferences.metaObject()->property(
+                preferences.metaObject()->indexOfProperty("showSystemFolders"));
+            QVERIFY(layout.isValid() && layout.isWritable());
+            QVERIFY(showSystem.isValid() && showSystem.isWritable());
+            // settings.model.ts createDefaultSettings: vertical + shown.
+            QCOMPARE(layout.read(&preferences).toString(), QStringLiteral("vertical"));
+            QVERIFY(showSystem.read(&preferences).toBool());
+            QSignalSpy layoutChanged(&preferences, SIGNAL(folderRailLayoutChanged()));
+            QSignalSpy showSystemChanged(&preferences, SIGNAL(showSystemFoldersChanged()));
+            QVERIFY(layoutChanged.isValid() && showSystemChanged.isValid());
+            QVERIFY(layout.write(&preferences, QStringLiteral("horizontal")));
+            QVERIFY(showSystem.write(&preferences, false));
+            QCOMPARE(layoutChanged.count(), 1);
+            QCOMPARE(showSystemChanged.count(), 1);
+            QSettings disk(path, QSettings::IniFormat);
+            QCOMPARE(disk.value("settings/app/folderRailLayout").toString(),
+                QStringLiteral("horizontal"));
+            QVERIFY(!disk.value("settings/app/showSystemFolders").toBool());
+            // Re-writing the same value is a no-op without a re-emit.
+            QVERIFY(layout.write(&preferences, QStringLiteral("horizontal")));
+            QCOMPARE(layoutChanged.count(), 1);
+        }
+        {
+            NativePreferences reopened(path);
+            const auto layout = reopened.metaObject()->property(
+                reopened.metaObject()->indexOfProperty("folderRailLayout"));
+            const auto showSystem = reopened.metaObject()->property(
+                reopened.metaObject()->indexOfProperty("showSystemFolders"));
+            QCOMPARE(layout.read(&reopened).toString(), QStringLiteral("horizontal"));
+            QVERIFY(!showSystem.read(&reopened).toBool());
+        }
+        {
+            QSettings disk(path, QSettings::IniFormat);
+            disk.setValue("settings/app/folderRailLayout", "diagonal");
+            disk.setValue("settings/app/showSystemFolders", "sometimes");
+            disk.sync();
+        }
+        NativePreferences sanitized(path);
+        const auto layout = sanitized.metaObject()->property(
+            sanitized.metaObject()->indexOfProperty("folderRailLayout"));
+        const auto showSystem = sanitized.metaObject()->property(
+            sanitized.metaObject()->indexOfProperty("showSystemFolders"));
+        // resolveFolderRailLayout: a stored value that is not exactly
+        // "vertical" lands on "horizontal"; resolveShowSystemFolders falls
+        // back to the default show for a non-boolean.
+        QCOMPARE(layout.read(&sanitized).toString(), QStringLiteral("horizontal"));
+        QVERIFY(showSystem.read(&sanitized).toBool());
+    }
     // Issue #107, exordy #387 round 2: the reduced-motion probe must address
     // the XDG Settings portal the way the portal spec does - D-Bus service
     // org.freedesktop.portal.Desktop, object path /org/freedesktop/portal/
