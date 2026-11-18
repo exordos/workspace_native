@@ -1794,6 +1794,11 @@ private:
         std::optional<qint64> presenceUpdatedAt;
         QString email;
         QString status, statusText, statusEmoji;
+        // Issue #88 (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md): the users-row
+        // last-seen display string behind the direct header caption
+        // (presence.lastSeen). Absent means contract null; like the presence
+        // and status decorations it follows the updated_at ordering guard.
+        QString lastSeen;
         // Issue #177: the directory's deactivated-account fact behind the
         // direct header badge (dm.partnerBlocked). Absent means not
         // deactivated, never invented; unlike presence it is account state,
@@ -1859,6 +1864,7 @@ private:
     // Issue #177: mirrors userPresence gating for the deactivated-account fact.
     bool userAccountDeactivated(const QString &id) const;
     QString userStatusLabel(const QString &id) const;
+    QString userLastSeen(const QString &id) const;
     QHash<QString, UserPresentation> m_names;
     QSet<QString> m_topicMetadataInFlight;
     QSet<QString> m_topicMetadataFailed;

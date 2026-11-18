@@ -364,6 +364,36 @@ ApplicationWindow {
     }
     // Issue #177: dm.partnerBlocked - en source string, ru catalog entry.
     function accountDeactivatedLabel() { return qsTr("Account deactivated"); }
+    // Issue #88 (reference chat-header.lib.ts:4-27, see
+    // docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md): the resolveDmStatusText
+    // priority chain on the directPeer projection. A presence value outside
+    // active/idle, including the empty "data unavailable" value, falls to the
+    // last-seen branch exactly like the contract: an unknown user shows the
+    // offline caption, never online.
+    function directStatusCaption() {
+        const peer = root.controller.directPeer
+        if (peer.accountDeactivated === true)
+            return root.accountDeactivatedLabel()
+        // Reference branch 2 (chat.typing). No handled realtime kind carries
+        // typing today, so directPeer.typing stays unset until the wire
+        // provides it; the branch matches the contract shape meanwhile.
+        if (peer.typing === true)
+            return qsTr("Typing")
+        const custom = String(peer.customStatus || "")
+        if (custom.length > 0)
+            return custom
+        const online = qsTr("online")
+        if (peer.presence === "active")
+            return online
+        if (peer.presence === "idle")
+            return qsTr("away")
+        const lastSeen = String(peer.lastSeen || "")
+        if (lastSeen.length === 0)
+            return qsTr("offline")
+        if (lastSeen === online)
+            return online
+        return qsTr("last seen %1").arg(lastSeen)
+    }
     component PresenceBadge: Item {
         id: badge
         property string presence: ""
@@ -5158,6 +5188,7 @@ ApplicationWindow {
                     }
                 }
                 RowLayout {
+                    id: directConversationRow
                     objectName: "directConversationHeader"
                     visible: root.controller.isDirectConversation && !root.controller.favoritesVisible
                     x: 20
@@ -5253,17 +5284,40 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             // An unknown user has no dot; Source's actual header
                             // still displays its offline caption, not online.
-                            // A deactivated partner replaces the whole caption
-                            // like resolveDmStatusText (chat-header.lib.ts:20-22).
-                            text: root.controller.directPeer.accountDeactivated === true
-                                ? root.accountDeactivatedLabel()
-                                : root.presenceLabel(String(root.controller.directPeer.presence || "")) || qsTr("offline")
+                            // Issue #88: the whole caption follows the
+                            // resolveDmStatusText chain (chat-header.lib.ts:4-27).
+                            text: root.directStatusCaption()
                             textFormat: Text.PlainText
                             color: root.colors["text-muted"]
                             font.pixelSize: 12
                             elide: Text.ElideRight
                             lineHeightMode: Text.FixedHeight; lineHeight: 16
                         }
+                    }
+                }
+                MouseArea {
+                    // Issue #88 (reference chat-header-direct.ui.tsx:7-8,
+                    // 47-55): the whole partner block is one overlay button
+                    // (aria-label a11y.openUserProfile) that opens the partner
+                    // profile drawer already wired from #134. The reference
+                    // renders the overlay only with a profile handler; here
+                    // that precondition is a known direct peer id.
+                    id: directPartnerProfileAction
+                    objectName: "directPartnerProfileAction"
+                    anchors.fill: directConversationRow
+                    visible: directConversationRow.visible
+                        && String(root.controller.directPeer.id || "").length > 0
+                    enabled: visible
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    Accessible.role: Accessible.Button
+                    Accessible.name: qsTr("Open profile: %1")
+                        .arg(String(root.controller.directPeer.displayName || ""))
+                    Accessible.ignored: !visible
+                    onClicked: {
+                        const peer = String(root.controller.directPeer.id || "")
+                        if (peer.length > 0)
+                            rightDrawer.openWorkspaceUserProfile(peer)
                     }
                 }
                 Row {
