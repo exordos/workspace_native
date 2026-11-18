@@ -368,6 +368,14 @@
             <translation>Имя пользователя или email</translation>
         </message>
         <message>
+            <source>No account?</source>
+            <translation>Нет аккаунта?</translation>
+        </message>
+        <message>
+            <source>Register</source>
+            <translation>Зарегистрироваться</translation>
+        </message>
+        <message>
             <source>Password</source>
             <translation>Пароль</translation>
         </message>
