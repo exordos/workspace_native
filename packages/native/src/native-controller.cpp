@@ -8987,6 +8987,15 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // older page); settle its transient state so reopen/retry/load-more can
         // dispatch again under the renewed session.
         interruptFeedRequest();
+        // Issue #50 review 4611502344: the same bump retires an in-flight
+        // Diagnostics transport ping; its wrapper callback can never settle,
+        // so report the drop here: it clears the single-probe guard and lets
+        // the Diagnostics page leave its loading state under the new session.
+        if (m_pingInFlight)
+        {
+            m_pingInFlight = false;
+            emit pingFinished(false, -1);
+        }
         m_messageFields.clear();
         // Same-token renewals retain their transfers. A changed generation fences
         // both active operations and queued paths before resetting their UI state.
