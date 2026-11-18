@@ -49,6 +49,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
     Q_PROPERTY(QString error READ error NOTIFY stateChanged)
     Q_PROPERTY(QString loginStep READ loginStep NOTIFY stateChanged)
+    // Issue #60 preselect (login-page.ui.tsx:316): the linked-message project
+    // when the discovered list contains it, else the first project, else "".
+    Q_PROPERTY(QString projectPreselection READ projectPreselection NOTIFY stateChanged)
     Q_PROPERTY(QString loginUsername READ loginUsername NOTIFY stateChanged)
     Q_PROPERTY(QString organizationRealm READ organizationRealm NOTIFY stateChanged)
     Q_PROPERTY(bool organizationLoading READ organizationLoading NOTIFY stateChanged)
@@ -465,6 +468,7 @@ public:
                            const QString &password, const QString &otp);
     // Login wizard organization step (docs/NATIVE_DESKTOP_LOGIN.md).
     QString loginStep() const { return m_loginStep; }
+    QString projectPreselection() const;
     QString loginUsername() const { return m_session->loginName(); }
     QString organizationRealm() const { return m_organizationRealm; }
     bool organizationLoading() const { return m_organizationLoading; }
@@ -2031,6 +2035,10 @@ private:
     QString m_stream;
     QString m_topic;
     QString m_anchorMessage;
+    // Issue #60: the parked message deep link's organization route id and
+    // lowercased project uuid (reference messageTarget). Returns false when
+    // no parked message link exists.
+    bool linkedMessageTarget(QString *org, QString *project) const;
     QString m_pendingDeepLink;
     QMetaObject::Connection m_profileLinkCacheDestroyed;
     std::weak_ptr<quint64> m_profileLinkSelection;

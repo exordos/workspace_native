@@ -23,6 +23,10 @@
             <source>Choose a sign-in method or enter your email/login and password.</source>
             <translation>Выберите способ входа или введите email/логин и пароль.</translation>
         </message>
+        <message>
+            <source>Sign in to an account for the organization and project in this link.</source>
+            <translation>Войдите в аккаунт организации и проекта, указанных в ссылке.</translation>
+        </message>
     </context>
     <context>
         <name>SessionSwitcher</name>
@@ -165,6 +169,26 @@
         <message>
             <source>Choose a sign-in method or enter your email/login and password.</source>
             <translation>Выберите способ входа или введите email/логин и пароль.</translation>
+        </message>
+        <message>
+            <source>Choose the project you want to open.</source>
+            <translation>Выберите проект, который хотите открыть.</translation>
+        </message>
+        <message>
+            <source>Project</source>
+            <translation>Проект</translation>
+        </message>
+        <message>
+            <source>Select a project</source>
+            <translation>Выберите проект</translation>
+        </message>
+        <message>
+            <source>Login</source>
+            <translation>Войти</translation>
+        </message>
+        <message>
+            <source>Your account does not have access to any projects in this organization.</source>
+            <translation>У вашего аккаунта нет доступа к проектам этой организации.</translation>
         </message>
         <message>
             <source>Server address</source>
@@ -1715,6 +1739,10 @@
         <message>
             <source>Could not load organization settings. Check the server address and try again.</source>
             <translation>Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Sign in to an account for the organization and project in this link.</source>
+            <translation>Войдите в аккаунт организации и проекта, указанных в ссылке.</translation>
         </message>
         <message>
             <source>Exordos Core Public</source>
