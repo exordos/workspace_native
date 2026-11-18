@@ -62,27 +62,39 @@ private:
 // daemon can never auto-activate the real portal behind a test's fake. If
 // dbus-daemon is unavailable the bus stays whatever the environment provides
 // and the portal case skips itself via the isConnected guard.
+//
+// exordy #387 round 3: the bus config and the bus socket live inside a private
+// QTemporaryDir (0700, unpredictable mkdtemp name). A fixed name in the shared
+// /tmp opened with WriteOnly|Truncate lets another local user pre-place a
+// symlink there, and the truncate then clobbers whatever file the runner could
+// write. Creation success is asserted by the portal case itself via
+// busConfigWritten(), so a failed fixture can never pass silently.
 class PortalProbeBus
 {
 public:
     PortalProbeBus()
     {
-        const QString config = QDir::temp().filePath(
-            QStringLiteral("workspace-native-portal-test-bus.conf"));
+        if (!m_dir.isValid())
+            return;
+        const QString config = m_dir.filePath(QStringLiteral("bus.conf"));
         QFile configFile(config);
-        if (configFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            configFile.write(
-                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
-                " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
-                "<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen>"
-                "<policy context=\"default\">"
-                "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
-                "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
-                "</policy></busconfig>");
-            configFile.close();
-        } else {
+        if (!configFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             return;
         }
+        // m_dir.path() is QDir::tempPath() plus mkdtemp's alphanumeric suffix,
+        // so splicing it into the XML below needs no escaping.
+        configFile.write(
+            (QStringLiteral("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
+                            " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
+                            "<busconfig><type>session</type><listen>unix:tmpdir=")
+             + m_dir.path()
+             + QStringLiteral("</listen>"
+                              "<policy context=\"default\">"
+                              "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
+                              "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
+                              "</policy></busconfig>")).toUtf8());
+        configFile.close();
+        m_busConfigWritten = true;
         m_daemon.start(QStringLiteral("dbus-daemon"),
             {QStringLiteral("--config-file=") + config, QStringLiteral("--print-address")});
         if (!m_daemon.waitForStarted(5000) || !m_daemon.waitForReadyRead(5000))
@@ -98,7 +110,10 @@ public:
         if (!m_daemon.waitForFinished(3000))
             m_daemon.kill();
     }
+    bool busConfigWritten() const { return m_busConfigWritten; }
 private:
+    QTemporaryDir m_dir{QDir::tempPath() + QStringLiteral("/workspace-native-portal-test-XXXXXX")};
+    bool m_busConfigWritten = false;
     QProcess m_daemon;
 };
 const PortalProbeBus portalProbeBus;
@@ -710,6 +725,8 @@ private slots:
     // reduced-motion, and an unknown value means "no preference".
     void prefersReducedMotionFollowsTheXDGSettingsPortal()
     {
+        QVERIFY2(portalProbeBus.busConfigWritten(),
+            "the portal probe fixture must have created its private bus config directory");
         auto bus = QDBusConnection::sessionBus();
         QVERIFY2(bus.isConnected(), "the portal probe needs a session bus");
         QTemporaryDir directory; QVERIFY(directory.isValid());
