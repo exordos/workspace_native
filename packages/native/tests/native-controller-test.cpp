@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "native-deeplink.h"
 #include "clipboard-snapshot-budget.h"
 #include "native-auth-guard.h"
 #include "native-logging.h"
@@ -28893,6 +28894,176 @@ private slots:
         otherController.setActivityOpen(false);
         NativePreferences closed(path);
         QVERIFY(!closed.loadActivityOpen(owner));
+    }
+
+    // ---- Issue #50: diagnostics dashboard (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md)
+    void diagnosticsOverallStatusTable_data()
+    {
+        QTest::addColumn<QString>("phase");
+        QTest::addColumn<bool>("online");
+        QTest::addColumn<int>("recentErrors");
+        QTest::addColumn<QString>("status");
+        // Reference rule (diagnostics-collect.lib.ts:153-188): offline wins
+        // over everything; any non-clean phase or a recent log error degrades;
+        // only a clean online phase is healthy.
+        QTest::newRow("offline-phase") << QStringLiteral("offline") << true << 0 << QStringLiteral("offline");
+        QTest::newRow("transport-down") << QStringLiteral("online") << false << 0 << QStringLiteral("offline");
+        QTest::newRow("healthy") << QStringLiteral("online") << true << 0 << QStringLiteral("healthy");
+        QTest::newRow("reconnecting") << QStringLiteral("reconnecting") << true << 0 << QStringLiteral("degraded");
+        QTest::newRow("rate-limited") << QStringLiteral("rate_limited") << true << 0 << QStringLiteral("degraded");
+        QTest::newRow("degraded-phase") << QStringLiteral("degraded") << true << 0 << QStringLiteral("degraded");
+        QTest::newRow("connecting") << QStringLiteral("connecting") << true << 0 << QStringLiteral("degraded");
+        QTest::newRow("blocked") << QStringLiteral("blocked") << true << 0 << QStringLiteral("degraded");
+        QTest::newRow("recent-errors-force-degraded") << QStringLiteral("online") << true << 1 << QStringLiteral("degraded");
+        QTest::newRow("offline-wins-over-errors") << QStringLiteral("offline") << true << 3 << QStringLiteral("offline");
+    }
+    void diagnosticsOverallStatusTable()
+    {
+        QFETCH(QString, phase); QFETCH(bool, online);
+        QFETCH(int, recentErrors); QFETCH(QString, status);
+        QCOMPARE(workspace::diagnostics::resolveOverallStatus(phase, online, recentErrors), status);
+    }
+
+    void diagnosticsSessionLogSummaryBucketsLevelsAndRecentWindow()
+    {
+        using namespace workspace::diagnostics;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const auto stamp = [now](qint64 offsetMs) {
+            return QDateTime::fromMSecsSinceEpoch(now - offsetMs, Qt::UTC).toString(Qt::ISODateWithMs) + QLatin1Char('Z');
+        };
+        QStringList text;
+        text << (stamp(1000) + QStringLiteral(" info: hello"));
+        text << (stamp(2000) + QStringLiteral(" debug: d1"));
+        text << (stamp(3000) + QStringLiteral(" warning: w1"));
+        text << (stamp(16 * 60 * 1000) + QStringLiteral(" fatal: old fatal outside the window"));
+        text << QStringLiteral("garbage without a timestamp");
+        text << QString();
+        // Ten fatal lines inside the window in file order (oldest line
+        // first, like a real log): recentErrorCount stays uncapped while the
+        // collected list is newest-first and capped at 8.
+        for (int index = 10; index >= 1; --index)
+            text << (stamp(qint64(index) * 60 * 1000)
+                + QStringLiteral(" fatal: recent %1").arg(index));
+        const auto summary = parseSessionLog(text.join(QLatin1Char('\n')), now);
+        QCOMPARE(summary.infoCount, 1);
+        QCOMPARE(summary.debugCount, 1);
+        QCOMPARE(summary.warnCount, 1);
+        QCOMPARE(summary.errorCount, 11); // 10 recent + 1 old, critical/fatal bucket
+        QCOMPARE(summary.recentErrorCount, 10);
+        QCOMPARE(summary.recentErrors.size(), RecentErrorLimit);
+        QCOMPARE(summary.recentErrors.first().message, QStringLiteral("recent 1")); // newest first
+        QCOMPARE(summary.recentErrors.last().message, QStringLiteral("recent 8")); // oldest two trimmed by the cap
+        QCOMPARE(summary.recentErrors.first().level, QStringLiteral("fatal"));
+    }
+
+    void diagnosticsLatencySummaryMatchesReferencePercentiles()
+    {
+        using namespace workspace::diagnostics;
+        const auto empty = summarizeLatency({});
+        QCOMPARE(empty.sampleCount, 0);
+        QCOMPARE(empty.medianMs, qint64(-1)); // reference null
+        QCOMPARE(empty.p95Ms, qint64(-1));
+        const auto few = summarizeLatency({40, 10, 30, 20});
+        QCOMPARE(few.sampleCount, 4);
+        QCOMPARE(few.medianMs, qint64(30)); // sorted[floor(4*0.5)]
+        QCOMPARE(few.p95Ms, qint64(40));    // sorted[min(3, floor(4*0.95))]
+        QList<qint64> many;
+        for (qint64 value = 1; value <= 20; ++value)
+            many.append(value);
+        const auto full = summarizeLatency(many);
+        QCOMPARE(full.medianMs, qint64(11)); // sorted[10]
+        QCOMPARE(full.p95Ms, qint64(20));     // sorted[19]
+    }
+
+    void diagnosticsSectionAndDeepLinksRequireAuthenticationAndOrigin()
+    {
+        Fixture f;
+        // Offline the section never renders (the login overlay keeps chat).
+        f.controller.showSection(QStringLiteral("diagnostics"));
+        QVERIFY(f.controller.section() != QStringLiteral("diagnostics"));
+        f.controller.openMessageLink(QStringLiteral("ew://open/settings/logs"));
+        QVERIFY(f.controller.section() != QStringLiteral("diagnostics"));
+        QVERIFY(f.start());
+        // The reference web route (right-panel-user-menu.ui.tsx:182 navigates
+        // to /settings/logs) and the bare /logs variant both open the page.
+        f.controller.openMessageLink(QStringLiteral("ew://open/settings/logs"));
+        QCOMPARE(f.controller.section(), QStringLiteral("diagnostics"));
+        f.controller.showSection(QStringLiteral("chat"));
+        f.controller.openMessageLink(QStringLiteral("ew://open/logs"));
+        QCOMPARE(f.controller.section(), QStringLiteral("diagnostics"));
+        // The org-prefixed variant carries the shared origin guard: a foreign
+        // org is ignored, the matching org opens the page.
+        f.controller.showSection(QStringLiteral("chat"));
+        f.controller.openMessageLink(QStringLiteral("ew://open/org/foreign-org/logs"));
+        QCOMPARE(f.controller.section(), QStringLiteral("chat"));
+        f.controller.openMessageLink(QStringLiteral("ew://open/org/%1/settings/logs")
+            .arg(workspace::orgRouteIdFromOrigin(f.server.origin())));
+        QCOMPARE(f.controller.section(), QStringLiteral("diagnostics"));
+    }
+
+    void diagnosticsSnapshotDatasetsReportAndPing()
+    {
+        Fixture f; QVERIFY(f.start());
+        const auto snapshot = f.controller.diagnosticsSnapshot();
+        // The dataset shape the page binds against (reference snapshot keys).
+        for (const auto *key:{"overallStatus", "collectedAt", "connection", "realtime",
+                              "session", "workspaceSession", "runtime", "environment",
+                              "notifications", "performance", "logs", "stores"})
+            QVERIFY2(snapshot.contains(QLatin1String(key)), key);
+        QCOMPARE(snapshot.value(QStringLiteral("overallStatus")).toString(),
+                 f.controller.diagnosticsOverallStatus());
+        QCOMPARE(snapshot.value(QStringLiteral("connection")).toMap()
+                     .value(QStringLiteral("phase")).toString(), f.controller.connectionPhase());
+        // The fixture login produced real HTTP round trips, so the latency
+        // dataset carries live samples (exact percentile math is pinned by
+        // diagnosticsLatencySummaryMatchesReferencePercentiles).
+        const auto apiLatency = snapshot.value(QStringLiteral("performance")).toMap()
+                                    .value(QStringLiteral("apiLatency")).toMap();
+        QVERIFY(apiLatency.value(QStringLiteral("sampleCount")).toInt() >= 1);
+        const auto medianMs = apiLatency.value(QStringLiteral("medianMs"));
+        const auto p95Ms = apiLatency.value(QStringLiteral("p95Ms"));
+        QVERIFY(!medianMs.isNull() && medianMs.toLongLong() >= 0);
+        QVERIFY(!p95Ms.isNull() && p95Ms.toLongLong() >= medianMs.toLongLong());
+        const auto slowest = apiLatency.value(QStringLiteral("slowest")).toList();
+        QVERIFY(!slowest.isEmpty() && slowest.size() <= 3);
+        for (qsizetype index = 1; index < slowest.size(); ++index)
+            QVERIFY(slowest.at(index - 1).toMap().value(QStringLiteral("durationMs")).toLongLong()
+                    >= slowest.at(index).toMap().value(QStringLiteral("durationMs")).toLongLong());
+        QCOMPARE(snapshot.value(QStringLiteral("stores")).toMap()
+                     .value(QStringLiteral("streamsCount")).toInt(), 1);
+        QVERIFY(!snapshot.value(QStringLiteral("workspaceSession")).toMap()
+                     .value(QStringLiteral("login")).toString().isEmpty());
+        // Copy surfaces: the snapshot is the pretty two-space full dataset,
+        // the connection report the reference subset (no stores card data).
+        const auto json = f.controller.diagnosticsSnapshotJson();
+        QVERIFY(json.contains(QLatin1String("\n  \"overallStatus\"")));
+        QVERIFY(!QJsonDocument::fromJson(json.toUtf8()).isNull());
+        QCOMPARE(QJsonDocument::fromJson(json.toUtf8()).object(),
+                 QJsonDocument::fromVariant(snapshot).object());
+        const auto report = QJsonDocument::fromJson(
+            f.controller.diagnosticsConnectionReportJson().toUtf8()).object();
+        for (const auto *key:{"collectedAt", "overallStatus", "connection", "realtime",
+                              "workspaceSession", "recentErrors"})
+            QVERIFY2(report.contains(QLatin1String(key)), key);
+        QVERIFY(!report.contains(QStringLiteral("stores")));
+        // Ping: one round trip, one signal; a second call while in flight is
+        // ignored by the reference single-probe guard.
+        QSignalSpy finished(&f.controller, &NativeController::pingFinished);
+        f.controller.pingServer();
+        f.controller.pingServer();
+        QVERIFY(finished.wait(5000));
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(finished.first().at(0).toBool());
+        QVERIFY(finished.first().at(1).toInt() >= 0);
+    }
+
+    void diagnosticsPingRequiresAuthentication()
+    {
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QSignalSpy finished(&controller, &NativeController::pingFinished);
+        controller.pingServer();
+        QTest::qWait(250);
+        QCOMPARE(finished.count(), 0);
     }
 };
 

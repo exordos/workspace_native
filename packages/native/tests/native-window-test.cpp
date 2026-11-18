@@ -29872,6 +29872,104 @@ private slots:
         QVERIFY(controller.anchorNavigationError().isEmpty());
         QVERIFY(controller.anchorMessageId().isEmpty());
     }
+
+    // Issue #50 (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md): the diagnostics
+    // page renders through the real profile-menu entry, the status pill paints
+    // the three reference states (healthy green, degraded yellow, offline red
+    // per logs-page-overview.ui.tsx:44), the Ping button completes the real
+    // request round-trip with its ms feedback and the 3 s reset, the snapshot
+    // copy lands in the clipboard with its 2 s feedback, and the advanced
+    // snapshot block toggles. Card data comes from the live collected
+    // snapshot, never synthetic values.
+    void diagnosticsPageRendersStatusPillStatesAndPingFeedback()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Diagnostics page teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        // The reference profile menu entry (right-panel-user-menu
+        // .ui.tsx:372-376) is the live surface for this page.
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        QVERIFY(page->property("visible").toBool());
+        QCOMPARE(visibleItem("diagnosticsTitle")->property("text").toString(), QString("Diagnostics"));
+        QCOMPARE(visibleItem("diagnosticsHint")->property("text").toString(),
+                 QString("Full runtime diagnostics with searchable session logs."));
+        QVERIFY(visibleItem("diagnosticsRefreshButton"));
+        QVERIFY(visibleItem("diagnosticsCopyReportButton"));
+        QVERIFY(visibleItem("diagnosticsCopySnapshotButton"));
+        // The nine reference cards (logs-page-overview.ui.tsx:66-208) all
+        // render through the collected snapshot Repeater.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsCardGrid"), 4000);
+        QVERIFY(visibleItem("diagnosticsMemoryCard"));
+        for (const auto *key:{"connection","realtime","session","runtime","notifications",
+                              "logcounts","performance","cache","stores"})
+            QVERIFY2(visibleItem(QStringLiteral("diagnosticsCard-%1").arg(key)), key);
+        // Status pill matrix. The snapshot var is the pill's only input, so
+        // assigning it drives the same bindings live data uses. No event loop
+        // runs between the assignment and the reads, so no refresh can race.
+        const auto colors=page->property("colors").toMap();
+        auto *dot=visibleItem("diagnosticsStatusDot"); QVERIFY(dot);
+        auto *pillText=visibleItem("diagnosticsStatusText"); QVERIFY(pillText);
+        QVariantMap snapshot;
+        snapshot.insert(QStringLiteral("overallStatus"), QStringLiteral("healthy"));
+        page->setProperty("snapshot",snapshot);
+        QCOMPARE(dot->property("color").value<QColor>(), colors.value("indicator-green").value<QColor>());
+        QCOMPARE(pillText->property("text").toString(), QString("Healthy"));
+        snapshot.insert(QStringLiteral("overallStatus"), QStringLiteral("degraded"));
+        page->setProperty("snapshot",snapshot);
+        QCOMPARE(dot->property("color").value<QColor>(), colors.value("indicator-yellow").value<QColor>());
+        QCOMPARE(pillText->property("text").toString(), QString("Degraded"));
+        snapshot.insert(QStringLiteral("overallStatus"), QStringLiteral("offline"));
+        page->setProperty("snapshot",snapshot);
+        QCOMPARE(dot->property("color").value<QColor>(), colors.value("indicator-red").value<QColor>());
+        QCOMPARE(pillText->property("text").toString(), QString("Offline"));
+        // Ping server drives a real request through NativeController and shows
+        // the measured latency until the 3 s reset (logs-page.ui.tsx:238-242).
+        QSignalSpy pingFinished(&controller, &NativeController::pingFinished);
+        click(window, visibleItem("diagnosticsPingButton"));
+        QCOMPARE(page->property("pingState").toString(), QString("loading"));
+        QVERIFY(pingFinished.wait(5000));
+        const bool pingOk=pingFinished.first().at(0).toBool();
+        const int pingMs=pingFinished.first().at(1).toInt();
+        QVERIFY(pingOk);
+        QVERIFY(pingMs>=0);
+        QCOMPARE(page->property("pingState").toString(), QString("success"));
+        QCOMPARE(visibleItem("diagnosticsPingLabel")->property("text").toString(),
+                 QStringLiteral("Reachable (%1 ms)").arg(pingMs));
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("pingState").toString()==QStringLiteral("idle"), 6000);
+        QCOMPARE(visibleItem("diagnosticsPingLabel")->property("text").toString(), QString("Ping server"));
+        // Copy snapshot writes the exact full-dataset text and resets after
+        // 2000 ms (logs-page.ui.tsx:232-236). The expected text is the page's
+        // own copy (the page refreshes its snapshot on live events), so the
+        // compare is race-free against refreshes after the click.
+        const QString snapshotJson=page->property("snapshotJson").toString();
+        QVERIFY(snapshotJson.contains(QStringLiteral("\"overallStatus\"")));
+        click(window, visibleItem("diagnosticsCopySnapshotButton"));
+        QTRY_COMPARE_WITH_TIMEOUT(QGuiApplication::clipboard()->text(), snapshotJson, 4000);
+        QCOMPARE(page->property("copyState").toString(), QString("success"));
+        QCOMPARE(visibleItem("diagnosticsCopySnapshotButton")->property("buttonLabel").toString(),
+                 QString("Snapshot copied"));
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("copyState").toString()==QStringLiteral("idle"), 4000);
+        QCOMPARE(visibleItem("diagnosticsCopySnapshotButton")->property("buttonLabel").toString(),
+                 QString("Copy snapshot"));
+        // Advanced snapshot collapses the pretty JSON block (325-334). The
+        // collapsed block is invisible, so only the expanded one is findable.
+        QCOMPARE(page->property("advancedExpanded").toBool(), false);
+        QVERIFY(!visibleItem("diagnosticsSnapshotPre"));
+        click(window, visibleItem("diagnosticsAdvancedToggle"));
+        QCOMPARE(page->property("advancedExpanded").toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
+    }
 };
 
 
