@@ -356,7 +356,12 @@ if(BUILD_TESTING)
             # at 900.01s with zero failures, and the same run passed 100% in 923.39s once the
             # ceiling was lifted (issue #339).
             # 1050s = worst measured runtime plus the usual headroom (#16/#103).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1050)
+            # The 0.36.0 cycle groups pushed the solo runtime to 1047.45s
+            # (complete group, zero failures, 2.5s under the ceiling) and the
+            # -j6 suite run timed out at 1200s with no case failed, so the old
+            # margin was gone. 1300s = worst measured runtime plus the usual
+            # headroom (#16/#103).
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1300)
         elseif(test STREQUAL "native-cache")
             # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
             # across solo runs, and the suite-context run was killed at the old 90s
@@ -381,7 +386,15 @@ if(BUILD_TESTING)
             # Issue #1 adds 56 visible opening/position rows (~154s). The
             # enlarged group reached 900s before completing the late profile
             # cases. Retain every assertion and allow the complete group to run.
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1200)
+            # The fullscreen/F11 window cases added in 0.36.0 took the complete
+            # group to 1231.3s solo (896 passed, 2 skipped, zero failed) which
+            # is past the 1200s ceiling: the group timed out deterministically
+            # with no case failed at the kill point, under -j6 and on an empty
+            # machine alike. The longest inter-case gap stayed at 12s, so this
+            # is accumulated group size, not one slow case.
+            # 1500s = worst measured runtime plus the usual headroom
+            # (#16/#103, issue #413).
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1500)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
