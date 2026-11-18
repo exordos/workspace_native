@@ -30015,6 +30015,72 @@ private slots:
         }
         QVERIFY(sawApiError);
     }
+
+    // Review 4616699148 on #411: transport failures never answer an HTTP
+    // status, so the status-gated session log branch skipped them and only
+    // the offline transition was recorded (first failure, no request
+    // details). The request wrapper must log every transport failure as its
+    // own api entry with the method and path (redacted): reference
+    // loggedFetch logs the failure per request (logger.ts logApiCall).
+    void sessionLogProducerLogsTransportFailuresWithRequestDetails()
+    {
+        Fixture f; QVERIFY(f.start());
+        f.streams = [](const Request &) -> Response {
+            Response response;
+            response.abortConnection = true; // connection dropped, no HTTP status
+            return response;
+        };
+        const auto transportErrorCount = [&f] {
+            int count = 0;
+            for (const auto &value : f.controller.diagnosticsSessionLogEntries()) {
+                const auto entry = value.toMap();
+                if (entry.value(QStringLiteral("scope")).toString() == QLatin1String("api")
+                    && entry.value(QStringLiteral("level")).toString() == QLatin1String("error"))
+                    ++count;
+            }
+            return count;
+        };
+        const auto offlineTransitions = [&f] {
+            int count = 0;
+            for (const auto &value : f.controller.diagnosticsSessionLogEntries()) {
+                const auto entry = value.toMap();
+                if (entry.value(QStringLiteral("scope")).toString() == QLatin1String("connection-health")
+                    && entry.value(QStringLiteral("message")).toString()
+                        == QStringLiteral("Network transport offline"))
+                    ++count;
+            }
+            return count;
+        };
+        f.controller.reloadSnapshot();
+        QTRY_VERIFY_WITH_TIMEOUT(transportErrorCount() > 0, 5000);
+        bool shaped = false;
+        for (const auto &value : f.controller.diagnosticsSessionLogEntries()) {
+            const auto entry = value.toMap();
+            if (entry.value(QStringLiteral("scope")).toString() != QLatin1String("api")) continue;
+            const auto message = entry.value(QStringLiteral("message")).toString();
+            if (!message.contains(QStringLiteral("GET")) || !message.contains(QStringLiteral("/streams/")))
+                continue;
+            const auto data = entry.value(QStringLiteral("data")).toMap();
+            QVERIFY(!data.contains(QStringLiteral("status"))); // no HTTP status to report
+            // The path map value may itself land [REDACTED]: a pure
+            // base64-alphabet path trips the logger.ts value pattern on
+            // purpose (the message keeps the request identity, like the
+            // reference where only data is redacted, never the message).
+            shaped = data.value(QStringLiteral("method")).toString() == QStringLiteral("GET")
+                && data.contains(QStringLiteral("path"))
+                && !data.value(QStringLiteral("error")).toString().isEmpty();
+        }
+        QVERIFY(shaped);
+        // Per-request details: the offline transition may interleave with the
+        // parallel HTTP answers of the same reload, but every transport
+        // failure after the first logs its own api entry even while already
+        // offline — the transition entry alone no longer hides them.
+        QVERIFY(offlineTransitions() >= 1);
+        const auto firstCount = transportErrorCount();
+        f.controller.reloadSnapshot();
+        QTRY_VERIFY_WITH_TIMEOUT(transportErrorCount() >= firstCount + 1, 5000);
+        QVERIFY(offlineTransitions() >= 1);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
