@@ -29659,8 +29659,19 @@ private slots:
         const auto json = f.controller.diagnosticsSnapshotJson();
         QVERIFY(json.contains(QLatin1String("\n  \"overallStatus\"")));
         QVERIFY(!QJsonDocument::fromJson(json.toUtf8()).isNull());
-        QCOMPARE(QJsonDocument::fromJson(json.toUtf8()).object(),
-                 QJsonDocument::fromVariant(snapshot).object());
+        // collectedAt and session.sessionRemainingMs advance with the wall
+        // clock and are re-sampled on every call, so the export equality must
+        // ignore them: comparing the two reads whole made this case flaky
+        // (a one-millisecond tick between the reads failed the equality).
+        const auto stripClockDriven = [](QJsonObject object) {
+            object.remove(QStringLiteral("collectedAt"));
+            auto session = object.value(QStringLiteral("session")).toObject();
+            session.remove(QStringLiteral("sessionRemainingMs"));
+            object.insert(QStringLiteral("session"), session);
+            return object;
+        };
+        QCOMPARE(stripClockDriven(QJsonDocument::fromJson(json.toUtf8()).object()),
+                 stripClockDriven(QJsonDocument::fromVariant(snapshot).object()));
         const auto report = QJsonDocument::fromJson(
             f.controller.diagnosticsConnectionReportJson().toUtf8()).object();
         for (const auto *key:{"collectedAt", "overallStatus", "connection", "realtime",
