@@ -27915,6 +27915,71 @@ private slots:
         QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
     }
 
+    // Review finding (cid 4616033386): the projection folded "no color" and a
+    // stored black (background_color_value 0x00000000) into the same RGB 0, so
+    // the edit prefill could not tell them apart and a name-only rename
+    // repainted black to the preset-0 blue. Unset must project as a null
+    // variant (the reference adapter's `?? null`), black stays a numeric 0,
+    // and the rename request resends the stored 0 instead of the default blue.
+    void folderRenameKeepsStoredBlackApartFromUnsetColor()
+    {
+        const QString blankUuid = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Noir", "created", 0, 0),
+            QJsonObject{{"uuid", blankUuid}, {"title", "Blank"}, {"system_type", "created"},
+                {"unread_count", 0}}}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 5, 4000);
+        QVariant noirColor, blankColor;
+        for (const auto &folder : f.controller.folders())
+        {
+            const auto row = folder.toMap();
+            if (row.value("id").toString() == f.customUuid) noirColor = row.value("color");
+            if (row.value("id").toString() == blankUuid) blankColor = row.value("color");
+        }
+        // Stored black survives as a numeric zero...
+        QVERIFY(noirColor.isValid() && !noirColor.isNull());
+        QCOMPARE(noirColor.toUInt(), 0u);
+        // ...while a folder with no color at all projects null, not 0.
+        QVERIFY(blankColor.isNull());
+        // Request-shape half: renaming the black row carries the stored zero
+        // back on the wire (not 0xff2563eb, the preset-0 blue).
+        const auto fallback = f.server.handler;
+        QJsonArray putBodies;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/" + f.customUuid)) {
+                putBodies.append(request.body);
+                return Response{QJsonObject{{"uuid", f.customUuid},
+                    {"title", request.body.value("title").toString()},
+                    {"system_type", "created"}, {"unread_count", 0},
+                    {"background_color_value", request.body.value("background_color_value")}}};
+            }
+            return fallback(request);
+        };
+        f.controller.renameFolder(f.customUuid, "Noir 2", 0);
+        QTRY_COMPARE_WITH_TIMEOUT(putBodies.size(), 1, 4000);
+        const auto body = putBodies.first().toObject();
+        QCOMPARE(body.value("title").toString(), QStringLiteral("Noir 2"));
+        QCOMPARE(body.value("background_color_value").toVariant().toString(), QStringLiteral("0"));
+        QVariant echoedColor;
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            for (const auto &folder : f.controller.folders())
+            {
+                const auto row = folder.toMap();
+                if (row.value("id").toString() != f.customUuid) continue;
+                if (row.value("title").toString() != QStringLiteral("Noir 2")) return false;
+                echoedColor = row.value("color");
+                return true;
+            }
+            return false;
+        })(), 4000);
+        QVERIFY(echoedColor.isValid() && !echoedColor.isNull());
+        QCOMPARE(echoedColor.toUInt(), 0u);
+    }
+
     // confirmDelete contract: DELETE /folders/<uuid>; the row disappears and
     // the effective selection falls back to All without a refetch.
     void folderDeleteRemovesRowAndFallsBackToAll()

@@ -31082,6 +31082,88 @@ private slots:
         QVERIFY(deleteAction->property("enabled").toBool());
         QTest::keyClick(window,Qt::Key_Escape);
     }
+
+    // Review finding (cid 4616033386): the edit prefill folded a stored black
+    // (background_color_value 0x00000000) into "unset" and fell back to the
+    // preset-0 blue, so saving a name-only rename repainted the folder. Black
+    // is not one of the eight presets: the dialog keeps the stored black
+    // selected (colorValue 0, no swatch pressed) and the PUT resends 0, not
+    // 0xff2563eb (reference folder-form-modal keeps the store value verbatim;
+    // the preset-0 fallback fires only for an unset color).
+    void folderRailContextMenuKeepsBlackFolderColorOnRename()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderNoir = QStringLiteral("8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c8c");
+        MockServer server;
+        QJsonArray puts;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/"+folderNoir)) {
+                puts.append(request.body);
+                return {QJsonObject{{"uuid",folderNoir},
+                    {"title",request.body.value("title").toString()},{"system_type","created"},
+                    {"unread_count",0},{"background_color_value",request.body.value("background_color_value")}}};
+            }
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderNoir},{"title","Noir"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Black folder rename teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+folderNoir), 5000);
+        const auto rightClick=[&](const QString &objectName){
+            auto *cell=visibleItem(objectName); QVERIFY(cell);
+            const auto point=cell->mapToScene(QPointF(cell->width()/2,cell->height()/2));
+            QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point.toPoint());
+        };
+        rightClick("folder-"+folderNoir);
+        auto *renameAction=visibleItem("folderMenuRename"); QVERIFY(renameAction);
+        QVERIFY(renameAction->property("enabled").toBool());
+        click(window,renameAction);
+        auto *dialog=window->findChild<QObject*>("folderFormDialog"); QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->property("visible").toBool(),2000);
+        auto *nameField=visibleItem("folderNameField"); QVERIFY(nameField);
+        auto *submit=visibleItem("folderFormSubmit"); QVERIFY(submit);
+        QTRY_VERIFY_WITH_TIMEOUT(nameField->property("text").toString()==QStringLiteral("Noir"),2000);
+        // The dialog stays on the stored black: neither a preset nor blue.
+        QCOMPARE(dialog->property("colorValue").toDouble(), 0.0);
+        auto *swatch0=window->findChild<QQuickItem*>("folderSwatch-0"); QVERIFY(swatch0);
+        QVERIFY(!swatch0->property("selected").toBool());
+        // A name-only rename is the only change; Save unlocks and resends black.
+        QVERIFY(!submit->isEnabled());
+        nameField->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent renamed; renamed.setCommitString("Renamed");
+        QCoreApplication::sendEvent(nameField, &renamed);
+        QTRY_VERIFY_WITH_TIMEOUT(submit->isEnabled(),2000);
+        click(window,submit);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(),3000);
+        QTRY_COMPARE_WITH_TIMEOUT(puts.size(),1,3000);
+        const auto body=puts.first().toObject();
+        QCOMPARE(body.value("title").toString(),QStringLiteral("Renamed"));
+        QCOMPARE(body.value("background_color_value").toVariant().toString(),QStringLiteral("0"));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.folders().last().toMap().value("title").toString(),
+            QStringLiteral("Renamed"),3000);
+        QCOMPARE(controller.folders().last().toMap().value("color").toUInt(), 0u);
+    }
 };
 
 
