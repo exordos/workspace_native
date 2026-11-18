@@ -27298,6 +27298,207 @@ private slots:
 #endif
     }
 
+    // ------------------------------------------------------------------
+    // Issue #52: the memory panel provider (docs/NATIVE_DESKTOP_DIAGNOSTICS_
+    // PAGE.md, "Memory panel" section). The dataset mirrors the Electron
+    // diagnostics:getMemorySnapshot data the reference cards read
+    // (workspace_ui diagnostics-memory.lib.ts:15-40 feeding
+    // logs-page-memory.ui.tsx:96-197): per-process working set, peak and CPU
+    // plus system total/free/available, with capability flags.
+    // ------------------------------------------------------------------
+
+    static bool writeMemoryProcFile(const QString &path, const QByteArray &contents)
+    {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        return file.write(contents) == contents.size();
+    }
+
+    static bool seedMemoryProcFixture(const QString &root, qint64 rssKb, qint64 peakKb,
+                                      qint64 totalKb = 8388608, qint64 freeKb = 524288,
+                                      qint64 availableKb = 4194304)
+    {
+        if (!QDir(root).mkpath(QStringLiteral("self")))
+            return false;
+        return writeMemoryProcFile(root + QStringLiteral("/self/status"),
+                QStringLiteral("Name:\tworkspace-native\nPid:\t4242\nVmSize:\t   20480 kB\n"
+                               "VmHWM:\t   %1 kB\nVmRSS:\t   %2 kB\nThreads:\t7\n")
+                    .arg(peakKb).arg(rssKb).toUtf8())
+            && writeMemoryProcFile(root + QStringLiteral("/meminfo"),
+                QStringLiteral("MemTotal:        %1 kB\nMemFree:          %2 kB\n"
+                               "MemAvailable:    %3 kB\nSwapTotal:       1048576 kB\n")
+                    .arg(totalKb).arg(freeKb).arg(availableKb).toUtf8());
+    }
+
+    void diagnosticsMemoryProviderParsesProcFixtures()
+    {
+        QTemporaryDir proc;
+        QVERIFY(proc.isValid());
+        QVERIFY(seedMemoryProcFixture(proc.path(), 8192, 9216));
+        workspace::diagnostics::NativeMemoryDiagnostics provider;
+        provider.setProcRoot(proc.path());
+        const QVariantMap snapshot = provider.snapshot();
+        const QRegularExpression iso(QStringLiteral(
+            "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"));
+        QVERIFY(iso.match(snapshot.value(QStringLiteral("collectedAt")).toString()).hasMatch());
+        QCOMPARE(snapshot.value(QStringLiteral("runtime")).toString(), QStringLiteral("native"));
+        const QVariantMap app = snapshot.value(QStringLiteral("app")).toMap();
+        const QVariantMap system = snapshot.value(QStringLiteral("system")).toMap();
+        const QVariantMap capabilities = snapshot.value(QStringLiteral("capabilities")).toMap();
+#ifdef Q_OS_LINUX
+        QCOMPARE(app.value(QStringLiteral("workingSetKb")).toLongLong(), qint64(8192));
+        QCOMPARE(app.value(QStringLiteral("peakWorkingSetKb")).toLongLong(), qint64(9216));
+        QCOMPARE(app.value(QStringLiteral("totalWorkingSetKb")).toLongLong(), qint64(8192));
+        QCOMPARE(system.value(QStringLiteral("totalKb")).toLongLong(), qint64(8388608));
+        QCOMPARE(system.value(QStringLiteral("freeKb")).toLongLong(), qint64(524288));
+        QCOMPARE(system.value(QStringLiteral("availableKb")).toLongLong(), qint64(4194304));
+        // The system-availability rule the panel gates on: MemTotal > MemAvailable > 0.
+        QVERIFY(system.value(QStringLiteral("totalKb")).toLongLong()
+                > system.value(QStringLiteral("availableKb")).toLongLong());
+        QVERIFY(system.value(QStringLiteral("availableKb")).toLongLong() > 0);
+        QVERIFY(capabilities.value(QStringLiteral("processMetricsAvailable")).toBool());
+        QVERIFY(capabilities.value(QStringLiteral("systemMemoryAvailable")).toBool());
+        // Declared deviation: the single-process dataset renders exactly one
+        // Main row with the reference five columns (logs-page-memory.ui.tsx:160-197).
+        const QVariantList processes = snapshot.value(QStringLiteral("processes")).toList();
+        QCOMPARE(processes.size(), 1);
+        const QVariantMap self = processes.first().toMap();
+        QCOMPARE(self.value(QStringLiteral("type")).toString(), QStringLiteral("Main"));
+        QCOMPARE(self.value(QStringLiteral("pid")).toInt(), QCoreApplication::applicationPid());
+        QCOMPARE(self.value(QStringLiteral("workingSetKb")).toLongLong(), qint64(8192));
+        QCOMPARE(self.value(QStringLiteral("peakWorkingSetKb")).toLongLong(), qint64(9216));
+        // No stat/uptime fixture files: CPU stays null (the panel draws an em dash).
+        QVERIFY(self.value(QStringLiteral("cpuPercent")).isNull());
+#else
+        // Non-Linux keeps the key set with zeros and both capability flags false,
+        // the documented shape the panel renders as the unavailable state.
+        QVERIFY(!capabilities.value(QStringLiteral("processMetricsAvailable")).toBool());
+        QVERIFY(!capabilities.value(QStringLiteral("systemMemoryAvailable")).toBool());
+        QVERIFY(snapshot.value(QStringLiteral("processes")).toList().isEmpty());
+        QCOMPARE(app.value(QStringLiteral("workingSetKb")).toLongLong(), qint64(0));
+#endif
+    }
+
+    void diagnosticsMemoryProviderPeakIsMonotonicAcrossPolls()
+    {
+        QTemporaryDir proc;
+        QVERIFY(proc.isValid());
+        QVERIFY(seedMemoryProcFixture(proc.path(), 8192, 8192));
+        workspace::diagnostics::NativeMemoryDiagnostics provider;
+        provider.setProcRoot(proc.path());
+#ifdef Q_OS_LINUX
+        QCOMPARE(provider.snapshot().value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("peakWorkingSetKb")).toLongLong(), qint64(8192));
+        // The fixture peak regresses below the live RSS: the reported peak must
+        // never shrink (max over polls, VmHWM plus current RSS).
+        QVERIFY(seedMemoryProcFixture(proc.path(), 12288, 8192));
+        QCOMPARE(provider.snapshot().value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("peakWorkingSetKb")).toLongLong(), qint64(12288));
+        QVERIFY(seedMemoryProcFixture(proc.path(), 5120, 5120));
+        QCOMPARE(provider.snapshot().value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("peakWorkingSetKb")).toLongLong(), qint64(12288));
+        QCOMPARE(provider.snapshot().value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("workingSetKb")).toLongLong(), qint64(5120));
+#else
+        QVERIFY(provider.snapshot().value(QStringLiteral("app")).toMap()
+                    .value(QStringLiteral("peakWorkingSetKb")).toLongLong() == 0);
+#endif
+    }
+
+    void diagnosticsMemoryProviderMalformedInputFallsBackToUnavailable()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        QVERIFY(QDir(root.path()).mkpath(QStringLiteral("malformed/self")));
+        QVERIFY(writeMemoryProcFile(root.path() + QStringLiteral("/malformed/self/status"),
+            QStringLiteral("this is not a proc status document\n").toUtf8()));
+        workspace::diagnostics::NativeMemoryDiagnostics malformed;
+        malformed.setProcRoot(root.path() + QStringLiteral("/malformed"));
+        const QVariantMap broken = malformed.snapshot();
+        QVERIFY(broken.contains(QStringLiteral("capabilities")));
+        const QVariantMap capabilities = broken.value(QStringLiteral("capabilities")).toMap();
+        QVERIFY(!capabilities.value(QStringLiteral("processMetricsAvailable")).toBool());
+        QVERIFY(!capabilities.value(QStringLiteral("systemMemoryAvailable")).toBool());
+        QVERIFY(broken.value(QStringLiteral("processes")).toList().isEmpty());
+        QCOMPARE(broken.value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("workingSetKb")).toLongLong(), qint64(0));
+        QCOMPARE(broken.value(QStringLiteral("system")).toMap()
+                     .value(QStringLiteral("totalKb")).toLongLong(), qint64(0));
+        // A completely missing proc root degrades the same way (the panel
+        // renders settings.diagnosticsMemoryUnavailable instead of cards).
+        workspace::diagnostics::NativeMemoryDiagnostics missing;
+        missing.setProcRoot(root.path() + QStringLiteral("/absent-proc"));
+        const QVariantMap absent = missing.snapshot();
+        QVERIFY(!absent.value(QStringLiteral("capabilities"))
+                     .toMap().value(QStringLiteral("processMetricsAvailable")).toBool());
+        QVERIFY(absent.value(QStringLiteral("processes")).toList().isEmpty());
+    }
+
+#ifdef Q_OS_LINUX
+    void diagnosticsMemoryProviderCpuPercentMatchesProcMath()
+    {
+        QTemporaryDir proc;
+        QVERIFY(proc.isValid());
+        QVERIFY(seedMemoryProcFixture(proc.path(), 8192, 9216));
+        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/uptime"),
+            QByteArrayLiteral("100.00 400.00\n")));
+        // Fields after the last ')': state ppid pgrp session tty_nr tpgid flags
+        // minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
+        // num_threads itrealvalue starttime -- so utime=100, stime=50,
+        // starttime=0 against a 100 s uptime. The comm keeps a space to pin
+        // the last-')' parsing rule.
+        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/self/stat"),
+            QByteArrayLiteral("42 (workspace native) S 1 42 42 42 42 42 0 0 0 0 100 50 "
+                              "0 0 20 0 1 0 0\n")));
+        workspace::diagnostics::NativeMemoryDiagnostics provider;
+        provider.setProcRoot(proc.path());
+        const QVariantList processes = provider.snapshot().value(QStringLiteral("processes")).toList();
+        QCOMPARE(processes.size(), 1);
+        const QVariantMap self = processes.first().toMap();
+        QVERIFY(!self.value(QStringLiteral("cpuPercent")).isNull());
+        const long clkTck = []{ const long v = sysconf(_SC_CLK_TCK); return v > 0 ? v : 100L; }();
+        const double expected = 100.0 * 150.0 / double(clkTck) / 100.0;
+        QVERIFY2(qAbs(self.value(QStringLiteral("cpuPercent")).toDouble() - expected) < 0.001,
+                 qPrintable(QStringLiteral("cpuPercent %1 expected %2")
+                     .arg(self.value(QStringLiteral("cpuPercent")).toDouble())
+                     .arg(expected)));
+        // A malformed stat document keeps the row but nulls the CPU reading.
+        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/self/stat"),
+            QByteArrayLiteral("broken (unterminated\n")));
+        const QVariantMap degraded = provider.snapshot().value(QStringLiteral("processes"))
+                                         .toList().first().toMap();
+        QVERIFY(degraded.value(QStringLiteral("cpuPercent")).isNull());
+    }
+#endif
+
+    void diagnosticsSnapshotMemoryKeyUsesProviderWithoutLogging()
+    {
+        QTemporaryDir proc;
+        QVERIFY(proc.isValid());
+        QVERIFY(seedMemoryProcFixture(proc.path(), 8192, 9216));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        // No useLogging(): the memory key must still be filled by the panel
+        // provider (the reference cards never wait on the log writer).
+        controller.setDiagnosticsMemoryProcRoot(proc.path());
+        const QVariantMap memory =
+            controller.diagnosticsSnapshot().value(QStringLiteral("memory")).toMap();
+        QVERIFY2(!memory.isEmpty(), "diagnosticsSnapshot().memory must be the provider dataset");
+        QCOMPARE(memory.value(QStringLiteral("runtime")).toString(), QStringLiteral("native"));
+        QVERIFY(memory.contains(QStringLiteral("capabilities")));
+        // The QML poll surface returns the same dataset.
+        const QVariantMap invokable = controller.diagnosticsMemorySnapshot();
+        QCOMPARE(invokable.value(QStringLiteral("runtime")).toString(), QStringLiteral("native"));
+        QCOMPARE(invokable.value(QStringLiteral("capabilities")).toMap().keys().size(),
+                 memory.value(QStringLiteral("capabilities")).toMap().keys().size());
+#ifdef Q_OS_LINUX
+        QCOMPARE(invokable.value(QStringLiteral("app")).toMap()
+                     .value(QStringLiteral("workingSetKb")).toLongLong(), qint64(8192));
+#endif
+    }
+
     void diagnosticsMessageHandlerLineFormatAndFileWiring()
     {
         QCOMPARE(NativeLogging::formatMessageLine(QtDebugMsg, QStringLiteral("d")),
@@ -29625,6 +29826,12 @@ private slots:
     void diagnosticsSnapshotDatasetsReportAndPing()
     {
         Fixture f; QVERIFY(f.start());
+        // Pin the memory provider to a fixed proc fixture so the two snapshot
+        // reads below see identical process-state values (live /proc RSS moves
+        // between calls; issue #52 memory panel dataset).
+        QTemporaryDir memoryProc; QVERIFY(memoryProc.isValid());
+        QVERIFY(seedMemoryProcFixture(memoryProc.path(), 8192, 9216));
+        f.controller.setDiagnosticsMemoryProcRoot(memoryProc.path());
         const auto snapshot = f.controller.diagnosticsSnapshot();
         // The dataset shape the page binds against (reference snapshot keys).
         for (const auto *key:{"overallStatus", "collectedAt", "connection", "realtime",
@@ -29668,6 +29875,9 @@ private slots:
             auto session = object.value(QStringLiteral("session")).toObject();
             session.remove(QStringLiteral("sessionRemainingMs"));
             object.insert(QStringLiteral("session"), session);
+            auto memory = object.value(QStringLiteral("memory")).toObject();
+            memory.remove(QStringLiteral("collectedAt"));
+            object.insert(QStringLiteral("memory"), memory);
             return object;
         };
         QCOMPARE(stripClockDriven(QJsonDocument::fromJson(json.toUtf8()).object()),
