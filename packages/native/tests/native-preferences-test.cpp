@@ -824,16 +824,31 @@ private slots:
     // The real proof: point the private bus at a socket directory whose name
     // literally contains '&' and '<', and show a real dbus-daemon parses the
     // config and prints its address instead of exiting with a config error.
+    //
+    // exordy #387 round 5: the metacharacter directory is NOT created directly
+    // under the shared TMPDIR under a predictable name, and nothing here ever
+    // recursively removes a path this test does not exclusively own. The unique
+    // private parent (QTemporaryDir: mkdtemp name, 0700) is created FIRST; the
+    // 'probe&bus<x>' directory and the bus socket live strictly inside it, and
+    // the only cleanup is that parent's own destructor.
     void dbusDaemonAcceptsTemporaryPathWithXmlMetacharacters()
     {
         if (QStandardPaths::findExecutable(QStringLiteral("dbus-daemon")).isEmpty())
             QSKIP("dbus-daemon is unavailable in this environment");
-        const QString hostileRoot = QDir::tempPath() + QStringLiteral("/probe&bus<x>");
+        // Keep the parent prefix short: the bus socket lands deep inside it
+        // and the whole sun_path must stay under the 108-char unix limit.
+        QTemporaryDir privateRoot{QDir::tempPath() + QStringLiteral("/wn107-XXXXXX")};
+        QVERIFY(privateRoot.isValid());
+        const QString hostileRoot = privateRoot.path() + QStringLiteral("/probe&bus<x>");
         QVERIFY(QDir().mkpath(hostileRoot));
+        QVERIFY2(hostileRoot.contains(QLatin1Char('&')),
+            "the fixture path itself must carry the metacharacter into the config");
+        QVERIFY2(hostileRoot.startsWith(privateRoot.path() + QLatin1Char('/')),
+            "every path the fixture creates must live inside its private parent");
         QTemporaryDir dir(hostileRoot + QStringLiteral("/bus-XXXXXX"));
         QVERIFY(dir.isValid());
         QVERIFY2(dir.path().contains(QLatin1Char('&')),
-            "the fixture path itself must carry the metacharacter into the config");
+            "the socket directory itself must carry the metacharacter into the config");
         const QString config = dir.filePath(QStringLiteral("bus.conf"));
         QFile configFile(config);
         QVERIFY(configFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
@@ -850,7 +865,8 @@ private slots:
         daemon.terminate();
         if (!daemon.waitForFinished(3000))
             daemon.kill();
-        QDir(hostileRoot).removeRecursively();
+        // No manual cleanup: `privateRoot`'s destructor removes only the
+        // unique directory it created, metacharacter subtree included.
         QVERIFY2(printedAddress && address.startsWith(QLatin1String("unix:")),
             qPrintable(QStringLiteral("dbus-daemon rejected the config: %1").arg(failure)));
     }
