@@ -16945,6 +16945,187 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    // The popup ListView must be sized to the popup's available height so that
+    // options beyond the 300 px popup cap remain reachable by scrolling.
+    void loginProjectStepDropdownScrollsOverflowingOptions_data()
+    {
+        QTest::addColumn<int>("projectCount");
+        QTest::addColumn<bool>("overflow");
+        QTest::newRow("fits-inside-the-popup") << 3 << false;
+        QTest::newRow("overflow-beyond-the-cap") << 12 << true;
+    }
+    void loginProjectStepDropdownScrollsOverflowingOptions()
+    {
+        QFETCH(int, projectCount); QFETCH(bool, overflow);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        MockServer server;
+        QStringList ids;
+        QJsonArray projects;
+        for (int row = 0; row < projectCount; ++row)
+        {
+            const QString id = QStringLiteral("66666666-6666-4666-8666-%1")
+                .arg(row, 12, 10, QLatin1Char('0'));
+            ids << id;
+            projects.append(QJsonObject{{"uuid", id},
+                {"name", QStringLiteral("Project %1").arg(row + 1)}, {"status", "ACTIVE"}});
+        }
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Acme Realm"}}};
+            if (path.endsWith("/iam/projects/"))
+                return Response{projects};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto closeWindow = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Project step dropdown scroll teardown", __FILE__, __LINE__);
+        });
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_VERIFY(item(content, "projectSelect"));
+        auto *select = item(content, "projectSelect");
+        click(window, select);
+        QTRY_VERIFY(item(content, "projectOption-" + ids.first()));
+        auto *list = item(content, "nativeSelectListView");
+        QVERIFY(list);
+        auto *popupItem = list->parentItem();
+        QVERIFY(popupItem);
+        // Reference contract: the popup bounds itself at its 300 px cap.
+        QVERIFY(popupItem->height() <= 301.);
+        if (overflow)
+        {
+            // The view must fit inside the popup, so overflowing options stay
+            // inside the flickable's scroll range instead of beyond the cap.
+            QTRY_VERIFY2_WITH_TIMEOUT(list->property("contentHeight").toReal() > list->height(),
+                "The ListView is sized to its content, so options beyond the popup cannot scroll", 3000);
+            QVERIFY(list->height() <= popupItem->height());
+            QVERIFY(list->property("interactive").toBool());
+            // Scrolling to the end brings the last row inside the popup frame.
+            QMetaObject::invokeMethod(list, "positionViewAtEnd");
+            QTRY_VERIFY(list->property("contentY").toReal() > 0.);
+            auto *last = item(content, "projectOption-" + ids.last());
+            QVERIFY(last);
+            const qreal lastBottomY = last->mapToScene(QPointF(0., last->height())).y();
+            const qreal popupBottomY = popupItem->mapToScene(QPointF(0., popupItem->height())).y();
+            QVERIFY2(lastBottomY <= popupBottomY, qPrintable(QStringLiteral(
+                "last option at y=%1 stays below the popup bottom at y=%2")
+                .arg(lastBottomY).arg(popupBottomY)));
+        }
+        else
+        {
+            // Everything fits: the list is not interactive and the popup
+            // bounds itself to the rows (no scroll range, no clipping).
+            QVERIFY(list->property("contentHeight").toReal() <= list->height());
+            QVERIFY(!list->property("interactive").toBool());
+            QVERIFY(list->mapToScene(QPointF(0., list->height())).y()
+                <= popupItem->mapToScene(QPointF(0., popupItem->height())).y() + 1.);
+        }
+        // Dismiss the popup so the teardown closes the main window only.
+        click(window, select);
+        QTRY_VERIFY(!select->property("popupVisible").toBool());
+    }
+
+    // The popup ListView must stay inside the popup when its rows change while
+    // the popup is open: a view sized to its own contentHeight re-grows past
+    // the popup cap on the late binding re-fire and strands the new options
+    // beyond the popup, unreachable by scrolling.
+    void nativeSelectPopupStaysScrollableWhenRowsGrow()
+    {
+        QQmlEngine engine;
+        // Named colors keep hash-prefixed hex literals out of the raw string:
+        // moc's parser bails on them and silently drops the whole test class.
+        engine.rootContext()->setContextProperty("probeColors", QVariantMap{
+            {"text-primary", "white"}, {"text-muted", "gray"},
+            {"text-field-bg", "black"}, {"border-subtle", "gray"},
+            {"bg-elevated", "black"}, {"card-bg-active", "dimgray"},
+            {"accent", "dodgerblue"}});
+        QQmlComponent component(&engine);
+        component.setData(R"QML(import QtQuick
+            import "qrc:/workspace/qml"
+            Item {
+                width: 320; height: 600
+                property var rows: []
+                NativeSelect {
+                    objectName: "probeSelect"
+                    objectNamePrefix: "probeOption-"
+                    anchors.top: parent.top
+                    width: 280
+                    placeholderText: "Select a project"
+                    colors: probeColors
+                    model: parent.rows
+                }
+            }
+        )QML", QUrl("qrc:/native-select-scroll-probe.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(320, 600);
+        QScopedPointer<QQuickItem> probe(qobject_cast<QQuickItem *>(component.create()));
+        QVERIFY(probe);
+        probe->setParentItem(window.contentItem());
+        auto close = qScopeGuard([&] {
+            const bool closed = closeObservedTestWindow(&window);
+            probe->setParentItem(nullptr);
+            if (!closed) QTest::qFail("NativeSelect scroll probe teardown", __FILE__, __LINE__);
+        });
+        window.show();
+        window.requestActivate();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *probeRoot = probe.data();
+        auto row = [](int index) {
+            return QVariantMap{{"id", QStringLiteral("row-%1").arg(index)},
+                {"displayLabel", QStringLiteral("Project %1").arg(index + 1)}};
+        };
+        QVariantList rows;
+        for (int index = 0; index < 9; ++index) // 9 x 36 px > the 300 px popup cap already
+            rows.append(row(index));
+        probeRoot->setProperty("rows", rows);
+        auto *select = item(probeRoot, "probeSelect");
+        QVERIFY(select);
+        click(&window, select);
+        // Popup visuals are parented to the window overlay, not to the control.
+        QTRY_VERIFY(item(window.contentItem(), "probeOption-row-8"));
+        auto *list = item(window.contentItem(), "nativeSelectListView");
+        QVERIFY(list);
+        auto *popupItem = list->parentItem();
+        QVERIFY(popupItem);
+        QVERIFY(popupItem->height() <= 301.);
+        QVERIFY(list->property("interactive").toBool());
+        // The hazard: the project list grows while the popup is open. A view
+        // bound to its contentHeight re-grows past the popup; a view sized to
+        // the popup keeps every new row inside the scroll range.
+        rows.append(row(9));
+        rows.append(row(10));
+        rows.append(row(11));
+        probeRoot->setProperty("rows", rows);
+        QTRY_VERIFY(item(window.contentItem(), "probeOption-row-11"));
+        QVERIFY(list->property("contentHeight").toReal() > list->height());
+        QVERIFY(list->height() <= popupItem->height());
+        QVERIFY(list->property("interactive").toBool());
+        QMetaObject::invokeMethod(list, "positionViewAtEnd");
+        QTRY_VERIFY(list->property("contentY").toReal() > 0.);
+        auto *last = item(window.contentItem(), "probeOption-row-11");
+        QVERIFY(last);
+        QVERIFY2(last->mapToScene(QPointF(0., last->height())).y()
+                <= popupItem->mapToScene(QPointF(0., popupItem->height())).y(),
+            "the last option stays inside the popup after scrolling to the end");
+    }
+
     void existingEditAttachmentCardsLoadFailAndRemove_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("failed"); QTest::addColumn<bool>("typeRemoval");
