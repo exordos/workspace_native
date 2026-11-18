@@ -2,8 +2,10 @@
 #include "native-auth-guard.h"
 #include "domain.h"
 
+#include <QDebug>
 #include <QGuiApplication>
 #include <QLocale>
+#include <QKeyEvent>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QUrl>
@@ -635,10 +637,14 @@ void NativePreferences::attachWindow(QWindow *window)
     if (m_window) {
         saveWindow();
         disconnect(m_window, nullptr, this, nullptr);
+        m_window->removeEventFilter(this);
     }
     m_windowSaveTimer.stop();
     m_window = window;
     if (!window) return;
+    // #62: the F11 fullscreen toggle listens on the same window this
+    // component already persists the state for (see eventFilter).
+    window->installEventFilter(this);
     const auto screens = QGuiApplication::screens();
     if (screens.isEmpty()) return;
     const auto primary = QGuiApplication::primaryScreen()->availableGeometry();
@@ -675,7 +681,8 @@ void NativePreferences::attachWindow(QWindow *window)
     if (m_windowMaximized) window->setWindowState(Qt::WindowMaximized);
     const auto geometryChanged = [this] {
         if (!m_window) return;
-        if (m_window->windowState() == Qt::WindowNoState && m_window->width() >= 700 && m_window->height() >= 600)
+        if (m_window->windowState() == Qt::WindowNoState && !m_fullscreenPending
+            && m_window->width() >= 700 && m_window->height() >= 600)
             m_normalGeometry = m_window->geometry();
         m_windowSaveTimer.start();
     };
@@ -685,7 +692,14 @@ void NativePreferences::attachWindow(QWindow *window)
     connect(window, &QWindow::heightChanged, this, geometryChanged);
     connect(window, &QWindow::windowStateChanged, this, [this](Qt::WindowState state) {
         if (state == Qt::WindowMaximized) m_windowMaximized = true;
-        else if (state == Qt::WindowNoState) m_windowMaximized = false;
+        else if (state == Qt::WindowNoState) {
+            // #62: the WM's unmaximize hop around a fullscreen transition
+            // reports WindowNoState next to the FullScreen events; those hops
+            // must not clobber the maximized flag (the reference
+            // getNormalBounds rule keeps it through fullscreen). A genuine
+            // user restore outside a transition clears it.
+            if (!m_fullscreenPending) m_windowMaximized = false;
+        }
         m_windowSaveTimer.start();
     });
 }
@@ -713,6 +727,43 @@ void NativePreferences::activateWindow()
     else m_window->showNormal();
     m_window->raise();
     m_window->requestActivate();
+}
+
+bool NativePreferences::eventFilter(QObject *watched, QEvent *event)
+{
+    // #62: F11 is the reference's only fullscreen surface on Linux/Windows -
+    // the View menu's togglefullscreen role stays registered while the menu
+    // bar is hidden (packages/electron/src/main.ts of the pinned revision).
+    // Locale-independent: a key code, no new user-facing strings.
+    if (watched == m_window && event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_F11 && key->modifiers() == Qt::NoModifier) {
+            if (!key->isAutoRepeat()) toggleWindowFullscreen();
+            return true;
+        }
+    }
+    return false;
+}
+
+void NativePreferences::toggleWindowFullscreen()
+{
+    if (!m_window) return;
+    // The WM hop between FullScreen and the previous state passes through
+    // WindowNoState with transition geometry (unmaximize before entering,
+    // restore before exiting). Gate the persistence guards for a moment on
+    // both directions so those transients never reach the saved normal
+    // geometry or the maximized flag - the reference getNormalBounds rule.
+    m_fullscreenPending = true;
+    QTimer::singleShot(1500, this, [this] { m_fullscreenPending = false; });
+    if (m_window->visibility() == QWindow::FullScreen) {
+        // The reference toggle returns the window to the state it had before
+        // fullscreen: maximized returns maximized, normal returns at the
+        // saved normal geometry.
+        if (m_windowMaximized) m_window->showMaximized();
+        else m_window->showNormal();
+    } else {
+        m_window->showFullScreen();
+    }
 }
 
 namespace {

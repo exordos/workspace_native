@@ -60,16 +60,21 @@ above. `attachWindow` additionally installs an event filter on the window:
     reference restore rule (a maximized user returns maximized; a normal user
     returns at the saved normal geometry).
 - Entering fullscreen must not overwrite the persisted normal geometry or the
-  maximized flag. That mirrors the getNormalBounds rule and is already
-  enforced by the two guards `attachWindow` installs: geometry changes are
-  folded into `m_normalGeometry` only while `windowState() == Qt::WindowNoState`,
-  and `m_windowMaximized` is only re-derived from `WindowMaximized` /
-  `WindowNoState` state changes - neither reacts to `WindowFullScreen`, so the
-  debounced save during a fullscreen transition keeps writing the pre-F11
-  values.
+  maximized flag. Mirroring the getNormalBounds rule needs one more guard than
+  the reference: measured on X11/openbox, both toggle directions pass through
+  a transient `WindowNoState` state-change with transition geometry (the WM
+  unmaximizes on the way into fullscreen and restores on the way out), and Qt
+  can interleave that hop on either side of the client-side `WindowFullScreen`
+  event. `attachWindow` already folds geometry into `m_normalGeometry` only
+  while `windowState() == Qt::WindowNoState` and re-derives
+  `m_windowMaximized` only from `WindowMaximized` / `WindowNoState`; the
+  toggle now sets a short transition gate (`m_fullscreenPending`, cleared
+  1.5 s after the request) around both directions, and those two guards skip
+  while it is set, so the debounced save keeps writing the pre-transition
+  normal geometry and maximized flag throughout a toggle.
 - Leaving fullscreen through the WM (not just F11) is handled by the same
-  guards: the restored normal geometry flows back in only once the state is
-  `WindowNoState` again.
+  guards: the restored normal geometry flows back in once the state is
+  `WindowNoState` again and the transition gate has elapsed.
 - The activation restore at `activateWindow` keeps working unchanged: a
   fullscreen window that was hidden to the tray is re-shown fullscreen, and
   F11 then exits it.
