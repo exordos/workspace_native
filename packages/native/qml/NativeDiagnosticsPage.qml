@@ -2,6 +2,9 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs as NativeDialogs
+import QtQuick.Effects
+import QtCore
 
 // Diagnostics page: connection dashboard (issue #50,
 // docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md). Pixel-faithful port of the
@@ -43,6 +46,75 @@ FocusScope {
     property string pingState: "idle"   // idle | loading | success | error
     property int pingLatencyMs: -1
     property bool advancedExpanded: false
+
+    // ---- Issue #51: session log viewer modal state ------------------------
+    // (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, modal section). The rows come
+    // from the controller ring buffer (reference logger.ts getLogHistory,
+    // newest first); the filter values mirror the reference Select state of
+    // LogsPageLogsSection ("all" = pass, search trimmed case-insensitive).
+    property var logEntries: []
+    property var logsRows: []
+    property var logsScopeOptions: []
+    property var logsRuntimeOptions: []
+    property var logsRecentErrors: []
+    property string logsLevelFilter: "all"
+    property string logsSourceFilter: "all"
+    property string logsScopeFilter: "all"
+    property string logsRuntimeFilter: "all"
+    property string logsSearchQuery: ""
+
+    function refreshLogs() {
+        page.logEntries = page.controller.diagnosticsSessionLogEntries();
+        page.logsRows = page.controller.diagnosticsSessionLogsFiltered(
+            page.logsLevelFilter, page.logsSourceFilter, page.logsScopeFilter,
+            page.logsRuntimeFilter, page.logsSearchQuery);
+        // Reference derives the scope/runtime Select options from the
+        // present entries (logs-page-logs.ui.tsx:33-45).
+        const scopes = new Set();
+        const runtimes = new Set();
+        for (const entry of page.logEntries) {
+            scopes.add(String(entry.scope));
+            runtimes.add(String(entry.runtime));
+        }
+        page.logsScopeOptions = Array.from(scopes).sort();
+        page.logsRuntimeOptions = Array.from(runtimes).sort();
+        // "Recent errors": error entries inside the reference 15-minute
+        // window, newest first, capped at 8 (diagnostics-collect.lib.ts:153).
+        const cutoff = Date.now() - 900000;
+        const recent = [];
+        for (const entry of page.logEntries) {
+            if (recent.length >= 8)
+                break;
+            if (String(entry.level) === "error" && Date.parse(String(entry.timestamp)) >= cutoff)
+                recent.push(entry);
+        }
+        page.logsRecentErrors = recent;
+    }
+
+    function openLogsModal() {
+        page.resetLogFilters();
+        logsModal.open();
+    }
+
+    function resetLogFilters() {
+        page.logsLevelFilter = "all";
+        page.logsSourceFilter = "all";
+        page.logsScopeFilter = "all";
+        page.logsRuntimeFilter = "all";
+        page.logsSearchQuery = "";
+        logsSearchField.text = "";
+        logsSourceFilterSelect.currentIndex = 0;
+        logsLevelFilterSelect.currentIndex = 0;
+        logsScopeFilterSelect.currentIndex = 0;
+        logsRuntimeFilterSelect.currentIndex = 0;
+        page.refreshLogs();
+    }
+
+    function logTimestamp(stamp) {
+        const when = new Date(String(stamp));
+        return Number.isNaN(when.getTime()) ? String(stamp)
+            : Qt.formatDateTime(when, Qt.DefaultLocaleLongDate);
+    }
 
     function refresh() {
         page.snapshot = page.controller.diagnosticsSnapshot();
@@ -234,6 +306,12 @@ FocusScope {
             page.pingState = ok ? "success" : "error";
             pingReset.restart();
         }
+        function onSessionLogChanged() {
+            // Reference subscribeLogHistory: the modal re-reads rows live
+            // (logs-page.test.tsx "entries append while the modal is open").
+            if (logsModal.visible)
+                page.refreshLogs();
+        }
     }
 
     Timer {
@@ -256,6 +334,7 @@ FocusScope {
         color: hovered && enabled ? page.colors["bg-elevated"] : page.colors["card-bg"]
         border.color: page.colors["border-subtle"]
         border.width: 1
+        opacity: enabled ? 1.0 : 0.5 // disabled:opacity-50
         Text {
             id: headerButtonLabel
             anchors.centerIn: parent
@@ -265,8 +344,9 @@ FocusScope {
         }
         MouseArea {
             anchors.fill: parent
+            enabled: headerButton.enabled
             hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
             onEntered: headerButton.hovered = true
             onExited: headerButton.hovered = false
             onClicked: headerButton.actioned()
@@ -320,6 +400,11 @@ FocusScope {
                 id: headerActions
                 objectName: "diagnosticsHeaderActions"
                 spacing: 4 // gap-1
+                HeaderButton {
+                    objectName: "diagnosticsViewLogsButton"
+                    buttonLabel: qsTr("View logs")
+                    onActioned: page.openLogsModal()
+                }
                 HeaderButton {
                     objectName: "diagnosticsRefreshButton"
                     buttonLabel: qsTr("Refresh")
@@ -570,6 +655,30 @@ FocusScope {
                                         }
                                     }
                                 }
+                                // Log counts card "View logs" button
+                                // (logs-page-overview.ui.tsx:143-149): h-7 rounded-md
+                                // bg-bg px-2 text-[11px] opening the logs modal.
+                                Rectangle {
+                                    objectName: "diagnosticsCardLogCountsViewButton"
+                                    visible: card.modelData.kind === "logcounts"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: cardViewLogsLabel.implicitWidth + 16 // px-2
+                                    height: 28 // h-7
+                                    radius: 6 // rounded-md
+                                    color: page.colors["bg"]
+                                    Text {
+                                        id: cardViewLogsLabel
+                                        anchors.centerIn: parent
+                                        text: qsTr("View logs")
+                                        font.pixelSize: 11 // text-[11px]
+                                        color: page.colors["text-primary"]
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: page.openLogsModal()
+                                    }
+                                }
                             }
                         }
                     }
@@ -634,6 +743,551 @@ FocusScope {
                             color: page.colors["text-muted"]
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ---- Issue #51: session log viewer modal ------------------------------
+    // logs-view-modal.ui.tsx at 61dacef78: dialog content max-h-[85vh]
+    // max-w-4xl rounded-xl border-border-subtle bg-card-bg p-0 over a
+    // bg-black/50 overlay; header px-4 py-3 (title text-sm font-semibold +
+    // subtitle text-[11px]) with Refresh / Clear / Download h-8 buttons
+    // (Clear and Download disabled while there are no entries,
+    // logs-view-modal.ui.tsx:70-103) and the 18 px close icon. Body p-3 pt-2
+    // hosts the LogsPageLogsSection (filter row h-8, results label,
+    // recent-errors block and the entry rows measured in the docs).
+    Popup {
+        id: logsModal
+        objectName: "logsModal"
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        dim: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        visible: false
+        padding: 0
+        width: Math.min(896, (parent ? parent.width : 896) - 32) // max-w-4xl
+        height: Math.min((parent ? parent.height : 800) * 0.85, 600) // max-h-[85vh]
+
+        background: Rectangle {
+            radius: 12 // rounded-xl
+            color: page.colors["card-bg"]
+            border.color: page.colors["border-subtle"]
+            border.width: 1
+        }
+
+        onOpened: page.refreshLogs()
+
+        // Popup children live inside the popup's internal content item;
+        // the reference layout is reproduced inside an explicit contentItem so
+        // children can anchor to their parent like every other popup in the
+        // client (NativeMediaViewer).
+        contentItem: Item {
+            id: logsModalContent
+
+        // Header (logs-view-modal.ui.tsx:47-104).
+        Rectangle {
+            id: logsModalHeader
+            objectName: "logsModalHeader"
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: logsModalHeaderRow.implicitHeight + 24 // py-3
+            color: "transparent"
+            Rectangle { // border-b border-border-subtle
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: page.colors["border-subtle"]
+            }
+            Row {
+                id: logsModalHeaderRow
+                x: 16 // px-4
+                y: 12
+                width: parent.width - 32
+                spacing: 8 // gap-2
+                Column {
+                    width: Math.max(120, logsModalHeaderRow.width - logsModalActions.implicitWidth - 8)
+                    spacing: 2 // mt-0.5
+                    Text {
+                        objectName: "logsModalTitle"
+                        text: qsTr("Logs")
+                        font.pixelSize: 14 // text-sm
+                        font.weight: Font.DemiBold // font-semibold
+                        color: page.colors["text-primary"]
+                        elide: Text.ElideRight
+                        width: parent.width
+                    }
+                    Text {
+                        objectName: "logsModalSubtitle"
+                        text: qsTr("In-memory session logs (last 500 entries).")
+                        font.pixelSize: 11 // text-[11px]
+                        color: page.colors["text-muted"]
+                        elide: Text.ElideRight
+                        width: parent.width
+                    }
+                }
+                Row {
+                    id: logsModalActions
+                    spacing: 4 // gap-1
+                    HeaderButton {
+                        objectName: "logsRefreshButton"
+                        buttonLabel: qsTr("Refresh")
+                        onActioned: page.refreshLogs()
+                    }
+                    HeaderButton {
+                        objectName: "logsClearButton"
+                        buttonLabel: qsTr("Clear logs")
+                        enabled: page.logEntries.length > 0
+                        onActioned: page.controller.clearSessionLog()
+                    }
+                    HeaderButton {
+                        objectName: "logsExportButton"
+                        buttonLabel: qsTr("Export logs")
+                        enabled: page.logEntries.length > 0
+                        onActioned: {
+                            // StandardPaths.writableLocation already yields
+                            // a file:// url, so no manual scheme prefixing.
+                            const base = StandardPaths.writableLocation(StandardPaths.DownloadLocation)
+                                || StandardPaths.writableLocation(StandardPaths.HomeLocation);
+                            const name = page.controller.diagnosticsLogsExportFilename();
+                            logsSaveDialog.currentFolder = base
+                            logsSaveDialog.currentFile = base + "/" + name
+                            logsSaveDialog.open()
+                        }
+                    }
+                    // Close icon button (Icon name="close" size 18, aria-label
+                    // common.close).
+                    Rectangle {
+                        objectName: "logsCloseButton"
+                        width: 26 // p-1 around the 18 px glyph
+                        height: 26
+                        radius: 4
+                        color: logsCloseMouseArea.containsMouse
+                            ? page.colors["bg"] : "transparent"
+                        Image {
+                            anchors.centerIn: parent
+                            source: "qrc:/workspace/icons/close.svg"
+                            sourceSize.width: 18 // size={18}
+                            sourceSize.height: 18
+                            asynchronous: false
+                            layer.enabled: true
+                            layer.effect: MultiEffect {
+                                colorizationColor: page.colors["text-muted"]
+                                colorization: 1.0
+                            }
+                        }
+                        MouseArea {
+                            id: logsCloseMouseArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: logsModal.close()
+                        }
+                        Accessible.name: qsTr("Close")
+                    }
+                }
+            }
+        }
+
+        // Filter row (logs-page-logs.ui.tsx:110-168): h-8 controls, search +
+        // source/level/scope/runtime compact selects (min-w-[110px]) + Reset.
+        Row {
+            id: logsFilterRow
+            objectName: "logsFilterRow"
+            anchors.top: logsModalHeader.bottom
+            anchors.topMargin: 8 // pt-2
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 12 // p-3
+            anchors.rightMargin: 12
+            spacing: 4 // gap-1
+            Accessible.name: qsTr("Search logs")
+            TextField {
+                id: logsSearchField
+                objectName: "logsSearchField"
+                width: 220 // min-w-context-menu-narrow
+                height: 32 // h-8
+                placeholderText: qsTr("Search message, scope, runtime, or payload…")
+                font.pixelSize: 12 // text-xs
+                color: page.colors["text-primary"]
+                leftPadding: 8 // px-2
+                rightPadding: 8
+                verticalAlignment: Text.AlignVCenter
+                Accessible.name: qsTr("Search logs")
+                onTextChanged: {
+                    page.logsSearchQuery = text
+                    page.refreshLogs()
+                }
+                background: Rectangle {
+                    radius: 6 // rounded-md
+                    color: page.colors["bg"]
+                    border.color: logsSearchField.activeFocus
+                        ? page.colors["accent"] : page.colors["border-subtle"] // focus:border-accent
+                    border.width: 1
+                }
+            }
+            NativeSelect {
+                id: logsSourceFilterSelect
+                objectName: "logsSourceFilterSelect"
+                colors: page.colors
+                implicitHeight: 32 // h-8 compact select
+                width: Math.max(110, implicitContentWidth + 44) // min-w-[110px]
+                leftPadding: 8
+                rightPadding: 28
+                placeholderText: qsTr("All sources")
+                Accessible.name: qsTr("Log source")
+                model: [
+                    { id: "all", displayLabel: qsTr("All sources") },
+                    { id: "api", displayLabel: qsTr("API") },
+                    { id: "actions", displayLabel: qsTr("Actions") },
+                    { id: "console", displayLabel: qsTr("Console") },
+                    { id: "trace", displayLabel: qsTr("Pipeline traces") },
+                    { id: "app", displayLabel: qsTr("App") }
+                ]
+                onCurrentValueChanged: {
+                    page.logsSourceFilter = currentValue === undefined || currentText.length === 0
+                        ? "all" : String(currentValue)
+                    page.refreshLogs()
+                }
+            }
+            NativeSelect {
+                id: logsLevelFilterSelect
+                objectName: "logsLevelFilterSelect"
+                colors: page.colors
+                implicitHeight: 32
+                width: Math.max(110, implicitContentWidth + 44)
+                leftPadding: 8
+                rightPadding: 28
+                placeholderText: qsTr("All levels")
+                Accessible.name: qsTr("Log level")
+                model: [
+                    { id: "all", displayLabel: qsTr("All levels") },
+                    { id: "debug", displayLabel: qsTr("Debug") },
+                    { id: "info", displayLabel: qsTr("Info") },
+                    { id: "warn", displayLabel: qsTr("Warn") },
+                    { id: "error", displayLabel: qsTr("Error") }
+                ]
+                onCurrentValueChanged: {
+                    page.logsLevelFilter = currentValue === undefined || currentText.length === 0
+                        ? "all" : String(currentValue)
+                    page.refreshLogs()
+                }
+            }
+            NativeSelect {
+                id: logsScopeFilterSelect
+                objectName: "logsScopeFilterSelect"
+                colors: page.colors
+                implicitHeight: 32
+                width: Math.max(110, implicitContentWidth + 44)
+                leftPadding: 8
+                rightPadding: 28
+                placeholderText: qsTr("All scopes")
+                Accessible.name: qsTr("Log scope")
+                model: [{ id: "all", displayLabel: qsTr("All scopes") }].concat(
+                    page.logsScopeOptions.map(function (scope) {
+                        return { id: scope, displayLabel: scope }
+                    }))
+                onCurrentValueChanged: {
+                    page.logsScopeFilter = currentValue === undefined || currentText.length === 0
+                        ? "all" : String(currentValue)
+                    page.refreshLogs()
+                }
+            }
+            NativeSelect {
+                id: logsRuntimeFilterSelect
+                objectName: "logsRuntimeFilterSelect"
+                colors: page.colors
+                implicitHeight: 32
+                width: Math.max(110, implicitContentWidth + 44)
+                leftPadding: 8
+                rightPadding: 28
+                placeholderText: qsTr("All runtimes")
+                Accessible.name: qsTr("Runtime")
+                model: [{ id: "all", displayLabel: qsTr("All runtimes") }].concat(
+                    page.logsRuntimeOptions.map(function (runtime) {
+                        return { id: runtime, displayLabel: runtime }
+                    }))
+                onCurrentValueChanged: {
+                    page.logsRuntimeFilter = currentValue === undefined || currentText.length === 0
+                        ? "all" : String(currentValue)
+                    page.refreshLogs()
+                }
+            }
+            HeaderButton {
+                objectName: "logsResetFiltersButton"
+                buttonLabel: qsTr("Reset filters")
+                onActioned: page.resetLogFilters()
+            }
+        }
+
+        // Results label "visible of total entries" (text-[11px]).
+        Text {
+            id: logsResultsLabel
+            objectName: "logsResultsLabel"
+            anchors.top: logsFilterRow.bottom
+            anchors.topMargin: 6 // gap-1.5
+            anchors.left: parent.left
+            anchors.leftMargin: 12
+            text: qsTr("%1 of %2 entries").arg(page.logsRows.length).arg(page.logEntries.length)
+            font.pixelSize: 11
+            color: page.colors["text-muted"]
+        }
+
+        // "Recent errors" block (open by default, only when present):
+        // rounded-lg border card with a max-h-40 inner list.
+        Rectangle {
+            id: logsRecentErrorsBlock
+            objectName: "logsRecentErrorsBlock"
+            visible: page.logsRecentErrors.length > 0
+            anchors.top: logsResultsLabel.bottom
+            anchors.topMargin: visible ? 6 : 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            radius: 8 // rounded-lg
+            color: page.colors["card-bg"]
+            border.color: page.colors["border-subtle"]
+            border.width: 1
+            height: visible ? logsRecentErrorsColumn.height + 16 : 0 // p-2
+            Column {
+                id: logsRecentErrorsColumn
+                x: 8
+                y: 8
+                width: logsRecentErrorsBlock.width - 16
+                spacing: 8 // mt-2
+                Text {
+                    objectName: "logsRecentErrorsTitle"
+                    text: qsTr("Recent errors")
+                    font.pixelSize: 12 // text-xs font-medium
+                    font.weight: Font.Medium
+                    color: page.colors["text-primary"]
+                }
+                Flickable {
+                    width: parent.width
+                    height: Math.min(160, logsRecentErrorsList.height) // max-h-40
+                    clip: true
+                    contentHeight: logsRecentErrorsList.height
+                    Column {
+                        id: logsRecentErrorsList
+                        width: parent ? parent.width : 0
+                        spacing: 4 // space-y-1
+                        Repeater {
+                            model: page.logsRecentErrors
+                            delegate: LogEntryRow {
+                                required property var modelData
+                                required property int index
+                                objectName: "logsRecentErrorRow-" + index
+                                entry: modelData
+                                rowColors: page.colors
+                                emphasize: true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Entry list / empty state (both fill the remaining body, p-3 bottom).
+        Flickable {
+            id: logsEntryListArea
+            objectName: "logsEntryList"
+            visible: page.logsRows.length > 0
+            anchors.top: logsRecentErrorsBlock.bottom
+            anchors.topMargin: 6
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            anchors.bottomMargin: 12
+            clip: true
+            contentHeight: logsEntryColumn.height
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Accessible.name: qsTr("Session log entries")
+            Column {
+                id: logsEntryColumn
+                width: parent ? parent.width : 0 // the Flickable body
+                spacing: 4 // gap-1
+                Repeater {
+                    model: page.logsRows
+                    delegate: LogEntryRow {
+                        required property var modelData
+                        required property int index
+                        entry: modelData
+                        rowColors: page.colors
+                        rowIndex: index
+                    }
+                }
+            }
+        }
+        Rectangle {
+            id: logsEmptyState
+            objectName: "logsEmptyState"
+            visible: page.logsRows.length === 0
+            anchors.top: logsRecentErrorsBlock.bottom
+            anchors.topMargin: 6
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            anchors.bottomMargin: 12
+            radius: 8 // rounded-lg
+            color: "transparent"
+            border.color: page.colors["border-subtle"]
+            border.width: 1
+            Column {
+                anchors.centerIn: parent
+                spacing: 8 // gap-2
+                Image {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    source: "qrc:/workspace/icons/grid.svg" // Icon name="grid" size 32
+                    sourceSize.width: 32
+                    sourceSize.height: 32
+                    asynchronous: false
+                    opacity: 0.5
+                    layer.enabled: true
+                    layer.effect: MultiEffect {
+                        colorizationColor: page.colors["text-muted"]
+                        colorization: 1.0
+                    }
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: qsTr("No logs yet")
+                    font.pixelSize: 12
+                    color: page.colors["text-muted"]
+                }
+            }
+        }
+        }
+    }
+
+    // Save-as dialog for the JSON export (the native save flow: reference
+    // downloadLogsAsFile is replaced by the client's FileDialog + file write).
+    NativeDialogs.FileDialog {
+        id: logsSaveDialog
+        objectName: "diagnosticsLogsSaveDialog"
+        title: qsTr("Export logs")
+        fileMode: NativeDialogs.FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: ["JSON (*.json)"]
+        onAccepted: page.controller.exportSessionLog(logsSaveDialog.selectedFile)
+    }
+
+    // One log row (logs-page-logs.ui.tsx:216-245): rounded-md border p-2 with
+    // the meta line (level + runtime chips, scope, locale timestamp), the
+    // message and the optional data pre. warn/error rows get the 2 px left
+    // accent (indicator-yellow / indicator-red).
+    component LogEntryRow: Rectangle {
+        id: logRow
+        required property var entry
+        required property var rowColors
+        property bool emphasize: false
+        property int rowIndex: 0
+        objectName: "logsEntryRow-" + rowIndex
+        width: parent ? parent.width : 0
+        height: logRowColumn.height + 16 // p-2
+        radius: 6 // rounded-md
+        color: "transparent"
+        border.color: rowColors["border-subtle"]
+        border.width: 1
+        readonly property string entryLevel: String(entry.level)
+        Rectangle { // border-l-2 accent
+            visible: logRow.entryLevel === "error" || logRow.entryLevel === "warn"
+                || logRow.emphasize
+            x: 0
+            y: 0
+            width: 2
+            height: parent.height
+            color: logRow.entryLevel === "error" ? rowColors["indicator-red"]
+                : logRow.entryLevel === "warn" ? rowColors["indicator-yellow"]
+                    : rowColors["border-subtle"]
+        }
+        Column {
+            id: logRowColumn
+            x: 8 // p-2
+            y: 8
+            width: logRow.width - 16
+            spacing: 4 // mt-1 lines
+            Row {
+                spacing: 4 // gap-1
+                Rectangle { // level chip rounded bg-bg px-1.5 py-0.5 font-mono uppercase
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: logRowLevelLabel.implicitWidth + 12
+                    height: logRowLevelLabel.implicitHeight + 4
+                    radius: 4
+                    color: rowColors["bg"]
+                    Text {
+                        id: logRowLevelLabel
+                        anchors.centerIn: parent
+                        text: logRow.entryLevel.toUpperCase()
+                        font.pixelSize: 11
+                        font.family: "monospace"
+                        color: rowColors["text-muted"]
+                    }
+                }
+                Rectangle { // runtime chip (same shape, not upper-cased)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: logRowRuntimeLabel.implicitWidth + 12
+                    height: logRowRuntimeLabel.implicitHeight + 4
+                    radius: 4
+                    color: rowColors["bg"]
+                    Text {
+                        id: logRowRuntimeLabel
+                        anchors.centerIn: parent
+                        text: String(logRow.entry.runtime)
+                        font.pixelSize: 11
+                        font.family: "monospace"
+                        color: rowColors["text-muted"]
+                    }
+                }
+                Text { // scope font-medium text-text-primary
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(logRow.entry.scope)
+                    font.pixelSize: 11
+                    font.weight: Font.Medium
+                    color: rowColors["text-primary"]
+                }
+                Text { // locale timestamp (toLocaleString)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: page.logTimestamp(logRow.entry.timestamp)
+                    font.pixelSize: 11
+                    color: rowColors["text-muted"]
+                }
+            }
+            Text { // message text-xs leading-snug
+                width: logRowColumn.width
+                text: String(logRow.entry.message)
+                font.pixelSize: 12
+                lineHeight: 17 // leading-snug
+                lineHeightMode: Text.FixedHeight
+                wrapMode: Text.Wrap
+                color: rowColors["text-primary"]
+            }
+            // Optional data pre (JSON.stringify(data)); Qt clips instead of
+            // offering the reference horizontal scrollbar, single-line elide.
+            Rectangle {
+                objectName: "logsEntryDataPre-" + logRow.rowIndex
+                visible: logRow.entry.data !== undefined
+                width: logRowColumn.width
+                height: visible ? 24 : 0
+                radius: 4 // rounded
+                color: rowColors["bg"]
+                clip: true
+                Text {
+                    anchors.fill: parent
+                    anchors.leftMargin: 6 // p-1.5
+                    anchors.rightMargin: 6
+                    verticalAlignment: Text.AlignVCenter
+                    text: logRow.entry.data === undefined
+                        ? "" : JSON.stringify(logRow.entry.data)
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                    color: rowColors["text-muted"]
                 }
             }
         }

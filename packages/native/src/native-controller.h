@@ -591,6 +591,20 @@ public:
     Q_INVOKABLE QString diagnosticsConnectionReportJson() const;
     Q_INVOKABLE QString diagnosticsOverallStatus() const;
     Q_INVOKABLE void pingServer();
+    // Issue #51: the in-memory session log ring buffer feeding the log
+    // viewer modal (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, modal section).
+    // appendSessionLog is the logger.ts appendBufferedLog analogue; the
+    // filtered/entries invokables answer the modal's list queries.
+    Q_INVOKABLE void appendSessionLog(const QString &level, const QString &scope,
+        const QString &message, const QVariantMap &data = QVariantMap());
+    Q_INVOKABLE QVariantList diagnosticsSessionLogEntries() const;
+    Q_INVOKABLE QVariantList diagnosticsSessionLogsFiltered(const QString &levelFilter,
+        const QString &sourceFilter, const QString &scopeFilter,
+        const QString &runtimeFilter, const QString &searchQuery) const;
+    Q_INVOKABLE void clearSessionLog();
+    Q_INVOKABLE QString diagnosticsLogsExportFilename() const;
+    Q_INVOKABLE QString diagnosticsLogsExportJson() const;
+    Q_INVOKABLE bool exportSessionLog(const QString &target) const;
     // The rotating diagnostics log provider (issue #77) feeding the Log counts
     // card and the recent-error status rule; owned by main.cpp.
     void useLogging(class NativeLogging *logging);
@@ -891,6 +905,10 @@ signals:
     // Issue #50: one finished Diagnostics ping (ok + latency ms); the page
     // mirrors the reference ping reset timer (3 s, logs-page.ui.tsx:238-242).
     void pingFinished(bool ok, int latencyMs);
+    // Issue #51: the session log ring buffer changed (append or clear); the
+    // log viewer modal re-reads its rows on this signal (reference
+    // subscribeLogHistory).
+    void sessionLogChanged();
     void stateChanged();
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
@@ -2195,6 +2213,9 @@ private:
     // declare NativeLogging can include this header (QPointer needs the
     // QObject base for its casts); every use casts back locally.
     QPointer<QObject> m_logging;
+    // Issue #51: in-memory session log ring buffer (reference logger.ts),
+    // feeding the diagnostics log viewer modal.
+    workspace::diagnostics::SessionLogBuffer m_sessionLog{this};
     int m_realtimeEventsReceived = 0;
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;

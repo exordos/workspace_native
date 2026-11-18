@@ -1,7 +1,13 @@
 #pragma once
 
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
+#include <QObject>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QString>
 #include <QStringList>
 
@@ -132,5 +138,80 @@ inline LatencySummary summarizeLatency(const QList<qint64> &samples)
     summary.p95Ms = pick(0.95);
     return summary;
 }
+
+// ---- Issue #51: in-memory session log for the log viewer modal -----------
+// (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, modal section). Mirrors the
+// reference history surface in workspace_ui shared/lib/logger.ts: entry
+// shape, redact(), the source-bucket filter (logs-source-filter.lib.ts),
+// the filter semantics (logs-page-logs.ui.tsx:248-268) and the export
+// format (logs-export.lib.ts).
+
+struct SessionLogEntry {
+    QString level;     // debug | info | warn | error (reference LogLevel)
+    QString scope;
+    QString message;
+    QString timestamp; // ISO-8601 UTC with ms (JS Date.toISOString shape)
+    QString runtime;   // native runtime label (fixed set: linux | macos | windows)
+    QVariantMap data;  // optional structured payload
+    bool hasData = false;
+};
+
+// logger.ts redact(): sensitive keys are lower-cased with '-'/'_' stripped
+// before lookup; string values matching the token patterns and maps deeper
+// than depth 8 are replaced.
+QVariant redactLogValue(const QVariant &value, int depth = 0);
+
+// logs-source-filter.lib.ts:3-32: api = scope "api"; console = scope
+// "console"; trace = scope prefix "trace:"; actions = scope in {action,
+// auth, realtime} or prefix "action:"; app = everything else.
+QString logSourceBucket(const QString &scope);
+bool matchesLogSourceFilter(const QString &scope, const QString &filter);
+
+// filterLogEntries semantics (logs-page-logs.ui.tsx:248-268): level, source,
+// scope and runtime AND together ("all" passes); the search is a trimmed
+// case-insensitive substring of "level scope runtime message JSON(data)".
+bool logEntryMatchesFilters(const SessionLogEntry &entry, const QString &levelFilter,
+    const QString &sourceFilter, const QString &scopeFilter, const QString &runtimeFilter,
+    const QString &searchQuery);
+QList<SessionLogEntry> filterSessionLogEntries(const QList<SessionLogEntry> &entries,
+    const QString &levelFilter, const QString &sourceFilter, const QString &scopeFilter,
+    const QString &runtimeFilter, const QString &searchQuery);
+
+// logs-export.lib.ts: UTC "workspace-YYYYMMDD-HHMMSS.json" name and the
+// 2-space pretty JSON array with every entry's data re-run through redact().
+QString buildLogsExportFilename(qint64 nowUtcMs);
+QJsonObject sessionLogEntryJson(const SessionLogEntry &entry);
+QString serializeLogsForExport(const QList<SessionLogEntry> &entries);
+
+// The logger ring buffer (shared/lib/logger.ts pushToBuffer/getLogHistory/
+// clearLogHistory/subscribeLogHistory): 500 entries max, oldest evicted,
+// newest-first reads, one entriesChanged() notification per append and clear.
+class SessionLogBuffer final : public QObject {
+    Q_OBJECT
+public:
+    static inline constexpr int MaxEntries = 500;
+
+    explicit SessionLogBuffer(QObject *parent = nullptr);
+
+    // The fixed native runtime value set (docs modal section, deviation 1):
+    // linux | macos | windows, stamped onto every entry like the reference
+    // getRuntime() stamp.
+    static QString nativeRuntimeLabel();
+    void setRuntimeLabel(const QString &label);
+    QString runtimeLabel() const { return m_runtimeLabel; }
+
+    void append(const QString &level, const QString &scope, const QString &message,
+        const QVariantMap &data = QVariantMap(), qint64 timestampMs = -1);
+    QList<SessionLogEntry> entries() const; // newest first
+    int size() const { return m_entries.size(); }
+    void clear();
+
+signals:
+    void entriesChanged();
+
+private:
+    QList<SessionLogEntry> m_entries; // newest first
+    QString m_runtimeLabel;
+};
 
 } // namespace workspace::diagnostics

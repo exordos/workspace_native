@@ -4710,6 +4710,36 @@
         <message><source>%1 streams</source><translation>%1 каналов</translation></message>
         <message><source>%1 conversations</source><translation>%1 разговоров</translation></message>
         <message><source>%1 users</source><translation>%1 пользователей</translation></message>
+        <!-- Issue #51: session log viewer modal (reference settings.logs* values). -->
+        <message><source>View logs</source><translation>Просмотр логов</translation></message>
+        <message><source>Logs</source><translation>Журнал</translation></message>
+        <message><source>In-memory session logs (last 500 entries).</source><translation>Логи текущей сессии в памяти (последние 500 записей).</translation></message>
+        <message><source>Clear logs</source><translation>Очистить журнал</translation></message>
+        <message><source>Export logs</source><translation>Экспортировать логи</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Search logs</source><translation>Поиск по логам</translation></message>
+        <message><source>Search message, scope, runtime, or payload…</source><translation>Поиск по сообщению, scope, рантайму или payload…</translation></message>
+        <message><source>Log source</source><translation>Источник логов</translation></message>
+        <message><source>All sources</source><translation>Все источники</translation></message>
+        <message><source>API</source><translation>API</translation></message>
+        <message><source>Actions</source><translation>Действия</translation></message>
+        <message><source>Console</source><translation>Консоль</translation></message>
+        <message><source>Pipeline traces</source><translation>Pipeline-трейсы</translation></message>
+        <message><source>App</source><translation>Приложение</translation></message>
+        <message><source>Log level</source><translation>Уровень логов</translation></message>
+        <message><source>All levels</source><translation>Все уровни</translation></message>
+        <message><source>Debug</source><translation>Debug</translation></message>
+        <message><source>Info</source><translation>Info</translation></message>
+        <message><source>Warn</source><translation>Warn</translation></message>
+        <message><source>Error</source><translation>Error</translation></message>
+        <message><source>Log scope</source><translation>Scope логов</translation></message>
+        <message><source>All scopes</source><translation>Все scope</translation></message>
+        <message><source>All runtimes</source><translation>Все рантаймы</translation></message>
+        <message><source>Reset filters</source><translation>Сбросить фильтры</translation></message>
+        <message><source>%1 of %2 entries</source><translation>%1 из %2 записей</translation></message>
+        <message><source>Recent errors</source><translation>Недавние ошибки</translation></message>
+        <message><source>Session log entries</source><translation>Записи журнала сессии</translation></message>
+        <message><source>No logs yet</source><translation>Записей пока нет</translation></message>
     </context>
     <context>
         <name>NativeFavoritesPage</name>
