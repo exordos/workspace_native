@@ -71,8 +71,9 @@ inline SessionLogSummary parseSessionLog(const QString &logText, qint64 nowMs)
         if (space <= 0)
             continue;
         auto stamp = trimmed.left(space);
-        if (stamp.endsWith(QLatin1Char('Z')))
-            stamp.chop(1);
+        // Keep the UTC suffix: chopping it made Qt parse the stamp in the
+        // machine-local zone (review 4611502317), shifting recent-error
+        // decisions by the local offset.
         auto when = QDateTime::fromString(stamp, Qt::ISODateWithMs);
         if (!when.isValid())
             when = QDateTime::fromString(stamp, Qt::ISODate);
