@@ -77,9 +77,14 @@ above. `attachWindow` additionally installs an event filter on the window:
   state, so a legitimate move or restore made right after the transition
   is persisted instead of dropped. Re-capture still rejects the transient
   hop frame: (a) a maximized window's unmaximize at exactly the maximized
-  bounds, and (b) on release, a frame that fills the screen, equals the
+  bounds, (b) on release, a frame that fills the screen, equals the
   fullscreen snapshot taken when F11 released it, and arrives while that
-  restore sequence is in flight. Size alone may not mark the hop: a
+  restore sequence is in flight, and (c) on enter, any `WindowNoState`
+  frame seen while the enter is in flight (from the F11 toggle until the
+  FullScreen state atom is observed or the gate ends): it lacks that atom
+  - the WM may place the fullscreen geometry first - so even a normal
+  window's frame is still the transition, not settled normal bounds.
+  Size alone may not mark the hop: a
   user-settled normal window may legitimately fill the screen, so a moved
   screen-filling frame is the settled window and recaptures normally.
 - Leaving fullscreen through the WM (not just F11) is handled by the same
