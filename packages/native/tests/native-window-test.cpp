@@ -30661,6 +30661,53 @@ private slots:
         disconnect(conn);
         QCOMPARE(savedWindowBounds(path), normal);
     }
+
+    // #62 round 4 (exordy review on the round-3 size guard): a user-settled
+    // normal window may legitimately fill the screen - rejecting every
+    // screen-filling WindowNoState as a WM hop therefore also rejects real
+    // user moves of such a window made while the exit gate is open, and the
+    // detach/gate-release persists the pre-move bounds. Only the frame that
+    // still wears the fullscreen snapshot while the release restore sequence
+    // is in flight is a transition; a moved screen-filling frame is settled
+    // and must be recaptured.
+    void fullscreenExitFromScreenFillingNormalRecapturesUserMoveMadeDuringTheGate()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        window.setGeometry(QRect(available.x() + 60, available.y() + 40, 900, 650));
+        QTest::qWait(700);
+        // A normal (not maximized) window the user stretched to fill the screen.
+        const QRect filled(available.topLeft(), available.size());
+        window.setGeometry(filled);
+        QTest::qWait(700); // outlast the 350 ms save debounce
+        QCOMPARE(savedWindowBounds(path), filled);
+        QVERIFY(!QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::qWait(700); // let the enter gate settle before starting the exit
+        QCOMPARE(savedWindowBounds(path), filled);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 5000);
+        // The user drags the screen-filling window to a new origin while the
+        // exit gate is still open (the transient restore re-armed the settle).
+        // The moved bounds are legitimate and must be persisted, not rejected
+        // as a fullscreen shape the restore has not left behind.
+        const QRect moved(available.x() + 180, available.y() + 60,
+            available.width(), available.height());
+        window.setGeometry(moved);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), moved, 5000);
+        preferences.attachWindow(nullptr); // quit-style immediate save mid-gate
+        QCOMPARE(savedWindowBounds(path), moved);
+    }
 };
 
 
