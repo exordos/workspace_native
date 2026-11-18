@@ -68,10 +68,20 @@ above. `attachWindow` additionally installs an event filter on the window:
   event. `attachWindow` already folds geometry into `m_normalGeometry` only
   while `windowState() == Qt::WindowNoState` and re-derives
   `m_windowMaximized` only from `WindowMaximized` / `WindowNoState`; the
-  toggle now sets a short transition gate (`m_fullscreenPending`, cleared
-  1.5 s after the request) around both directions, and those two guards skip
-  while it is set, so the debounced save keeps writing the pre-transition
-  normal geometry and maximized flag throughout a toggle.
+  toggle now sets a short transition gate (`m_fullscreenPending`) around both
+  directions, and those two guards skip while it is set, so the debounced
+  save keeps writing the pre-transition normal geometry and maximized flag
+  throughout a toggle. The gate ends when the window has sat in the state
+  the toggle asked for for a settle interval (a 1.5 s cap backstops a WM
+  that never settles), and either release re-captures the live window
+  state, so a legitimate move or restore made right after the transition
+  is persisted instead of dropped. Re-capture still rejects the transient
+  hop frame: (a) a maximized window's unmaximize at exactly the maximized
+  bounds, and (b) on release, a frame that fills the screen, equals the
+  fullscreen snapshot taken when F11 released it, and arrives while that
+  restore sequence is in flight. Size alone may not mark the hop: a
+  user-settled normal window may legitimately fill the screen, so a moved
+  screen-filling frame is the settled window and recaptures normally.
 - Leaving fullscreen through the WM (not just F11) is handled by the same
   guards: the restored normal geometry flows back in once the state is
   `WindowNoState` again and the transition gate has elapsed.
