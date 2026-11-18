@@ -143,6 +143,7 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     loadAppearance();
     loadAuthIdleTimeout();
     loadChatLayout();
+    loadFolderRail();
     probePortalReducedMotion();
 }
 
@@ -435,6 +436,54 @@ void NativePreferences::setChatClickAction(const QString &action)
     m_settings.setValue("settings/app/chatClickAction", next);
     m_settings.sync();
     emit chatClickActionChanged();
+}
+
+// Issue #85 (docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md): the reference
+// resolvers (workspace_ui 61dacef settings.model.ts resolveFolderRailLayout /
+// resolveShowSystemFolders) are asymmetric: a virgin store starts on the
+// default vertical/shown pair (createDefaultSettings), but once a value was
+// stored the layout only stays "vertical" on the exact token - anything else
+// resolves to "horizontal" - while the visibility flag is accepted only as a
+// strict boolean and keeps the default true otherwise. The keys join the #102
+// global settings/app scope (the reference settings blob is global too).
+void NativePreferences::loadFolderRail()
+{
+    const auto layout = m_settings.value("settings/app/folderRailLayout");
+    const auto nextLayout = !layout.isValid()
+            || layout.toString() == QLatin1String("vertical")
+        ? QStringLiteral("vertical") : QStringLiteral("horizontal");
+    if (nextLayout != m_folderRailLayout) {
+        m_folderRailLayout = nextLayout;
+        emit folderRailLayoutChanged();
+    }
+    const auto shown = m_settings.value("settings/app/showSystemFolders");
+    const auto shownText = shown.toString();
+    const auto nextShown = shown.isValid() && shownText == QLatin1String("false")
+        ? false : true;
+    if (nextShown != m_showSystemFolders) {
+        m_showSystemFolders = nextShown;
+        emit showSystemFoldersChanged();
+    }
+}
+
+void NativePreferences::setFolderRailLayout(const QString &layout)
+{
+    const auto next = layout == QLatin1String("vertical")
+        ? layout : QStringLiteral("horizontal");
+    if (next == m_folderRailLayout) return;
+    m_folderRailLayout = next;
+    m_settings.setValue("settings/app/folderRailLayout", next);
+    m_settings.sync();
+    emit folderRailLayoutChanged();
+}
+
+void NativePreferences::setShowSystemFolders(bool show)
+{
+    if (show == m_showSystemFolders) return;
+    m_showSystemFolders = show;
+    m_settings.setValue("settings/app/showSystemFolders", show);
+    m_settings.sync();
+    emit showSystemFoldersChanged();
 }
 
 void NativePreferences::setAuthIdleTimeout(const QString &preset)
