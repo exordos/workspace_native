@@ -61,6 +61,7 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Account deactivated</source><translation>Пользователь заблокирован</translation></message>
         <message><source>Select</source><translation>Выбрать</translation></message>
         <message><source>Deselect</source><translation>Снять выделение</translation></message>
@@ -4618,5 +4619,54 @@
     <context>
         <name>NativeAboutDrawer</name>
         <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
+    </context>
+    <context>
+        <name>NativeDiagnosticsPage</name>
+        <message><source>Diagnostics</source><translation>Диагностика</translation></message>
+        <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
+        <message><source>Memory</source><translation>Память</translation></message>
+        <message><source>Memory metrics are not available in this build.</source><translation>Метрики памяти недоступны в этой сборке.</translation></message>
+        <message><source>Total app memory: %1</source><translation>Память приложения: %1</translation></message>
+        <message><source>System free memory: %1</source><translation>Свободная RAM системы: %1</translation></message>
+        <message><source>Refresh</source><translation>Обновить</translation></message>
+        <message><source>Copy connection report</source><translation>Копировать отчёт о подключении</translation></message>
+        <message><source>Copy snapshot</source><translation>Скопировать снимок</translation></message>
+        <message><source>Snapshot copied</source><translation>Снимок скопирован</translation></message>
+        <message><source>Copy failed</source><translation>Не удалось скопировать</translation></message>
+        <message><source>Advanced snapshot</source><translation>Расширенный снимок</translation></message>
+        <message><source>Healthy</source><translation>Норма</translation></message>
+        <message><source>Degraded</source><translation>Проблемы</translation></message>
+        <message><source>Offline</source><translation>Офлайн</translation></message>
+        <message><source>Ping server</source><translation>Пинг сервера</translation></message>
+        <message><source>Reachable (%1 ms)</source><translation>Доступен (%1 мс)</translation></message>
+        <message><source>Unreachable</source><translation>Недоступен</translation></message>
+        <message><source>Connection</source><translation>Подключение</translation></message>
+        <message><source>Reconnect attempts: %1</source><translation>Попыток переподключения: %1</translation></message>
+        <message><source>Realtime</source><translation>Realtime</translation></message>
+        <message><source>Events received: %1</source><translation>Получено событий: %1</translation></message>
+        <message><source>online</source><translation>в сети</translation></message>
+        <message><source>Window visible</source><translation>Окно видимо</translation></message>
+        <message><source>Window hidden</source><translation>Окно скрыто</translation></message>
+        <message><source>Last %1 event %2s ago</source><translation>Последнее событие %1 %2 с назад</translation></message>
+        <message><source>Session</source><translation>Сессия</translation></message>
+        <message><source>Not signed in</source><translation>Не выполнен вход</translation></message>
+        <message><source>%1 Workspace sessions</source><translation>%1 Workspace-сессий</translation></message>
+        <message><source>Session expires in ~%1 min</source><translation>Сессия истекает через ~%1 мин</translation></message>
+        <message><source>Runtime</source><translation>Runtime</translation></message>
+        <message><source>Notifications</source><translation>Уведомления</translation></message>
+        <message><source>OS/browser permission</source><translation>Разрешение ОС/браузера</translation></message>
+        <message><source>Log counts</source><translation>Счётчики логов</translation></message>
+        <message><source>Performance</source><translation>Производительность</translation></message>
+        <message><source>No performance metrics recorded yet</source><translation>Метрики производительности пока не записаны</translation></message>
+        <message><source>API median %1 ms · p95 %2 ms (%3 calls)</source><translation>API median %1 мс · p95 %2 мс (%3 вызовов)</translation></message>
+        <message><source>Local cache</source><translation>Локальный кэш</translation></message>
+        <message><source>Local cache unavailable</source><translation>Локальный кэш недоступен</translation></message>
+        <message><source>%1 cached responses</source><translation>Кэшировано ответов: %1</translation></message>
+        <message><source>Workspace cache owner present</source><translation>Workspace cache owner присутствует</translation></message>
+        <message><source>No Workspace cache owner</source><translation>Workspace cache owner отсутствует</translation></message>
+        <message><source>Stores</source><translation>Stores</translation></message>
+        <message><source>%1 streams</source><translation>%1 каналов</translation></message>
+        <message><source>%1 conversations</source><translation>%1 разговоров</translation></message>
+        <message><source>%1 users</source><translation>%1 пользователей</translation></message>
     </context>
 </TS>

@@ -2,6 +2,8 @@
 #include "call/incoming-call.h"
 #include "media-viewer.h"
 #include "native-deeplink.h"
+#include "native-diagnostics.h"
+#include "native-logging.h"
 #include "workspace-reference.h"
 #include "native-preferences.h"
 #include "native-auth-guard.h"
@@ -6262,6 +6264,241 @@ QString NativeController::licensesDatasetJson() const
     return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString{};
 }
 
+namespace {
+
+// JSON.stringify(snapshot, null, 2) equivalence: QJsonDocument::toJson uses
+// its own indent unit, so every line's leading indent is rebuilt at two
+// spaces per nesting level. JSON strings escape newlines, so per-line
+// rewriting is safe.
+QString prettyJsonTwoSpace(const QVariantMap &snapshot)
+{
+    const auto text = QString::fromUtf8(QJsonDocument::fromVariant(snapshot)
+        .toJson(QJsonDocument::Indented));
+    QString out;
+    const auto lines = text.split(QLatin1Char('\n'));
+    for (qsizetype index = 0; index < lines.size(); ++index) {
+        const auto &line = lines.at(index);
+        qsizetype width = 0;
+        while (width < line.size() && (line.at(width) == QLatin1Char(' ') || line.at(width) == QLatin1Char('\t')))
+            ++width;
+        const auto unit = (width > 0 && line.at(width - 1) == QLatin1Char('\t')) ? 1 : 4;
+        const auto level = width / unit;
+        out += QString(2 * level, QLatin1Char(' ')) + line.mid(width);
+        if (index + 1 < lines.size())
+            out += QLatin1Char('\n');
+    }
+    return out;
+}
+
+} // namespace
+
+void NativeController::useLogging(NativeLogging *logging)
+{
+    m_logging = logging;
+}
+
+workspace::diagnostics::SessionLogSummary NativeController::diagnosticsLogSummary() const
+{
+    using namespace workspace::diagnostics;
+    SessionLogSummary summary;
+    auto *logging = qobject_cast<NativeLogging *>(m_logging.data());
+    if (!logging)
+        return summary;
+    QFile logFile(logging->filePath());
+    if (!logFile.open(QIODevice::ReadOnly))
+        return summary;
+    return parseSessionLog(QString::fromUtf8(logFile.readAll()), QDateTime::currentMSecsSinceEpoch());
+}
+
+QVariantMap NativeController::diagnosticsSnapshot() const
+{
+    using namespace workspace::diagnostics;
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    const auto logSummary = diagnosticsLogSummary();
+    const auto phase = connectionPhase();
+    const auto status = resolveOverallStatus(phase, !m_transportOffline, logSummary.recentErrorCount);
+
+    QVariantMap connection;
+    connection.insert(QStringLiteral("phase"), phase);
+    connection.insert(QStringLiteral("failureReason"),
+        connectionRetryInSeconds() > 0
+            ? QStringLiteral("rate limited; retry after %1 s").arg(connectionRetryInSeconds())
+            : QVariant());
+    connection.insert(QStringLiteral("reconnectAttempt"), m_realtimeReconnectAttempts);
+
+    QVariantMap realtimeStats;
+    realtimeStats.insert(QStringLiteral("eventsReceivedCount"), m_realtimeEventsReceived);
+    realtimeStats.insert(QStringLiteral("lastEventAt"),
+        m_realtimeLastEventAtMs > 0 ? QVariant(m_realtimeLastEventAtMs) : QVariant());
+    realtimeStats.insert(QStringLiteral("lastEventType"),
+        m_realtimeLastEventType.isEmpty() ? QVariant() : QVariant(m_realtimeLastEventType));
+    QVariantMap realtime;
+    realtime.insert(QStringLiteral("online"), !m_transportOffline);
+    realtime.insert(QStringLiteral("windowVisible"), m_windowVisible);
+    realtime.insert(QStringLiteral("stats"), realtimeStats);
+
+    QVariantMap runtime;
+    runtime.insert(QStringLiteral("detectedRuntime"), QStringLiteral("Qt %1 desktop").arg(QT_VERSION_STR));
+    runtime.insert(QStringLiteral("online"), !m_transportOffline);
+    runtime.insert(QStringLiteral("windowVisible"), m_windowVisible);
+
+    QVariantMap environment;
+    environment.insert(QStringLiteral("appVersion"), QCoreApplication::applicationVersion());
+    environment.insert(QStringLiteral("brandAppName"), QStringLiteral("Exordos Workspace"));
+
+    const auto sessionRemaining = m_session->accessRemainingMs();
+    QVariantMap session;
+    session.insert(QStringLiteral("currentUserUuid"),
+        m_session->ready() ? QVariant(m_session->user()) : QVariant());
+    session.insert(QStringLiteral("sessionRemainingMs"),
+        sessionRemaining > 0 ? QVariant(sessionRemaining) : QVariant());
+
+    QVariantMap workspaceSession;
+    workspaceSession.insert(QStringLiteral("count"), authenticated() ? 1 : 0);
+    workspaceSession.insert(QStringLiteral("organizationOrigin"), m_api->server().toString());
+    workspaceSession.insert(QStringLiteral("projectId"), m_session->project());
+    workspaceSession.insert(QStringLiteral("userUuid"), m_session->user());
+    workspaceSession.insert(QStringLiteral("login"), m_session->loginName());
+
+    QVariantMap notifications;
+    notifications.insert(QStringLiteral("permission"), QStringLiteral("unsupported"));
+
+    QVariantList slowest;
+    {
+        QList<QPair<QString, qint64>> sorted = m_apiLatencySamples;
+        std::stable_sort(sorted.begin(), sorted.end(),
+            [](const auto &left, const auto &right) { return left.second > right.second; });
+        for (qsizetype index = 0; index < qMin<qsizetype>(sorted.size(), 3); ++index)
+            slowest.append(QVariantMap{{QStringLiteral("path"), sorted.at(index).first},
+                {QStringLiteral("durationMs"), sorted.at(index).second}});
+    }
+    const auto latency = summarizeLatency([&]{ QList<qint64> samples;
+        samples.reserve(m_apiLatencySamples.size());
+        for (const auto &sample : m_apiLatencySamples) samples.append(sample.second);
+        return samples; }());
+    QVariantMap apiLatency;
+    apiLatency.insert(QStringLiteral("sampleCount"), latency.sampleCount);
+    apiLatency.insert(QStringLiteral("medianMs"), latency.medianMs >= 0 ? QVariant(latency.medianMs) : QVariant());
+    apiLatency.insert(QStringLiteral("p95Ms"), latency.p95Ms >= 0 ? QVariant(latency.p95Ms) : QVariant());
+    apiLatency.insert(QStringLiteral("slowest"), slowest);
+    QVariantMap performance;
+    performance.insert(QStringLiteral("vitals"), QVariantList{}); // no Web Vitals equivalent in Qt
+    performance.insert(QStringLiteral("apiLatency"), apiLatency);
+
+    QVariant cache;
+    if (m_chatCache && m_chatCache->available()) {
+        const auto stats = m_chatCache->stats();
+        cache = QVariantMap{{QStringLiteral("entries"), static_cast<qulonglong>(stats.entries)},
+            {QStringLiteral("bytes"), static_cast<qulonglong>(stats.bytes)},
+            {QStringLiteral("hasOwnerMeta"), true}};
+    }
+
+    int streamsCount = 0;
+    int conversationsCount = 0;
+    for (const auto &stream : m_streams) {
+        const bool direct = stream.privateStream && isUuid(stream.directUser)
+            && stream.directUser != m_session->user();
+        direct ? ++conversationsCount : ++streamsCount;
+    }
+    QVariantMap stores;
+    stores.insert(QStringLiteral("streamsCount"), streamsCount);
+    stores.insert(QStringLiteral("conversationsCount"), conversationsCount);
+    stores.insert(QStringLiteral("usersCount"), m_names.size());
+    stores.insert(QStringLiteral("foldersCount"), folders().size());
+
+    QVariantList recentErrors;
+    for (const auto &error : logSummary.recentErrors)
+        recentErrors.append(QVariantMap{{QStringLiteral("timestamp"), error.timestamp},
+            {QStringLiteral("level"), error.level}, {QStringLiteral("message"), error.message}});
+    QVariantMap byLevel;
+    byLevel.insert(QStringLiteral("debug"), logSummary.debugCount);
+    byLevel.insert(QStringLiteral("info"), logSummary.infoCount);
+    byLevel.insert(QStringLiteral("warn"), logSummary.warnCount);
+    byLevel.insert(QStringLiteral("error"), logSummary.errorCount);
+    QVariantMap logs;
+    logs.insert(QStringLiteral("total"), logSummary.totalLines);
+    logs.insert(QStringLiteral("filtered"), logSummary.totalLines);
+    logs.insert(QStringLiteral("byLevel"), byLevel);
+    logs.insert(QStringLiteral("recentErrors"), recentErrors);
+
+    QVariantMap snapshot;
+    snapshot.insert(QStringLiteral("collectedAt"),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)); // Qt 6 already suffixes "Z"
+    snapshot.insert(QStringLiteral("overallStatus"), status);
+    snapshot.insert(QStringLiteral("connection"), connection);
+    snapshot.insert(QStringLiteral("rateLimitBlockedUntil"),
+        m_rateLimitedUntilMs > now ? QVariant(m_rateLimitedUntilMs) : QVariant());
+    snapshot.insert(QStringLiteral("realtime"), realtime);
+    snapshot.insert(QStringLiteral("runtime"), runtime);
+    snapshot.insert(QStringLiteral("environment"), environment);
+    snapshot.insert(QStringLiteral("session"), session);
+    snapshot.insert(QStringLiteral("workspaceSession"), workspaceSession);
+    snapshot.insert(QStringLiteral("notifications"), notifications);
+    snapshot.insert(QStringLiteral("memory"),
+        m_logging ? QVariant(qobject_cast<NativeLogging *>(m_logging.data())->memorySnapshot())
+                  : QVariant());
+    snapshot.insert(QStringLiteral("performance"), performance);
+    snapshot.insert(QStringLiteral("cache"), cache);
+    snapshot.insert(QStringLiteral("stores"), stores);
+    snapshot.insert(QStringLiteral("logs"), logs);
+    return snapshot;
+}
+
+QString NativeController::diagnosticsSnapshotJson() const
+{
+    return prettyJsonTwoSpace(diagnosticsSnapshot());
+}
+
+QString NativeController::diagnosticsConnectionReportJson() const
+{
+    // buildConnectionReportSnapshot subset (diagnostics-collect.lib.ts:328-345):
+    // collectedAt, overallStatus, connection, rateLimitBlockedUntil, realtime,
+    // workspaceSession and the recent errors.
+    const auto snapshot = diagnosticsSnapshot();
+    QVariantMap report;
+    report.insert(QStringLiteral("collectedAt"), snapshot.value(QStringLiteral("collectedAt")));
+    report.insert(QStringLiteral("overallStatus"), snapshot.value(QStringLiteral("overallStatus")));
+    report.insert(QStringLiteral("connection"), snapshot.value(QStringLiteral("connection")));
+    report.insert(QStringLiteral("rateLimitBlockedUntil"), snapshot.value(QStringLiteral("rateLimitBlockedUntil")));
+    report.insert(QStringLiteral("realtime"), snapshot.value(QStringLiteral("realtime")));
+    report.insert(QStringLiteral("workspaceSession"), snapshot.value(QStringLiteral("workspaceSession")));
+    report.insert(QStringLiteral("recentErrors"),
+        snapshot.value(QStringLiteral("logs")).toMap().value(QStringLiteral("recentErrors")));
+    return prettyJsonTwoSpace(report);
+}
+
+QString NativeController::diagnosticsOverallStatus() const
+{
+    return workspace::diagnostics::resolveOverallStatus(connectionPhase(), !m_transportOffline,
+        diagnosticsLogSummary().recentErrorCount);
+}
+
+void NativeController::pingServer()
+{
+    // The reference probe (network-transport-probe.lib.ts) is a dead stub
+    // after the Zulip removal; the issue acceptance defines the intended
+    // behaviour: a transport probe with latency feedback. Any HTTP answer
+    // proves reachability; a transport failure is "Unreachable".
+    if (m_pingInFlight || !authenticated())
+        return;
+    m_pingInFlight = true;
+    const auto started = QDateTime::currentMSecsSinceEpoch();
+    request("GET", messenger + QStringLiteral("/streams/"), {},
+        {{QStringLiteral("page_limit"), QStringLiteral("1")}},
+        [this, started](const ApiResult &result) {
+            const auto elapsed = int(QDateTime::currentMSecsSinceEpoch() - started);
+            m_pingInFlight = false;
+            emit pingFinished(result.status > 0, elapsed);
+        });
+}
+
+void NativeController::recordApiLatency(const QString &label, qint64 elapsedMs)
+{
+    m_apiLatencySamples.append(qMakePair(label, elapsedMs));
+    while (m_apiLatencySamples.size() > 200)
+        m_apiLatencySamples.removeFirst();
+}
+
 void NativeController::showSection(const QString &name)
 {
     if (!authenticated())
@@ -6313,6 +6550,16 @@ void NativeController::showSection(const QString &name)
             m_sectionBeforeLicenses = m_section;
         closeOtherContentPages(ContentPage::Licenses);
         m_section = QStringLiteral("licenses");
+        emit stateChanged();
+    }
+    else if (name == QLatin1String("diagnostics"))
+    {
+        // Issue #50: the reference /settings/logs route renders the Diagnostics
+        // dashboard (logs-page.ui.tsx, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
+        // The profile menu entry and the whitelisted /logs + settings/logs deep
+        // links are the entry surfaces (right-panel-user-menu.ui.tsx:182,372-376).
+        closeOtherContentPages(ContentPage::Diagnostics);
+        m_section = QStringLiteral("diagnostics");
         emit stateChanged();
     }
     else if (name == QLatin1String("chat"))
@@ -9774,6 +10021,10 @@ void NativeController::useRealtime(RealtimeClient *client)
     });
     connect(this, &NativeController::resynchronizeRequested, client, &RealtimeClient::resynchronize);
     connect(client, &RealtimeClient::connectionChanged, this, [this](const QString &state) {
+        // Issue #50: each backoff retry is one reconnect attempt for the
+        // diagnostics Connection card (connection.reconnectAttempt).
+        if (state == QLatin1String("retrying"))
+            ++m_realtimeReconnectAttempts;
         const bool previous = m_syncBlocked;
         m_syncState = state;
         if (state == "live") {
@@ -9793,6 +10044,14 @@ void NativeController::useRealtime(RealtimeClient *client)
         if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
     });
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
+        // Issue #50: diagnostics realtime stats mirror
+        // diagnostics-realtime.lib.ts:16-20 (recorded on every receive).
+        ++m_realtimeEventsReceived;
+        const auto kind = event.value("payload").toObject().value("kind").toString();
+        if (!kind.isEmpty()) {
+            m_realtimeLastEventType = kind;
+            m_realtimeLastEventAtMs = QDateTime::currentMSecsSinceEpoch();
+        }
         if (applyRealtimeEvent(event)) {
             client->acknowledge(event.value("uuid").toString());
         } else {
@@ -9809,9 +10068,15 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
 {
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
-    return m_api->request(method, path, body, query, [self, owner, callback](const ApiResult &result) {
+    const auto started = QDateTime::currentMSecsSinceEpoch();
+    return m_api->request(method, path, body, query, [self, owner, callback, method, path, started](const ApiResult &result) {
         if (self && self->m_api->generation() == owner) {
             self->observeTransport(result);
+            // Issue #50: "API latency from HTTP response timing" — every
+            // answered HTTP round feeds the bounded diagnostics ring.
+            if (result.status > 0)
+                self->recordApiLatency(QString::fromUtf8(method) + QLatin1Char(' ') + path,
+                    QDateTime::currentMSecsSinceEpoch() - started);
             callback(result);
         }
     });
@@ -15203,6 +15468,19 @@ void NativeController::applyDeepLink(const QString &url)
             || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
                 Qt::CaseInsensitive) == 0)
             showSection(QStringLiteral("licenses"));
+        return;
+    }
+    // The reference diagnostics routes (issue #50, logs-page.ui.tsx mapped to
+    // /settings/logs; right-panel-user-menu.ui.tsx:182 navigates there): the
+    // whitelisted /logs and settings/logs routes resolve to the diagnostics
+    // page. The org-prefixed variant carries the same origin guard as /calls.
+    static const QRegularExpression diagnosticsRoutePattern(
+        "^(?:/org/([^/]+))?/(?:logs|settings/logs)/?(?:[?#].*)?$");
+    if (const auto match = diagnosticsRoutePattern.match(*route); match.hasMatch()) {
+        if (match.captured(1).isEmpty()
+            || match.captured(1).compare(workspace::orgRouteIdFromOrigin(m_api->server()),
+                Qt::CaseInsensitive) == 0)
+            showSection(QStringLiteral("diagnostics"));
         return;
     }
     // The reference activity route carries its collection segment

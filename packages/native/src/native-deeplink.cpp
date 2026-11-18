@@ -73,10 +73,13 @@ std::optional<QString> parseExternalDeepLink(const QString &value)
         && (url.path().isEmpty() || url.path() == QLatin1String("/")
             || QRegularExpression("^/org/[^/?#]+/?$").match(url.path(QUrl::FullyEncoded)).hasMatch())) return route;
     if (QRegularExpression("^/org/[^/?#]+/?$").match(route).hasMatch()) return route;
-    if (QRegularExpression("^/(?:calendar|mail|calls|services|all-services|licenses|settings|logs)/?(?:[?#].*)?$")
+    // Issue #50: the settings/logs variants are added to the reference
+    // single-segment list so the web route ew://open/org/<org>/settings/logs
+    // resolves (the whitelist comment; docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
+    if (QRegularExpression("^/(?:calendar|mail|calls|services|all-services|licenses|settings/logs|settings|logs)/?(?:[?#].*)?$")
             .match(route).hasMatch())
         return route;
-    if (QRegularExpression("^/org/[^/]+/(?:calendar|mail|calls|services|all-services|licenses|settings|logs)/?(?:[?#].*)?$")
+    if (QRegularExpression("^/org/[^/]+/(?:calendar|mail|calls|services|all-services|licenses|settings/logs|settings|logs)/?(?:[?#].*)?$")
             .match(route).hasMatch())
         return route;
     if (projectRoutePattern().match(route).hasMatch()) return route;

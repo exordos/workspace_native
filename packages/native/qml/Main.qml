@@ -2887,6 +2887,20 @@ ApplicationWindow {
                 text: qsTr("App version")
                 onClicked: root.openAbout(true)
             }
+            // Issue #50: the reference user menu lists Diagnostics directly
+            // below the App version row and navigates to /settings/logs
+            // (right-panel-user-menu.ui.tsx:361-379, settings.connectionDiagnostics).
+            NativeButton {
+                objectName: "diagnosticsAction"
+                colors: root.colors
+                Layout.fillWidth: true
+                text: qsTr("Diagnostics")
+                enabled: root.controller.authenticated
+                onClicked: {
+                    accountPopup.close()
+                    root.controller.showSection("diagnostics")
+                }
+            }
             NativeButton {
                 colors: root.colors
                 Layout.fillWidth: true
@@ -9382,6 +9396,19 @@ ApplicationWindow {
             onBackRequested: root.controller.showSection(root.controller.sectionBeforeLicenses)
             onMessengerHomeRequested: root.controller.showSection("chat")
             onExternalLinkRequested: url => Qt.openUrlExternally(url)
+        }
+        // Diagnostics page (issue #50, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
+        // the reference /settings/logs connection dashboard. The profile menu
+        // entry and the whitelisted /logs + settings/logs deep links are the
+        // entry surfaces (right-panel-user-menu.ui.tsx:182,372-376); chat
+        // navigation resets the section back to the conversation, matching the
+        // reference route behaviour.
+        NativeDiagnosticsPage {
+            controller: root.controller
+            colors: root.colors
+            visible: root.controller.section === "diagnostics"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
     }
     component MessageBoundaryRow: Item {

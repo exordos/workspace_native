@@ -57,6 +57,10 @@ public:
     QString project() const { return m_project; }
     QString user() const { return m_user; }
     bool ready() const { return m_ready; }
+    // Remaining access-credential lifetime in ms, -1 when nothing is verified
+    // (issue #50 diagnostics session-remaining sub-line; same monotonic clock
+    // as the refresh guard in session.cpp).
+    qint64 accessRemainingMs() const;
     const QVector<Project> &projects() const { return m_projects; }
     QVariantMap publicProfile() const { return m_ready ? m_publicProfile : QVariantMap{}; }
 
