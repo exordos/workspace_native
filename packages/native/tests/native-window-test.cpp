@@ -5267,9 +5267,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         auto *activity = view("activity-drafts"); QVERIFY(activity && activity->isEnabled());
-        for (const auto *name : {"activity-favorites"}) {
-            auto *unsupported = view(QLatin1String(name)); QVERIFY(unsupported); QVERIFY(!unsupported->isEnabled());
-        }
+        QVERIFY(view("activity-favorites")->isEnabled()); // enabled by issue #70
         QVERIFY(view("activity-mentions")->isEnabled()); // enabled by issue #42
         QVERIFY(view("activity-inbox")->isEnabled()); // enabled by issue #44
         QVERIFY(view("activity-starred")->isEnabled()); // enabled by issue #41
@@ -29304,9 +29302,10 @@ private slots:
             QVERIFY(bg);
             QCOMPARE(bg->property("color").value<QColor>(), expected[i]);
         }
-        // favorites keeps its disabled state until #70 lands.
-        QVERIFY(!view("activityRow-favorites")->isEnabled());
-        QVERIFY(!view("activityChip-favorites")->isEnabled());
+        // #70 landed: the favorites row and chip are enabled and route to
+        // showFavorites (docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md).
+        QVERIFY(view("activityRow-favorites")->isEnabled());
+        QVERIFY(view("activityChip-favorites")->isEnabled());
         QVERIFY(view("activityRow-mentions")->isEnabled());
         // The chat list is pushed down instead of overlapped (reference flow).
         QTRY_VERIFY2(chatList->y() >= closedTop + 200,
