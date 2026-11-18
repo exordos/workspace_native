@@ -154,6 +154,9 @@ private:
     // transition runs, and the release that re-captures the live state.
     void noteFullscreenGateSignal();
     void finishFullscreenGate();
+    // #62 round 2: reads the window's current geometry/maximized state;
+    // shared by the gate release and immediate saves during an open gate.
+    void recaptureLiveWindowState();
     QString appearanceGroup() const;
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
