@@ -633,4 +633,12 @@ void Session::requestRefresh()
     refreshProject();
 }
 
+qint64 Session::accessRemainingMs() const
+{
+    if (m_accessExpiresAt <= 0)
+        return -1;
+    const auto remaining = m_accessExpiresAt - m_clock.elapsed();
+    return remaining > 0 ? remaining : -1;
+}
+
 }

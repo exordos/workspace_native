@@ -118,6 +118,9 @@ int main(int argc, char **argv)
 #endif
     workspace::bindNativeChatKeys(chatKeys, session, api, controller, deviceName);
     controller.useCache(&cache);
+    // Issue #50: the diagnostics page reads the rotating log provider (#77)
+    // for the Log counts card and the recent-error status rule.
+    controller.useLogging(&diagnosticsLog);
     controller.useDrafts(&drafts);
     controller.useFiles(&files);
     workspace::RealtimeCursorStore realtimeCursors;

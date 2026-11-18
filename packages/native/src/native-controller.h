@@ -6,6 +6,7 @@
 #include "api-client.h"
 #include "domain.h"
 #include "native-cache-service.h"
+#include "native-diagnostics.h"
 #include "session.h"
 #include "native-chat-key-vault.h"
 #include "native-drafts.h"
@@ -551,6 +552,19 @@ public:
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
     Q_INVOKABLE QString licensesDatasetJson() const;
+    // Issue #50: the Diagnostics page surface (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
+    // the live dataset object, the pretty-printed snapshot JSON for the copy
+    // action and the advanced block, the connection-report subset, the live
+    // overall status (status pill) and one transport ping at a time
+    // (pingFinished carries the latency).
+    Q_INVOKABLE QVariantMap diagnosticsSnapshot() const;
+    Q_INVOKABLE QString diagnosticsSnapshotJson() const;
+    Q_INVOKABLE QString diagnosticsConnectionReportJson() const;
+    Q_INVOKABLE QString diagnosticsOverallStatus() const;
+    Q_INVOKABLE void pingServer();
+    // The rotating diagnostics log provider (issue #77) feeding the Log counts
+    // card and the recent-error status rule; owned by main.cpp.
+    void useLogging(class NativeLogging *logging);
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void showReactions();
@@ -845,6 +859,9 @@ signals:
         const QString &outcome, const QString &message);
     void decryptRetryStateChanged();
     void archivedChatsChanged();
+    // Issue #50: one finished Diagnostics ping (ok + latency ms); the page
+    // mirrors the reference ping reset timer (3 s, logs-page.ui.tsx:238-242).
+    void pingFinished(bool ok, int latencyMs);
     void stateChanged();
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
@@ -1932,7 +1949,11 @@ private:
     // Issue #54: the sidebar destinations are mutually exclusive. Opening one
     // closes the others so exactly one page and one sidebar selection stay
     // active, and closing the active page returns to the conversation.
-    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses };
+    enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses, Diagnostics };
+
+    // Issue #50: diagnostics collector helpers (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
+    workspace::diagnostics::SessionLogSummary diagnosticsLogSummary() const;
+    void recordApiLatency(const QString &label, qint64 elapsedMs);
 
     void resetChatSection();
     void closeOtherContentPages(ContentPage keep);
@@ -2112,6 +2133,19 @@ private:
     QTimer m_connectionCountdown{this};
     qint64 m_rateLimitedUntilMs = 0;
     bool m_transportOffline = false;
+    // Issue #50: diagnostics collector state (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
+    // The counters mirror the reference diagnostics-realtime.lib.ts stats; the
+    // latency ring is the "API latency from HTTP response timing" source.
+    // Stored as QPointer<QObject> so translation units that only forward-
+    // declare NativeLogging can include this header (QPointer needs the
+    // QObject base for its casts); every use casts back locally.
+    QPointer<QObject> m_logging;
+    int m_realtimeEventsReceived = 0;
+    QString m_realtimeLastEventType;
+    qint64 m_realtimeLastEventAtMs = 0;
+    int m_realtimeReconnectAttempts = 0;
+    QList<QPair<QString, qint64>> m_apiLatencySamples; // bounded to 200, insertion order
+    bool m_pingInFlight = false;
     bool m_bootstrapError = false;
     QString m_notice;
     int m_uploads = 0;
