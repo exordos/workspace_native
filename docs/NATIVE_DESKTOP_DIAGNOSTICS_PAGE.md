@@ -276,3 +276,186 @@ catalog guard passes.
   "Reachable (N ms)" then resets to "Ping server" after 3 s; Copy snapshot
   puts 2-space-indented JSON on the clipboard and swaps the label for 2 s;
   the advanced snapshot collapse reveals the JSON block (max height 208).
+
+## Session log viewer modal (issue #51)
+
+Issue #51 (part of #49). Same reference contract sha
+`61dacef78dab2f5d0be76f283bebf49fe29b84af`. Figma token unavailable (401) -
+mockups not consulted; the reference code is the pixel oracle. This section
+supersedes deviation 4 above: the "View logs" affordances and the logs modal
+are this issue's scope.
+
+### Modal shell - `packages/web/src/pages/logs/logs-view-modal.ui.tsx`
+
+- Content (`logs-view-modal.ui.tsx:11` + app-dialog.ui.tsx base): `fixed
+  left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-h-[85vh]
+  max-w-4xl rounded-xl border border-border-subtle bg-card-bg p-0 shadow-2xl
+  overflow-hidden flex flex-col` (max width 896, max height 85% of viewport,
+  radius 12). Overlay `fixed inset-0 bg-black/50` (`:13`,
+  `APP_DIALOG_OVERLAY_CLASS`).
+- Header (`:47-79`): `flex shrink-0 flex-wrap items-start justify-between
+  gap-2 border-b border-border-subtle px-4 py-3` (16px/12px padding). Title
+  `text-sm font-semibold text-text-primary` (14px semibold,
+  `settings.logs` "Logs" / "Журнал"), subtitle `mt-0.5 text-[11px]
+  text-text-muted` (`settings.logsHint` "In-memory session logs (last 500
+  entries)."). Action row `flex items-center gap-1` (4px): Refresh, Clear,
+  Download buttons `h-8 rounded-md border border-border-subtle bg-card-bg
+  px-2.5 text-xs` (32px tall, radius 6, padding 10px, 12px text); Clear and
+  Download carry `disabled:opacity-50 disabled:cursor-not-allowed` and are
+  disabled while `!hasEntries` (`:70-103`). Close button `rounded p-1
+  text-text-muted hover:bg-bg/50` with the `close` icon at 18 px
+  (`:93-101`, aria `common.close` "Close"/"Закрыть").
+- Body (`:110-125`): `flex min-h-0 flex-1 flex-col overflow-hidden p-3 pt-2`
+  (12px padding, 8px top) hosting `LogsPageLogsSection showHeading={false}`.
+
+### Filters + list - `packages/web/src/pages/logs/logs-page-logs.ui.tsx`
+
+- Filter row (`:110-168`): `flex shrink-0 items-center gap-1 overflow-x-auto`
+  with: search input `h-8 min-w-context-menu-narrow rounded-md border
+  border-border-subtle bg-card-bg px-2 text-xs focus:border-accent`
+  (placeholder `settings.logsSearchPlaceholder`); four compact Selects
+  `min-w-[110px]` in order source, level, scope, runtime; Reset filters
+  button `h-8 whitespace-nowrap px-2 text-xs`.
+- Results label (`:170`): `text-[11px] text-text-muted`, key
+  `settings.logsResults` "{{visible}} of {{total}} entries".
+- Entry rows `LogEntryRow` (`:216-245`): `li rounded-md border
+  border-border-subtle p-2`; meta line `flex flex-wrap items-center gap-1
+  text-[11px] text-text-muted` with level chip `rounded bg-bg px-1.5 py-0.5
+  font-mono uppercase`, runtime chip same shape (not uppercase), scope
+  `font-medium text-text-primary`, timestamp `new Date(ts).toLocaleString()`;
+  message `mt-1 text-xs leading-snug text-text-primary`; optional data `pre
+  mt-1 overflow-x-auto rounded bg-bg p-1.5 text-[11px] leading-snug` with
+  `JSON.stringify(entry.data)`. Left accent: warn rows `border-l-2
+  border-indicator-yellow` `#ffd633`, error rows `border-l-2
+  border-indicator-red` `#f04c4c` (emphasized recent-error rows with no other
+  accent get `border-l-2 border-border-subtle`).
+- "Recent errors" block (`:96-108`): `details[open] rounded-lg border
+  border-border-subtle bg-card-bg p-2`, summary `text-xs font-medium`
+  (`settings.diagnosticsRecentErrors`), inner `ul mt-2 max-h-40 space-y-1
+  overflow-auto` (max height 160). Only rendered when recent errors exist
+  (errors in the last 15 min, newest first, capped at 8 -
+  diagnostics-collect.lib.ts:153-154).
+- Empty state (`:172-176`): centered column `rounded-lg border
+  border-border-subtle p-4` with `grid` icon size 32 opacity-50 and
+  `settings.logsEmpty` "No logs yet" text-xs.
+- Filter semantics `filterLogEntries` (`:248-268` and the in-component
+  useMemo): level, source, scope and runtime filters AND together
+  ("all"/empty = pass); search = `query.trim().toLowerCase()` substring
+  (case-insensitive) of `` `${level} ${scope} ${runtime} ${message}
+  ${JSON.stringify(data)}` `` (missing data serializes to empty). Source
+  buckets (`logs-source-filter.lib.ts:3-32`): `api` = scope `api`; `console`
+  = scope `console`; `trace` = scope prefix `trace:`; `actions` = scope in
+  {`action`, `auth`, `realtime`} or prefix `action:`; `app` = every other
+  scope.
+- Export (`logs-export.lib.ts:7-23`): filename `workspace-logs-YYYYMMDD-
+  HHMMSS.json` from UTC parts (zero-padded); body = `JSON.stringify(entries,
+  null, 2)` (2-space pretty) with each entry's `data` re-run through
+  `logger.redact()`; export/download disabled on empty history.
+
+### History source - `shared/lib/logger.ts`
+
+In-memory ring buffer `MAX_BUFFER_SIZE = 500`, push order oldest first with
+oldest evicted; `getLogHistory` newest-first view for consumers,
+`subscribeLogHistory` notifies on every append and clear, `clearLogHistory`
+empties. Entry shape `{level, scope, message, timestamp(ISO-8601), runtime,
+data?}` with `redact()` applied on write: sensitive keys (case-insensitive,
+`-`/`_` stripped: apikey, api_key, apikey, password, passwd, secret, token,
+authorization, auth, cookie, session, sessionid, csrf, csrftoken,
+creditcard, ssn, private_key, privatekey) become `"[REDACTED]"`; string
+values matching `^[A-Za-z0-9+/=]{20,}$`, `^Basic\s+` or `^Bearer\s+` become
+`"[REDACTED]"`; objects recurse to depth 8 then `"[max depth]"`; arrays map
+element-wise.
+
+### Native design
+
+- New C++ surface in `src/native-diagnostics.{h,cpp}` (`workspace::diagnostics`):
+  `SessionLogEntry` (level/scope/message/timestamp/runtime/data), `redactLogValue`
+  (exact reference port), `logSourceBucket`/`matchesLogSourceFilter`,
+  `logEntryMatchesFilters` (reference AND-substring semantics),
+  `buildLogsExportFilename(nowMs)` (UTC `workspace-logs-YYYYMMDD-HHMMSS.json`),
+  `serializeLogsForExport` (entries -> 2-space pretty JSON, `data` redacted),
+  and `SessionLogBuffer` (QObject ring buffer, newest-first `entries()`,
+  `append`, `clear`, `entriesChanged()` signal, cap 500 like the reference).
+- Controller (`src/native-controller.{h,cpp}`): owns one `SessionLogBuffer`;
+  `useLogging` also labels the buffer with the platform runtime. QML surface:
+  `diagnosticsSessionLogEntries()`, `diagnosticsSessionLogsFiltered(level,
+  source, scope, runtime, search)`, `appendSessionLog(level, scope, message,
+  data)`, `clearSessionLog()`, `diagnosticsLogsExportFilename()`,
+  `diagnosticsLogsExportJson()`, `exportSessionLog(path)`, signal
+  `sessionLogChanged()`. Live producers (real state only, no synthetic feed):
+  realtime `connectionChanged` transitions log scope `connection-health`
+  (live = info, retrying = warn); realtime apply failures log scope
+  `realtime` level error; answered HTTP requests with status >= 400 and
+  transport failures log scope `api` (4xx warn, 5xx/transport error) with
+  method/path/status data; transport offline/online flips log scope
+  `connection-health`.
+- QML (`qml/NativeDiagnosticsPage.qml`): header gains the `View logs`
+  `HeaderButton` (first action, `diagnosticsViewLogsButton`) and the Log
+  counts card gains its `View logs` button (`h-7 rounded-md bg-bg px-2
+  text-[11px]`, reference logs-page-overview.ui.tsx:143-149); both open the
+  modal (`logsModal`, hidden Popup until opened). Modal: 896x(85% of page)
+  centered card `rounded-xl border-border-subtle bg-card-bg` over a 50%-black
+  overlay (Popup `modal: true` + `Overlay`), header px-4 py-3 with title +
+  hint + Refresh/Clear/Export h-8 buttons (Clear/Export `enabled: false;
+  opacity: 0.5` while the buffer is empty) and the 18 px close icon
+  (`close.svg` shipped in the icon bundle). Filter row: search Field h-8
+  text-xs + source/level/scope/runtime selects (h-8 instances of NativeSelect
+  min width 110) + Reset filters button; results label "%1 of %2 entries"
+  11px; recent-errors block (from the ring buffer, same window/cap math as
+  #50's collector) max-h 160 open by default when present; entry list rows
+  with the measured chips/timestamp/message/data-pre and warn/error left
+  borders; empty state = 32px `grid.svg` at opacity 0.5 + "No logs yet".
+  Export goes through `NativeDialogs.FileDialog` (`SaveFile`,
+  `diagnosticsLogsSaveDialog`, suggested name from the controller) writing to
+  the picked path via `exportSessionLog` - the repo's existing save flow
+  (same pattern as `attachmentSaveDialog`); no Electron-style blob download.
+  Live refresh: the page re-reads the filtered rows on
+  `controller.sessionLogChanged()` while the modal is visible (reference
+  `subscribeLogHistory`).
+
+### Declared deviations
+
+1. Runtime value set: the reference runtime filter enumerates the web values
+   (`getRuntime()` -> `electron` | `pwa` | `browser`); the native data set
+   records the native client platform label. The fixed native value set is
+   `linux` | `macos` | `windows` (`Q_OS_*` mapped), stamped by the logger on
+   every entry; the scope/runtime Selects stay reference-driven lists built
+   from present entries plus the "All …" option.
+2. Scope options list from present entries (reference does the same) - with
+   the native scope taxonomy actually produced (`api`, `realtime`,
+   `connection-health`, `app` today).
+3. Clear wipes only the in-memory ring (reference `clearLogHistory`); the
+   on-disk rotating log of #77 is untouched - the reference has no on-disk
+   surface in the window either.
+4. The web "sr-only" filter labels map to `Accessible.name` on the native
+   controls (no separate hidden text nodes in QML).
+5. Data pre block serializes with Qt's JSON (single-line compact) - the
+   reference `JSON.stringify(data)` is likewise single-line.
+
+### i18n
+
+All visible strings are `qsTr` with the reference en values (placeholders
+`{{visible}}`/`{{total}}` become `%1`/%2) and the ru values from
+`ru.json` (`settings.logs*`, `common.close`, `settings.diagnosticsRecentErrors`,
+`settings.logsViewModal`); new strings land in
+`packages/native/translations/workspace_ru.ts` so the native-native-locale
+catalog guards pass.
+
+### Tests
+
+- `native-native-controller`: ring buffer append/subscribe/clear + 500-cap
+  eviction + newest-first; source bucket mapping per the rules above; filter
+  semantics (level/source/scope/runtime ANDs, trimmed case-insensitive
+  substring incl. JSON-serialized data); `redactLogValue` key/pattern/depth
+  matrix; export filename shape `workspace-logs-[0-9]{8}-[0-9]{6}[.]json`
+  (UTC parts), export JSON round-trips to the same entries with data
+  redacted and 2-space pretty-print; controller surface: append ->
+  `sessionLogChanged`, filtered invokables, `clearSessionLog`, and
+  `exportSessionLog` writing the file under a QStandardPaths temp dir.
+- `native-native-window` (inside `NativeWindowTest`): modal hidden until
+  opened from the header View logs button and from the Log counts card
+  button; empty state with Clear/Export disabled; appended lines appear live
+  while open (incl. recent-errors block for a fresh error row); level and
+  source selects narrow the list live with the "x of y entries" label;
+  search narrows further; Reset filters restores; Clear switches to the
+  empty state and disables itself; Export opens the save dialog.
