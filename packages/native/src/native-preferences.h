@@ -150,6 +150,10 @@ protected:
 
 private:
     void toggleWindowFullscreen();
+    // #62 round 2: the gate fed by every window signal while a fullscreen
+    // transition runs, and the release that re-captures the live state.
+    void noteFullscreenGateSignal();
+    void finishFullscreenGate();
     QString appearanceGroup() const;
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
@@ -204,10 +208,18 @@ private:
     QString m_chatClickAction = QStringLiteral("stream");
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
-    // #62: true between an F11 fullscreen request and the WM confirming
-    // WindowFullScreen; the transient unmaximize hop must not reach the
-    // persisted normal geometry / maximized flag.
+    // #62 round 2: true while a fullscreen transition is in flight. The gate
+    // covers the WM's transient unmaximize/restore hop so it never reaches
+    // the persisted normal geometry or maximized flag (the reference
+    // getNormalBounds rule), but it ends as soon as the window settles into
+    // the state the transition asked for, and the release re-captures the
+    // live window state so legitimate user changes during the transition
+    // are persisted, not dropped.
     bool m_fullscreenPending = false;
+    bool m_fullscreenAwaitingExit = false;
+    bool m_fullscreenExitMaximized = false;
+    QTimer m_fullscreenGateSettle;
+    QTimer m_fullscreenGateCap;
 };
 
 } // namespace workspace
