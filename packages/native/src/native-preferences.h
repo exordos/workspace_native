@@ -34,6 +34,11 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QVariantMap quickReactionUsage READ quickReactionUsage NOTIFY reactionHistoryChanged)
     Q_PROPERTY(QStringList organizationHistory READ organizationHistory NOTIFY organizationHistoryChanged)
     Q_PROPERTY(QString authIdleTimeout READ authIdleTimeout WRITE setAuthIdleTimeout NOTIFY authIdleTimeoutChanged)
+    // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the reference chat list
+    // density and click action (settings.model.ts chatListDensity/chatClickAction).
+    // Persisted globally like the reference settings blob, not per owner.
+    Q_PROPERTY(QString chatListDensity READ chatListDensity WRITE setChatListDensity NOTIFY chatListDensityChanged)
+    Q_PROPERTY(QString chatClickAction READ chatClickAction WRITE setChatClickAction NOTIFY chatClickActionChanged)
 public:
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
@@ -72,6 +77,12 @@ public:
     // invalid values resolve to "3d" like settings.model.ts:75,175-178.
     QString authIdleTimeout() const { return m_authIdleTimeout; }
     void setAuthIdleTimeout(const QString &preset);
+    // Issue #102: strict reference resolvers - only the single non-default token
+    // survives (settings.model.ts:124,173), anything else is the default value.
+    QString chatListDensity() const { return m_chatListDensity; }
+    QString chatClickAction() const { return m_chatClickAction; }
+    void setChatListDensity(const QString &density);
+    void setChatClickAction(const QString &action);
     // Mention frecency (mention-frecency.lib.ts): decayed pick counts per user,
     // partitioned by the opaque caller scope (the controller's creation owner,
     // which stays valid on loopback fixtures where the HTTPS vault owner is empty).
@@ -112,11 +123,14 @@ signals:
     void reactionHistoryChanged();
     void mentionFrecencyChanged();
     void authIdleTimeoutChanged();
+    void chatListDensityChanged();
+    void chatClickActionChanged();
 
 private:
     QString appearanceGroup() const;
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
+    void loadChatLayout();
     void loadAppearance();
     void persist();
     void setError(const QString &error);
@@ -159,6 +173,8 @@ private:
     QStringList m_pendingConversation;
     QStringList m_organizationHistory;
     QString m_authIdleTimeout = QStringLiteral("3d");
+    QString m_chatListDensity = QStringLiteral("general");
+    QString m_chatClickAction = QStringLiteral("stream");
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
 };

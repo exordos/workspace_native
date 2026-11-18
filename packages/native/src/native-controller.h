@@ -1716,6 +1716,10 @@ private:
         bool own = false;
         bool locked = false;
         QDateTime created;
+        // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the topic the previewed
+        // message lives in - the reference stream.preview?.route input for the
+        // latestTopic click mode (sidebar-workspace.ui.tsx:455).
+        QString topic;
     };
     std::optional<RowPreview> rowPreview(const QString &uuid) const;
     std::optional<RowPreview> rowPreviewOf(const Message &message) const;

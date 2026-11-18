@@ -120,6 +120,7 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     }
     loadAppearance();
     loadAuthIdleTimeout();
+    loadChatLayout();
 }
 
 NativePreferences::~NativePreferences()
@@ -310,6 +311,50 @@ void NativePreferences::loadAuthIdleTimeout()
         m_settings.value(settingsGroup() + "/authIdleTimeout", QStringLiteral("3d")).toString());
     if (m_authIdleTimeout != old)
         emit authIdleTimeoutChanged();
+}
+
+// Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the reference resolvers
+// (workspace_ui 61dacef settings.model.ts:124,173) accept exactly one non-default
+// token each and fall back to the default otherwise. The keys are global
+// (`settings/app/...`) because settings.model.ts persistSettings keeps one global
+// settings blob (deviation D2), unlike the per-owner authIdleTimeout scope.
+void NativePreferences::loadChatLayout()
+{
+    const auto density = m_settings.value("settings/app/chatListDensity").toString();
+    const auto action = m_settings.value("settings/app/chatClickAction").toString();
+    const auto nextDensity = density == QLatin1String("compact")
+        ? density : QStringLiteral("general");
+    const auto nextAction = action == QLatin1String("latestTopic")
+        ? action : QStringLiteral("stream");
+    if (nextDensity != m_chatListDensity) {
+        m_chatListDensity = nextDensity;
+        emit chatListDensityChanged();
+    }
+    if (nextAction != m_chatClickAction) {
+        m_chatClickAction = nextAction;
+        emit chatClickActionChanged();
+    }
+}
+
+void NativePreferences::setChatListDensity(const QString &density)
+{
+    const auto next = density == QLatin1String("compact") ? density : QStringLiteral("general");
+    if (next == m_chatListDensity) return;
+    m_chatListDensity = next;
+    m_settings.setValue("settings/app/chatListDensity", next);
+    m_settings.sync();
+    emit chatListDensityChanged();
+}
+
+void NativePreferences::setChatClickAction(const QString &action)
+{
+    const auto next = action == QLatin1String("latestTopic")
+        ? action : QStringLiteral("stream");
+    if (next == m_chatClickAction) return;
+    m_chatClickAction = next;
+    m_settings.setValue("settings/app/chatClickAction", next);
+    m_settings.sync();
+    emit chatClickActionChanged();
 }
 
 void NativePreferences::setAuthIdleTimeout(const QString &preset)

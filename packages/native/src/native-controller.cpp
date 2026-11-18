@@ -15806,6 +15806,7 @@ std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const
     // and the resolved display name otherwise, omitted entirely for an unknown author.
     RowPreview preview;
     preview.created = message.created;
+    preview.topic = message.topic;
     // The sender label is resolved at projection time so a late-arriving display name or a
     // language change reaches the row; the cache only stores the author identity.
     preview.own = message.own;
@@ -15877,11 +15878,12 @@ QVariantMap NativeController::rowPreviewFields(const QString &lastMessage) const
     // keeps the reference empty preview line; a locked row is valid without any text.
     if (!preview || (!preview->locked && !preview->created.isValid()))
         return QVariantMap{{"previewSender", QString{}}, {"previewText", QString{}},
-            {"previewLocked", false}, {"rowTime", QString{}}};
+            {"previewLocked", false}, {"rowTime", QString{}}, {"previewTopic", QString{}}};
     const auto sender = preview->own ? tr("You") : userDisplayName(preview->author);
     const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
     return QVariantMap{{"previewSender", sender}, {"previewText", preview->text},
         {"previewLocked", preview->locked},
+        {"previewTopic", preview->topic},
         {"rowTime", formatRowTime(preview->created, locale, QDate::currentDate(),
             tr("Yesterday"))}};
 }

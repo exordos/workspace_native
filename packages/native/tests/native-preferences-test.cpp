@@ -574,6 +574,44 @@ private slots:
         QVERIFY(restartedIndex >= 0);
         QVERIFY(!restarted.metaObject()->property(restartedIndex).read(&restarted).toBool());
     }
+
+    // docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md (issue #102): the reference resolvers
+    // (workspace_ui 61dacef settings.model.ts:124,173) accept exactly one non-default
+    // token each and fall back otherwise; both keys are persisted in the global
+    // settings scope (settings.model.ts persistSettings keeps one global blob).
+    void chatListDensityAndChatClickActionPersistGloballyWithStrictDefaults()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("chat-layout.ini");
+        {
+            NativePreferences preferences(path);
+            QCOMPARE(preferences.chatListDensity(), QStringLiteral("general"));
+            QCOMPARE(preferences.chatClickAction(), QStringLiteral("stream"));
+            QSignalSpy densityChanged(&preferences, &NativePreferences::chatListDensityChanged);
+            QSignalSpy actionChanged(&preferences, &NativePreferences::chatClickActionChanged);
+            preferences.setChatListDensity("compact");
+            preferences.setChatClickAction("latestTopic");
+            QCOMPARE(densityChanged.count(), 1);
+            QCOMPARE(actionChanged.count(), 1);
+            QSettings disk(path, QSettings::IniFormat);
+            QCOMPARE(disk.value("settings/app/chatListDensity").toString(), QStringLiteral("compact"));
+            QCOMPARE(disk.value("settings/app/chatClickAction").toString(), QStringLiteral("latestTopic"));
+        }
+        {
+            NativePreferences reopened(path);
+            QCOMPARE(reopened.chatListDensity(), QStringLiteral("compact"));
+            QCOMPARE(reopened.chatClickAction(), QStringLiteral("latestTopic"));
+        }
+        {
+            QSettings disk(path, QSettings::IniFormat);
+            disk.setValue("settings/app/chatListDensity", "standard");
+            disk.setValue("settings/app/chatClickAction", "general");
+            disk.sync();
+        }
+        NativePreferences sanitized(path);
+        QCOMPARE(sanitized.chatListDensity(), QStringLiteral("general"));
+        QCOMPARE(sanitized.chatClickAction(), QStringLiteral("stream"));
+    }
 };
 
 QTEST_MAIN(NativePreferencesTest)
