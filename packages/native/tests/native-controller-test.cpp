@@ -28930,7 +28930,9 @@ private slots:
         using namespace workspace::diagnostics;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         const auto stamp = [now](qint64 offsetMs) {
-            return QDateTime::fromMSecsSinceEpoch(now - offsetMs, Qt::UTC).toString(Qt::ISODateWithMs) + QLatin1Char('Z');
+            // toString(ISODateWithMs) already carries the 'Z' UTC suffix for
+            // a UTC-spec QDateTime; appending another would corrupt the stamp.
+            return QDateTime::fromMSecsSinceEpoch(now - offsetMs, Qt::UTC).toString(Qt::ISODateWithMs);
         };
         QStringList text;
         text << (stamp(1000) + QStringLiteral(" info: hello"));
