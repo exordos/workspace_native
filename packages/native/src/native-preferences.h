@@ -143,7 +143,13 @@ private slots:
     // system reduce-motion toggle.
     void onPortalSettingChanged(const QString &ns, const QString &key, const QDBusVariant &value);
 
+protected:
+    // #62: F11 fullscreen toggle on the attached window (the reference keeps
+    // the View menu's togglefullscreen role while the menu bar is hidden).
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
+    void toggleWindowFullscreen();
     QString appearanceGroup() const;
     QString settingsGroup() const;
     void loadAuthIdleTimeout();
@@ -198,6 +204,10 @@ private:
     QString m_chatClickAction = QStringLiteral("stream");
     QRect m_normalGeometry;
     bool m_windowMaximized = false;
+    // #62: true between an F11 fullscreen request and the WM confirming
+    // WindowFullScreen; the transient unmaximize hop must not reach the
+    // persisted normal geometry / maximized flag.
+    bool m_fullscreenPending = false;
 };
 
 } // namespace workspace
