@@ -30748,6 +30748,85 @@ private slots:
         // The transition frame must not overwrite the settled normal bounds.
         QCOMPARE(savedWindowBounds(path), normal);
     }
+
+    // #62 round 6 (review cid 4612931182): the enter flag is cleared on
+    // recapture, not on the FullScreen state signal, so a WM restore that
+    // lands after the state atom but before the gate's recapture stays
+    // classified as an enter hop and an immediate save drops its bounds.
+    // The restore must be judged settled user geometry the moment the
+    // FullScreen observation arrives: F11 enters (Qt confirms the atom
+    // synchronously), the window is restored at a normal rect that differs
+    // from the settled one, and the detach save must persist the restore.
+    void fullscreenEnterWmRestoreAfterStateSignalDuringGatePersistsRestoredBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 70, available.y() + 45, 850, 610);
+        window.setGeometry(normal);
+        QTest::qWait(700); // outlast the save debounce: settled normal on disk
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11); // enter starts: gate closes
+        QTRY_VERIFY_WITH_TIMEOUT(window.windowState() == Qt::WindowFullScreen, 5000);
+        // The WM restores the window at a new normal rect while the enter
+        // gate is still open (the restore stops the settle backstop from
+        // firing, so the save below lands mid-gate by construction).
+        const QRect restored(available.x() + 140, available.y() + 70, 760, 640);
+        window.showNormal();
+        window.setGeometry(restored);
+        QVERIFY(window.windowState() != Qt::WindowFullScreen);
+        QCOMPARE(window.geometry(), restored);
+        preferences.attachWindow(nullptr); // the aboutToQuit seam: immediate save
+        // The restore is settled user geometry, not an enter hop: its
+        // bounds must be persisted, not dropped with the transition.
+        QCOMPARE(savedWindowBounds(path), restored);
+    }
+
+    // #62 round 6 (review thread cid 4611449708): the gate-cap release must
+    // not persist the fullscreen transition frame as normal bounds. The cap
+    // cleared the enter guard one statement before recapture, so when the
+    // window still wears the fullscreen shape while its state transition
+    // lags (NoState with the fullscreen rect, the order R5 reproduced), the
+    // recapture on cap expiry saves the fullscreen rect as the normal
+    // geometry. The settled normal bounds must survive the cap expiry.
+    void fullscreenEnterGateCapExpiryKeepsTransitionFrameOutOfSavedBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const auto screen = QGuiApplication::primaryScreen()->geometry();
+        const QRect normal(available.x() + 50, available.y() + 30, 830, 620);
+        window.setGeometry(normal);
+        QTest::qWait(700); // outlast the save debounce: settled normal on disk
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11); // enter starts: gate closes
+        // Transition frame: the fullscreen shape is present while the state
+        // is back at NoState, so the transition never settles and only the
+        // 1500 ms gate cap ends the gate.
+        window.showNormal();
+        window.setGeometry(screen);
+        QVERIFY(window.windowState() != Qt::WindowFullScreen);
+        // Outlast the cap plus the debounced save it schedules.
+        QTest::qWait(1500 + 1200);
+        QVERIFY2(savedWindowBounds(path) == normal,
+            "the gate-cap release persisted the fullscreen transition frame as the normal bounds");
+    }
 };
 
 
