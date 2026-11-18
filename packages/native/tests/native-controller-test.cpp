@@ -29138,7 +29138,9 @@ private slots:
         QTest::qWait(200);
         QCOMPARE(finished.count(), 1);
         // The single-probe guard is freed: a fresh ping dispatches under the
-        // new generation and settles normally.
+        // new generation and settles normally (with no token the transport
+        // would reject locally, so re-arm a credential first).
+        f.api.setAccessToken("rotated-token");
         f.controller.pingServer();
         QVERIFY(QTest::qWaitFor([&] { return pingGets == 2; }, 2000));
         QVERIFY(release);
