@@ -29970,6 +29970,115 @@ private slots:
         QCOMPARE(page->property("advancedExpanded").toBool(), true);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
     }
+
+    // Review 4611502344 on #404: an API-generation change (token loss,
+    // account/server switch) drops the in-flight ping callback, so the page
+    // used to sit in loading forever. The bump must settle the ping as a
+    // failed probe and the button must become usable again.
+    void diagnosticsPingSettlesAcrossApiGenerationChange()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        int pingGets=0; bool holdPing=true; std::function<void()> release;
+        WindowOwnStatusFixture fixture;
+        const auto baseHandler=fixture.server.handler;
+        fixture.server.handler=[&](const Request &request)->Response{
+            if(request.target.path()==QStringLiteral("/api/workspace/v1/messenger/streams/")
+               && QUrlQuery(request.target).queryItemValue("page_limit")==QStringLiteral("1")){
+                ++pingGets;
+                Response response{QJsonArray{}};
+                if(holdPing)response.defer=[&](std::function<void()> send){release=std::move(send);};
+                return response;
+            }
+            return baseHandler(request);
+        };
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Diagnostics page teardown",__FILE__,__LINE__);});
+        auto drop=qScopeGuard([&release]{if(release)release();});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        QSignalSpy finished(&controller, &NativeController::pingFinished);
+        click(window, visibleItem("diagnosticsPingButton"));
+        QCOMPARE(page->property("pingState").toString(), QString("loading"));
+        QVERIFY(QTest::qWaitFor([&]{return pingGets==1;},2000));
+        QCOMPARE(finished.count(), 0); // the answer is held by the gate
+        api.clearSession(); // token/account boundary: the bump retires the callback
+        // The page must leave loading on the bump, not wait for a callback
+        // that can never arrive.
+        QCOMPARE(page->property("pingState").toString(), QString("error"));
+        QCOMPARE(finished.count(), 1);
+        QCOMPARE(visibleItem("diagnosticsPingLabel")->property("text").toString(), QString("Unreachable"));
+        holdPing=false; // the next ping answers immediately
+        click(window, visibleItem("diagnosticsPingButton")); // not stuck: usable again
+        QCOMPARE(page->property("pingState").toString(), QString("loading"));
+        QVERIFY(finished.wait(5000));
+        QCOMPARE(finished.count(), 2);
+        QCOMPARE(page->property("pingState").toString(), QString("success"));
+    }
+
+    // Review 4611502346 on #404: starting a ping while the previous ping's
+    // feedback reset is pending let the stale timer clear the new ping's
+    // loading state mid-flight (button re-enabled while still in flight).
+    // A new ping must cancel the pending reset first.
+    void diagnosticsNewPingCancelsPendingFeedbackReset()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        int pingGets=0; bool holdPing=false; std::function<void()> release;
+        WindowOwnStatusFixture fixture;
+        const auto baseHandler=fixture.server.handler;
+        fixture.server.handler=[&](const Request &request)->Response{
+            if(request.target.path()==QStringLiteral("/api/workspace/v1/messenger/streams/")
+               && QUrlQuery(request.target).queryItemValue("page_limit")==QStringLiteral("1")){
+                ++pingGets;
+                Response response{QJsonArray{}};
+                if(holdPing)response.defer=[&](std::function<void()> send){release=std::move(send);};
+                return response;
+            }
+            return baseHandler(request);
+        };
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Diagnostics page teardown",__FILE__,__LINE__);});
+        auto drop=qScopeGuard([&release]{if(release)release();});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        QSignalSpy finished(&controller, &NativeController::pingFinished);
+        // First ping: answered immediately, so the 3 s feedback timer is now
+        // pending while the second ping is dispatched.
+        click(window, visibleItem("diagnosticsPingButton"));
+        QVERIFY(finished.wait(5000));
+        QCOMPARE(page->property("pingState").toString(), QString("success"));
+        holdPing=true;
+        click(window, visibleItem("diagnosticsPingButton")); // click during feedback
+        QCOMPARE(page->property("pingState").toString(), QString("loading"));
+        QVERIFY(QTest::qWaitFor([&]{return pingGets==2;},2000));
+        // Wait out the first ping's reset deadline (3 s from its answer).
+        // The stale timer must not have settled the second ping early.
+        QTest::qWait(page->property("pingFeedbackMs").toInt()+400);
+        QCOMPARE(page->property("pingState").toString(), QString("loading"));
+        QCOMPARE(finished.count(), 1);
+        release(); // the second ping lands now
+        QVERIFY(finished.wait(5000));
+        QCOMPARE(page->property("pingState").toString(), QString("success"));
+    }
 };
 
 
