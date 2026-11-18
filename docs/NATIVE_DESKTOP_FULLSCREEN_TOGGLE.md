@@ -74,16 +74,23 @@ above. `attachWindow` additionally installs an event filter on the window:
   throughout a toggle. The gate ends when the window has sat in the state
   the toggle asked for for a settle interval (a 1.5 s cap backstops a WM
   that never settles), and either release re-captures the live window
-  state, so a legitimate move or restore made right after the transition
-  is persisted instead of dropped. Re-capture still rejects the transient
-  hop frame: (a) a maximized window's unmaximize at exactly the maximized
-  bounds, (b) on release, a frame that fills the screen, equals the
+  state, so a legitimate move or restore made right after the
+  transition is persisted instead of dropped. Re-capture still rejects the
+  transient hop frame: (a) a maximized window's unmaximize at exactly the
+  maximized bounds, (b) on release, a frame that fills the screen, equals the
   fullscreen snapshot taken when F11 released it, and arrives while that
   restore sequence is in flight, and (c) on enter, any `WindowNoState`
   frame seen while the enter is in flight (from the F11 toggle until the
-  FullScreen state atom is observed or the gate ends): it lacks that atom
-  - the WM may place the fullscreen geometry first - so even a normal
-  window's frame is still the transition, not settled normal bounds.
+  FullScreen state observation arrives): it lacks that atom - the
+  WM may place the fullscreen geometry first - so even a normal
+  window's frame is still the transition, not settled normal bounds. The
+  observation is recorded the moment the state signal lands
+  (`noteFullscreenGateSignal`), never by the gate ending: a WM restore that
+  follows the observation is settled user geometry and recaptures, while the
+  observation also arms the release rule (b) with the fullscreen shape, so a
+  restore frame still wearing that shape is the hop; the gate cap expiring
+  while the atom has not arrived keeps (c) in force rather than clearing it
+  before the release re-capture.
   Size alone may not mark the hop: a
   user-settled normal window may legitimately fill the screen, so a moved
   screen-filling frame is the settled window and recaptures normally.
