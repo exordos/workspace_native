@@ -6475,6 +6475,86 @@ QString NativeController::diagnosticsOverallStatus() const
         diagnosticsLogSummary().recentErrorCount);
 }
 
+// ---- Issue #51: session log viewer modal (docs modal section) -------------
+
+namespace {
+
+QVariantMap sessionLogEntryMap(const workspace::diagnostics::SessionLogEntry &entry)
+{
+    QVariantMap map;
+    map.insert(QStringLiteral("level"), entry.level);
+    map.insert(QStringLiteral("scope"), entry.scope);
+    map.insert(QStringLiteral("message"), entry.message);
+    map.insert(QStringLiteral("timestamp"), entry.timestamp);
+    map.insert(QStringLiteral("runtime"), entry.runtime);
+    if (entry.hasData)
+        map.insert(QStringLiteral("data"), entry.data);
+    return map;
+}
+
+} // namespace
+
+void NativeController::appendSessionLog(const QString &level, const QString &scope,
+    const QString &message, const QVariantMap &data)
+{
+    m_sessionLog.append(level, scope, message, data);
+}
+
+QVariantList NativeController::diagnosticsSessionLogEntries() const
+{
+    QVariantList out;
+    const auto entries = m_sessionLog.entries();
+    for (const auto &entry : entries)
+        out.append(sessionLogEntryMap(entry));
+    return out;
+}
+
+QVariantList NativeController::diagnosticsSessionLogsFiltered(const QString &levelFilter,
+    const QString &sourceFilter, const QString &scopeFilter,
+    const QString &runtimeFilter, const QString &searchQuery) const
+{
+    QVariantList out;
+    const auto entries = workspace::diagnostics::filterSessionLogEntries(
+        m_sessionLog.entries(), levelFilter, sourceFilter, scopeFilter,
+        runtimeFilter, searchQuery);
+    for (const auto &entry : entries)
+        out.append(sessionLogEntryMap(entry));
+    return out;
+}
+
+void NativeController::clearSessionLog()
+{
+    m_sessionLog.clear();
+}
+
+QString NativeController::diagnosticsLogsExportFilename() const
+{
+    return workspace::diagnostics::buildLogsExportFilename(QDateTime::currentMSecsSinceEpoch());
+}
+
+QString NativeController::diagnosticsLogsExportJson() const
+{
+    const auto entries = m_sessionLog.entries();
+    if (entries.isEmpty())
+        return QString();
+    return workspace::diagnostics::serializeLogsForExport(entries);
+}
+
+bool NativeController::exportSessionLog(const QString &target) const
+{
+    // logs-export.lib.ts downloadLogsAsFile: empty history exports nothing.
+    const auto json = diagnosticsLogsExportJson();
+    if (json.isEmpty())
+        return false;
+    auto path = target;
+    if (path.startsWith(QLatin1String("file://")))
+        path = QUrl(path).toLocalFile();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    return file.write(json.toUtf8()) == json.toUtf8().size();
+}
+
 void NativeController::pingServer()
 {
     // The reference probe (network-transport-probe.lib.ts) is a dead stub
@@ -8789,6 +8869,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     : QObject(parent), m_api(api), m_session(session)
 {
     m_mediaViewer = new MediaViewerModel(this, this);
+    // Issue #51: the log viewer modal subscribes to the ring buffer like the
+    // reference subscribeLogHistory (logger.ts), so forward every change.
+    connect(&m_sessionLog, &workspace::diagnostics::SessionLogBuffer::entriesChanged,
+        this, &NativeController::sessionLogChanged);
     // Issue #83: the folder-scoped sidebar projection follows the catalog too;
     // one notification path keeps QML bindings single-sourced.
     connect(this, &NativeController::streamsChanged, this, [this] {
@@ -10204,6 +10288,18 @@ void NativeController::useRealtime(RealtimeClient *client)
         // diagnostics Connection card (connection.reconnectAttempt).
         if (state == QLatin1String("retrying"))
             ++m_realtimeReconnectAttempts;
+        // Issue #51: real connection-health transitions feed the session log
+        // (reference scope "connection-health", connection-health logger).
+        if (state == QLatin1String("live"))
+            m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
+                QStringLiteral("Realtime connection live"));
+        else if (state == QLatin1String("retrying"))
+            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+                QStringLiteral("Realtime reconnect attempt %1")
+                    .arg(m_realtimeReconnectAttempts));
+        else if (state != QLatin1String("connecting") && state != QLatin1String("catching_up"))
+            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+                QStringLiteral("Realtime connection state: %1").arg(state));
         const bool previous = m_syncBlocked;
         m_syncState = state;
         if (state == "live") {
@@ -10234,6 +10330,9 @@ void NativeController::useRealtime(RealtimeClient *client)
         if (applyRealtimeEvent(event)) {
             client->acknowledge(event.value("uuid").toString());
         } else {
+            // Issue #51: a dropped live update is a real error worth a log row.
+            m_sessionLog.append(QStringLiteral("error"), QStringLiteral("realtime"),
+                QStringLiteral("A live update could not be applied; resynchronizing"));
             report(tr("A live update could not be applied. Reloading the current state."));
             client->resynchronize();
         }
@@ -10256,6 +10355,16 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
             if (result.status > 0)
                 self->recordApiLatency(QString::fromUtf8(method) + QLatin1Char(' ') + path,
                     QDateTime::currentMSecsSinceEpoch() - started);
+            // Issue #51: answered HTTP failures land in the session log
+            // (reference logApiCall scope "api"); 4xx warn, 5xx error.
+            if (result.status >= 400)
+                self->m_sessionLog.append(
+                    result.status >= 500 ? QStringLiteral("error") : QStringLiteral("warn"),
+                    QStringLiteral("api"),
+                    QStringLiteral("API request failed: %1 %2 (status %3)")
+                        .arg(QString::fromUtf8(method), path).arg(result.status),
+                    QVariantMap{{QStringLiteral("method"), QString::fromUtf8(method)},
+                        {QStringLiteral("path"), path}, {QStringLiteral("status"), result.status}});
             callback(result);
         }
     });
@@ -14335,10 +14444,21 @@ void NativeController::observeTransport(const ApiResult &result)
 {
     bool changed = false;
     if (result.transportFailed) {
-        if (!m_transportOffline) { m_transportOffline = true; changed = true; }
+        if (!m_transportOffline) {
+            m_transportOffline = true;
+            changed = true;
+            // Issue #51: transport flips are real connection-health events.
+            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+                QStringLiteral("Network transport offline"));
+        }
     } else if (result.status > 0) {
         // Any HTTP response proves the server is reachable again.
-        if (m_transportOffline) { m_transportOffline = false; changed = true; }
+        if (m_transportOffline) {
+            m_transportOffline = false;
+            changed = true;
+            m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
+                QStringLiteral("Network transport back online"));
+        }
         if (result.status == 429) {
             // The reference keeps the rate-limit countdown running until it
             // expires (connection-health retryAfterMs); a fresh 429 extends
