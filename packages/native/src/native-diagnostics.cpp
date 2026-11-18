@@ -1,9 +1,18 @@
 #include "native-diagnostics.h"
 
+#include <QCoreApplication>
+#include <QFile>
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSet>
 #include <QTimeZone>
+
+#include <optional>
+#include <algorithm>
+
+#if defined(Q_OS_LINUX)
+#  include <unistd.h> // sysconf(_SC_CLK_TCK) for the memory provider CPU math
+#endif
 
 // The diagnostics collector core up top is header-only pure math (see the
 // header); this translation unit holds the issue #51 session-log code: the
@@ -247,6 +256,152 @@ void SessionLogBuffer::clear()
     }
     m_entries.clear();
     emit entriesChanged();
+}
+
+} // namespace workspace::diagnostics
+
+namespace workspace::diagnostics {
+
+// ---------------------------------------------------------------------
+// Issue #52: NativeMemoryDiagnostics - the memory panel provider
+// (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel" section). The
+// dataset mirrors the Electron diagnostics:getMemorySnapshot shape that feeds
+// the reference cards (workspace_ui diagnostics-memory.lib.ts:15-40 ->
+// logs-page-memory.ui.tsx:96-197): working set / peak / CPU per process,
+// system total/free/available and capability flags. Procfs stays gated on
+// Q_OS_LINUX exactly like NativeLogging::memorySnapshot().
+// ---------------------------------------------------------------------
+
+namespace {
+
+QByteArray memoryReadProc(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+// Parses "Key:   <value> kB" lines of /proc/<pid>/status and /proc/meminfo.
+// Returns 0 when the key is missing or malformed (the unavailable fallback).
+qint64 memoryProcKb(const QByteArray &contents, const QByteArray &key)
+{
+    const QByteArray prefix = key + ':';
+    for (const QByteArray &line : contents.split('\n')) {
+        if (!line.startsWith(prefix))
+            continue;
+        const QByteArray value = line.mid(prefix.size()).simplified().split(' ').first();
+        bool ok = false;
+        const qint64 parsed = value.toLongLong(&ok);
+        if (ok && parsed >= 0)
+            return parsed;
+    }
+    return 0;
+}
+
+#if defined(Q_OS_LINUX)
+// Cumulative CPU percent since process start - the same semantics as
+// Chromium PercentCPUUsage, which is what the Electron IPC reports
+// (declared dataset deviation note in the design doc). Fields after the
+// last ')': utime is token 11, stime 12, starttime 19.
+std::optional<double> memoryCpuPercent(const QString &procRoot)
+{
+    const QByteArray stat = memoryReadProc(procRoot + QStringLiteral("/self/stat"));
+    const int close = stat.lastIndexOf(')');
+    if (close < 0)
+        return std::nullopt;
+    const QList<QByteArray> fields = stat.mid(close + 1).simplified().split(' ');
+    if (fields.size() < 20)
+        return std::nullopt;
+    bool okUser = false;
+    bool okSystem = false;
+    bool okStart = false;
+    const qint64 userTicks = fields.at(11).toLongLong(&okUser);
+    const qint64 systemTicks = fields.at(12).toLongLong(&okSystem);
+    const qint64 startTicks = fields.at(19).toLongLong(&okStart);
+    const QByteArray uptime = memoryReadProc(procRoot + QStringLiteral("/uptime"))
+                                  .simplified().split(' ').first();
+    bool okUptime = false;
+    const double uptimeSeconds = uptime.toDouble(&okUptime);
+    const long clkRaw = sysconf(_SC_CLK_TCK);
+    const double clkTck = clkRaw > 0 ? double(clkRaw) : 100.0;
+    if (!okUser || !okSystem || !okStart || !okUptime || uptimeSeconds <= 0)
+        return std::nullopt;
+    const double processUptimeSeconds = uptimeSeconds - double(startTicks) / clkTck;
+    if (processUptimeSeconds <= 0)
+        return std::nullopt;
+    const double percent = 100.0 * double(userTicks + systemTicks) / clkTck
+        / processUptimeSeconds;
+    return percent > 0 ? percent : 0.0;
+}
+#endif
+
+// JavaScript Date.toISOString() equivalent: UTC with milliseconds, Z suffix
+// (the same stamp contract as the accepted NativeLogging snapshot).
+QString memoryIsoTimestampNow()
+{
+    return QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyy-MM-ddTHH:mm:ss.zzz"))
+        + QLatin1Char('Z');
+}
+
+} // namespace
+
+void NativeMemoryDiagnostics::setProcRoot(QString procRoot)
+{
+    m_procRoot = std::move(procRoot);
+    m_peakWorkingSetKb = 0; // a new root starts its own peak history
+}
+
+QVariantMap NativeMemoryDiagnostics::snapshot() const
+{
+    qint64 rssKb = 0;
+    qint64 totalKb = 0;
+    qint64 freeKb = 0;
+    qint64 availableKb = 0;
+    QVariantList processes;
+#if defined(Q_OS_LINUX)
+    const QByteArray status = memoryReadProc(m_procRoot + QStringLiteral("/self/status"));
+    rssKb = memoryProcKb(status, "VmRSS");
+    const qint64 peakKb = memoryProcKb(status, "VmHWM");
+    const QByteArray meminfo = memoryReadProc(m_procRoot + QStringLiteral("/meminfo"));
+    totalKb = memoryProcKb(meminfo, "MemTotal");
+    freeKb = memoryProcKb(meminfo, "MemFree");
+    availableKb = memoryProcKb(meminfo, "MemAvailable");
+    // Monotonic peak: kernel VmHWM plus the cross-poll clamp, so a regressing
+    // fixture peak can never lower the reported value.
+    m_peakWorkingSetKb = qMax(m_peakWorkingSetKb, qMax(peakKb, rssKb));
+    if (rssKb > 0) {
+        QVariantMap self;
+        self.insert(QStringLiteral("type"), QStringLiteral("Main"));
+        self.insert(QStringLiteral("pid"), QCoreApplication::applicationPid());
+        self.insert(QStringLiteral("workingSetKb"), rssKb);
+        self.insert(QStringLiteral("peakWorkingSetKb"), m_peakWorkingSetKb);
+        const auto cpu = memoryCpuPercent(m_procRoot);
+        self.insert(QStringLiteral("cpuPercent"),
+            cpu.has_value() ? QVariant(*cpu) : QVariant());
+        processes.append(self);
+    }
+#endif
+    QVariantMap app;
+    app.insert(QStringLiteral("workingSetKb"), rssKb);
+    app.insert(QStringLiteral("peakWorkingSetKb"), m_peakWorkingSetKb);
+    app.insert(QStringLiteral("totalWorkingSetKb"), rssKb);
+    QVariantMap system;
+    system.insert(QStringLiteral("totalKb"), totalKb);
+    system.insert(QStringLiteral("freeKb"), freeKb);
+    system.insert(QStringLiteral("availableKb"), availableKb);
+    QVariantMap capabilities;
+    capabilities.insert(QStringLiteral("processMetricsAvailable"), !processes.isEmpty());
+    capabilities.insert(QStringLiteral("systemMemoryAvailable"),
+        totalKb > 0 && availableKb > 0 && availableKb <= totalKb);
+    QVariantMap snapshot;
+    snapshot.insert(QStringLiteral("collectedAt"), memoryIsoTimestampNow());
+    snapshot.insert(QStringLiteral("runtime"), QStringLiteral("native"));
+    snapshot.insert(QStringLiteral("system"), system);
+    snapshot.insert(QStringLiteral("app"), app);
+    snapshot.insert(QStringLiteral("processes"), processes);
+    snapshot.insert(QStringLiteral("capabilities"), capabilities);
+    return snapshot;
 }
 
 } // namespace workspace::diagnostics

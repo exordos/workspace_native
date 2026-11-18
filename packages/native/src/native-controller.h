@@ -589,6 +589,14 @@ public:
     Q_INVOKABLE QVariantMap diagnosticsSnapshot() const;
     Q_INVOKABLE QString diagnosticsSnapshotJson() const;
     Q_INVOKABLE QString diagnosticsConnectionReportJson() const;
+    // Issue #52: the memory panel poll source (3 s QTimer in the page calls
+    // this while the section is visible). Same provider dataset that fills
+    // the snapshot's memory key (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md,
+    // "Memory panel" section).
+    Q_INVOKABLE QVariantMap diagnosticsMemorySnapshot() const;
+    // Test seam: points the memory provider at a fixture proc root so window
+    // tests drive exact values (mirrors NativeLogging::setProcRoot).
+    void setDiagnosticsMemoryProcRoot(const QString &procRoot);
     Q_INVOKABLE QString diagnosticsOverallStatus() const;
     Q_INVOKABLE void pingServer();
     // Issue #51: the in-memory session log ring buffer feeding the log
@@ -2213,6 +2221,8 @@ private:
     // declare NativeLogging can include this header (QPointer needs the
     // QObject base for its casts); every use casts back locally.
     QPointer<QObject> m_logging;
+    // Issue #52: memory panel provider (procfs-backed, capability flags).
+    workspace::diagnostics::NativeMemoryDiagnostics m_memoryDiagnostics;
     // Issue #51: in-memory session log ring buffer (reference logger.ts),
     // feeding the diagnostics log viewer modal.
     workspace::diagnostics::SessionLogBuffer m_sessionLog{this};

@@ -6436,14 +6436,27 @@ QVariantMap NativeController::diagnosticsSnapshot() const
     snapshot.insert(QStringLiteral("session"), session);
     snapshot.insert(QStringLiteral("workspaceSession"), workspaceSession);
     snapshot.insert(QStringLiteral("notifications"), notifications);
-    snapshot.insert(QStringLiteral("memory"),
-        m_logging ? QVariant(qobject_cast<NativeLogging *>(m_logging.data())->memorySnapshot())
-                  : QVariant());
+    // Issue #52: the memory key is filled by the panel provider regardless of
+    // the file log writer - the reference cards never wait on the logger. The
+    // provider falls back to the unavailable shape when its sources fail.
+    snapshot.insert(QStringLiteral("memory"), QVariant(m_memoryDiagnostics.snapshot()));
     snapshot.insert(QStringLiteral("performance"), performance);
     snapshot.insert(QStringLiteral("cache"), cache);
     snapshot.insert(QStringLiteral("stores"), stores);
     snapshot.insert(QStringLiteral("logs"), logs);
     return snapshot;
+}
+
+QVariantMap NativeController::diagnosticsMemorySnapshot() const
+{
+    // Memory panel poll surface (issue #52): the same NativeMemoryDiagnostics
+    // dataset the snapshot's memory key carries.
+    return m_memoryDiagnostics.snapshot();
+}
+
+void NativeController::setDiagnosticsMemoryProcRoot(const QString &procRoot)
+{
+    m_memoryDiagnostics.setProcRoot(procRoot);
 }
 
 QString NativeController::diagnosticsSnapshotJson() const
