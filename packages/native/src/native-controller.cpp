@@ -10365,6 +10365,23 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
                         .arg(QString::fromUtf8(method), path).arg(result.status),
                     QVariantMap{{QStringLiteral("method"), QString::fromUtf8(method)},
                         {QStringLiteral("path"), path}, {QStringLiteral("status"), result.status}});
+            // Review 4616699148 on #411: a transport failure never answers an
+            // HTTP status, so the branch above skips it and the offline
+            // transition alone hides every request after the first. Mirror
+            // reference loggedFetch: each failed request logs its own api
+            // entry (logger.ts logApiCall "failed"), keyed on the redacted
+            // request identity — the logged path drops any query/fragment so
+            // no inline query secrets reach the ring buffer (the map below
+            // goes through redact() on append, like the reference data).
+            else if (result.transportFailed) {
+                const auto loggedPath = path.section(QLatin1Char('?'), 0, 0).section(QLatin1Char('#'), 0, 0);
+                self->m_sessionLog.append(QStringLiteral("error"), QStringLiteral("api"),
+                    QStringLiteral("API request failed: %1 %2 (transport error)")
+                        .arg(QString::fromUtf8(method), loggedPath),
+                    QVariantMap{{QStringLiteral("method"), QString::fromUtf8(method)},
+                        {QStringLiteral("path"), loggedPath},
+                        {QStringLiteral("error"), result.error}});
+            }
             callback(result);
         }
     });
