@@ -556,6 +556,80 @@ public:
     }
 };
 
+// Favorites self-chat fixture (#70, docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md):
+// the ordinary WindowChannelFixture catalog/topics/history/session handlers
+// plus a "Personal notes" self direct stream (private with direct_user_uuid
+// of the session user, per messenger-self-chat.lib.ts:8-18).
+static const QString windowFavoritesStream = "d0d0d0d0-d0d0-4d0d-8d0d-000000000001";
+static const QString windowFavoritesTopic = "d1d1d1d1-d1d1-4d1d-8d1d-111111111111";
+static const QString windowFavoritesNote = "d2d2d2d2-d2d2-4d2d-8d2d-222222222222";
+static const QString windowFavoritesSent = "d3d3d3d3-d3d3-4d3d-8d3d-333333333333";
+
+static QJsonObject windowSelfChatStream()
+{
+    auto row = windowChannel(windowFavoritesStream, "Personal notes");
+    row["private"] = true;
+    row["direct_user_uuid"] = userId;
+    row["default_topic_uuid"] = windowFavoritesTopic;
+    return row;
+}
+
+static QJsonObject windowSelfChatTopic()
+{
+    auto row = windowChannelTopic(windowFavoritesTopic, windowFavoritesStream, "Personal notes");
+    row["is_default"] = true;
+    return row;
+}
+
+static QJsonObject windowSelfChatNote(const QString &text = QStringLiteral("Personal reminder"),
+    const QString &uuid = windowFavoritesNote)
+{
+    auto row = message(text, uuid, windowFavoritesTopic);
+    row["stream_uuid"] = windowFavoritesStream;
+    return row;
+}
+
+class WindowFavoritesFixture final : public WindowChannelFixture {
+public:
+    bool catalogIncludesSelf = false, createFails = false;
+    int selfPosts = 0;
+    QJsonObject selfPostBody, sentEcho;
+    WindowFavoritesFixture()
+    {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto query = QUrlQuery(request.target);
+            if (path.endsWith("/streams/") && request.method == "POST") {
+                ++selfPosts;
+                selfPostBody = request.body;
+                if (createFails) return {QJsonObject{{"detail", "synthetic refusal"}}, 500, 0, {}};
+                return {windowSelfChatStream(), 201, 0, {}};
+            }
+            if (path.endsWith("/streams/") && request.method == "GET" && catalogIncludesSelf) {
+                auto rows = fallback(request).data.toArray();
+                rows.append(windowSelfChatStream());
+                return {rows, 200, 0, {}};
+            }
+            if (path.endsWith("/stream_topics/")
+                && query.queryItemValue("stream_uuid") == windowFavoritesStream)
+                return {QJsonArray{windowSelfChatTopic()}, 200, 0, {}};
+            if (path.endsWith("/messages/") && request.method == "POST") {
+                sentEcho = windowSelfChatNote(
+                    request.body.value("payload").toObject().value("content").toString(),
+                    windowFavoritesSent);
+                return {sentEcho, 201, 0, {}};
+            }
+            if (path.endsWith("/messages/" + windowFavoritesSent)) return {sentEcho};
+            if (path.endsWith("/messages/")
+                && (query.queryItemValue("topic_uuid") == windowFavoritesTopic
+                    || query.queryItemValue("stream_uuid") == windowFavoritesStream))
+                return {QJsonArray{windowSelfChatNote()}, 200, 0, {}};
+            return fallback(request);
+        };
+    }
+};
+
 // A secret store whose missing entries report NotFound, so the vault can
 // provision its master key on first open (WindowSecrets reports empty
 // values as a successful read, which the vault treats as corruption).
@@ -30079,6 +30153,119 @@ private slots:
         release(); // the second ping lands now
         QVERIFY(finished.wait(5000));
         QCOMPARE(page->property("pingState").toString(), QString("success"));
+    }
+
+    // ---- Favorites self-chat (#70, docs/NATIVE_DESKTOP_FAVORITES_SELF_CHAT.md) ----
+
+    // The enabled Favorites chip opens the "Personal notes" self-chat with
+    // the favorites header presentation, the composer behaves as in a normal
+    // DM, the right drawer is forced closed (chat-page.ui.tsx:40-42), and
+    // the self stream stays out of the ordinary sidebar list
+    // (messenger-sidebar.lib.ts:560,592,616,656).
+    void favoritesChipOpensSelfChatConversation()
+    {
+        WindowFavoritesFixture fixture;
+        fixture.catalogIncludesSelf = true;
+        fixture.sourceScene = true; // startComposerEmojiFixture needs the 3-topic scene
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        // The ordinary sidebar shows the normal channel but never the self
+        // stream; Favorites is its only entry point.
+        QVERIFY(view("stream-" + streamId));
+        QVERIFY(!view("stream-" + windowFavoritesStream));
+        // The right drawer is open first so the favorites mount can force it
+        // closed, exactly like the reference effect on route mount.
+        QMetaObject::invokeMethod(item(window->contentItem(), "nativeRightDrawer"), "toggleChatInfo");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("nativeRightDrawer"), 4000);
+        auto *chip = view("activity-favorites"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QVERIFY(controller.favoritesVisible());
+        // The catalog already carried the self stream: no create request.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.favoritesStatus() == QStringLiteral("ready"), 5000);
+        QCOMPARE(fixture.selfPosts, 0);
+        QCOMPARE(fixture.selfPostBody, QJsonObject{});
+        QCOMPARE(controller.selectedStream(), windowFavoritesStream);
+        QCOMPARE(controller.selectedTopic(), windowFavoritesTopic);
+        // The favorites header replaces the ordinary title...
+        QTRY_VERIFY(view("favoritesConversationHeader"));
+        QCOMPARE(view("favoritesConversationHeader")->property("text").toString(), QString("Favorites"));
+        QVERIFY(!visibleItem("favoritesStateHeader")); // the state page is not shown when ready
+        // ...and the right drawer left with the favorites mount.
+        QTRY_VERIFY_WITH_TIMEOUT(!item(window->contentItem(), "nativeRightDrawer")->isVisible(), 4000);
+        // The self note renders and the composer behaves like a normal DM:
+        // text, send, verified read-back bubble.
+        QTRY_VERIFY(view("message-content-" + windowFavoritesNote));
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer && composer->isVisible() && composer->isEnabled());
+        composer->setProperty("text", "A note written through Favorites.");
+        QTRY_VERIFY_WITH_TIMEOUT(controller.canSend(), 4000);
+        click(window, item(window->contentItem(), "sendButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.selfPostBody == QJsonObject{} && fixture.sentEcho.contains("uuid"), 6000);
+        QTRY_VERIFY_WITH_TIMEOUT(view("message-content-" + windowFavoritesSent), 6000);
+        // The self stream still never appears in the ordinary list, and the
+        // re-clicked chip keeps the ready conversation (no re-route, no POST).
+        QVERIFY(!view("stream-" + windowFavoritesStream));
+        click(window, view("activity-favorites"));
+        QVERIFY(controller.favoritesVisible());
+        QCOMPARE(controller.favoritesStatus(), QStringLiteral("ready"));
+        QCOMPARE(fixture.selfPosts, 0);
+        // Selecting an ordinary stream leaves the favorites presentation.
+        click(window, view("stream-" + streamId));
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.favoritesVisible(), 4000);
+        QVERIFY(controller.selectedStream() == streamId);
+    }
+
+    // A failed ensure renders the bordered error card with Retry
+    // (chat-page.ui.tsx:56-65); Retry re-dispatches the create and recovers.
+    void favoritesEnsureFailureShowsErrorCardAndRetry()
+    {
+        WindowFavoritesFixture fixture;
+        fixture.createFails = true;
+        fixture.sourceScene = true; // startComposerEmojiFixture needs the 3-topic scene
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-favorites"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.favoritesStatus() == QStringLiteral("error"), 6000);
+        QVERIFY(controller.favoritesVisible());
+        // The reference create body (workspace-self-chat.hook.ts:53-60).
+        QCOMPARE(fixture.selfPosts, 1);
+        QCOMPARE(fixture.selfPostBody.value("name").toString(), QStringLiteral("Personal notes"));
+        QCOMPARE(fixture.selfPostBody.value("direct_user_uuid").toString(), userId);
+        // The error card shows the favorites.loadError copy and Retry.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("favoritesErrorCard"), 4000);
+        QVERIFY(!visibleItem("favoritesLoading"));
+        QVERIFY(visibleItem("favoritesErrorText"));
+        QVERIFY(!visibleItem("favoritesConversationHeader")); // conversation stays hidden
+        // Retry re-dispatches (the settled dedup entry is dropped) and recovers.
+        fixture.createFails = false;
+        click(window, view("favoritesRetryButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.favoritesStatus() == QStringLiteral("ready"), 6000);
+        QCOMPARE(fixture.selfPosts, 2);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("favoritesConversationHeader"), 4000);
+        QCOMPARE(controller.selectedStream(), windowFavoritesStream);
+        QCOMPARE(controller.selectedTopic(), windowFavoritesTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-content-" + windowFavoritesNote), 6000);
+        // The freshly created stream also stays out of the ordinary list.
+        QVERIFY(!view("stream-" + windowFavoritesStream));
     }
 };
 

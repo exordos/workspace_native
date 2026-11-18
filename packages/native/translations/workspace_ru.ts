@@ -3,7 +3,8 @@
 <TS version="2.1" language="ru_RU">
     <context>
         <name>NativeController</name>
-        <message>
+            <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
+<message>
             <source>Server address must be a valid HTTPS URL</source>
             <translation>Адрес сервера должен быть корректным HTTPS URL</translation>
         </message>
@@ -1655,6 +1656,7 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+    <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
     <message>
         <source>The authentication code is invalid. Try again.</source>
         <translation>Код подтверждения неверный. Попробуйте ещё раз.</translation>
@@ -4668,5 +4670,12 @@
         <message><source>%1 streams</source><translation>%1 каналов</translation></message>
         <message><source>%1 conversations</source><translation>%1 разговоров</translation></message>
         <message><source>%1 users</source><translation>%1 пользователей</translation></message>
+    </context>
+    <context>
+        <name>NativeFavoritesPage</name>
+        <message><source>Favorites</source><translation>Избранное</translation></message>
+        <message><source>Loading…</source><translation>Загрузка…</translation></message>
+        <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
+        <message><source>Try again</source><translation>Попробовать снова</translation></message>
     </context>
 </TS>
