@@ -30556,6 +30556,89 @@ private slots:
             "detach during the gate persisted the stale maximized flag");
         QCOMPARE(savedWindowBounds(path), normal);
     }
+
+    // #62 round 3 (review thread cid 4609403368): the pending-gate re-capture
+    // in saveWindow also accepted WindowNoState while the WM hop is still in
+    // flight, so a quit/detach save landing mid-hop persisted the transition
+    // geometry and cleared the settled maximized flag. Both cases latch onto
+    // the WindowNoState emission of the documented hop and detach synchronously
+    // inside it - that is exactly the instant a aboutToQuit/detach save races.
+    // Entering fullscreen from maximized: the WM unmaximizes (WindowNoState at
+    // the work-area geometry) before placing fullscreen, so the transient also
+    // fills the screen while the target state has not been reached.
+    void fullscreenEnterMidTransitionSaveKeepsSettledMaximizedState()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 60, available.y() + 40, 880, 620);
+        window.setGeometry(normal);
+        QTest::qWait(700);
+        window.showMaximized();
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        QTest::qWait(700); // settled: normal bounds + maximized=true are on disk
+        QVERIFY(QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
+        QCOMPARE(savedWindowBounds(path), normal);
+        bool savedMidHop = false;
+        const auto conn = connect(&window, &QWindow::windowStateChanged, &preferences,
+            [&preferences, &savedMidHop](Qt::WindowState state) {
+                if (state != Qt::WindowNoState || savedMidHop) return;
+                savedMidHop = true;
+                preferences.attachWindow(nullptr); // the aboutToQuit seam: immediate save
+            });
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(savedMidHop, 5000); // the WM hop must emit WindowNoState
+        disconnect(conn);
+        const QSettings mid(path, QSettings::IniFormat);
+        QVERIFY2(mid.value("window/maximized").toBool(),
+            "the mid-transition save persisted the transient hop and cleared the maximized flag");
+        QCOMPARE(savedWindowBounds(path), normal);
+    }
+
+    // Exiting fullscreen to normal: the state change lands before the WM has
+    // configured the window back to its normal geometry, so a save inside the
+    // WindowNoState emission still sees the fullscreen rectangle. The persisted
+    // normal bounds must stay the settled ones, not the transition rectangle.
+    void fullscreenExitMidTransitionSaveKeepsSavedNormalBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 45, available.y() + 35, 860, 640);
+        window.setGeometry(normal);
+        QTest::qWait(700);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::qWait(700); // let the enter gate settle before starting the exit
+        QVERIFY(savedWindowBounds(path) == normal);
+        bool savedMidHop = false;
+        const auto conn = connect(&window, &QWindow::windowStateChanged, &preferences,
+            [&preferences, &savedMidHop](Qt::WindowState state) {
+                if (state != Qt::WindowNoState || savedMidHop) return;
+                savedMidHop = true;
+                preferences.attachWindow(nullptr); // the aboutToQuit seam: immediate save
+            });
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(savedMidHop, 5000); // the WM hop must emit WindowNoState
+        disconnect(conn);
+        QCOMPARE(savedWindowBounds(path), normal);
+    }
 };
 
 
