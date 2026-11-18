@@ -31306,6 +31306,144 @@ private slots:
         QVERIFY(!exportedText.contains(QStringLiteral("leak-me")));
         QVERIFY(exportedText.contains(QStringLiteral("\n    \"level\""))); // 2-space pretty print
     }
+
+    // Review 4616699176 on #411: at narrow modal widths the fixed-width filter
+    // row overflowed the popup and the controls beyond the edge (reset last)
+    // were unreachable. The reference row is overflow-x-auto
+    // (logs-page-logs.ui.tsx:110-168), so scrolling must bring every control
+    // inside the popup bounds.
+    void diagnosticsLogViewerModalNarrowWidthKeepsFilterControlsReachable()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Narrow filter row teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        // Narrow the window so the popup ends up narrower than the filter row.
+        window->resize(420, 760);
+        QTRY_COMPARE_WITH_TIMEOUT(window->width(), 420, 4000);
+        auto *scroll=visibleItem("logsFilterScroll"); QVERIFY(scroll);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            scroll->property("contentWidth").toReal()>scroll->property("width").toReal(), 4000);
+        // Scroll the row to its end: the controls past the old fixed-width
+        // edge (last select + reset) must land inside the scroll viewport.
+        const auto maxContentX=scroll->property("contentWidth").toReal()-scroll->property("width").toReal();
+        scroll->setProperty("contentX", maxContentX);
+        QTRY_VERIFY_WITH_TIMEOUT(scroll->property("contentX").toReal()>=maxContentX-1, 2000);
+        for (const auto name:{"logsRuntimeFilterSelect","logsResetFiltersButton"}){
+            auto *control=visibleItem(QString::fromLatin1(name)); QVERIFY2(control, name);
+            const auto topLeft=control->mapToItem(scroll, QPointF(0,0));
+            const auto bottomRight=control->mapToItem(scroll, QPointF(control->width(), control->height()));
+            QVERIFY2(topLeft.x()>=-1&&bottomRight.x()<=scroll->property("width").toReal()+1, name);
+            QVERIFY2(topLeft.y()>=-1&&bottomRight.y()<=scroll->property("height").toReal()+1, name);
+        }
+        // Scrolling back to the start keeps the leading search field reachable.
+        scroll->setProperty("contentX", 0);
+        auto *search=visibleItem("logsSearchField"); QVERIFY(search);
+        const auto searchLeft=search->mapToItem(scroll, QPointF(0,0));
+        const auto searchRight=search->mapToItem(scroll, QPointF(search->width(), search->height()));
+        QVERIFY(searchLeft.x()>=-1&&searchRight.x()<=scroll->property("width").toReal()+1);
+    }
+
+    // Review 4616699185 on #411: the data pre elided overflowing JSON at the
+    // row width, so long payloads could not be fully inspected. The reference
+    // pre is overflow-x-auto (logs-page-logs.ui.tsx LogEntryRow): the full
+    // payload must stay laid out and scrollable, selectable like the
+    // browser's pre text.
+    void diagnosticsLogViewerModalLongPayloadRemainsScrollable()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Long payload teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        controller.clearSessionLog();
+        // Long but not base64-shaped: a pure "x"*N run would (correctly) be
+        // redacted by the logger.ts value pattern before it reaches the row.
+        const auto payload = QStringLiteral("detail-value ").repeated(500);
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("api"),
+            QStringLiteral("Long response"), QVariantMap{{QStringLiteral("payload"), payload}});
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsEntryDataPre-0"), 4000);
+        auto *text=visibleItem("logsEntryDataText-0"); QVERIFY(text);
+        // The full payload is laid out (no elision), like the reference pre.
+        QCOMPARE(text->property("text").toString(),
+            QStringLiteral("{\"payload\":\"") + QStringLiteral("detail-value ").repeated(500) + QStringLiteral("\"}"));
+        // Qt::TextElideMode: ElideLeft=0, ElideRight=1, ElideMiddle=2, ElideNone=3.
+        QCOMPARE(text->property("elide").toInt(), int(Qt::ElideNone)); // no elision
+        auto *scroll=visibleItem("logsEntryDataScroll-0"); QVERIFY(scroll);
+        QVERIFY(scroll->property("contentWidth").toReal()>scroll->property("width").toReal());
+        // Scroll to the end: the payload tail becomes visible inside the pre.
+        const auto maxContentX=scroll->property("contentWidth").toReal()-scroll->property("width").toReal();
+        scroll->setProperty("contentX", maxContentX);
+        QTRY_VERIFY_WITH_TIMEOUT(scroll->property("contentX").toReal()>=maxContentX-1, 2000);
+        const auto textRight=text->mapToItem(scroll, QPointF(text->width(),0)).x();
+        QVERIFY2(qAbs(textRight-scroll->property("width").toReal())<=1.0,
+            qPrintable(QStringLiteral("tail x=%1 viewport=%2")
+                .arg(textRight).arg(scroll->property("width").toReal())));
+    }
+
+    // Review 4616699201 on #411: the save handler discarded exportSessionLog's
+    // false result, leaving the user with neither a file nor an error. A
+    // failed export must show an actionable inline error that clears when a
+    // retry with a writable destination succeeds.
+    void diagnosticsLogViewerModalExportFailureShowsActionableError()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Export error teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        controller.clearSessionLog();
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Exportable line"));
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsExportButton"), 4000);
+        auto *saveDialog=window->findChild<QObject*>("diagnosticsLogsSaveDialog"); QVERIFY(saveDialog);
+        // A destination whose parent folder does not exist cannot be written;
+        // drive the save handler exactly as dialog acceptance does.
+        const auto unwritable=directory.filePath("missing-parent/session-logs.json");
+        QVERIFY(saveDialog->setProperty("selectedFile", QUrl::fromLocalFile(unwritable)));
+        QMetaObject::invokeMethod(saveDialog, "accepted");
+        QVERIFY(!QFile::exists(unwritable));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsExportError"), 4000);
+        // Retry with a writable destination: the file lands and the error clears.
+        const auto exportDirectory=directory.filePath("export"); QDir().mkpath(exportDirectory);
+        const auto goodPath=exportDirectory + QStringLiteral("/session-logs.json");
+        QVERIFY(saveDialog->setProperty("selectedFile", QUrl::fromLocalFile(goodPath)));
+        QMetaObject::invokeMethod(saveDialog, "accepted");
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(goodPath), 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("logsExportError"), 4000);
+    }
 };
 
 
