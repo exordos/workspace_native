@@ -215,6 +215,15 @@ private:
     // exactly these bounds as WindowNoState, so matching them marks a
     // transition rather than a settled user change (recaptureLiveWindowState).
     QRect m_maximizedGeometry;
+    // #62 round 4: the fullscreen shape the window wore when F11 released
+    // fullscreen, plus the in-flight flag for the restore sequence that
+    // release starts. A screen-filling WindowNoState counts as the WM hop
+    // only while that restore is in flight and the frame still equals this
+    // snapshot; a user-settled normal window may legitimately fill the
+    // screen, and its moves differ in shape and recapture normally
+    // (recaptureLiveWindowState).
+    QRect m_fullscreenSnapshot;
+    bool m_fullscreenRestoreInFlight = false;
     bool m_windowMaximized = false;
     // #62 round 2: true while a fullscreen transition is in flight. The gate
     // covers the WM's transient unmaximize/restore hop so it never reaches

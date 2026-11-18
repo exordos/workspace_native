@@ -792,6 +792,15 @@ void NativePreferences::toggleWindowFullscreen()
     m_fullscreenPending = true;
     m_fullscreenAwaitingExit = exiting;
     m_fullscreenExitMaximized = exiting && m_windowMaximized;
+    // #62 round 4 (review on the round-3 size guard): the release hop arrives
+    // as WindowNoState still wearing the fullscreen shape. Snapshot that shape
+    // now - the window is fullscreen at exactly this moment - and mark the
+    // release restore in flight; recaptureLiveWindowState treats a
+    // screen-filling frame as the hop only while that flag is set and the
+    // frame equals the snapshot. A settled user window that happens to fill
+    // the screen moves to a different shape and stays legitimate.
+    m_fullscreenRestoreInFlight = exiting;
+    m_fullscreenSnapshot = exiting ? m_window->geometry() : QRect();
     m_fullscreenGateSettle.stop();
     m_fullscreenGateCap.start();
     if (exiting) {
@@ -848,24 +857,44 @@ void NativePreferences::recaptureLiveWindowState()
         m_windowMaximized = true;
         return;
     }
+    if (state == Qt::WindowFullScreen) {
+        // #62 round 4: keep the release snapshot fresh while the window is
+        // actually fullscreen; the release hop frame equals this shape.
+        m_fullscreenSnapshot = m_window->geometry();
+        return;
+    }
     if (state != Qt::WindowNoState) return;
-    // #62 round 3 (review cid 4609403368): WindowNoState only describes a
-    // settled window when the window is not still wearing a transition
-    // shape. The WM hop passes through NoState in two shapes: entering
-    // fullscreen the WM unmaximizes onto the very bounds the window had
-    // while maximized, and exiting the state change lands while the window
-    // still fills the screen, before the restore configure arrives.
-    // Mirroring the reference getNormalBounds rule, neither may enter the
-    // saved normal geometry or clear the maximized flag. A settled user
-    // move or restore has its own, smaller geometry, so it is still
-    // captured exactly as before.
+    // #62 round 3 (review cid 4609403368) + round 4 (review on its size
+    // guard): WindowNoState only describes a settled window when the window
+    // is not still wearing a transition shape. The WM hop passes through
+    // NoState in two shapes: entering fullscreen the WM unmaximizes onto the
+    // very bounds the window had while maximized, and on release the state
+    // change lands while the window still fills the screen, before the
+    // restore configure arrives. Mirroring the reference getNormalBounds
+    // rule, neither may enter the saved normal geometry or clear the
+    // maximized flag - but a user-settled normal window may legitimately
+    // fill the screen too, so size alone may not mark the hop. It is the hop
+    // only while the release restore sequence is in flight AND the frame
+    // still equals the fullscreen snapshot; a moved screen-filling frame is
+    // the settled window, leaves the restore behind, and recaptures like
+    // any other user change.
     const auto geometry = m_window->geometry();
     if (m_windowMaximized && m_maximizedGeometry.isValid() && geometry == m_maximizedGeometry)
         return;
     const auto *screen = m_window->screen();
-    if (screen && geometry.width() >= screen->geometry().width()
-        && geometry.height() >= screen->availableGeometry().height())
-        return;
+    const bool screenFilling = screen
+        && geometry.width() >= screen->geometry().width()
+        && geometry.height() >= screen->availableGeometry().height();
+    if (screenFilling) {
+        // Release hop: still wearing the fullscreen snapshot while that
+        // restore is in flight. Enter hop: a maximized window the WM is
+        // unmaximizing onto the work area inside the enter gate.
+        if (m_fullscreenRestoreInFlight && geometry == m_fullscreenSnapshot)
+            return;
+        if (m_windowMaximized && m_fullscreenPending && !m_fullscreenAwaitingExit)
+            return;
+    }
+    m_fullscreenRestoreInFlight = false;
     if (geometry.width() >= 700 && geometry.height() >= 600) {
         m_windowMaximized = false;
         m_normalGeometry = geometry;
