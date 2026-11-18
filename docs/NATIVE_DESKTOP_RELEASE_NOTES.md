@@ -1,3 +1,26 @@
+# Workspace Native 0.35.0 - Linux development preview
+
+The sign-in wizard picks its workspace like the reference, the chat list
+honors the reference layout settings, and a message link to an unloaded
+message shows the reference transition instead of a blank wait:
+
+- The login project step is a real dropdown: the organization suffix joins
+  the project name, the em-dash placeholder matches the reference form, and
+  a long project list scrolls inside the popup. A profile without any visible
+  project gets the blocking notice before the wizard proceeds, and a deep
+  link that names a specific project is enforced against the picked one.
+- The chat list follows the two reference layout settings persisted with the
+  session: compact density tightens the row ladder to the measured
+  reference geometry and drops the preview line, timestamp and avatar, while
+  the open-latest-topic click mode sends the row body to the last message
+  topic and keeps the avatar as its own stream link named `General Chat: <title>` for keyboards and screen readers.
+- A message link for a message outside the loaded window shows the reference
+  skeleton preview zones while the anchor resolves - static under the
+  platform reduced-motion setting - and a failed resolution lands an in-list
+  alert whose Retry re-issues the fetch.
+
+---
+
 # Workspace Native 0.34.0 - Linux development preview
 
 The sidebar chat list now accounts for every catalog state and the Activity
