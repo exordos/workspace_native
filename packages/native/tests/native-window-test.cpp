@@ -30480,6 +30480,82 @@ private slots:
         QTest::qWait(2100); // outlast the gate timer and the save debounce
         QVERIFY(!QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
     }
+
+    // #62 round 2 (review thread cid 4607588851): an immediate save - the
+    // aboutToQuit connection or an attachWindow(nullptr) detach - used to
+    // persist the pre-transition geometry because re-capture only happened
+    // on gate release. Both paths run the same saveWindow slot (saveWindow
+    // is private, so the detach is the public seam onto it), so detaching
+    // while the gate is open exercises exactly the quit-time defect.
+    void fullscreenExitDetachDuringGatePersistsUserMoveMadeDuringTheGate()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 40, available.y() + 30, 900, 650);
+        window.setGeometry(normal);
+        QTest::qWait(700); // outlast the 350 ms save debounce
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        // The user moves the window the moment it is back, while the gate
+        // is still open: every geometry event the move emits re-arms the
+        // settle timer and the transition target is already satisfied, so
+        // the detach lands before the gate can release on its own.
+        const QRect moved(available.x() + 160, available.y() + 90, 800, 700);
+        window.setGeometry(moved);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), moved, 5000);
+        preferences.attachWindow(nullptr); // quit-style immediate save
+        QCOMPARE(savedWindowBounds(path), moved);
+    }
+
+    void fullscreenExitFromMaximizedDetachDuringGatePersistsUserRestore()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 60, available.y() + 40, 880, 620);
+        window.setGeometry(normal);
+        QTest::qWait(700);
+        window.showMaximized();
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        QTest::qWait(700);
+        QVERIFY(QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        // The user un-maximizes right after the fullscreen exit, while the
+        // gate is open (its target was Maximized, so these signals only hold
+        // the gate open). The detach save must persist maximized=false
+        // instead of the pre-fullscreen maximized flag.
+        window.showNormal();
+        QTRY_VERIFY_WITH_TIMEOUT(window.windowState() != Qt::WindowMaximized, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        preferences.attachWindow(nullptr); // quit-style immediate save
+        const QSettings saved(path, QSettings::IniFormat);
+        QVERIFY2(!saved.value("window/maximized").toBool(),
+            "detach during the gate persisted the stale maximized flag");
+        QCOMPARE(savedWindowBounds(path), normal);
+    }
 };
 
 
