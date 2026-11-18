@@ -30827,6 +30827,261 @@ private slots:
         QVERIFY2(savedWindowBounds(path) == normal,
             "the gate-cap release persisted the fullscreen transition frame as the normal bounds");
     }
+    // ---- Issue #84: folder rail CRUD (docs/NATIVE_DESKTOP_FOLDERS.md) ----
+
+    // The form-modal contract measured from folder-form-modal.ui.tsx: focus
+    // in the name field on open, preset 0 selected, submit blocked until the
+    // name is non-empty, swatch 5 repaints the preview chip, Enter submits,
+    // and reopening create resets both fields.
+    void folderRailCreateModalFollowsTheFormContract()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString createdUuid = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        MockServer server;
+        QJsonArray posts; int folderGets = 0;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messenger/folders/")) {
+                posts.append(request.body);
+                return {QJsonObject{{"uuid", createdUuid},
+                    {"title", request.body.value("title").toString()},
+                    {"background_color_value", request.body.value("background_color_value")}}};
+            }
+            if (path.endsWith("/messenger/folders/")) {
+                ++folderGets;
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0x2563eb}}}};
+            }
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folder form teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+folderFocus), 5000);
+        const auto swatch=[&](int index){ return window->findChild<QQuickItem*>(QString("folderSwatch-%1").arg(index)); };
+        // The add button opens the modal with focus in the name field and
+        // preset 0 selected (folder-form-modal reset contract).
+        click(window,visibleItem("folderAddButton"));
+        auto *dialog=window->findChild<QObject*>("folderFormDialog"); QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->property("visible").toBool(),2000);
+        auto *nameField=visibleItem("folderNameField"); QVERIFY(nameField);
+        QTRY_VERIFY_WITH_TIMEOUT(nameField->property("activeFocus").toBool(),2000);
+        QVERIFY(swatch(0) && swatch(0)->property("selected").toBool());
+        for(int index=1; index<8; ++index) QVERIFY(!swatch(index)->property("selected").toBool());
+        auto *submit=visibleItem("folderFormSubmit"); QVERIFY(submit);
+        QVERIFY(!submit->isEnabled());
+        auto *chip=visibleItem("folderPreviewChip"); QVERIFY(chip);
+        QCOMPARE(visibleItem("folderPreviewText")->property("text").toString(),QStringLiteral("Preview"));
+        // An empty name keeps submit blocked; "QA" unblocks it (guard.nonEmpty).
+        nameField->forceActiveFocus();
+        QInputMethodEvent typed; typed.setCommitString("QA");
+        QCoreApplication::sendEvent(nameField, &typed);
+        QTRY_VERIFY_WITH_TIMEOUT(submit->isEnabled(),2000);
+        QCOMPARE(nameField->property("text").toString(),QStringLiteral("QA"));
+        // Swatch 5 takes selection and repaints the preview chip in its hue.
+        click(window,swatch(5));
+        QVERIFY(swatch(5)->property("selected").toBool());
+        const QColor after=chip->property("color").value<QColor>();
+        QCOMPARE(after.name(QColor::HexRgb),QString("#dc2626"));
+        QCOMPARE(visibleItem("folderPreviewText")->property("text").toString(),QStringLiteral("QA"));
+        // Enter submits the create flow (TextField onAccepted).
+        nameField->forceActiveFocus();
+        QTest::keyClick(window,Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(),3000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+createdUuid),3000);
+        QCOMPARE(posts.size(),1);
+        const auto body=posts.first().toObject();
+        QCOMPARE(body.value("title").toString(),QStringLiteral("QA"));
+        QCOMPARE(body.value("background_color_value").toVariant().toString(),QStringLiteral("4292617766"));
+        QCOMPARE(folderGets,1); // incremental append, no refetch
+        // Reopening create resets both fields (reference reset-on-close).
+        click(window,visibleItem("folderAddButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->property("visible").toBool(),2000);
+        QCOMPARE(nameField->property("text").toString(),QString());
+        QVERIFY(swatch(0)->property("selected").toBool());
+        QVERIFY(!submit->isEnabled());
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(),2000);
+    }
+
+    // The rename and delete flows end to end over the context menu: the edit
+    // modal prefills name + color and blocks Save until something changes;
+    // the delete dialog shows the reference wording and removes the rail
+    // row after confirm without a refetch.
+    void folderRailContextMenuRenamesAndDeletesCustomFolders()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        MockServer server;
+        QJsonArray puts; QStringList deletes; int folderGets = 0;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/"+folderFocus)) {
+                puts.append(request.body);
+                return {QJsonObject{{"uuid",folderFocus},
+                    {"title",request.body.value("title").toString()},{"system_type","created"},
+                    {"unread_count",0},{"background_color_value",request.body.value("background_color_value")}}};
+            }
+            if (request.method == "DELETE" && path.endsWith("/messenger/folders/"+folderFocus)) {
+                deletes.append(path); return {QJsonObject{}};
+            }
+            if (path.endsWith("/messenger/folders/")) {
+                ++folderGets;
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0x2563eb}}}};
+            }
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folder rename/delete teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+folderFocus), 5000);
+        QVERIFY(controller.folders().size()==4); // all + Focus + synthesized pair
+        const auto rightClick=[&](const QString &objectName){
+            auto *cell=visibleItem(objectName); QVERIFY(cell);
+            const auto point=cell->mapToScene(QPointF(cell->width()/2,cell->height()/2));
+            QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point.toPoint());
+        };
+        rightClick("folder-"+folderFocus);
+        auto *renameAction=visibleItem("folderMenuRename"); QVERIFY(renameAction);
+        QVERIFY(renameAction->property("enabled").toBool());
+        click(window,renameAction);
+        auto *dialog=window->findChild<QObject*>("folderFormDialog"); QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->property("visible").toBool(),2000);
+        auto *nameField=visibleItem("folderNameField"); QVERIFY(nameField);
+        auto *submit=visibleItem("folderFormSubmit"); QVERIFY(submit);
+        auto *swatch0=window->findChild<QQuickItem*>("folderSwatch-0"); QVERIFY(swatch0);
+        // Edit mode prefills the name and the matching preset color, and the
+        // Save button stays disabled until something actually changes.
+        QTRY_VERIFY_WITH_TIMEOUT(nameField->property("text").toString()==QStringLiteral("Focus"),2000);
+        QVERIFY(swatch0->property("selected").toBool());
+        QVERIFY(!submit->isEnabled());
+        nameField->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent renamed; renamed.setCommitString("Renamed");
+        QCoreApplication::sendEvent(nameField, &renamed);
+        QTRY_VERIFY_WITH_TIMEOUT(submit->isEnabled(),2000);
+        click(window,submit);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(),3000);
+        QTRY_COMPARE_WITH_TIMEOUT(puts.size(),1,3000);
+        QCOMPARE(puts.first().toObject().value("title").toString(),QStringLiteral("Renamed"));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.folders().last().toMap().value("title").toString(),
+            QStringLiteral("Renamed"),3000);
+        // The delete confirmation carries the reference text with the label.
+        rightClick("folder-"+folderFocus);
+        auto *deleteAction=visibleItem("folderMenuDelete"); QVERIFY(deleteAction);
+        QVERIFY(deleteAction->property("enabled").toBool());
+        click(window,deleteAction);
+        auto *confirmDialog=window->findChild<QObject*>("folderDeleteDialog"); QVERIFY(confirmDialog);
+        QTRY_VERIFY_WITH_TIMEOUT(confirmDialog->property("visible").toBool(),2000);
+        auto *description=window->findChild<QObject*>("folderDeleteDescription"); QVERIFY(description);
+        QCOMPARE(description->property("text").toString(),
+            QStringLiteral("Are you sure you want to delete \"Renamed\"?"));
+        click(window,visibleItem("folderDeleteConfirm"));
+        QTRY_VERIFY_WITH_TIMEOUT(!confirmDialog->property("visible").toBool(),3000);
+        QTRY_VERIFY_WITH_TIMEOUT(deletes.size()==1,3000);
+        QVERIFY(deletes.first().endsWith("/folders/"+folderFocus));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.folders().size(),3,3000);
+        QVERIFY(!visibleItem("folder-"+folderFocus));
+        QCOMPARE(folderGets,1); // no refetch after any mutation
+    }
+
+    // folder-rail-context-menu.lib.ts gating: rename and delete are disabled
+    // for the system slots and enabled for created folders.
+    void folderRailContextMenuKeepsSystemFoldersReadOnly()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0x2563eb}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folder menu gating teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-all") && visibleItem("folder-"+folderFocus), 5000);
+        const auto rightClick=[&](const QString &objectName){
+            auto *cell=visibleItem(objectName); QVERIFY(cell);
+            const auto point=cell->mapToScene(QPointF(cell->width()/2,cell->height()/2));
+            QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point.toPoint());
+        };
+        // All (pinned slot) and Personal (system slot): both actions disabled.
+        rightClick("folder-all");
+        auto *renameAction=visibleItem("folderMenuRename"); QVERIFY(renameAction);
+        auto *deleteAction=visibleItem("folderMenuDelete"); QVERIFY(deleteAction);
+        QTRY_VERIFY_WITH_TIMEOUT(renameAction->property("visible").toBool(),3000);
+        QVERIFY(!renameAction->property("enabled").toBool());
+        QVERIFY(!deleteAction->property("enabled").toBool());
+        rightClick("folder-personal");
+        QVERIFY(!renameAction->property("enabled").toBool());
+        QVERIFY(!deleteAction->property("enabled").toBool());
+        // A created folder gets both actions enabled.
+        rightClick("folder-"+folderFocus);
+        QVERIFY(renameAction->property("enabled").toBool());
+        QVERIFY(deleteAction->property("enabled").toBool());
+        QTest::keyClick(window,Qt::Key_Escape);
+    }
 };
 
 

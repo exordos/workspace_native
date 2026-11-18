@@ -27819,6 +27819,209 @@ private slots:
         QCOMPARE(legacy.controller.folders().first().toMap().value("id").toString(), legacy.customUuid);
     }
 
+    // ---- Issue #84: folder create/rename/delete (docs/NATIVE_DESKTOP_FOLDERS.md) ----
+
+    // handleCreate contract (folder-rail.ui.tsx): POST /folders/ with
+    // {title, background_color_value}; the rail appends the created folder
+    // without a full refetch.
+    void folderCreateSendsContractRequestAndAppendsWithoutRefetch()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto fallback = f.server.handler;
+        const QString createdUuid = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        QJsonArray createdBodies;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messenger/folders/")) {
+                createdBodies.append(request.body);
+                return Response{QJsonObject{{"uuid", createdUuid},
+                    {"title", request.body.value("title").toString()},
+                    {"background_color_value", request.body.value("background_color_value")}}};
+            }
+            return fallback(request);
+        };
+        f.controller.createFolder("QA", 0xff0d9488);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 5, 4000);
+        QCOMPARE(createdBodies.size(), 1);
+        const auto body = createdBodies.first().toObject();
+        QCOMPARE(body.value("title").toString(), QStringLiteral("QA"));
+        // The wire shape is the reference ARGB positive integer.
+        QCOMPARE(body.value("background_color_value").toVariant().toString(), QStringLiteral("4279080072"));
+        const auto row = f.controller.folders().last().toMap();
+        QCOMPARE(row.value("key").toString(), createdUuid);
+        QCOMPARE(row.value("id").toString(), createdUuid);
+        QCOMPARE(row.value("title").toString(), QStringLiteral("QA"));
+        QCOMPARE(row.value("systemType").toString(), QStringLiteral("created"));
+        // Projections carry the RGB part only (folderColorValueToCssHex mask).
+        QCOMPARE(row.value("color").toUInt(), quint32(0x000d9488));
+        // No extra GET /folders/ happened: the append is incremental.
+        int folderGets = 0;
+        for (const auto &request : f.server.requests)
+            if (request.method == "GET" && request.target.path().endsWith("/messenger/folders/")) ++folderGets;
+        QCOMPARE(folderGets, 1);
+        const auto mutation = f.controller.folderMutation();
+        QVERIFY(mutation.value("error").toString().isEmpty());
+        QVERIFY(!mutation.value("pending").toBool());
+    }
+
+    // handleSaveRename contract: PUT /folders/<uuid> with the same body
+    // shape; the row updates in place, selection intact, no refetch.
+    void folderRenameSendsPutAndUpdatesRowInPlace()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb,
+                {folderRailItem(f.streamB)})}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(f.controller.selectedFolder(), f.customUuid);
+        const auto fallback = f.server.handler;
+        QJsonArray putBodies;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/" + f.customUuid)) {
+                putBodies.append(request.body);
+                return Response{QJsonObject{{"uuid", f.customUuid},
+                    {"title", request.body.value("title").toString()},
+                    {"system_type", "created"}, {"unread_count", 0},
+                    {"background_color_value", request.body.value("background_color_value")}}};
+            }
+            return fallback(request);
+        };
+        f.controller.renameFolder(f.customUuid, "Focus 2", 0xffdc2626);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().last().toMap().value("title").toString(),
+            QStringLiteral("Focus 2"), 4000);
+        QCOMPARE(putBodies.size(), 1);
+        const auto body = putBodies.first().toObject();
+        QCOMPARE(body.value("title").toString(), QStringLiteral("Focus 2"));
+        QCOMPARE(body.value("background_color_value").toVariant().toString(), QStringLiteral("4292617766"));
+        const auto row = f.controller.folders().last().toMap();
+        QCOMPARE(row.value("color").toUInt(), quint32(0x00dc2626));
+        QCOMPARE(row.value("streamIds").toStringList(), (QStringList{f.streamB}));
+        // Membership (hence the scoped sidebar) survived the rename.
+        QCOMPARE(f.controller.selectedFolder(), f.customUuid);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{f.streamB}));
+        int folderGets = 0;
+        for (const auto &request : f.server.requests)
+            if (request.method == "GET" && request.target.path().endsWith("/messenger/folders/")) ++folderGets;
+        QCOMPARE(folderGets, 1);
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+    }
+
+    // confirmDelete contract: DELETE /folders/<uuid>; the row disappears and
+    // the effective selection falls back to All without a refetch.
+    void folderDeleteRemovesRowAndFallsBackToAll()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        f.controller.selectFolder(f.customUuid);
+        QCOMPARE(f.controller.selectedFolder(), f.customUuid);
+        const auto fallback = f.server.handler;
+        QStringList deleted;
+        f.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "DELETE" && path.startsWith("/api/workspace/v1/messenger/folders/")
+                && !path.endsWith("/folders/")) {
+                deleted.append(path);
+                return Response{QJsonObject{}};
+            }
+            return fallback(request);
+        };
+        f.controller.deleteFolder(f.customUuid);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        QCOMPARE(deleted.size(), 1);
+        QVERIFY(deleted.first().endsWith("/folders/" + f.customUuid));
+        QCOMPARE(f.controller.selectedFolder(), allChatsFolder);
+        QCOMPARE(sidebarRowIds(f.controller.sidebarStreams()), (QStringList{streamId, f.streamB}));
+        int folderGets = 0;
+        for (const auto &request : f.server.requests)
+            if (request.method == "GET" && request.target.path().endsWith("/messenger/folders/")) ++folderGets;
+        QCOMPARE(folderGets, 1);
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+    }
+
+    // Context-menu gating (folder-rail-context-menu.lib.ts): rename/delete
+    // are disabled for system folders; the controller mirrors the gate and
+    // never issues the request. Failed mutations carry the reference toast
+    // defaults (folder.createFailed / updateFailed / deleteFailed).
+    void folderMutationsGateSystemFoldersAndSurfaceErrors()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(personalFolder, "Personal", "personal", 0, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        f.controller.renameFolder(personalFolder, "Nope", 0xff2563eb);
+        QCOMPARE(f.controller.folderMutation().value("error").toString(),
+            QStringLiteral("Could not update folder"));
+        f.controller.deleteFolder(personalFolder);
+        QCOMPARE(f.controller.folderMutation().value("error").toString(),
+            QStringLiteral("Could not delete folder"));
+        f.controller.renameFolder(QStringLiteral("00000000-dead-dead-dead-deaddeadbeef"), "Ghost", 0);
+        QCOMPARE(f.controller.folderMutation().value("error").toString(),
+            QStringLiteral("Could not update folder"));
+        f.controller.deleteFolder(allChatsFolder);
+        QCOMPARE(f.controller.folderMutation().value("error").toString(),
+            QStringLiteral("Could not delete folder"));
+        for (const auto &request : f.server.requests)
+            QVERIFY(request.method != "PUT" && request.method != "DELETE");
+        // A failing create settles with the reference toast text and adds no row.
+        const auto fallback = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messenger/folders/"))
+                return Response{QJsonObject{{"detail", "no"}}, 500};
+            return fallback(request);
+        };
+        f.controller.createFolder("QA", 0xff2563eb);
+        QTRY_VERIFY_WITH_TIMEOUT(f.controller.folderMutation().value("error").toString()
+            == QStringLiteral("Could not create folder"), 4000);
+        QCOMPARE(f.controller.folders().size(), 3);
+        QVERIFY(!f.controller.folderMutation().value("pending").toBool());
+    }
+
+    // Single-flight: while a mutation is in flight a second one is ignored,
+    // matching the modal's disabled submit and the reference isDeletingFolder
+    // re-entry guard in confirmDelete.
+    void folderMutationsAreSingleFlightUntilSettled()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{folderRailFolder(allChatsFolder, "All chats", "all", 0, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        const auto fallback = f.server.handler;
+        int posts = 0;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messenger/folders/")) {
+                ++posts;
+                Response deferred{QJsonObject{{"uuid", QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")},
+                    {"title", request.body.value("title").toString()}}};
+                deferred.delay = 250;
+                return deferred;
+            }
+            return fallback(request);
+        };
+        f.controller.createFolder("First", 0xff2563eb);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        f.controller.createFolder("Second", 0xff4f46e5); // ignored: one mutation at a time
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("create"));
+        QTRY_VERIFY_WITH_TIMEOUT(!f.controller.folderMutation().value("pending").toBool(), 4000);
+        QCOMPARE(posts, 1);
+        QCOMPARE(f.controller.folders().size(), 4);
+        QCOMPARE(f.controller.folders().last().toMap().value("title").toString(), QStringLiteral("First"));
+    }
+
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
 
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
