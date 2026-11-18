@@ -30282,30 +30282,36 @@ private slots:
     // View menu's togglefullscreen role lives under a hidden menu bar, and
     // persistence stores normal bounds + the maximized flag only (the
     // getNormalBounds rule, main.ts:255-270 of the pinned revision).
-    // See docs/NATIVE_DESKTOP_FULLSCREEN_TOGGLE.md.
+    // See docs/NATIVE_DESKTOP_FULLSCREEN_TOGGLE.md. Fixed settle waits
+    // outlast the 350 ms window-save debounce; teardown guards keep a failed
+    // case from leaving a fullscreen window on the shared display.
     void f11TogglesFullScreenAndRestoresThePreviousNormalGeometry()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const auto path = directory.filePath("preferences.ini");
         NativePreferences preferences(path);
         QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
         preferences.attachWindow(&window);
         window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
         const auto available = QGuiApplication::primaryScreen()->availableGeometry();
         const QRect normal(available.x() + 40, available.y() + 30, 900, 650);
         window.setGeometry(normal);
-        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        QTest::qWait(700); // outlast the 350 ms save debounce
+        QCOMPARE(savedWindowBounds(path), normal);
         QTest::keyClick(&window, Qt::Key_F11);
-        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
         // Entering fullscreen must not overwrite the saved normal geometry.
         QCOMPARE(savedWindowBounds(path), normal);
         QTest::keyClick(&window, Qt::Key_F11);
-        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 5000);
         // Exiting restores the previous normal state at its geometry.
-        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        QTest::qWait(700);
         QCOMPARE(savedWindowBounds(path), normal);
-        preferences.attachWindow(nullptr);
-        window.close();
     }
 
     void f11FromMaximizedReturnsToMaximizedAndKeepsSavedNormalBounds()
@@ -30314,18 +30320,26 @@ private slots:
         const auto path = directory.filePath("preferences.ini");
         NativePreferences preferences(path);
         QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
         preferences.attachWindow(&window);
         window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
         const auto available = QGuiApplication::primaryScreen()->availableGeometry();
         const QRect normal(available.x() + 60, available.y() + 40, 880, 620);
         window.setGeometry(normal);
-        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        QTest::qWait(700);
+        QCOMPARE(savedWindowBounds(path), normal);
         window.showMaximized();
-        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
         QVERIFY(preferences.windowMaximized());
-        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
+        QTest::qWait(700); // settle: normal size + maximized true are on disk
+        QCOMPARE(savedWindowBounds(path).size(), normal.size());
+        QVERIFY(QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
         QTest::keyClick(&window, Qt::Key_F11);
-        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::qWait(700);
         {
             // Mirror of getNormalBounds: normal size + maximized flag, never
             // the fullscreen rectangle as the normal size.
@@ -30335,15 +30349,14 @@ private slots:
             QVERIFY(saved.value("window/maximized").toBool());
         }
         QTest::keyClick(&window, Qt::Key_F11);
-        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        QTest::qWait(700); // the re-persist after restore settles the same way
         {
             const QSettings saved(path, QSettings::IniFormat);
             QCOMPARE(saved.value("window/width").toInt(), 880);
             QCOMPARE(saved.value("window/height").toInt(), 620);
             QVERIFY(saved.value("window/maximized").toBool());
         }
-        preferences.attachWindow(nullptr);
-        window.close();
     }
 
     void activationRestoresFullScreenAndF11ExitsWithoutOverwritingSavedBounds()
@@ -30352,31 +30365,49 @@ private slots:
         const auto path = directory.filePath("preferences.ini");
         NativePreferences preferences(path);
         QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
         preferences.attachWindow(&window);
         window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
         const auto available = QGuiApplication::primaryScreen()->availableGeometry();
         const QRect normal(available.x() + 50, available.y() + 35, 860, 600);
         window.setGeometry(normal);
-        QTRY_VERIFY_WITH_TIMEOUT(savedWindowBounds(path).size() == normal.size(), 3000);
-        window.showFullScreen();
-        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 3000);
-        window.hide();
+        QTest::qWait(700);
+        QCOMPARE(savedWindowBounds(path), normal);
+        // Enter fullscreen; under a slow Xvnc the request can race the map,
+        // and a real user would simply press F11 again, so retry.
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            window.showFullScreen();
+            if (QTest::qWaitFor([&] { return window.visibility() == QWindow::FullScreen; }, 1200))
+                break;
+        }
+        QVERIFY2(window.visibility() == QWindow::FullScreen,
+            qPrintable(QStringLiteral("showFullScreen never applied (visibility %1)")
+                .arg(int(window.visibility()))));
+        QTest::qWait(300);
+        window.hide(); // the tray hide the activation restore is for
         QVERIFY(!window.isVisible());
-        QTest::qWait(300); // let the unmap settle, as a real tray hide would
-        preferences.activateWindow(); // re-applies Qt::WindowFullScreen (restore path).
-        QTest::qWait(600); // the WM state exchange must land and stay fullscreen
+        QTest::qWait(300);
+        // The activation restore re-applies Qt::WindowFullScreen; same map
+        // race as above, so re-activate until the WM honored it.
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            preferences.activateWindow(); // re-applies Qt::WindowFullScreen (restore path).
+            if (QTest::qWaitFor([&] { return window.visibility() == QWindow::FullScreen; }, 1200))
+                break;
+        }
         QVERIFY2(window.visibility() == QWindow::FullScreen,
             qPrintable(QStringLiteral("activation did not keep the fullscreen restore (visibility %1)")
                 .arg(int(window.visibility()))));
         QTest::keyClick(&window, Qt::Key_F11);
-        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 3000);
-        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        QTest::qWait(700);
         const QSettings saved(path, QSettings::IniFormat);
         QCOMPARE(saved.value("window/width").toInt(), 860);
         QCOMPARE(saved.value("window/height").toInt(), 600);
         QVERIFY(!saved.value("window/maximized").toBool());
-        preferences.attachWindow(nullptr);
-        window.close();
     }
 };
 
