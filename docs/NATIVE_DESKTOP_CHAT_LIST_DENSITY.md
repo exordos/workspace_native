@@ -129,7 +129,10 @@ RU `"Общий чат"` (`ru.json:467`).
   - `chatClickAction == "latestTopic"`: the row button click routes to
     `controller.openTopic(previewTopic, stream)` when `previewTopic` is non-empty
     and otherwise `controller.selectStream(stream)` (reference `?? stream.route`);
-    the avatar gets its own click surface that calls `controller.selectStream`
+    the avatar is a separate focusable `ToolButton` action (the reference is a
+    native focusable `<a>`, so keyboard Tab + Space and the accessible Press
+    action must open the stream; PR #396 review round 1) that calls
+    `controller.selectStream`
     and the accessible name `qsTr("General Chat: %1")` (ru catalog:
     `Общий чат: %1`), matching the reference aria-label format.
 
@@ -150,7 +153,7 @@ RU `"Общий чат"` (`ru.json:467`).
 - **D3 - overlay equivalence.** The reference achieves "whole card is a link
   except the avatar" with an `after:absolute inset-0` pseudo overlay on the body
   link. Native rows already handle the whole-card click on the row button; the
-  raised avatar MouseArea reproduces the same hit map without an extra item.
+  raised avatar `ToolButton` reproduces the same hit map without an extra item.
 - **D4 - avatar `title` tooltip.** The reference sets both `aria-label` and the
   HTML `title` attribute on the avatar link. Native ports the accessible name;
   the hover tooltip is not ported (QML hover tooltips for this surface are not

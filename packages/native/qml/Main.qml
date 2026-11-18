@@ -4038,14 +4038,11 @@ ApplicationWindow {
                             objectName: "streamRowLayout-" + streamDelegate.modelData.id
                             spacing: streamDelegate.compactDensity ? 8 : 12
                             Rectangle {
-                                objectName: "streamAvatar-" + streamDelegate.modelData.id
+                                objectName: "streamAvatarFace-" + streamDelegate.modelData.id
                                 // showAvatar: !compact in the general click config and always
                                 // true in latestTopic, where the avatar is the sm size in
                                 // compact density (sidebar-workspace.ui.tsx:417,452,457).
                                 visible: !streamDelegate.compactDensity || streamDelegate.opensLatestTopic
-                                Accessible.role: Accessible.Button
-                                Accessible.name: streamDelegate.opensLatestTopic
-                                    ? qsTr("General Chat: %1").arg(root.streamDisplayName(streamDelegate.modelData)) : ""
                                 implicitWidth: streamDelegate.compactDensity ? 32 : 40
                                 implicitHeight: streamDelegate.compactDensity ? 32 : 40
                                 radius: streamDelegate.compactDensity ? 16 : 20
@@ -4059,6 +4056,7 @@ ApplicationWindow {
                                     && String(streamDelegate.modelData.avatarColor || "").length
                                     ? streamDelegate.modelData.avatarColor : root.colors.bg
                                 border.color: root.colors["border-subtle"]
+                                Accessible.ignored: true
                                 NativeAvatarImage {
                                     id: streamPhoto
                                     anchors.fill: parent
@@ -4086,12 +4084,41 @@ ApplicationWindow {
                                     color: root.colors["text-primary"]
                                     font.pixelSize: 16
                                 }
-                                MouseArea {
-                                    // In latestTopic mode the avatar stays a separate link
-                                    // above the body overlay and opens the stream itself
-                                    // (reference Link to stream.route at z-10, line 494-501).
+                                Rectangle {
+                                    // Keyboard focus ring for the avatar action below, the
+                                    // same pattern as the row button (streamButton shows its
+                                    // focus with a 1 px accent border). A separate ring item
+                                    // so the face's own 1 px border-subtle ring (the photo is
+                                    // inset inside it) is untouched.
                                     anchors.fill: parent
-                                    enabled: streamDelegate.opensLatestTopic
+                                    radius: parent.radius + 1
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: root.colors.accent
+                                    visible: streamAvatarLink.visualFocus
+                                }
+                                ToolButton {
+                                    id: streamAvatarLink
+                                    objectName: "streamAvatar-" + streamDelegate.modelData.id
+                                    // PR #396 review: the avatar action was a Rectangle +
+                                    // MouseArea, which only answered the pointer. The reference
+                                    // renders the avatar as a focusable <a> with title and
+                                    // aria-label `chat.generalChat: title`
+                                    // (sidebar-workspace.ui.tsx:455-462), so the action becomes a
+                                    // transparent AbstractButton raised over the face: focus
+                                    // policy, Space/Enter activation and the accessible Press
+                                    // action come from the control itself (Qt.StrongFocus matches
+                                    // the NativeIconButton idiom, e.g. line 8256). It fills the
+                                    // face, so the avatar geometry (32 px compact sm / 40 px md,
+                                    // 44/60 px rows) is untouched, and left-click still only
+                                    // opens the stream (reference Link to stream.route at z-10,
+                                    // line 494-501); right-click falls through to the row menu.
+                                    anchors.fill: parent
+                                    background: null
+                                    padding: 0
+                                    focusPolicy: Qt.StrongFocus
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: qsTr("General Chat: %1").arg(root.streamDisplayName(streamDelegate.modelData))
                                     onClicked: {
                                         root.controller.closeDrafts();
                                         root.controller.selectStream(streamDelegate.modelData.id);
