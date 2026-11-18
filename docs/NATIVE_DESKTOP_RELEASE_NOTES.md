@@ -1,3 +1,30 @@
+# Workspace Native 0.36.0 - Linux development preview
+
+The profile menu gains the runtime diagnostics page, F11 toggles fullscreen
+like the reference client, and the Favorites rail chip opens the personal
+self-chat:
+
+- Diagnostics opens from the profile menu and renders the reference
+  connection dashboard: the status pill paints healthy green, degraded yellow
+  or offline red from live collected state, nine cards show connection,
+  realtime, cache and memory facts with their measured values, Ping server
+  runs a real round-trip with millisecond feedback and an automatic reset,
+  Copy snapshot lands the JSON report with its two second feedback, and the
+  advanced snapshot block toggles open - all in both locales and modes.
+- F11 toggles window fullscreen exactly like the reference View menu
+  accelerator (which lives under the hidden menu bar): only the normal bounds
+  and the maximized flag are persisted, a user window move or restore made
+  while the window manager settles the transition is recaptured instead of
+  being saved as fullscreen geometry, and detaching during the transition
+  keeps the settled state, never the transient one.
+- The sidebar Favorites chip is enabled and opens the "Personal notes"
+  self-chat with the reference favorites header: the private self stream is
+  found or created lazily per session with in-flight deduplication and retry,
+  the composer behaves as in any direct chat, and the self stream stays out
+  of the ordinary sidebar and folder lists.
+
+---
+
 # Workspace Native 0.35.0 - Linux development preview
 
 The sign-in wizard picks its workspace like the reference, the chat list
