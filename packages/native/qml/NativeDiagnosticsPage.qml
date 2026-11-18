@@ -62,6 +62,9 @@ FocusScope {
     property string logsScopeFilter: "all"
     property string logsRuntimeFilter: "all"
     property string logsSearchQuery: ""
+    // Export feedback state (review 4616699201 on #411): idle | error, the
+    // same inline-state pattern the ping/copy feedback uses on this page.
+    property string logsExportState: "idle"
 
     function refreshLogs() {
         page.logEntries = page.controller.diagnosticsSessionLogEntries();
@@ -777,7 +780,12 @@ FocusScope {
             border.width: 1
         }
 
-        onOpened: page.refreshLogs()
+        onOpened: {
+            // A fresh open starts from a clean slate, including a stale export
+            // error from the previous session of the modal.
+            page.logsExportState = "idle"
+            page.refreshLogs()
+        }
 
         // Popup children live inside the popup's internal content item;
         // the reference layout is reproduced inside an explicit contentItem so
@@ -893,18 +901,30 @@ FocusScope {
 
         // Filter row (logs-page-logs.ui.tsx:110-168): h-8 controls, search +
         // source/level/scope/runtime compact selects (min-w-[110px]) + Reset.
-        Row {
-            id: logsFilterRow
-            objectName: "logsFilterRow"
+        // The reference row is overflow-x-auto (review 4616699176 on #411):
+        // when the popup is narrower than the row the controls stay reachable
+        // through horizontal scrolling instead of clipping past the popup edge.
+        Flickable {
+            id: logsFilterScroll
+            objectName: "logsFilterScroll"
             anchors.top: logsModalHeader.bottom
             anchors.topMargin: 8 // pt-2
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.leftMargin: 12 // p-3
             anchors.rightMargin: 12
-            spacing: 4 // gap-1
-            Accessible.name: qsTr("Search logs")
-            TextField {
+            height: logsFilterRow.implicitHeight
+            contentWidth: logsFilterRow.implicitWidth
+            flickableDirection: Flickable.HorizontalFlick
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+            Row {
+                id: logsFilterRow
+                objectName: "logsFilterRow"
+                spacing: 4 // gap-1
+                Accessible.name: qsTr("Search logs")
+                TextField {
                 id: logsSearchField
                 objectName: "logsSearchField"
                 width: 220 // min-w-context-menu-narrow
@@ -1020,19 +1040,37 @@ FocusScope {
                 buttonLabel: qsTr("Reset filters")
                 onActioned: page.resetLogFilters()
             }
+            }
         }
 
         // Results label "visible of total entries" (text-[11px]).
         Text {
             id: logsResultsLabel
             objectName: "logsResultsLabel"
-            anchors.top: logsFilterRow.bottom
+            anchors.top: logsFilterScroll.bottom
             anchors.topMargin: 6 // gap-1.5
             anchors.left: parent.left
             anchors.leftMargin: 12
             text: qsTr("%1 of %2 entries").arg(page.logsRows.length).arg(page.logEntries.length)
             font.pixelSize: 11
             color: page.colors["text-muted"]
+        }
+
+        // Export failure feedback (review 4616699201 on #411): the save
+        // handler used to discard exportSessionLog's result, so an unwritable
+        // destination left the user without a file or an error. The inline
+        // red line follows the page's existing inline-state pattern (the ping
+        // / copy feedback states) and clears on the next attempt or reopen.
+        Text {
+            id: logsExportErrorText
+            objectName: "logsExportError"
+            visible: page.logsExportState === "error"
+            anchors.top: logsResultsLabel.top
+            anchors.left: logsResultsLabel.right
+            anchors.leftMargin: 8
+            text: qsTr("The logs could not be exported to the selected location. Pick another folder and try again.")
+            font.pixelSize: 11 // text-[11px]
+            color: page.colors["indicator-red"]
         }
 
         // "Recent errors" block (open by default, only when present):
@@ -1175,7 +1213,13 @@ FocusScope {
         fileMode: NativeDialogs.FileDialog.SaveFile
         defaultSuffix: "json"
         nameFilters: ["JSON (*.json)"]
-        onAccepted: page.controller.exportSessionLog(logsSaveDialog.selectedFile)
+        onAccepted: {
+            // Review 4616699201 on #411: the export result must not be
+            // discarded - a failed write shows the inline error line next to
+            // the results label; success clears it again.
+            page.logsExportState = page.controller.exportSessionLog(logsSaveDialog.selectedFile)
+                ? "idle" : "error"
+        }
     }
 
     // One log row (logs-page-logs.ui.tsx:216-245): rounded-md border p-2 with
@@ -1268,8 +1312,10 @@ FocusScope {
                 wrapMode: Text.Wrap
                 color: rowColors["text-primary"]
             }
-            // Optional data pre (JSON.stringify(data)); Qt clips instead of
-            // offering the reference horizontal scrollbar, single-line elide.
+            // Optional data pre (JSON.stringify(data)): overflow-x-auto like
+            // the reference pre (review 4616699185 on #411) - the full payload
+            // stays laid out, horizontally scrollable and selectable instead
+            // of eliding at the row width.
             Rectangle {
                 objectName: "logsEntryDataPre-" + logRow.rowIndex
                 visible: logRow.entry.data !== undefined
@@ -1278,16 +1324,28 @@ FocusScope {
                 radius: 4 // rounded
                 color: rowColors["bg"]
                 clip: true
-                Text {
+                Flickable {
+                    id: logsEntryDataScroll
+                    objectName: "logsEntryDataScroll-" + logRow.rowIndex
                     anchors.fill: parent
                     anchors.leftMargin: 6 // p-1.5
                     anchors.rightMargin: 6
-                    verticalAlignment: Text.AlignVCenter
-                    text: logRow.entry.data === undefined
-                        ? "" : JSON.stringify(logRow.entry.data)
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                    color: rowColors["text-muted"]
+                    contentWidth: Math.max(logsEntryDataText.implicitWidth, width)
+                    flickableDirection: Flickable.HorizontalFlick
+                    boundsBehavior: Flickable.StopAtBounds
+                    clip: true
+                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+                    Text {
+                        id: logsEntryDataText
+                        objectName: "logsEntryDataText-" + logRow.rowIndex
+                        width: implicitWidth
+                        height: logsEntryDataScroll.height
+                        verticalAlignment: Text.AlignVCenter
+                        text: logRow.entry.data === undefined
+                            ? "" : JSON.stringify(logRow.entry.data)
+                        font.pixelSize: 11
+                        color: rowColors["text-muted"]
+                    }
                 }
             }
         }

@@ -4740,6 +4740,7 @@
         <message><source>Recent errors</source><translation>Недавние ошибки</translation></message>
         <message><source>Session log entries</source><translation>Записи журнала сессии</translation></message>
         <message><source>No logs yet</source><translation>Записей пока нет</translation></message>
+        <message><source>The logs could not be exported to the selected location. Pick another folder and try again.</source><translation>Не удалось экспортировать логи в выбранное расположение. Выберите другую папку и повторите попытку.</translation></message>
     </context>
     <context>
         <name>NativeFavoritesPage</name>
