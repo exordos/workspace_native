@@ -17,6 +17,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QStandardPaths>
 #include <algorithm>
 #include <limits>
 
@@ -81,18 +82,7 @@ public:
         if (!configFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             return;
         }
-        // m_dir.path() is QDir::tempPath() plus mkdtemp's alphanumeric suffix,
-        // so splicing it into the XML below needs no escaping.
-        configFile.write(
-            (QStringLiteral("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
-                            " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
-                            "<busconfig><type>session</type><listen>unix:tmpdir=")
-             + m_dir.path()
-             + QStringLiteral("</listen>"
-                              "<policy context=\"default\">"
-                              "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
-                              "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
-                              "</policy></busconfig>")).toUtf8());
+        configFile.write(busConfigXml(m_dir.path()).toUtf8());
         configFile.close();
         m_busConfigWritten = true;
         m_daemon.start(QStringLiteral("dbus-daemon"),
@@ -111,6 +101,54 @@ public:
             m_daemon.kill();
     }
     bool busConfigWritten() const { return m_busConfigWritten; }
+    // Builds the bus config XML for a socket directory. Two grammars guard the
+    // interpolated path: (1) after the XML parses, the <listen> text must be a
+    // valid D-Bus address, and dbus-daemon rejects reserved address characters
+    // verbatim ("In D-Bus address, character '&' should have been escaped"),
+    // so reserved characters are percent-encoded for the address grammar
+    // first; (2) the value is then XML-escaped (& < > ") before being spliced
+    // into the text node. Percent-encoding already strips every XML
+    // metacharacter, so layer (2) is a no-op today; it stays because the two
+    // layers guard different grammars. The config file's own path never
+    // enters the XML (it reaches dbus-daemon via argv), so this is the only
+    // interpolation point.
+    static QString dbusEscapeAddressValue(const QString &value)
+    {
+        static const char hex[] = "0123456789ABCDEF";
+        QByteArray escaped;
+        const QByteArray utf8 = value.toUtf8();
+        for (const char raw : utf8) {
+            const bool safe = (raw >= 'a' && raw <= 'z') || (raw >= 'A' && raw <= 'Z')
+                || (raw >= '0' && raw <= '9')
+                || raw == '_' || raw == '.' || raw == '/' || raw == '-';
+            if (safe) {
+                escaped += raw;
+            } else {
+                const auto byte = static_cast<unsigned char>(raw);
+                escaped += '%';
+                escaped += hex[byte >> 4];
+                escaped += hex[byte & 0x0F];
+            }
+        }
+        return QString::fromUtf8(escaped);
+    }
+    static QString busConfigXml(const QString &tmpDirPath)
+    {
+        QString escapedPath = dbusEscapeAddressValue(tmpDirPath);
+        escapedPath.replace(QLatin1Char('&'), QStringLiteral("&amp;"))
+            .replace(QLatin1Char('<'), QStringLiteral("&lt;"))
+            .replace(QLatin1Char('>'), QStringLiteral("&gt;"))
+            .replace(QLatin1Char('"'), QStringLiteral("&quot;"));
+        return QStringLiteral("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
+                              " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
+                              "<busconfig><type>session</type><listen>unix:tmpdir=")
+            + escapedPath
+            + QStringLiteral("</listen>"
+                             "<policy context=\"default\">"
+                             "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
+                             "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
+                             "</policy></busconfig>");
+    }
 private:
     QTemporaryDir m_dir{QDir::tempPath() + QStringLiteral("/workspace-native-portal-test-XXXXXX")};
     bool m_busConfigWritten = false;
@@ -761,6 +799,60 @@ private slots:
         }
         bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
         bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
+    }
+
+    // Issue #107, exordy #387 round 4: QDir::tempPath() honours TMPDIR, and a
+    // legitimate TMPDIR may contain XML metacharacters (an '&' in a checkout
+    // path is the classic case). The bus config generator must encode the
+    // socket directory so the <listen> value is a valid D-Bus address after
+    // the XML parses: reserved address characters come back percent-encoded
+    // (%26, %3C, %3E, %22), which is simultaneously XML-safe text.
+    void busConfigXmlEscapesXmlMetacharactersInTemporaryPath()
+    {
+        const QString hostile = QStringLiteral("/tmp/a&b/<x>y\"z");
+        QCOMPARE(PortalProbeBus::busConfigXml(hostile), QStringLiteral(
+            "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\""
+            " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">"
+            "<busconfig><type>session</type>"
+            "<listen>unix:tmpdir=/tmp/a%26b/%3Cx%3Ey%22z</listen>"
+            "<policy context=\"default\">"
+            "<allow send_destination=\"*\" eavesdrop=\"true\"/>"
+            "<allow eavesdrop=\"true\"/><allow own=\"*\"/>"
+            "</policy></busconfig>"));
+    }
+
+    // The real proof: point the private bus at a socket directory whose name
+    // literally contains '&' and '<', and show a real dbus-daemon parses the
+    // config and prints its address instead of exiting with a config error.
+    void dbusDaemonAcceptsTemporaryPathWithXmlMetacharacters()
+    {
+        if (QStandardPaths::findExecutable(QStringLiteral("dbus-daemon")).isEmpty())
+            QSKIP("dbus-daemon is unavailable in this environment");
+        const QString hostileRoot = QDir::tempPath() + QStringLiteral("/probe&bus<x>");
+        QVERIFY(QDir().mkpath(hostileRoot));
+        QTemporaryDir dir(hostileRoot + QStringLiteral("/bus-XXXXXX"));
+        QVERIFY(dir.isValid());
+        QVERIFY2(dir.path().contains(QLatin1Char('&')),
+            "the fixture path itself must carry the metacharacter into the config");
+        const QString config = dir.filePath(QStringLiteral("bus.conf"));
+        QFile configFile(config);
+        QVERIFY(configFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(configFile.write(PortalProbeBus::busConfigXml(dir.path()).toUtf8()));
+        configFile.close();
+        QProcess daemon;
+        daemon.start(QStringLiteral("dbus-daemon"),
+            {QStringLiteral("--config-file=") + config, QStringLiteral("--print-address")});
+        QVERIFY(daemon.waitForStarted(5000));
+        const bool printedAddress = daemon.waitForReadyRead(5000);
+        const QString address = QString::fromUtf8(daemon.readAllStandardOutput())
+            .trimmed().split(QLatin1Char(',')).first();
+        const QString failure = QString::fromUtf8(daemon.readAllStandardError());
+        daemon.terminate();
+        if (!daemon.waitForFinished(3000))
+            daemon.kill();
+        QDir(hostileRoot).removeRecursively();
+        QVERIFY2(printedAddress && address.startsWith(QLatin1String("unix:")),
+            qPrintable(QStringLiteral("dbus-daemon rejected the config: %1").arg(failure)));
     }
 };
 
