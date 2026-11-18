@@ -157,8 +157,13 @@ mockups were not consulted (same treatment as the #83 rail doc).
   and system-folders visibility toggle have no native counterpart yet (no
   rail-layout or visibility settings surface exists), so those items are
   deferred with the overflow quick list from #83.
-- The edit modal prefill matches the folder's color against the 8 presets; a
-  color outside the presets is carried through as `0xffRRGGBB` (no swatch
+- The edit modal prefill matches the folder's color against the 8 presets. The
+  rail projection carries the color nullable: a DTO without a
+  `background_color_value` projects `null` (unset) and falls back to preset 0,
+  while a stored `0x00000000` black stays a numeric `0` and is resent as black
+  on rename - the prefill never maps unset to `0` (review cid 4616033386).
+  A color outside the presets is carried through as stored (non-zero hues with
+  the presets' full `0xffRRGGBB` alpha, black as the numeric 0; no swatch
   shows selected) so a rename never repaints it silently. The reference keeps
   the exact store value the same way (fallback preset 0 only when unset).
 - Folder-name sanity bound in the controller is 200 chars (the modal caps

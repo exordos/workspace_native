@@ -1703,7 +1703,10 @@ private:
         QString key;
         QString title;
         QString systemType; // all | personal | channels | created
-        quint32 color = 0;  // 0xRRGGBB
+        // 0xRRGGBB as masked by the reference display code; nullopt when the
+        // DTO carries no background_color_value at all (review cid 4616033386:
+        // unset is NOT black - the stored 0x00000000 stays a numeric 0).
+        std::optional<quint32> color;
         int unread = 0;
         QStringList streamIds;
         bool synthesized = false;

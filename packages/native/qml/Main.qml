@@ -3341,14 +3341,25 @@ ApplicationWindow {
         root.folderFormMode = "edit";
         root.folderFormTargetId = String(row.id);
         root.folderFormInitialName = String(row.title || "");
-        const rgb = Number(row.color || 0);
+        // Review 4616033386: the projection distinguishes an unset color (null)
+        // from a stored black (numeric 0). The reference folder-form-modal
+        // falls back to preset 0 only for an unset color
+        // (initialBackgroundColor ?? FOLDER_COLOR_PRESETS[0]) and keeps a
+        // stored value verbatim, so renaming a black folder resends black
+        // instead of silently repainting it to the default blue.
+        const raw = row.color;
+        const hasColor = raw !== undefined && raw !== null;
+        const rgb = hasColor ? Number(raw) : -1;
+        const presetMatch = hasColor
+            ? root.folderColorPresets.find(p => (p & 0xffffff) === rgb) : undefined;
         let matched = root.folderColorPresets[0];
-        for (const preset of root.folderColorPresets)
-            if ((preset & 0xffffff) === rgb) matched = preset;
-        // A color outside the presets (or All's 0) is carried through as the
-        // RGB value with full alpha so a rename never repaints it silently.
-        if (rgb !== 0 && !root.folderColorPresets.some(p => (p & 0xffffff) === rgb))
-            matched = 4278190080 + rgb;
+        if (presetMatch !== undefined)
+            matched = presetMatch;
+        else if (hasColor)
+            // A color outside the presets is carried through as stored: black
+            // stays the numeric 0 itself; other hues regain the full ARGB
+            // alpha the presets are defined with, so a rename never repaints.
+            matched = rgb === 0 ? 0 : 4278190080 + rgb;
         root.folderFormInitialColor = matched;
         folderFormDialog.open();
     }
