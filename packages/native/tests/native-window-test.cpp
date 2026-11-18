@@ -31164,6 +31164,148 @@ private slots:
             QStringLiteral("Renamed"),3000);
         QCOMPARE(controller.folders().last().toMap().value("color").toUInt(), 0u);
     }
+    // Issue #51 (docs modal section): the session log viewer modal opens from
+    // the header View logs button and the Log counts card button, starts in
+    // the empty state with Clear/Export disabled, appends lines live while
+    // open, narrows through level/source/search filters with the reference
+    // "x of y entries" label, resets, clears back to the empty state and
+    // exports the snapshot JSON through the save dialog.
+    void diagnosticsLogViewerModalFiltersClearAndExports()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Log modal teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        QVERIFY(visibleItem("diagnosticsViewLogsButton"));
+        // The modal is hidden until opened (logs-page.test.tsx:31-40). The
+        // Popup wrapper is not a QQuickItem, so visibility is asserted
+        // through the header item inside its content.
+        QVERIFY(!visibleItem("logsModalHeader"));
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        QCOMPARE(visibleItem("logsModalTitle")->property("text").toString(), QString("Logs"));
+        QCOMPARE(visibleItem("logsModalSubtitle")->property("text").toString(),
+                 QString("In-memory session logs (last 500 entries)."));
+        // Empty state: rows empty, Clear/Export disabled (logs-view-modal
+        // .ui.tsx:70-103 disabled while there are no entries). The realtime
+        // producers may have logged during startup, so clear first for a
+        // deterministic empty state.
+        controller.clearSessionLog();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsEmptyState"), 4000);
+        QVERIFY(!visibleItem("logsEntryList"));
+        QCOMPARE(visibleItem("logsResultsLabel")->property("text").toString(), QString("0 of 0 entries"));
+        QVERIFY(!visibleItem("logsClearButton")->property("enabled").toBool());
+        QVERIFY(!visibleItem("logsExportButton")->property("enabled").toBool());
+        // Close icon closes the modal; the Log counts card reopens it.
+        click(window, visibleItem("logsCloseButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("logsModalHeader"), 4000);
+        QVERIFY(visibleItem("diagnosticsCardLogCountsViewButton"));
+        click(window, visibleItem("diagnosticsCardLogCountsViewButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        // Entries append live while the modal is open (subscribeLogHistory).
+        controller.appendSessionLog(QStringLiteral("error"), QStringLiteral("api"),
+            QStringLiteral("Request failed GET /streams"),
+            QVariantMap{{QStringLiteral("status"), 500}});
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Workspace ready"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsEntryRow-0"), 4000);
+        QVERIFY(visibleItem("logsEntryRow-1"));
+        QVERIFY(visibleItem("logsEntryDataPre-0")); // the error row carries its data pre
+        // Recent errors block appears for the fresh error row (max-h-40 list).
+        QVERIFY(visibleItem("logsRecentErrorRow-0"));
+        QCOMPARE(visibleItem("logsResultsLabel")->property("text").toString(), QString("2 of 2 entries"));
+        // Level filter: newest-first rows are [info/app, error/api], so the
+        // Error level keeps a single row.
+        auto *levelSelect=visibleItem("logsLevelFilterSelect"); QVERIFY(levelSelect);
+        {
+            const auto center=levelSelect->mapToScene(QPointF(levelSelect->width()/2, levelSelect->height()/2)).toPoint();
+            QTest::mouseClick(window, Qt::LeftButton, {}, center);
+            auto *popup=qvariant_cast<QObject*>(levelSelect->property("popup")); QVERIFY(popup);
+            QTRY_VERIFY_WITH_TIMEOUT(popup->property("visible").toBool(), 2000);
+            for (int step=0; step<4; ++step) QTest::keyClick(window, Qt::Key_Down);
+            QTest::keyClick(window, Qt::Key_Return);
+            QTRY_VERIFY_WITH_TIMEOUT(
+                visibleItem("logsResultsLabel")->property("text").toString()==QString("1 of 2 entries"), 4000);
+        }
+        levelSelect->setProperty("currentIndex", 4);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("1 of 2 entries"), 4000);
+        QVERIFY(!visibleItem("logsEntryRow-1"));
+        // Source filter (reset level first): API keeps the api row only.
+        levelSelect->setProperty("currentIndex", 0);
+        auto *sourceSelect=visibleItem("logsSourceFilterSelect"); QVERIFY(sourceSelect);
+        sourceSelect->setProperty("currentIndex", 1); // API
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("1 of 2 entries"), 4000);
+        // Search narrows further: with the API source still on, a query that
+        // matches nothing else empties the list (empty state returns).
+        auto *searchField=visibleItem("logsSearchField"); QVERIFY(searchField);
+        searchField->setProperty("text", QStringLiteral("ready"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("0 of 2 entries"), 4000);
+        QVERIFY(visibleItem("logsEmptyState"));
+        // Reset filters restores the full list.
+        click(window, visibleItem("logsResetFiltersButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("2 of 2 entries"), 4000);
+        // Clear empties to the empty state and disables itself; a line after
+        // Clear appends live again.
+        click(window, visibleItem("logsClearButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("0 of 0 entries"), 4000);
+        QVERIFY(visibleItem("logsEmptyState"));
+        QVERIFY(!visibleItem("logsClearButton")->property("enabled").toBool());
+        QVERIFY(!visibleItem("logsRecentErrorsBlock"));
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Post clear line"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("1 of 1 entries"), 4000);
+        // Export: the save dialog lands through the controller export path
+        // and writes the snapshot JSON (redacted data, UTC-shaped name).
+        controller.appendSessionLog(QStringLiteral("error"), QStringLiteral("api"),
+            QStringLiteral("Token probe"), QVariantMap{{QStringLiteral("token"), QStringLiteral("leak-me")}});
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem("logsResultsLabel")->property("text").toString()==QString("2 of 2 entries"), 4000);
+        auto *saveDialog=window->findChild<QObject*>("diagnosticsLogsSaveDialog"); QVERIFY(saveDialog);
+        const auto exportDirectory=directory.filePath("export"); QDir().mkpath(exportDirectory);
+        click(window, visibleItem("logsExportButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+        // Same drive as the attachment save test (native-window-test.cpp
+        // attachment flows): navigate the live dialog, replace the suggested
+        // file name in the dialog's field, click Save, assert accepted fired.
+        QVERIFY(saveDialog->setProperty("currentFolder", QUrl::fromLocalFile(exportDirectory)));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("fileNameTextField"), 4000);
+        auto *filename=visibleItem("fileNameTextField");
+        click(filename->window(), filename);
+        QTest::keySequence(filename->window(), QKeySequence::SelectAll);
+        for (const auto character : QByteArray("session-logs.json"))
+            QTest::keyClick(filename->window(), character);
+        QCOMPARE(filename->property("text").toString(), QString("session-logs.json"));
+        QTRY_VERIFY_WITH_TIMEOUT(dialogButton("Save"), 4000);
+        auto *saveButton=dialogButton("Save");
+        QSignalSpy saveAccepted(saveDialog, SIGNAL(accepted()));
+        click(saveButton->window(), saveButton);
+        QTRY_COMPARE_WITH_TIMEOUT(saveAccepted.size(), 1, 4000);
+        const auto exported=QDir(exportDirectory).filePath("session-logs.json");
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(exported), 4000);
+        QFile file(exported); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto exportedText=QString::fromUtf8(file.readAll());
+        const auto exportedJson=QJsonDocument::fromJson(exportedText.toUtf8()).array();
+        QCOMPARE(exportedJson.size(), 2);
+        QVERIFY(exportedText.contains(QStringLiteral("[REDACTED]")));
+        QVERIFY(!exportedText.contains(QStringLiteral("leak-me")));
+        QVERIFY(exportedText.contains(QStringLiteral("\n    \"level\""))); // 2-space pretty print
+    }
 };
 
 

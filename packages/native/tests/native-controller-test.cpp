@@ -29732,6 +29732,289 @@ private slots:
         QCOMPARE(finished.count(), 2);
         QCOMPARE(finished.at(1).at(0).toBool(), true);
     }
+
+    // ---- Issue #51: session log viewer modal (docs: modal section) --------
+
+    // The reference logger ring buffer (shared/lib/logger.ts): append notifies
+    // subscribers, newest-first reads, oldest-first eviction at 500, and clear
+    // notifies once.
+    void sessionLogBufferAppendSubscribeEvictClear()
+    {
+        using namespace workspace::diagnostics;
+        SessionLogBuffer buffer;
+        QSignalSpy changed(&buffer, &SessionLogBuffer::entriesChanged);
+        buffer.append(QStringLiteral("info"), QStringLiteral("app"), QStringLiteral("first"));
+        buffer.append(QStringLiteral("warn"), QStringLiteral("api"), QStringLiteral("second"),
+            QVariantMap{{QStringLiteral("status"), 429}});
+        QCOMPARE(changed.count(), 2);
+        const auto entries = buffer.entries();
+        QCOMPARE(entries.size(), qsizetype(2));
+        QCOMPARE(entries.at(0).message, QStringLiteral("second")); // newest first
+        QCOMPARE(entries.at(0).level, QStringLiteral("warn"));
+        QVERIFY(entries.at(0).hasData);
+        QVERIFY(!entries.at(1).hasData);
+        QCOMPARE(entries.at(1).message, QStringLiteral("first"));
+        // Timestamp is ISO-8601 UTC with ms (reference new Date().toISOString()).
+        const auto stamp = QDateTime::fromString(entries.at(0).timestamp, Qt::ISODateWithMs);
+        QVERIFY(stamp.isValid());
+        QCOMPARE(stamp.timeSpec(), Qt::UTC);
+        buffer.clear();
+        QCOMPARE(changed.count(), 3);
+        QVERIFY(buffer.entries().isEmpty());
+        for (int index = 0; index < SessionLogBuffer::MaxEntries + 5; ++index)
+            buffer.append(QStringLiteral("info"), QStringLiteral("app"),
+                QStringLiteral("line-%1").arg(index));
+        const auto capped = buffer.entries();
+        QCOMPARE(capped.size(), qsizetype(SessionLogBuffer::MaxEntries));
+        QCOMPARE(capped.first().message,
+            QStringLiteral("line-%1").arg(SessionLogBuffer::MaxEntries + 4));
+        QCOMPARE(capped.last().message, QStringLiteral("line-5")); // oldest 5 evicted
+    }
+
+    // logs-source-filter.lib.ts:3-32 bucket rules.
+    void sessionLogSourceBucketsMatchReferenceRules()
+    {
+        using namespace workspace::diagnostics;
+        QCOMPARE(logSourceBucket(QStringLiteral("api")), QStringLiteral("api"));
+        QCOMPARE(logSourceBucket(QStringLiteral("console")), QStringLiteral("console"));
+        QCOMPARE(logSourceBucket(QStringLiteral("trace:chat-list")), QStringLiteral("trace"));
+        QCOMPARE(logSourceBucket(QStringLiteral("action")), QStringLiteral("actions"));
+        QCOMPARE(logSourceBucket(QStringLiteral("auth")), QStringLiteral("actions"));
+        QCOMPARE(logSourceBucket(QStringLiteral("realtime")), QStringLiteral("actions"));
+        QCOMPARE(logSourceBucket(QStringLiteral("action:switch")), QStringLiteral("actions"));
+        QCOMPARE(logSourceBucket(QStringLiteral("store:messages")), QStringLiteral("app"));
+        QCOMPARE(logSourceBucket(QStringLiteral("app")), QStringLiteral("app"));
+        QCOMPARE(logSourceBucket(QStringLiteral("connection-health")), QStringLiteral("app"));
+        QVERIFY(matchesLogSourceFilter(QStringLiteral("anything"), QStringLiteral("all")));
+        QVERIFY(matchesLogSourceFilter(QStringLiteral("trace:x"), QStringLiteral("trace")));
+        QVERIFY(!matchesLogSourceFilter(QStringLiteral("trace:x"), QStringLiteral("actions")));
+        QVERIFY(matchesLogSourceFilter(QStringLiteral("perf"), QStringLiteral("app")));
+        QVERIFY(!matchesLogSourceFilter(QStringLiteral("api"), QStringLiteral("app")));
+    }
+
+    // filterLogEntries semantics (logs-page-logs.ui.tsx:248-268): level,
+    // source, scope and runtime AND together; search is a trimmed,
+    // case-insensitive substring of "level scope runtime message JSON(data)".
+    void sessionLogFiltersMatchReferenceSemantics()
+    {
+        using namespace workspace::diagnostics;
+        QList<SessionLogEntry> entries;
+        SessionLogEntry api;
+        api.level = QStringLiteral("error"); api.scope = QStringLiteral("api");
+        api.message = QStringLiteral("Request failed GET /streams");
+        api.runtime = QStringLiteral("linux");
+        api.data = QVariantMap{{QStringLiteral("status"), 500}};
+        api.hasData = true;
+        entries.append(api);
+        SessionLogEntry boot;
+        boot.level = QStringLiteral("info"); boot.scope = QStringLiteral("app");
+        boot.message = QStringLiteral("Workspace ready");
+        boot.runtime = QStringLiteral("linux");
+        entries.append(boot);
+        SessionLogEntry trace;
+        trace.level = QStringLiteral("debug"); trace.scope = QStringLiteral("trace:chat-list");
+        trace.message = QStringLiteral("repaint"); trace.runtime = QStringLiteral("linux");
+        entries.append(trace);
+
+        const auto pass = filterSessionLogEntries(entries,
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("all"), QString());
+        QCOMPARE(pass.size(), qsizetype(3));
+        const QStringList levels{QStringLiteral("error"), QStringLiteral("debug"), QStringLiteral("info")};
+        for (qsizetype index = 0; index < levels.size(); ++index) {
+            const auto only = filterSessionLogEntries(entries, levels.at(index),
+                QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"), QString());
+            QCOMPARE(only.size(), qsizetype(1));
+            QCOMPARE(only.at(0).level, levels.at(index));
+        }
+        const auto sourceApi = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("api"), QStringLiteral("all"), QStringLiteral("all"), QString());
+        QCOMPARE(sourceApi.size(), qsizetype(1));
+        QCOMPARE(sourceApi.at(0).scope, QStringLiteral("api"));
+        const auto sourceApp = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("app"), QStringLiteral("all"), QStringLiteral("all"), QString());
+        QCOMPARE(sourceApp.size(), qsizetype(1));
+        const auto sourceTrace = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("trace"), QStringLiteral("all"), QStringLiteral("all"), QString());
+        QCOMPARE(sourceTrace.size(), qsizetype(1));
+        const auto scopeOnly = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("app"), QStringLiteral("all"), QString());
+        QCOMPARE(scopeOnly.size(), qsizetype(1));
+        const auto runtimeMiss = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("windows"), QString());
+        QVERIFY(runtimeMiss.isEmpty());
+        // Search: case-insensitive, trimmed, matches message and data JSON.
+        const auto upper = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("  REQUEST FAILED  "));
+        QCOMPARE(upper.size(), qsizetype(1));
+        QCOMPARE(upper.at(0).scope, QStringLiteral("api"));
+        const auto viaData = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("500"));
+        QCOMPARE(viaData.size(), qsizetype(1));
+        const auto viaScope = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("trace:"));
+        QCOMPARE(viaScope.size(), qsizetype(1));
+        // Whitespace-only search trims to "everything".
+        const auto blank = filterSessionLogEntries(entries, QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("   "));
+        QCOMPARE(blank.size(), qsizetype(3));
+    }
+
+    // logger.ts redact(): sensitive keys (normalized), sensitive value
+    // patterns, and the depth-8 cutoff.
+    void sessionLogRedactionMatchesReferenceRules()
+    {
+        using namespace workspace::diagnostics;
+        QVariantMap data;
+        data.insert(QStringLiteral("token"), QStringLiteral("abc123"));
+        data.insert(QStringLiteral("auth"), QStringLiteral("plain value"));
+        data.insert(QStringLiteral("Keep-Me"), QStringLiteral("visible"));
+        data.insert(QStringLiteral("authHeader"), QStringLiteral("Basic dXNlcjpwYXNz"));
+        data.insert(QStringLiteral("blob"), QString(20, QLatin1Char('A')));
+        data.insert(QStringLiteral("short"), QStringLiteral("abcdefghij012345678")); // 19 chars: stays
+        data.insert(QStringLiteral("list"), QVariantList{
+            QVariantMap{{QStringLiteral("apiKey"), QStringLiteral("x")}}, QStringLiteral("plain")});
+        const auto redacted = redactLogValue(data).toMap();
+        QCOMPARE(redacted.value(QStringLiteral("token")).toString(), QStringLiteral("[REDACTED]"));
+        QCOMPARE(redacted.value(QStringLiteral("auth")).toString(), QStringLiteral("[REDACTED]"));
+        QCOMPARE(redacted.value(QStringLiteral("Keep-Me")).toString(), QStringLiteral("visible"));
+        QCOMPARE(redacted.value(QStringLiteral("authHeader")).toString(), QStringLiteral("[REDACTED]"));
+        QCOMPARE(redacted.value(QStringLiteral("blob")).toString(), QStringLiteral("[REDACTED]"));
+        QCOMPARE(redacted.value(QStringLiteral("short")).toString(), QStringLiteral("abcdefghij012345678"));
+        const auto list = redacted.value(QStringLiteral("list")).toList();
+        QCOMPARE(list.at(0).toMap().value(QStringLiteral("apiKey")).toString(),
+            QStringLiteral("[REDACTED]"));
+        QCOMPARE(list.at(1).toString(), QStringLiteral("plain"));
+        // Depth: the reference nests through depth 8 and stops there.
+        QVariant deep = QStringLiteral("deep value");
+        for (int level = 0; level < 9; ++level) {
+            QVariant nested;
+            nested = QVariantMap{{QStringLiteral("next"), deep}};
+            deep = nested;
+        }
+        QVariant walker = redactLogValue(deep);
+        int depth = 0;
+        while (walker.typeId() == QMetaType::QVariantMap && depth < 20) {
+            walker = walker.toMap().value(QStringLiteral("next"));
+            ++depth;
+        }
+        QCOMPARE(walker.toString(), QStringLiteral("[max depth]"));
+    }
+
+    // Controller surface: append/clear/clear live signal + filter invokables.
+    void controllerSessionLogSurfaceAppendFilterClear()
+    {
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QSignalSpy changed(&controller, &NativeController::sessionLogChanged);
+        controller.appendSessionLog(QStringLiteral("error"), QStringLiteral("api"),
+            QStringLiteral("Request failed GET /streams"),
+            QVariantMap{{QStringLiteral("status"), 500}, {QStringLiteral("secret"), QStringLiteral("s3cret")}});
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Workspace ready"));
+        QCOMPARE(changed.count(), 2);
+        const auto entries = controller.diagnosticsSessionLogEntries();
+        QCOMPARE(entries.size(), qsizetype(2));
+        // Newest first: the "Workspace ready" line is the most recent entry.
+        const auto first = entries.first().toMap();
+        QCOMPARE(first.value(QStringLiteral("level")).toString(), QStringLiteral("info"));
+        QCOMPARE(first.value(QStringLiteral("scope")).toString(), QStringLiteral("app"));
+        const auto second = entries.at(1).toMap();
+        QCOMPARE(second.value(QStringLiteral("level")).toString(), QStringLiteral("error"));
+        QCOMPARE(second.value(QStringLiteral("scope")).toString(), QStringLiteral("api"));
+        QVERIFY(second.contains(QStringLiteral("runtime")));
+        const auto filtered = controller.diagnosticsSessionLogsFiltered(
+            QStringLiteral("error"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("all"), QString());
+        QCOMPARE(filtered.size(), qsizetype(1));
+        const auto searched = controller.diagnosticsSessionLogsFiltered(
+            QStringLiteral("all"), QStringLiteral("all"), QStringLiteral("all"),
+            QStringLiteral("all"), QStringLiteral("ready"));
+        QCOMPARE(searched.size(), qsizetype(1));
+        controller.clearSessionLog();
+        QCOMPARE(changed.count(), 3);
+        QVERIFY(controller.diagnosticsSessionLogEntries().isEmpty());
+    }
+
+    // logs-export.lib.ts: UTC filename shape, 2-space pretty body, and the
+    // round-trip with redacted data; the native save path writes the file.
+    void sessionLogExportFilenamesAndRoundTrip()
+    {
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        controller.appendSessionLog(QStringLiteral("error"), QStringLiteral("api"),
+            QStringLiteral("Request failed"),
+            QVariantMap{{QStringLiteral("status"), 500}, {QStringLiteral("token"), QStringLiteral("top-secret")}});
+        controller.appendSessionLog(QStringLiteral("info"), QStringLiteral("app"),
+            QStringLiteral("Workspace ready"));
+        const QString name = controller.diagnosticsLogsExportFilename();
+        QVERIFY2(QRegularExpression(QStringLiteral("^workspace-logs-[0-9]{8}-[0-9]{6}[.]json$")).match(name).hasMatch(),
+            qPrintable(name));
+        const QString json = controller.diagnosticsLogsExportJson();
+        QVERIFY2(json.contains(QStringLiteral("\n    \"level\"")), qPrintable(json.left(120)));
+        QVERIFY(json.contains(QStringLiteral("[REDACTED]")));
+        QVERIFY(!json.contains(QStringLiteral("top-secret")));
+        const auto parsed = QJsonDocument::fromJson(json.toUtf8()).array();
+        QCOMPARE(parsed.size(), 2);
+        // Newest first, like getLogHistory: the "Workspace ready" line leads.
+        const auto first = parsed.at(0).toObject();
+        QCOMPARE(first.value(QStringLiteral("level")).toString(), QStringLiteral("info"));
+        QCOMPARE(first.value(QStringLiteral("message")).toString(), QStringLiteral("Workspace ready"));
+        QVERIFY(!first.contains(QStringLiteral("data")));
+        const auto second = parsed.at(1).toObject();
+        QCOMPARE(second.value(QStringLiteral("level")).toString(), QStringLiteral("error"));
+        QCOMPARE(second.value(QStringLiteral("scope")).toString(), QStringLiteral("api"));
+        QVERIFY(second.contains(QStringLiteral("data")));
+        QCOMPARE(second.value(QStringLiteral("data")).toObject().value(QStringLiteral("token")).toString(),
+            QStringLiteral("[REDACTED]"));
+        QCOMPARE(second.value(QStringLiteral("data")).toObject().value(QStringLiteral("status")).toInt(), 500);
+        // exportSessionLog writes the snapshot JSON to a picked path (the
+        // FileDialog SaveFile flow passes its selected file through).
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto target = directory.filePath(controller.diagnosticsLogsExportFilename());
+        QVERIFY(controller.exportSessionLog(target));
+        QFile file(target);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(file.readAll()), json);
+        // A file:// URL is accepted as well (QML FileDialog selectedFile).
+        const auto urlTarget = directory.filePath(QStringLiteral("copy.json"));
+        QVERIFY(controller.exportSessionLog(QUrl::fromLocalFile(urlTarget).toString()));
+        QVERIFY(QFile::exists(urlTarget));
+        // An empty buffer exports nothing and refuses to write.
+        controller.clearSessionLog();
+        QVERIFY(controller.diagnosticsLogsExportJson().isEmpty());
+        QVERIFY(!controller.exportSessionLog(directory.filePath(QStringLiteral("never.json"))));
+    }
+
+    // Live producers only log real state: an answered HTTP 500 through the
+    // request wrapper lands as an api-scope error entry with method/path/status.
+    void sessionLogProducerLogsApiFailures()
+    {
+        Fixture f; QVERIFY(f.start());
+        const auto before = f.controller.diagnosticsSessionLogEntries().size();
+        f.streams = [](const Request &) -> Response {
+            return Response{QJsonArray{}, 500};
+        };
+        f.controller.reloadSnapshot();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            f.controller.diagnosticsSessionLogEntries().size() > before, 5000);
+        const auto entries = f.controller.diagnosticsSessionLogEntries();
+        bool sawApiError = false;
+        for (const auto &value : entries) {
+            const auto entry = value.toMap();
+            if (entry.value(QStringLiteral("scope")).toString() == QLatin1String("api")
+                && entry.value(QStringLiteral("level")).toString() == QLatin1String("error")) {
+                sawApiError = true;
+                QVERIFY(entry.value(QStringLiteral("message")).toString()
+                    .contains(QStringLiteral("/streams/")));
+                QCOMPARE(entry.value(QStringLiteral("data")).toMap()
+                    .value(QStringLiteral("status")).toInt(), 500);
+            }
+        }
+        QVERIFY(sawApiError);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
