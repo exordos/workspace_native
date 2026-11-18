@@ -28163,6 +28163,183 @@ private slots:
         QTRY_VERIFY(!visibleItem("deactivated-direct-header"));
         QTRY_VERIFY(visibleItem("presence-direct-header"));
     }
+    // Issue #88 (reference 61dacef7 chat-header.lib.ts:4-27 and
+    // chat-header-direct.ui.tsx:43-55): the direct header caption follows the
+    // resolveDmStatusText chain - deactivated beats everything, then typing,
+    // then custom status as-is, then presence text with the last-seen
+    // fallback. Locales at that sha: presence.lastSeen "last seen {time}"/
+    // "был(а) {time}", a11y.openUserProfile "Open profile: {name}"/
+    // "Открыть профиль: {name}". No handled realtime kind carries typing
+    // (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md), so no mock-driven typing
+    // case exists; the gap is recorded on the issue instead of fabricated.
+    void directHeaderStatusCaptionResolvesReferenceChain_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en");
+        QTest::newRow("ru") << QString("ru");
+    }
+
+    void directHeaderStatusCaptionResolvesReferenceChain()
+    {
+        QFETCH(QString, locale);
+        const bool russian=locale==QString("ru");
+        const QString online=russian?QString::fromUtf8("В сети"):QString("online");
+        const QString away=russian?QString::fromUtf8("Отошёл"):QString("away");
+        const QString offline=russian?QString::fromUtf8("Не в сети"):QString("offline");
+        const QString deactivated=russian?QString::fromUtf8("Пользователь заблокирован")
+            :QString("Account deactivated");
+        const QString lastSeenExpected=russian?QString::fromUtf8("был(а) 15:30"):QString("last seen 15:30");
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("caption.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Caption window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1200,800);QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);
+        preferences.setLocale(locale);preferences.setMode("light");
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(visibleItem("directPresenceStatus"));
+        auto caption=[&] {return visibleItem("directPresenceStatus")->property("text").toString();};
+        // Reference caption class contract text-xs text-text-muted truncate
+        // (chat-header-direct.ui.tsx:45): 12px text-muted with elision.
+        auto *captionItem=visibleItem("directPresenceStatus");
+        QCOMPARE(captionItem->property("font").value<QFont>().pixelSize(),12);
+        QCOMPARE(QQmlProperty(captionItem,"color").read().value<QColor>(),QColor("#989898"));
+        QCOMPARE(QQmlProperty(captionItem,"elide").read().toInt(),int(Qt::ElideRight));
+        // Branch 4: presence text.
+        QTRY_COMPARE(caption(),online);
+        auto setPeer=[&](std::function<void(QJsonObject&)> mutate) {
+            auto row=fixture.users.at(1).toObject();mutate(row);fixture.users[1]=row;controller.refresh();
+        };
+        setPeer([](QJsonObject &row){row["status"]="idle";});
+        QTRY_COMPARE(caption(),away);
+        setPeer([](QJsonObject &row){row["status"]="offline";row.remove("last_seen");});
+        QTRY_COMPARE(caption(),offline);
+        // Branch 4 fallback: last seen display string (offline with lastSeen
+        // "15:30" -> "last seen 15:30").
+        setPeer([](QJsonObject &row){row["last_seen"]="15:30";});
+        QTRY_COMPARE(caption(),lastSeenExpected);
+        // Reference equality check: a last seen equal to the online label
+        // renders the online label itself (chat-header.lib.ts:14-16).
+        setPeer([&](QJsonObject &row){row["last_seen"]=online;});
+        QTRY_COMPARE(caption(),online);
+        // Branch 3: custom status as-is, overriding presence text.
+        setPeer([](QJsonObject &row){row["status"]="active";row["status_text"]="On call";row.remove("last_seen");});
+        QTRY_COMPARE(caption(),QString("On call"));
+        setPeer([](QJsonObject &row){row.remove("status_text");row["status_emoji"]=QString::fromUtf8("\xF0\x9F\x93\x9E");});
+        QTRY_COMPARE(caption(),QString::fromUtf8("\xF0\x9F\x93\x9E"));
+        // Branch 1: the deactivated caption beats the custom status.
+        setPeer([](QJsonObject &row){row["account_deactivated"]=true;});
+        QTRY_COMPARE(caption(),deactivated);
+        setPeer([](QJsonObject &row){row.remove("account_deactivated");row.remove("status_emoji");});
+        QTRY_COMPARE(caption(),online);
+        // presenceState null (unknown user) shows the offline caption, not
+        // online (chat-header.types.ts:5-6 plus the recorded native note).
+        setPeer([](QJsonObject &row){row.remove("status");row.remove("last_seen");});
+        QTRY_COMPARE(caption(),offline);
+        // The realtime user.updated row drives the caption through the same
+        // chain: custom "On call" overrides presence, removal restores it.
+        auto live=fixture.users.at(1).toObject();
+        live["status"]="active";live["status_text"]="On call";live["updated_at"]="2026-01-02T10:01:00Z";
+        live["kind"]="user.updated";fixture.users[1]=live;
+        QVERIFY(controller.applyRealtimeEvent({{"schema_version",1},{"epoch_version",90},
+            {"uuid","a8800000-0000-4000-8000-000000000088"},{"project_id",projectId},{"user_uuid",userId},
+            {"object_type","user"},{"action","updated"},{"payload",live},
+            {"created_at","2026-01-02T10:01:00Z"},{"updated_at","2026-01-02T10:01:00Z"}}));
+        QTRY_COMPARE(caption(),QString("On call"));
+        auto cleared=fixture.users.at(1).toObject();
+        cleared.remove("status_text");cleared["updated_at"]="2026-01-02T10:02:00Z";
+        cleared["kind"]="user.updated";fixture.users[1]=cleared;
+        QVERIFY(controller.applyRealtimeEvent({{"schema_version",1},{"epoch_version",91},
+            {"uuid","a8800000-0000-4000-8000-000000000089"},{"project_id",projectId},{"user_uuid",userId},
+            {"object_type","user"},{"action","updated"},{"payload",cleared},
+            {"created_at","2026-01-02T10:02:00Z"},{"updated_at","2026-01-02T10:02:00Z"}}));
+        QTRY_COMPARE(caption(),online);
+    }
+
+    // Issue #88 (reference chat-header-direct.ui.tsx:7-8,47-55): the whole
+    // partner block is one click target opening the partner profile drawer
+    // (#134), with the localized a11y.openUserProfile accessible name.
+    void directHeaderPartnerBlockOpensPeerProfile_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en");
+        QTest::newRow("ru") << QString("ru");
+    }
+
+    void directHeaderPartnerBlockOpensPeerProfile()
+    {
+        QFETCH(QString, locale);
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("profile-click.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Profile-click window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1200,800);QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);
+        preferences.setLocale(locale);preferences.setMode("light");
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());
+        QTRY_VERIFY(!controller.busy());
+        // The overlay exists only for a direct chat with a known peer.
+        QTRY_VERIFY(visibleItem("directPartnerProfileAction"));
+        auto *action=visibleItem("directPartnerProfileAction");
+        // It spans the whole partner block: the same rectangle as the header row
+        // (avatar plus name and caption column).
+        auto *row=visibleItem("directConversationHeader");QVERIFY(row);
+        QCOMPARE(action->parentItem(),row->parentItem());
+        QCOMPARE(action->x(),row->x());QCOMPARE(action->y(),row->y());
+        QCOMPARE(action->width(),row->width());QCOMPARE(action->height(),row->height());
+        const QString name=controller.directPeer().value("displayName").toString();
+        const QString label=locale==QString("ru")
+            ?QString::fromUtf8("Открыть профиль: ")+name:QString("Open profile: ")+name;
+        auto *accessible=QAccessible::queryAccessibleInterface(action);QVERIFY(accessible);
+        QCOMPARE(accessible->role(),QAccessible::Button);
+        QCOMPARE(accessible->text(QAccessible::Name),label);
+        click(window,action);
+        QTRY_VERIFY(visibleItem("profileLayer"));
+        auto *layer=visibleItem("profileLayer");
+        QCOMPARE(layer->property("userUuid").toString(),channelPeer);
+        QVERIFY(!layer->property("isSelf").toBool());
+    }
     // ---- Issue #45: static Services placeholder hub
     // (docs/NATIVE_DESKTOP_SERVICES.md, workspace_ui
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af services-page.ui.tsx) ----

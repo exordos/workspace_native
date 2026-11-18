@@ -2495,6 +2495,83 @@ private slots:
         QCOMPARE(test.direct.posts,0);
     }
 
+    // Issue #88 (reference 61dacef7 chat-header.types.ts:1-17 and
+    // chat-header.lib.ts:20-27): the direct header caption consumes
+    // customStatus (custom status with its emoji, shown as-is) and the
+    // last-seen display string. The authoritative users directory rows are
+    // the native projection source, with the documented caveat that the
+    // reference production selector assigns neither fact at the pinned sha
+    // (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md).
+    void directPeerProjectsCustomStatusAndLastSeenFromDirectoryRows_data()
+    {
+        QTest::addColumn<QJsonValue>("statusText");
+        QTest::addColumn<QJsonValue>("statusEmoji");
+        QTest::addColumn<QJsonValue>("lastSeen");
+        QTest::addColumn<QString>("customStatus");
+        QTest::addColumn<QString>("lastSeenText");
+        QTest::newRow("text-only") << QJsonValue("On call") << QJsonValue(QJsonValue::Null)
+            << QJsonValue("15:30") << QString("On call") << QString("15:30");
+        QTest::newRow("emoji-only") << QJsonValue(QJsonValue::Null)
+            << QJsonValue(QString::fromUtf8("\xF0\x9F\x93\x9E")) << QJsonValue(QJsonValue::Undefined)
+            << QString::fromUtf8("\xF0\x9F\x93\x9E") << QString();
+        QTest::newRow("emoji-and-text") << QJsonValue("On call")
+            << QJsonValue(QString::fromUtf8("\xF0\x9F\x93\x9E")) << QJsonValue("15:30")
+            << QString::fromUtf8("\xF0\x9F\x93\x9E On call") << QString("15:30");
+        QTest::newRow("both-absent") << QJsonValue(QJsonValue::Null) << QJsonValue(QJsonValue::Null)
+            << QJsonValue(QJsonValue::Undefined) << QString() << QString();
+        QTest::newRow("last-seen-null") << QJsonValue(QJsonValue::Null) << QJsonValue(QJsonValue::Null)
+            << QJsonValue(QJsonValue::Null) << QString() << QString();
+    }
+    void directPeerProjectsCustomStatusAndLastSeenFromDirectoryRows()
+    {
+        QFETCH(QJsonValue, statusText); QFETCH(QJsonValue, statusEmoji); QFETCH(QJsonValue, lastSeen);
+        QFETCH(QString, customStatus); QFETCH(QString, lastSeenText);
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        auto self = presencePerson(userId, "avatar-self", "active");
+        auto peer = presencePerson(channelMemberA, "avatar-peer", "active",
+            "2026-01-02T10:00:00Z", statusText, statusEmoji);
+        if (!lastSeen.isUndefined()) peer["last_seen"] = lastSeen;
+        test.directory = {self, peer, avatarReferencePerson(channelMemberB, "other-peer")};
+        QVERIFY(test.start());
+        QVERIFY2(c.directPeer().contains("customStatus"),
+            "Direct peer custom status is absent from the header projection");
+        QVERIFY2(c.directPeer().contains("lastSeen"),
+            "Direct peer last-seen display string is absent from the header projection");
+        QCOMPARE(c.directPeer().value("customStatus").toString(), customStatus);
+        QCOMPARE(c.directPeer().value("lastSeen").toString(), lastSeenText);
+        // The typing fact has no wire source among the handled realtime
+        // kinds; the projection never invents it.
+        QVERIFY(!c.directPeer().value("typing").toBool());
+    }
+
+    void directPeerStatusFactsFollowRealtimeUserUpdatedWithoutRegression()
+    {
+        AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
+        QVERIFY(test.start());
+        QVERIFY(c.directPeer().value("customStatus").toString().isEmpty());
+        QVERIFY(c.directPeer().value("lastSeen").toString().isEmpty());
+        auto fresh = presencePerson(channelMemberA, "avatar-peer", "active",
+            "2026-01-02T10:06:00Z", "On call");
+        fresh["last_seen"] = "15:30";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", fresh, 250)));
+        QCOMPARE(c.directPeer().value("customStatus").toString(), QString("On call"));
+        QCOMPARE(c.directPeer().value("lastSeen").toString(), QString("15:30"));
+        // An older row keeps the newest facts, including the new last seen.
+        auto older = presencePerson(channelMemberA, "avatar-peer", "idle",
+            "2026-01-02T10:05:30Z", "Older");
+        older["last_seen"] = "09:00";
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", older, 251)));
+        QCOMPARE(c.directPeer().value("customStatus").toString(), QString("On call"));
+        QCOMPARE(c.directPeer().value("lastSeen").toString(), QString("15:30"));
+        // The latest row removed both optional facts: the caption inputs fall
+        // back to empty (contract null), never the stale values.
+        auto cleared = presencePerson(channelMemberA, "avatar-peer", "active",
+            "2026-01-02T10:07:00Z");
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("user.updated", cleared, 252)));
+        QVERIFY(c.directPeer().value("customStatus").toString().isEmpty());
+        QVERIFY(c.directPeer().value("lastSeen").toString().isEmpty());
+    }
+
     void reopenedUsersProfilesAreOfflineUntilTheActualUsersReply()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
