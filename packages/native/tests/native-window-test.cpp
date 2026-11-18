@@ -30409,6 +30409,77 @@ private slots:
         QCOMPARE(saved.value("window/height").toInt(), 600);
         QVERIFY(!saved.value("window/maximized").toBool());
     }
+
+    // #62 round 2 (review thread): the fullscreen transition gate must end
+    // when the exit transition completes and must re-capture legitimate
+    // window changes made right after leaving fullscreen. The first round's
+    // silent 1500 ms timer dropped them and the debounced save kept the
+    // stale pre-fullscreen state.
+    void fullscreenExitRecapturesUserMoveMadeDuringTheTransitionGate()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 40, available.y() + 30, 900, 650);
+        window.setGeometry(normal);
+        QTest::qWait(700); // outlast the 350 ms save debounce
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() != QWindow::FullScreen, 5000);
+        // Wait for the WM restore to land, then move like a user who drags
+        // the window the moment it is back - still inside the old 1500 ms
+        // transition gate. The move is legitimate and must be persisted.
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        const QRect moved(available.x() + 160, available.y() + 90, 800, 700);
+        window.setGeometry(moved);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), moved, 5000);
+        QTest::qWait(2100); // outlast the gate timer and the save debounce
+        QCOMPARE(savedWindowBounds(path), moved);
+    }
+
+    void fullscreenExitFromMaximizedRecapturesUserRestoreMadeDuringTheTransitionGate()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const QRect normal(available.x() + 60, available.y() + 40, 880, 620);
+        window.setGeometry(normal);
+        QTest::qWait(700);
+        window.showMaximized();
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        QTest::qWait(700);
+        QVERIFY(QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowMaximized, 5000);
+        // The user un-maximizes right after the fullscreen exit - still
+        // inside the old gate. The saved maximized flag must follow the user
+        // instead of keeping the pre-fullscreen maximized state.
+        window.showNormal();
+        QTRY_VERIFY_WITH_TIMEOUT(window.windowState() != Qt::WindowMaximized, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
+        QTest::qWait(2100); // outlast the gate timer and the save debounce
+        QVERIFY(!QSettings(path, QSettings::IniFormat).value("window/maximized").toBool());
+    }
 };
 
 
