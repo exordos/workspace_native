@@ -10962,6 +10962,11 @@ void NativeController::reset()
     // Issue #83: the rail is per-owner state too; the next bootstrap re-reads it.
     m_folders.clear();
     m_selectedFolder.clear();
+    m_folderMutationKind.clear();
+    m_folderMutationOwner.clear();
+    m_folderMutationError.clear();
+    m_folderMutationPending = false;
+    ++m_folderMutationTicket;
     m_archiveOperations.clear();
     m_chatActions.clear();
     m_topics.clear();
@@ -12710,6 +12715,199 @@ void NativeController::selectFolder(const QString &key)
 void NativeController::requestAddFolder()
 {
     emit folderAddRequested();
+}
+
+// Issue #84 (docs/NATIVE_DESKTOP_FOLDERS.md): rail CRUD as measured in
+// folder-rail.ui.tsx handleCreate / handleSaveRename / confirmDelete. The
+// transport is the same /folders/ family the loader uses, and - like
+// loadFolders - it deliberately bypasses the tracked request() helper: a
+// folder round trip must never move the connection banner. Exactly one
+// folder mutation is in flight at a time (ownStatus ticket guard), and a
+// settled mutation updates the rail incrementally (append / in-place
+// update / removal) instead of re-fetching the whole collection.
+QVariantMap NativeController::folderMutation() const
+{
+    if (!authenticated()) return {};
+    const bool current = m_folderMutationOwner == creationOwnerKey()
+        && m_folderMutationGeneration == m_api->generation();
+    return {{"kind", current ? m_folderMutationKind : QString{}},
+        {"pending", current && m_folderMutationPending},
+        {"error", current ? m_folderMutationError : QString{}},
+        {"ticket", qlonglong(qint64(m_folderMutationTicket))}};
+}
+
+void NativeController::createFolder(const QString &name, int backgroundColor)
+{
+    if (!authenticated() || m_folderMutationPending) return;
+    const auto owner = creationOwnerKey();
+    if (owner.isEmpty()) return;
+    // guard.nonEmpty port: the modal disables empty submits, a stray call is
+    // dropped silently - the reference never toasts an empty name.
+    const auto trimmed = sourceTrimmed(name);
+    if (trimmed.isEmpty() || !boundedText(trimmed, 201)) return;
+    const auto generation = m_api->generation(), ticket = ++m_folderMutationTicket;
+    m_folderMutationOwner = owner;
+    m_folderMutationGeneration = generation;
+    m_folderMutationKind = QStringLiteral("create");
+    m_folderMutationError.clear();
+    m_folderMutationPending = true;
+    emit folderMutationChanged();
+    const QPointer<NativeController> guard(this);
+    const auto current = [this, guard, owner, generation, ticket] {
+        return guard && authenticated() && owner == creationOwnerKey()
+            && generation == m_api->generation() && ticket == m_folderMutationTicket;
+    };
+    m_api->request("POST", messenger + QStringLiteral("/folders/"),
+        QJsonObject{{"title", trimmed}, {"background_color_value", static_cast<double>(quint32(backgroundColor))}}, {},
+        [this, current, trimmed, backgroundColor](const ApiResult &result) {
+        if (!current()) return;
+        m_folderMutationPending = false;
+        m_folderMutationKind.clear();
+        const auto row = result.data.toObject();
+        const auto uuid = row.value("uuid").toString();
+        if (!result.ok() || !result.data.isObject() || uuid.isEmpty()) {
+            m_folderMutationError = tr("Could not create folder");
+            emit folderMutationChanged();
+            return;
+        }
+        // onFoldersChanged(created={id,title,backgroundColor}) port: the
+        // server echo wins, the submitted values are the fallback.
+        FolderRow created;
+        created.uuid = uuid;
+        created.key = uuid;
+        created.title = row.value("title").toString();
+        if (created.title.isEmpty()) created.title = trimmed;
+        created.systemType = QStringLiteral("created");
+        created.color = (row.value("background_color_value").isDouble()
+            ? quint32(row.value("background_color_value").toDouble())
+            : quint32(backgroundColor)) & 0x00ffffffu;
+        bool replaced = false;
+        for (auto &existing : m_folders)
+            if (existing.uuid == created.uuid) { existing = created; replaced = true; break; }
+        if (!replaced) m_folders.append(created);
+        emit foldersChanged();
+        if (!current()) return;
+        emit sidebarStreamsChanged();
+        if (!current()) return;
+        emit folderMutationChanged();
+    });
+}
+
+void NativeController::renameFolder(const QString &folderUuid, const QString &name, int backgroundColor)
+{
+    if (!authenticated() || m_folderMutationPending) return;
+    const auto owner = creationOwnerKey();
+    if (owner.isEmpty()) return;
+    const auto trimmed = sourceTrimmed(name);
+    if (trimmed.isEmpty() || !boundedText(trimmed, 201)) return;
+    int position = -1;
+    for (int i = 0; i < m_folders.size(); ++i)
+        if (m_folders.at(i).uuid == folderUuid || m_folders.at(i).key == folderUuid) { position = i; break; }
+    const auto generation = m_api->generation(), ticket = ++m_folderMutationTicket;
+    m_folderMutationOwner = owner;
+    m_folderMutationGeneration = generation;
+    m_folderMutationKind = QStringLiteral("rename");
+    // Context-menu gating port (folder-rail-context-menu.lib.ts): rename is
+    // disabled for system folders and synthesized slots; an unknown id is a
+    // stale menu. The reference surfaces the toast default on that path, so
+    // the rejection settles immediately with folder.updateFailed.
+    const bool mutableRow = position >= 0
+        && m_folders.at(position).systemType == QLatin1String("created")
+        && !m_folders.at(position).synthesized;
+    if (!mutableRow) {
+        m_folderMutationPending = false;
+        m_folderMutationError = tr("Could not update folder");
+        emit folderMutationChanged();
+        return;
+    }
+    m_folderMutationError.clear();
+    m_folderMutationPending = true;
+    emit folderMutationChanged();
+    const auto uuid = m_folders.at(position).uuid;
+    const QPointer<NativeController> guard(this);
+    const auto current = [this, guard, owner, generation, ticket] {
+        return guard && authenticated() && owner == creationOwnerKey()
+            && generation == m_api->generation() && ticket == m_folderMutationTicket;
+    };
+    m_api->request("PUT", messenger + QStringLiteral("/folders/") + uuid,
+        QJsonObject{{"title", trimmed}, {"background_color_value", static_cast<double>(quint32(backgroundColor))}}, {},
+        [this, current, position, trimmed, backgroundColor](const ApiResult &result) {
+        if (!current()) return;
+        m_folderMutationPending = false;
+        m_folderMutationKind.clear();
+        const auto row = result.data.toObject();
+        if (!result.ok() || !result.data.isObject()) {
+            m_folderMutationError = tr("Could not update folder");
+            emit folderMutationChanged();
+            return;
+        }
+        // The row identity never moves; membership (streamIds) and selection
+        // survive untouched, so the scoped sidebar keeps working.
+        if (position < m_folders.size()) {
+            auto &target = m_folders[position];
+            const auto title = row.value("title").toString();
+            if (!title.isEmpty()) target.title = title;
+            if (row.value("background_color_value").isDouble())
+                target.color = quint32(row.value("background_color_value").toDouble()) & 0x00ffffffu;
+            else target.color = quint32(backgroundColor) & 0x00ffffffu;
+        }
+        emit foldersChanged();
+        if (!current()) return;
+        emit folderMutationChanged();
+    });
+}
+
+void NativeController::deleteFolder(const QString &folderUuid)
+{
+    if (!authenticated() || m_folderMutationPending) return;
+    const auto owner = creationOwnerKey();
+    if (owner.isEmpty()) return;
+    int position = -1;
+    for (int i = 0; i < m_folders.size(); ++i)
+        if (m_folders.at(i).uuid == folderUuid || m_folders.at(i).key == folderUuid) { position = i; break; }
+    const auto generation = m_api->generation(), ticket = ++m_folderMutationTicket;
+    m_folderMutationOwner = owner;
+    m_folderMutationGeneration = generation;
+    m_folderMutationKind = QStringLiteral("delete");
+    const bool mutableRow = position >= 0
+        && m_folders.at(position).systemType == QLatin1String("created")
+        && !m_folders.at(position).synthesized;
+    if (!mutableRow) {
+        m_folderMutationPending = false;
+        m_folderMutationError = tr("Could not delete folder");
+        emit folderMutationChanged();
+        return;
+    }
+    m_folderMutationError.clear();
+    m_folderMutationPending = true;
+    emit folderMutationChanged();
+    const auto uuid = m_folders.at(position).uuid;
+    const QPointer<NativeController> guard(this);
+    const auto current = [this, guard, owner, generation, ticket] {
+        return guard && authenticated() && owner == creationOwnerKey()
+            && generation == m_api->generation() && ticket == m_folderMutationTicket;
+    };
+    m_api->request("DELETE", messenger + QStringLiteral("/folders/") + uuid, QJsonObject{}, {},
+        [this, current, uuid](const ApiResult &result) {
+        if (!current()) return;
+        m_folderMutationPending = false;
+        m_folderMutationKind.clear();
+        if (!result.ok()) {
+            m_folderMutationError = tr("Could not delete folder");
+            emit folderMutationChanged();
+            return;
+        }
+        // onFoldersChanged(deletedFolderId) port: drop the row; the effective
+        // selection falls back to All through selectedFolder()'s resolution.
+        for (auto it = m_folders.begin(); it != m_folders.end();)
+            if (it->uuid == uuid) it = m_folders.erase(it); else ++it;
+        if (m_selectedFolder == uuid) m_selectedFolder.clear();
+        emit foldersChanged();
+        if (!current()) return;
+        emit sidebarStreamsChanged();
+        if (!current()) return;
+        emit folderMutationChanged();
+    });
 }
 
 void NativeController::setSidebarSearchQuery(const QString &query)

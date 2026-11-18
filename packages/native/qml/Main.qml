@@ -3150,9 +3150,19 @@ ApplicationWindow {
                 id: folderCellPointer
                 objectName: "folder-" + String(folderCell.folder.key)
                 anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: { root.controller.closeDrafts(); root.controller.selectFolder(String(folderCell.folder.key)) }
+                onClicked: (mouse) => {
+                    // Issue #84: right click opens the rename/delete menu;
+                    // selecting (left click) keeps closing drafts first.
+                    if (mouse.button === Qt.RightButton) {
+                        root.openFolderMenu(String(folderCell.folder.key),
+                            folderCellPointer.mapToItem(root.contentItem, mouse.x, mouse.y));
+                        return;
+                    }
+                    root.controller.closeDrafts(); root.controller.selectFolder(String(folderCell.folder.key));
+                }
             }
             Item {
                 id: folderCard
@@ -3235,6 +3245,466 @@ ApplicationWindow {
         // Reference handleSelectWorkspaceFolder: picking a different folder
         // clears the sidebar search query (sidebar-shell.ui.tsx:242-244).
         function onFolderSelected() { root.sidebarQuery = "" }
+        // Issue #84: the form/delete dialogs follow the reference
+        // "promise resolves true closes the modal" contract (folder-form-
+        // modal.ui.tsx): submitted && !pending settles success (close) vs
+        // failure (toast, modal stays open) exactly once per submit.
+        function onFolderAddRequested() { root.openFolderCreate() }
+        function onFolderMutationChanged() {
+            const facts = root.controller.folderMutation;
+            if (folderFormDialog.submitted && !facts.pending) {
+                folderFormDialog.submitted = false;
+                if (String(facts.error || "").length) {
+                    root.folderErrorNotice = String(facts.error);
+                    folderErrorToast.open();
+                } else {
+                    folderFormDialog.close();
+                }
+            } else if (folderDeleteDialog.submitted && !facts.pending) {
+                folderDeleteDialog.submitted = false;
+                if (String(facts.error || "").length) {
+                    root.folderErrorNotice = String(facts.error);
+                    folderErrorToast.open();
+                } else {
+                    folderDeleteDialog.close();
+                }
+            }
+        }
+    }
+
+    // Static swatch chrome for the folder form's color row. The Repeater
+    // variant left its delegates parented to an orphan popup content copy
+    // (Qt 6.10 Popup lazy instantiation), so the eight presets are explicit
+    // instances of one inline component instead.
+    component FolderSwatch: Button {
+        id: swatchButton
+        required property real colorValue
+        property bool selected: false
+        width: 36; height: 36; padding: 0
+        Accessible.name: qsTr("Color") + " " + String(colorValue)
+        background: Rectangle {
+            radius: 18
+            color: Qt.rgba(
+                ((swatchButton.colorValue >>> 16) & 0xff) / 255,
+                ((swatchButton.colorValue >>> 8) & 0xff) / 255,
+                (swatchButton.colorValue & 0xff) / 255, 1.0)
+            border.width: 1
+            border.color: swatchButton.selected ? root.colors["text-primary"] : root.colors["border-subtle"]
+        }
+        contentItem: Item {
+            // ring-2 ring-accent-soft on the selected swatch.
+            Rectangle {
+                anchors.centerIn: parent
+                width: 28; height: 28; radius: 14
+                border.width: 2; border.color: root.colors["accent-soft"]
+                color: "transparent"
+                visible: swatchButton.selected
+            }
+        }
+    }
+
+    // Issue #84 (docs/NATIVE_DESKTOP_FOLDERS.md): rail CRUD surfaces. The
+    // form modal internals are the port of workspace_ui 61dacef7
+    // folder-form-modal.ui.tsx: name field focused on open (timeout 0), 8
+    // round 36 px swatches with 10 px gap and the measured preset list,
+    // preview chip at 12 % alpha of the selected color, submit gated on
+    // non-empty name and, in edit mode, on an actual change.
+    readonly property var folderColorPresets: [0xff2563eb, 0xff4f46e5, 0xff0d9488, 0xff059669,
+        0xfff59e0b, 0xffdc2626, 0xff6b7280, 0xff334155]
+    property string folderMenuTargetKey: ""
+    property string folderFormMode: "create"
+    property string folderFormTargetId: ""
+    property string folderFormInitialName: ""
+    property var folderFormInitialColor: 0xff2563eb
+    property string folderErrorNotice: ""
+    function folderMenuRow() {
+        for (const row of root.controller.folders)
+            if (String(row.key) === root.folderMenuTargetKey || String(row.id) === root.folderMenuTargetKey)
+                return row;
+        return null;
+    }
+    readonly property bool folderMenuCanEdit: {
+        const row = root.folderMenuRow();
+        return !!row && String(row.systemType) === "created" && !row.synthesized;
+    }
+    function openFolderCreate() {
+        if (!root.controller.authenticated) return;
+        root.folderFormMode = "create";
+        root.folderFormTargetId = "";
+        root.folderFormInitialName = "";
+        root.folderFormInitialColor = root.folderColorPresets[0];
+        folderFormDialog.open();
+    }
+    function openFolderRename() {
+        const row = root.folderMenuRow();
+        if (!row || !root.folderMenuCanEdit) return;
+        root.folderFormMode = "edit";
+        root.folderFormTargetId = String(row.id);
+        root.folderFormInitialName = String(row.title || "");
+        const rgb = Number(row.color || 0);
+        let matched = root.folderColorPresets[0];
+        for (const preset of root.folderColorPresets)
+            if ((preset & 0xffffff) === rgb) matched = preset;
+        // A color outside the presets (or All's 0) is carried through as the
+        // RGB value with full alpha so a rename never repaints it silently.
+        if (rgb !== 0 && !root.folderColorPresets.some(p => (p & 0xffffff) === rgb))
+            matched = 4278190080 + rgb;
+        root.folderFormInitialColor = matched;
+        folderFormDialog.open();
+    }
+    function openFolderDelete() {
+        const row = root.folderMenuRow();
+        if (!row || !root.folderMenuCanEdit) return;
+        folderDeleteDialog.targetId = String(row.id);
+        folderDeleteDialog.targetTitle = String(row.title || "");
+        folderDeleteDialog.open();
+    }
+    function openFolderMenu(key, point) {
+        if (!root.controller.authenticated) return;
+        root.folderMenuTargetKey = key;
+        folderContextMenu.popup(point);
+    }
+
+    Popup {
+        id: folderFormDialog
+        objectName: "folderFormDialog"
+        property bool submitted: false
+        property real colorValue: 0xff2563eb
+        readonly property bool pending: Boolean(root.controller.folderMutation.pending)
+        readonly property bool hasName: folderNameField.text.trim().length > 0
+        readonly property bool noChanges: root.folderFormMode === "edit"
+            && folderNameField.text.trim() === root.folderFormInitialName.trim()
+            && colorValue === root.folderFormInitialColor
+        readonly property color selectedColor: Qt.rgba(
+            ((colorValue >>> 16) & 0xff) / 255, ((colorValue >>> 8) & 0xff) / 255,
+            (colorValue & 0xff) / 255, 1.0)
+        function submit() {
+            if (pending || !hasName || noChanges) return;
+            submitted = true;
+            if (root.folderFormMode === "create")
+                root.controller.createFolder(folderNameField.text.trim(), colorValue);
+            else
+                root.controller.renameFolder(root.folderFormTargetId, folderNameField.text.trim(), colorValue);
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(448, root.width - 32)
+        padding: 1
+        modal: true
+        dim: true
+        focus: true
+        closePolicy: pending ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#80000000" }
+        background: Rectangle {
+            radius: 10
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        onOpened: {
+            submitted = false;
+            if (root.folderFormMode === "create") {
+                folderNameField.text = "";
+                colorValue = root.folderColorPresets[0];
+            } else {
+                folderNameField.text = root.folderFormInitialName;
+                colorValue = root.folderFormInitialColor;
+            }
+            // Reference autofocus on open with a timeout-0 (folder-form-modal).
+            Qt.callLater(function() { folderNameField.forceActiveFocus(Qt.PopupFocusReason); });
+        }
+        onClosed: submitted = false
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text {
+                text: root.folderFormMode === "create" ? qsTr("Create folder") : qsTr("Rename folder")
+                textFormat: Text.PlainText
+                font.pixelSize: 16; font.weight: Font.DemiBold
+                color: root.colors["text-primary"]
+                Layout.fillWidth: true
+            }
+            NativeField {
+                id: folderNameField
+                objectName: "folderNameField"
+                colors: root.colors
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                placeholderText: qsTr("Folder name")
+                Accessible.name: qsTr("Folder name")
+                maximumLength: 200
+                enabled: !folderFormDialog.pending
+                selectByMouse: true
+                onAccepted: folderFormDialog.submit()
+            }
+            ColumnLayout {
+                spacing: 8
+                Layout.fillWidth: true
+                Text {
+                    text: qsTr("Color"); textFormat: Text.PlainText
+                    font.pixelSize: 12; font.weight: Font.Medium
+                    color: root.colors["text-muted"]
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    FolderSwatch { objectName: "folderSwatch-0"
+                        colorValue: root.folderColorPresets[0]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-1"
+                        colorValue: root.folderColorPresets[1]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-2"
+                        colorValue: root.folderColorPresets[2]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-3"
+                        colorValue: root.folderColorPresets[3]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-4"
+                        colorValue: root.folderColorPresets[4]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-5"
+                        colorValue: root.folderColorPresets[5]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-6"
+                        colorValue: root.folderColorPresets[6]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                    FolderSwatch { objectName: "folderSwatch-7"
+                        colorValue: root.folderColorPresets[7]
+                        selected: folderFormDialog.colorValue === colorValue
+                        onClicked: folderFormDialog.colorValue = colorValue }
+                }
+                Rectangle {
+                    objectName: "folderPreviewChip"
+                    Layout.alignment: Qt.AlignLeft
+                    color: Qt.rgba(folderFormDialog.selectedColor.r, folderFormDialog.selectedColor.g,
+                        folderFormDialog.selectedColor.b, 0.12)
+                    radius: 8
+                    border.width: 1
+                    border.color: root.colors["border-subtle"]
+                    height: 33
+                    width: folderPreviewRow.implicitWidth + 24
+                    RowLayout {
+                        id: folderPreviewRow
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Image {
+                            source: "qrc:/workspace/icons/folder.svg"
+                            sourceSize: Qt.size(16, 16)
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            objectName: "folderPreviewText"
+                            text: folderNameField.text.trim() || qsTr("Preview")
+                            textFormat: Text.PlainText
+                            font.pixelSize: 12
+                            color: root.colors["text-muted"]
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                StatusActionButton {
+                    objectName: "folderFormCancel"
+                    horizontalPadding: 16
+                    text: qsTr("Cancel")
+                    enabled: !folderFormDialog.pending
+                    onClicked: folderFormDialog.close()
+                }
+                StatusActionButton {
+                    id: folderFormSubmit
+                    objectName: "folderFormSubmit"
+                    horizontalPadding: 16
+                    text: root.folderFormMode === "create" ? qsTr("Create") : qsTr("Save")
+                    primary: true
+                    enabled: !folderFormDialog.pending && folderFormDialog.hasName
+                        && !folderFormDialog.noChanges
+                    contentItem: RowLayout {
+                        spacing: 8
+                        opacity: folderFormSubmit.enabled ? 1 : 0.5
+                        StatusSpinner { visible: folderFormDialog.pending; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
+                        Text {
+                            text: folderFormSubmit.text; textFormat: Text.PlainText
+                            color: root.colors["on-accent"]; font.pixelSize: 14; font.weight: Font.Medium
+                        }
+                    }
+                    onClicked: folderFormDialog.submit()
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: folderDeleteDialog
+        objectName: "folderDeleteDialog"
+        property string targetId: ""
+        property string targetTitle: ""
+        property bool submitted: false
+        readonly property bool pending: Boolean(root.controller.folderMutation.pending)
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(448, root.width - 32)
+        padding: 24
+        modal: true
+        dim: true
+        focus: true
+        closePolicy: pending ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#80000000" }
+        background: Rectangle {
+            radius: 10
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        onClosed: submitted = false
+        contentItem: Column {
+            spacing: 16
+            Text {
+                objectName: "folderDeleteTitle"
+                width: parent.width
+                text: qsTr("Delete folder?")
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 18; font.weight: Font.DemiBold
+                color: root.colors["text-primary"]
+            }
+            Text {
+                objectName: "folderDeleteDescription"
+                width: parent.width
+                text: qsTr("Are you sure you want to delete \"%1\"?").arg(folderDeleteDialog.targetTitle)
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                font.pixelSize: 14
+                color: root.colors["text-primary"]
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 8
+                StatusActionButton {
+                    objectName: "folderDeleteCancel"
+                    horizontalPadding: 16
+                    text: qsTr("Cancel")
+                    enabled: !folderDeleteDialog.pending
+                    onClicked: folderDeleteDialog.close()
+                }
+                Button {
+                    id: folderDeleteConfirm
+                    objectName: "folderDeleteConfirm"
+                    text: qsTr("Delete")
+                    enabled: !folderDeleteDialog.pending
+                    hoverEnabled: true
+                    padding: 0
+                    contentItem: RowLayout {
+                        spacing: 8
+                        opacity: folderDeleteConfirm.enabled ? 1 : 0.6
+                        StatusSpinner { visible: folderDeleteDialog.pending; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
+                        Text {
+                            text: folderDeleteConfirm.text; textFormat: Text.PlainText
+                            color: root.colors["notice-base"]; font.pixelSize: 14; font.weight: Font.Medium
+                        }
+                    }
+                    background: Rectangle {
+                        radius: 8
+                        color: Qt.rgba(root.colors["notice-base"].r, root.colors["notice-base"].g,
+                            root.colors["notice-base"].b, folderDeleteConfirm.hovered && folderDeleteConfirm.enabled ? 0.2 : 0.1)
+                    }
+                    leftPadding: 16; rightPadding: 16; topPadding: 8; bottomPadding: 8
+                    onClicked: {
+                        if (folderDeleteDialog.pending) return;
+                        folderDeleteDialog.submitted = true;
+                        root.controller.deleteFolder(folderDeleteDialog.targetId);
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: folderErrorToast
+        objectName: "folderErrorToast"
+        readonly property color noticeColor: root.colors["notice-base"]
+        parent: Overlay.overlay
+        x: root.width - width - 16
+        y: 16
+        z: 10000
+        width: Math.min(384, root.width - 32)
+        leftPadding: 16; rightPadding: 16; topPadding: 12; bottomPadding: 12
+        closePolicy: Popup.NoAutoClose
+        modal: false
+        focus: false
+        background: Rectangle {
+            radius: 8
+            color: Qt.rgba(folderErrorToast.noticeColor.r, folderErrorToast.noticeColor.g,
+                folderErrorToast.noticeColor.b, 0.1)
+            border.color: Qt.rgba(folderErrorToast.noticeColor.r, folderErrorToast.noticeColor.g,
+                folderErrorToast.noticeColor.b, 0.4)
+        }
+        contentItem: RowLayout {
+            spacing: 8
+            Text {
+                objectName: "folderErrorText"
+                text: root.folderErrorNotice
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+                color: root.colors["notice-base"]; font.pixelSize: 14
+                Layout.fillWidth: true
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: text
+            }
+            NativeIconButton {
+                objectName: "folderDismissError"
+                colors: root.colors; asset: "close.svg"
+                implicitWidth: 20; implicitHeight: 20
+                help: qsTr("Dismiss")
+                glyphSize: 16
+                iconColor: folderErrorToast.noticeColor
+                onClicked: folderErrorToast.close()
+            }
+        }
+        Timer { interval: 5000; running: folderErrorToast.visible; onTriggered: folderErrorToast.close() }
+    }
+
+    Menu {
+        id: folderContextMenu
+        objectName: "folderContextMenu"
+        width: 240
+        focus: true
+        topPadding: 5
+        bottomPadding: 5
+        leftPadding: 1
+        rightPadding: 1
+        modal: false
+        dim: false
+        background: Rectangle {
+            radius: 6
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        // folder-rail-context-menu.lib.ts port: rename and delete, both
+        // disabled for system folders; the layout and system-folder
+        // visibility toggles are not ported (no native rail-layout or
+        // visibility settings exist yet).
+        MessageMenuAction {
+            objectName: "folderMenuRename"
+            implicitWidth: 238
+            text: qsTr("Rename")
+            asset: "border_color.svg"
+            enabled: root.folderMenuCanEdit
+            onTriggered: root.openFolderRename()
+        }
+        MessageMenuAction {
+            objectName: "folderMenuDelete"
+            implicitWidth: 238
+            text: qsTr("Delete")
+            asset: "close.svg"
+            palette.windowText: root.colors["notice-base"]
+            enabled: root.folderMenuCanEdit
+            onTriggered: root.openFolderDelete()
+        }
     }
 
     RowLayout {

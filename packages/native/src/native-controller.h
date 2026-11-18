@@ -153,6 +153,11 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap sidebarCatalogState READ sidebarCatalogState NOTIFY sidebarCatalogStateChanged)
     Q_PROPERTY(QStringList expandedSidebarStreams READ expandedSidebarStreams NOTIFY sidebarExpansionChanged)
     Q_PROPERTY(QString selectedFolder READ selectedFolder NOTIFY foldersChanged)
+    // Issue #84: folder create/rename/delete (docs/NATIVE_DESKTOP_FOLDERS.md).
+    // Single-flight mutation projection {kind, pending, error, ticket} over
+    // the rail CRUD, guarded by owner + API generation + ticket exactly like
+    // the ownStatus update above.
+    Q_PROPERTY(QVariantMap folderMutation READ folderMutation NOTIFY folderMutationChanged)
     Q_PROPERTY(QVariantList topics READ topics NOTIFY topicsChanged)
     Q_PROPERTY(bool topicResolving READ topicResolving NOTIFY stateChanged)
     Q_PROPERTY(bool topicsComplete READ topicsComplete NOTIFY stateChanged)
@@ -526,6 +531,15 @@ public:
     Q_INVOKABLE void selectFolder(const QString &key);
     // Issue #84 will wire the creation dialog; the rail button only announces.
     Q_INVOKABLE void requestAddFolder();
+    // Issue #84 (docs/NATIVE_DESKTOP_FOLDERS.md): rail CRUD following the
+    // reference folder-rail.ui.tsx contract - POST /folders/
+    // {title, background_color_value}, PUT /folders/<uuid> with the same
+    // body, DELETE /folders/<uuid>. Only "created" rows are mutable; the
+    // result updates the rail incrementally without a full /folders/ refetch.
+    QVariantMap folderMutation() const;
+    Q_INVOKABLE void createFolder(const QString &name, int backgroundColor);
+    Q_INVOKABLE void renameFolder(const QString &folderUuid, const QString &name, int backgroundColor);
+    Q_INVOKABLE void deleteFolder(const QString &folderUuid);
     Q_INVOKABLE void openTopic(const QString &id, const QString &streamHint = {});
     // Window focus mirror for desktop notifications (Electron sends
     // window:activity from the focus/blur handlers in main.ts).
@@ -901,6 +915,7 @@ signals:
     void sidebarCatalogStateChanged();
     void folderSelected();
     void folderAddRequested();
+    void folderMutationChanged();
     void callCryptoStateChanged();
     void topicsChanged();
     void messagesChanged();
@@ -1695,6 +1710,12 @@ private:
     };
     QVector<FolderRow> m_folders;
     QString m_selectedFolder;
+    // Issue #84: single-flight folder mutation state (ownStatus pattern):
+    // kind "" | create | rename | delete, settled by owner + generation +
+    // ticket so a session switch can never apply a stale result.
+    QString m_folderMutationKind, m_folderMutationOwner, m_folderMutationError;
+    bool m_folderMutationPending = false;
+    quint64 m_folderMutationTicket = 0, m_folderMutationGeneration = 0;
     // Issue #132 channel info drawer state for the selected stream. The
     // binding rows belong to m_channelInfoStreamId; a projection read with a
     // different selection stays empty, so stale pages can never leak across
