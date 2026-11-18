@@ -30708,6 +30708,46 @@ private slots:
         preferences.attachWindow(nullptr); // quit-style immediate save mid-gate
         QCOMPARE(savedWindowBounds(path), moved);
     }
+
+    // #62 round 5 (review cid 4611449708): the enter side of the R4 release
+    // guard. On a NORMAL (non-maximized) window the WM may deliver the
+    // fullscreen configure BEFORE the fullscreen state atom, and an immediate
+    // save (aboutToQuit/detach) landing inside that transient used to persist
+    // the fullscreen rectangle as the settled normal bounds: the round-3
+    // screen-size guard only rejected the enter hop when maximized. The frame
+    // is driven deterministically the same way R3's exit case drives its
+    // transient (openbox coalesces configure+state and Qt confirms the
+    // fullscreen state locally at showFullScreen, so the natural WM order is
+    // never geometry-first): F11 starts the enter, then the fullscreen shape
+    // arrives while windowState has no FullScreen atom, then the save fires.
+    void fullscreenEnterFromNormalMidTransitionSaveKeepsNormalBounds()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        const auto screen = QGuiApplication::primaryScreen()->geometry();
+        const QRect normal(available.x() + 55, available.y() + 35, 840, 600);
+        window.setGeometry(normal);
+        QTest::qWait(700); // outlast the save debounce: settled normal on disk
+        QCOMPARE(savedWindowBounds(path), normal);
+        QTest::keyClick(&window, Qt::Key_F11); // enter starts: gate closes
+        // Transition frame: the fullscreen geometry is present while no
+        // FullScreen state atom has been reported (state is back at NoState).
+        window.showNormal();
+        window.setGeometry(screen);
+        QVERIFY(window.windowState() != Qt::WindowFullScreen);
+        preferences.attachWindow(nullptr); // the aboutToQuit seam: immediate save
+        // The transition frame must not overwrite the settled normal bounds.
+        QCOMPARE(savedWindowBounds(path), normal);
+    }
 };
 
 
