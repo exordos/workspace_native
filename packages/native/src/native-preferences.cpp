@@ -31,6 +31,14 @@ QString preferencesPath(const QString &provided)
         : provided;
 }
 
+// #62 round 2: fullscreen transition gate timing. The settle interval is how
+// long the window must sit in the transition's target state without further
+// WM movement before the gate closes and re-captures the live state; the cap
+// closes the gate with the same re-capture if the WM never delivers a stable
+// target state at all.
+constexpr int FullscreenGateSettleMs = 300;
+constexpr int FullscreenGateCapMs = 1500;
+
 QString validPalette(const QString &palette)
 {
     for (const auto *id : {"orange-warm", "blue-cold", "blue-mist", "emerald-chat"})
@@ -97,6 +105,15 @@ NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std:
     m_windowSaveTimer.setInterval(350);
     connect(&m_windowSaveTimer, &QTimer::timeout, this, &NativePreferences::saveWindow);
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &NativePreferences::saveWindow);
+    // #62 round 2: both fullscreen gate timers release through the same
+    // completion path so a gate that ends - early or capped - re-captures
+    // the live window state instead of leaving the save stale.
+    m_fullscreenGateSettle.setSingleShot(true);
+    m_fullscreenGateSettle.setInterval(FullscreenGateSettleMs);
+    connect(&m_fullscreenGateSettle, &QTimer::timeout, this, &NativePreferences::finishFullscreenGate);
+    m_fullscreenGateCap.setSingleShot(true);
+    m_fullscreenGateCap.setInterval(FullscreenGateCapMs);
+    connect(&m_fullscreenGateCap, &QTimer::timeout, this, &NativePreferences::finishFullscreenGate);
     m_conversationSaveTimer.setSingleShot(true);
     m_conversationSaveTimer.setInterval(300); // Source last-messenger-route debounce.
     connect(&m_conversationSaveTimer, &QTimer::timeout, this, &NativePreferences::saveLastConversation);
@@ -640,6 +657,11 @@ void NativePreferences::attachWindow(QWindow *window)
         m_window->removeEventFilter(this);
     }
     m_windowSaveTimer.stop();
+    // #62 round 2: an in-flight transition belongs to the window being
+    // detached; never let its gate leak onto the next one.
+    m_fullscreenGateSettle.stop();
+    m_fullscreenGateCap.stop();
+    m_fullscreenPending = false;
     m_window = window;
     if (!window) return;
     // #62: the F11 fullscreen toggle listens on the same window this
@@ -681,7 +703,8 @@ void NativePreferences::attachWindow(QWindow *window)
     if (m_windowMaximized) window->setWindowState(Qt::WindowMaximized);
     const auto geometryChanged = [this] {
         if (!m_window) return;
-        if (m_window->windowState() == Qt::WindowNoState && !m_fullscreenPending
+        if (m_fullscreenPending) { noteFullscreenGateSignal(); return; }
+        if (m_window->windowState() == Qt::WindowNoState
             && m_window->width() >= 700 && m_window->height() >= 600)
             m_normalGeometry = m_window->geometry();
         m_windowSaveTimer.start();
@@ -691,15 +714,12 @@ void NativePreferences::attachWindow(QWindow *window)
     connect(window, &QWindow::widthChanged, this, geometryChanged);
     connect(window, &QWindow::heightChanged, this, geometryChanged);
     connect(window, &QWindow::windowStateChanged, this, [this](Qt::WindowState state) {
+        if (m_fullscreenPending) { noteFullscreenGateSignal(); return; }
         if (state == Qt::WindowMaximized) m_windowMaximized = true;
-        else if (state == Qt::WindowNoState) {
-            // #62: the WM's unmaximize hop around a fullscreen transition
-            // reports WindowNoState next to the FullScreen events; those hops
-            // must not clobber the maximized flag (the reference
-            // getNormalBounds rule keeps it through fullscreen). A genuine
-            // user restore outside a transition clears it.
-            if (!m_fullscreenPending) m_windowMaximized = false;
-        }
+        // A genuine user restore clears the flag; the unmaximize hop of a
+        // fullscreen transition never reaches this handler because the gate
+        // (see toggleWindowFullscreen) is open while it passes through.
+        else if (state == Qt::WindowNoState) m_windowMaximized = false;
         m_windowSaveTimer.start();
     });
 }
@@ -750,12 +770,21 @@ void NativePreferences::toggleWindowFullscreen()
     if (!m_window) return;
     // The WM hop between FullScreen and the previous state passes through
     // WindowNoState with transition geometry (unmaximize before entering,
-    // restore before exiting). Gate the persistence guards for a moment on
-    // both directions so those transients never reach the saved normal
-    // geometry or the maximized flag - the reference getNormalBounds rule.
+    // restore before exiting). The gate keeps those transients out of the
+    // saved normal geometry and the maximized flag - the reference
+    // getNormalBounds rule - but it is directional: it closes the moment the
+    // window has sat in the state this toggle asked for for the settle
+    // interval (noteFullscreenGateSignal), and the cap only backstops a WM
+    // that never settles. Either release re-captures the live state, so a
+    // legitimate move or restore made right after the exit is persisted
+    // instead of being dropped with the transition.
+    const bool exiting = m_window->visibility() == QWindow::FullScreen;
     m_fullscreenPending = true;
-    QTimer::singleShot(1500, this, [this] { m_fullscreenPending = false; });
-    if (m_window->visibility() == QWindow::FullScreen) {
+    m_fullscreenAwaitingExit = exiting;
+    m_fullscreenExitMaximized = exiting && m_windowMaximized;
+    m_fullscreenGateSettle.stop();
+    m_fullscreenGateCap.start();
+    if (exiting) {
         // The reference toggle returns the window to the state it had before
         // fullscreen: maximized returns maximized, normal returns at the
         // saved normal geometry.
@@ -764,6 +793,41 @@ void NativePreferences::toggleWindowFullscreen()
     } else {
         m_window->showFullScreen();
     }
+}
+
+void NativePreferences::noteFullscreenGateSignal()
+{
+    // Every state/geometry signal while the gate is open. The transition is
+    // complete once the window reaches the state it was asked for and stops
+    // moving for the settle interval; any further WM movement re-arms it.
+    if (!m_window) { finishFullscreenGate(); return; }
+    const auto state = m_window->windowState();
+    const bool reachedTarget = m_fullscreenAwaitingExit
+        ? (m_fullscreenExitMaximized ? state == Qt::WindowMaximized : state == Qt::WindowNoState)
+        : state == Qt::WindowFullScreen;
+    if (reachedTarget) m_fullscreenGateSettle.start();
+    else m_fullscreenGateSettle.stop();
+}
+
+void NativePreferences::finishFullscreenGate()
+{
+    m_fullscreenGateSettle.stop();
+    m_fullscreenGateCap.stop();
+    if (!m_fullscreenPending) return;
+    m_fullscreenPending = false;
+    if (!m_window) return;
+    // Re-capture where the window actually ended up. Signals suppressed
+    // during the gate include legitimate user moves and restores that raced
+    // the transition; the live window is the only correct source, and a
+    // still-fullscreen or minimized window (cap expiry) keeps the saved
+    // normal geometry and maximized flag untouched.
+    const auto state = m_window->windowState();
+    if (state == Qt::WindowMaximized) m_windowMaximized = true;
+    else if (state == Qt::WindowNoState && m_window->width() >= 700 && m_window->height() >= 600) {
+        m_windowMaximized = false;
+        m_normalGeometry = m_window->geometry();
+    }
+    m_windowSaveTimer.start();
 }
 
 namespace {
