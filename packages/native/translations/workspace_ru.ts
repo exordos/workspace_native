@@ -2707,11 +2707,11 @@
         </message>
         <message>
             <source>%1 - In call: %2</source>
-            <translation>%1 - дзвінок: %2</translation>
+            <translation>%1 - идёт звонок: %2</translation>
         </message>
         <message>
             <source> (%1 participants)</source>
-            <translation> (%1 учасників)</translation>
+            <translation> (%1 участников)</translation>
         </message>
         <message>
             <source>Messenger</source>
