@@ -4346,8 +4346,21 @@ void NativeController::setChatHeaderVisible(bool visible)
     // the visibility binding that drives it.
     if (m_chatHeaderVisible == visible) return;
     m_chatHeaderVisible = visible;
-    if (visible)
-        QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
+    // Issue #438 review (finding 4633233517): a selection edge skipped while
+    // the header was off screen would never come back - the caption stayed
+    // absent forever. The rising visibility edge is that skipped edge's
+    // deferred half, so it re-checks the projection whenever an obligation
+    // was recorded (see ensureChatHeaderMembers). Mounting a window over an
+    // already-selected stream arms nothing: the #434-pinned budgets (also
+    // pinned by the e2ee suites) mount windows on pre-selected streams and
+    // must refetch nothing on mount, and surface blinks with no skipped edge
+    // stay silent too. The re-check is deferred so this setter never emits
+    // stateChanged synchronously into the visibility binding that drives it.
+    if (visible) {
+        m_chatHeaderVisibilityMounted = true;
+        if (m_chatHeaderDeferredEdge)
+            QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
+    }
 }
 
 void NativeController::ensureChatHeaderMembers()
@@ -4367,13 +4380,27 @@ void NativeController::ensureChatHeaderMembers()
     // into the exact-traffic fixtures and racing teardown (the abort).
     const auto *row = channelInfoStreamRow();
     if (!authenticated() || m_stream.isEmpty() || !row || row->privateStream) {
+        m_chatHeaderDeferredEdge = false; // nothing left to recover
         refreshChatHeaderMembers(); // clears the stale projection; never fetches
         return;
     }
     // Favorites replaces the header contents (#70): no member page for a
     // selection made behind the favorites surface.
-    if (!m_chatHeaderVisible || m_favoritesVisible) return;
+    if (!m_chatHeaderVisible || m_favoritesVisible) {
+        // Issue #438 review (finding 4633233517): after the header has been
+        // on screen at least once, a selection edge blocked by the surface
+        // being away (or by favorites) records the obligation so the next
+        // visibility/favorites-close edge can recover it exactly once. A
+        // pre-mount skip arms nothing: mounting a window on an already-
+        // selected stream refetches nothing (#434-pinned budgets).
+        if (m_chatHeaderVisibilityMounted
+            && (m_chatHeaderMembersStream != m_stream
+                || m_chatHeaderMembersOwner != ownerKey()))
+            m_chatHeaderDeferredEdge = true;
+        return;
+    }
     if (m_chatHeaderMembersStream == m_stream && m_chatHeaderMembersOwner == ownerKey()) return;
+    m_chatHeaderDeferredEdge = false;
     refreshChatHeaderMembers();
 }
 
@@ -7454,11 +7481,13 @@ void NativeController::leaveFavorites()
     m_favoritesError.clear();
     // Issue #438 review (finding 4633233517): closing favorites re-exposes
     // the selected channel's header without any selection edge, so it is the
-    // deferred half of a selection edge that favorites had blocked. Deferred
-    // and deduplicated exactly like the visibility edge in
-    // setChatHeaderVisible: an ordinary activation that leaves favorites on
-    // its own edge already requests the page before this re-check runs.
-    QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
+    // deferred half of a selection edge that favorites had blocked. Only a
+    // recorded obligation is recovered, and it is deferred and deduplicated
+    // exactly like the visibility edge in setChatHeaderVisible: an ordinary
+    // activation that leaves favorites on its own edge already requests the
+    // page before this re-check runs.
+    if (m_chatHeaderDeferredEdge)
+        QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
 }
 
 void NativeController::runFavoritesFlow()

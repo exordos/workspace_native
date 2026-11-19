@@ -1817,6 +1817,12 @@ private:
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
     bool m_chatHeaderVisible = false;
+    // Issue #438 review (finding 4633233517): has the header surface ever
+    // been on screen? Pre-mount selection skips arm nothing; only skips
+    // after the first mount record a deferred recovery obligation, cleared
+    // when the current selection claims its page (or is unselected).
+    bool m_chatHeaderVisibilityMounted = false;
+    bool m_chatHeaderDeferredEdge = false;
     quint64 m_chatHeaderMembersTicket = 0;
     // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
     // membership event that lands while a member page load is in flight is
