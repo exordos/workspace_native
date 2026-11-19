@@ -22350,9 +22350,13 @@ private slots:
         QVERIFY2(!channel.isEmpty(), "channel row missing from the sidebar projection");
         QCOMPARE(channel.value("displayedUnread").toInt(), 5);
         QVERIFY(!channel.value("unreadPassive").toBool());
-        // The unread-mention index walks with the project bootstrap (async).
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
         QVERIFY(!channel.value("pinned").toBool());
+        // The native unread-mention index walks with the mentions surface (the existing
+        // contract the activity rail encodes: nothing walks at bootstrap); opening and
+        // closing it must light the row badge exactly like the rail badge.
+        test.controller.showMentions();
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
+        test.controller.closeMentions();
         QCOMPARE(channel.value("statusEmoji").toString(), QString{});
         QCOMPARE(channel.value("statusText").toString(), QString{});
         const auto alice = rowOf(direct);

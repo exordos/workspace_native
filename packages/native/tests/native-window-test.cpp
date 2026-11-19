@@ -10589,6 +10589,165 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    // docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md (issue #96): the direct-chat row renders the
+    // partner status emoji + status text on the title line (the status text truncates first
+    // so the name keeps its full width), the meta column shows the 12 px pin only for chats
+    // pinned in the active folder view, the @ mention badge only for an unread personal
+    // mention, and the passive (muted) unread renders with the gray notice-disable badge
+    // variant while the active unread keeps the accent one. Colors are the blue-cold light
+    // palette of qml/NativeTheme.qml: badge-bg #7087ff, notice-disable #989898. Both locales
+    // run the scene to prove the row introduces no translated strings at all.
+    void sidebarDirectRowStatusPinMentionAndPassiveBadge_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("english") << QStringLiteral("en");
+        QTest::newRow("russian") << QStringLiteral("ru");
+    }
+
+    void sidebarDirectRowStatusPinMentionAndPassiveBadge()
+    {
+        QFETCH(QString, locale);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const QString direct = QStringLiteral("96000000-0000-4000-8000-960000000001");
+        const QString mentionUuid = QStringLiteral("81000000-0000-4000-8000-0000000000f1");
+        const QString statusText =
+            QStringLiteral("Out of office until Friday of the coming week, back on Monday");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/folders/")) {
+                // The server All folder carries the folder items: the direct chat is pinned
+                // there via pinned_at, the channel stays unpinned.
+                return Response{QJsonArray{QJsonObject{
+                    {"uuid", QStringLiteral("00000000-0000-0000-0000-000000000000")},
+                    {"title", QStringLiteral("All chats")}, {"system_type", QStringLiteral("all")},
+                    {"unread_count", 0},
+                    {"folder_items", QJsonArray{
+                        QJsonObject{{"uuid", QStringLiteral("fi-pinned")}, {"stream_uuid", direct},
+                            {"chat_type", QStringLiteral("direct")},
+                            {"pinned_at", QStringLiteral("2026-01-05T10:00:00Z")}},
+                        QJsonObject{{"uuid", QStringLiteral("fi-channel")}, {"stream_uuid", streamId},
+                            {"chat_type", QStringLiteral("channel")},
+                            {"pinned_at", QJsonValue::Null}}}}}}};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("mentioned") == QLatin1String("true")) {
+                // The unread-mention index walk: exactly one unread mention, in the direct chat.
+                auto row = message(QStringLiteral("Ping me about the design review"),
+                    mentionUuid, topicId);
+                row["stream_uuid"] = direct;
+                row["mentioned"] = true;
+                row["read"] = false;
+                return Response{QJsonArray{row}};
+            }
+            auto response = fallback(request);
+            if (request.method != "GET") return response;
+            if (path.endsWith("/users/")) {
+                QJsonArray patched;
+                for (const auto &value : response.data.toArray()) {
+                    auto row = value.toObject();
+                    if (row.value("uuid").toString() == channelPeer) {
+                        row["status_emoji"] = QStringLiteral("palm_tree");
+                        row["status_text"] = statusText;
+                    }
+                    patched.append(row);
+                }
+                response.data = patched;
+                return response;
+            }
+            if (path.endsWith("/streams/") && response.data.isArray()) {
+                QJsonArray rows = response.data.toArray();
+                for (int i = 0; i < rows.size(); ++i) {
+                    auto row = rows[i].toObject();
+                    if (row.value("uuid").toString() == streamId) {
+                        row["unread_count"] = 3;
+                        row["active_unread_count"] = 3;
+                        row["passive_unread_count"] = 0;
+                        rows[i] = row;
+                    }
+                }
+                auto directRow = windowChannel(direct, QStringLiteral("Alice Adams"));
+                directRow["private"] = true;
+                directRow["direct_user_uuid"] = channelPeer;
+                directRow["unread_count"] = 2;
+                directRow["active_unread_count"] = 0;
+                directRow["passive_unread_count"] = 2;
+                rows.append(directRow);
+                response.data = rows;
+                return response;
+            }
+            return response;
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath(QStringLiteral("row-states.ini")));
+        preferences.setLocale(locale); preferences.setMode(QStringLiteral("light"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Sidebar row-states window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1440,900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(),2,4000);
+        QTRY_VERIFY(visibleItem("stream-"+direct));
+        // Title line: the legacy emoji name maps to its symbol and the long status text
+        // truncates first while the name keeps its full implicit width.
+        auto *name = visibleItem("streamTitleName-"+direct); QVERIFY(name);
+        auto *status = visibleItem("streamTitleStatus-"+direct); QVERIFY(status);
+        auto *emoji = visibleItem("streamTitleEmoji-"+direct); QVERIFY(emoji);
+        QCOMPARE(emoji->property("text").toString(), QString::fromUtf8("\xF0\x9F\x8C\xB4"));
+        QCOMPARE(emoji->property("font").value<QFont>().pixelSize(),12);
+        QCOMPARE(status->property("text").toString(), statusText);
+        QCOMPARE(status->property("color").value<QColor>(), QColor("#989898"));
+        QCOMPARE(status->property("font").value<QFont>().pixelSize(),12);
+        QVERIFY2(status->width() < status->property("implicitWidth").toReal(),
+            "the status text must absorb the overflow and truncate before the name");
+        QCOMPARE(name->width(), name->property("implicitWidth").toReal());
+        // The channel row never carries the direct status items.
+        QVERIFY(!visibleItem("streamTitleStatus-"+streamId));
+        QVERIFY(!visibleItem("streamTitleEmoji-"+streamId));
+        // Meta column: the pinned direct chat shows the 12 px pin, the channel does not.
+        auto *pin = visibleItem("streamPin-"+direct); QVERIFY(pin);
+        QCOMPARE(pin->width(), 12.);
+        QVERIFY(!visibleItem("streamPin-"+streamId));
+        // The unread personal mention surfaces as the @ badge on the direct row once the
+        // unread-mention index has walked; natively that walk rides the mentions surface
+        // (the same contract the activity rail encodes), so open and close it first.
+        QTRY_VERIFY(visibleItem("activity-mentions"));
+        click(window, visibleItem("activity-mentions"));
+        QTRY_VERIFY(controller.mentionsVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(controller.activityMentionsCount() == 1, 5000);
+        click(window, visibleItem("mentionsCloseButton"));
+        QTRY_VERIFY(!controller.mentionsVisible());
+        auto *mention = visibleItem("streamMention-"+direct); QVERIFY(mention);
+        QCOMPARE(mention->property("color").value<QColor>(), QColor("#7087ff"));
+        auto *glyph = item(window->contentItem(), "streamMentionGlyph-"+direct);
+        QVERIFY(glyph);
+        QCOMPARE(glyph->property("text").toString(), QStringLiteral("@"));
+        QVERIFY(!visibleItem("streamMention-"+streamId));
+        // Passive-only unread is the gray notice-disable variant; active stays the accent one.
+        auto *passiveBadge = visibleItem("streamUnreadBadge-"+direct); QVERIFY(passiveBadge);
+        QCOMPARE(passiveBadge->property("color").value<QColor>(), QColor("#989898"));
+        auto *activeBadge = visibleItem("streamUnreadBadge-"+streamId); QVERIFY(activeBadge);
+        QCOMPARE(activeBadge->property("color").value<QColor>(), QColor("#7087ff"));
+        const QPair<QQuickItem *, QString> badgeCases[] = {
+            {passiveBadge, QStringLiteral("2")}, {activeBadge, QStringLiteral("3")}};
+        for (const auto &badgeCase : badgeCases) {
+            QString text;
+            const auto children = badgeCase.first->childItems();
+            for (auto *child : children)
+                if (child->inherits("QQuickText"))
+                    text = child->property("text").toString();
+            QCOMPARE(text, badgeCase.second);
+        }
+        const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
     void sidebarExpandsUnselectedStreamWithoutNavigating()
     {
         WindowChannelFixture fixture;
