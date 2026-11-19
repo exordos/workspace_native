@@ -163,11 +163,24 @@ void CallAwareness::requestInhibit(int generation, ServiceKind kind)
             && m_inhibitPendingKind == kind;
         if (!awaited) {
             // The call ended, or this reply landed after the deadline dropped
-            // the request as late. Anything it just granted is released at
-            // once, so an inhibitor can never outlive the request that asked
-            // for it - and the pending marker of a newer request stays put.
-            if (cookie)
+            // the request as late. A grant nobody is waiting for is released
+            // at once, so an inhibitor can never outlive the request that
+            // asked for it - and the pending marker of a newer request stays
+            // put. One exception (issue #86 review, finding 4627245017): a
+            // late grant whose call is still active is that call's only
+            // inhibitor when the fallback chain granted nothing - throwing
+            // it back would leave the active call uninhibited. Retain it and
+            // let callEnded release it normally.
+            if (cookie) {
+                const bool lateForLiveCall = generation == m_inhibitGeneration
+                    && callActive();
+                if (lateForLiveCall && !m_cookie) {
+                    m_cookie = cookie;
+                    m_inhibitService = kind;
+                    return;
+                }
                 sendUninhibit(kind, cookie);
+            }
             return;
         }
         m_inhibitPendingGeneration = -1;
@@ -184,6 +197,15 @@ void CallAwareness::requestInhibit(int generation, ServiceKind kind)
         }
         if (!callActive()) {
             sendUninhibit(kind, cookie); // the call ended after the guard check
+            return;
+        }
+        if (m_cookie) {
+            // Defensive (real buses may answer out of order): a late reply
+            // from the other service was already adopted as this call's
+            // inhibitor, so this awaited grant is the duplicate and goes
+            // straight back. The mock fixture dispatches both services on
+            // the test thread, where this ordering cannot reproduce.
+            sendUninhibit(kind, cookie);
             return;
         }
         m_cookie = cookie;

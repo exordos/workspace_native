@@ -30835,6 +30835,90 @@ private slots:
         QCOMPARE(saver.uninhibits.last(), 1901u);
     }
 
+    void lateScreenSaverGrantIsRetainedWhenTheFallbackFailed()
+    {
+        // exordy finding (review 4627245017): the client deadline marks a
+        // slow ScreenSaver reply late after InhibitCallTimeoutMs, the
+        // PowerManagement fallback finds no service on this bus, and the
+        // late ScreenSaver grant - the only inhibitor this call will ever
+        // get - used to be released the moment it landed, leaving the
+        // active call uninhibited. A late grant for a still-live call with
+        // no other inhibitor held must be retained and released only when
+        // the call ends.
+        PowerBusFixture bus("call-late-retained");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        saver.inhibitDelayMs = InhibitCallTimeoutMs + 600;
+        saver.cookie = 1933;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        // No PowerManagement.Inhibit on this bus: the fallback fired at the
+        // deadline is answered with an error at once and grants nothing.
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        awareness.callStarted("patience", 2);
+        // Past the deadline: the fallback was asked and failed; nothing is
+        // held while the ScreenSaver service is still chewing on the grant.
+        QTest::qWait(InhibitCallTimeoutMs + 200);
+        QVERIFY(awareness.callActive());
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+        // Past the late reply (it lands ~InhibitCallTimeoutMs + 600): the
+        // call adopts the late grant instead of throwing it back - no
+        // UnInhibit may be sent while the call is active and nothing else
+        // inhibits. Before the fix this released cookie 1933 immediately
+        // and the active call stayed uninhibited.
+        QTest::qWait(900);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(saver.uninhibits.size(), 0);
+        QCOMPARE(awareness.inhibitCookie(), 1933u);
+        // callEnded releases exactly that cookie, once.
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(saver.uninhibits.first(), 1933u);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+    }
+
+    void lateScreenSaverGrantIsReleasedWhenFallbackAlreadyHoldsInhibitor()
+    {
+        // The other half of the same fix: retention applies only while no
+        // other inhibitor is held. Here the PowerManagement fallback
+        // answers promptly at the deadline, so the late ScreenSaver grant
+        // is a duplicate and must still be released the moment it lands;
+        // the call ends releasing exactly the held fallback cookie.
+        PowerBusFixture bus("call-late-duplicate");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        saver.inhibitDelayMs = InhibitCallTimeoutMs + 600;
+        saver.cookie = 1944;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        PmInhibitStub pm;
+        new PmInhibitAdaptor(&pm);
+        QVERIFY(bus.exportObject("/org/freedesktop/PowerManagement/Inhibit", &pm));
+        QVERIFY(bus.claimService("org.freedesktop.PowerManagement.Inhibit"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        awareness.callStarted("fallback", 1);
+        // The deadline falls through to PowerManagement, which grants at once.
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 4242u, InhibitCallTimeoutMs + 1500);
+        // Past the late ScreenSaver reply: it lands onto a call that is
+        // already inhibited, so the extra grant is returned right away and
+        // the held fallback cookie stays put.
+        QTest::qWait(InhibitCallTimeoutMs + 900);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(saver.uninhibits.first(), 1944u);
+        QCOMPARE(awareness.inhibitCookie(), 4242u);
+        // callEnded releases exactly the held fallback cookie, once.
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(pm.uninhibits.size(), 1, 3000);
+        QCOMPARE(pm.uninhibits.first(), 4242u);
+        QCOMPARE(saver.uninhibits.size(), 1);
+    }
+
     void futureCallSurfaceInvokesTheQmlInvokables()
     {
         // The dormant service is reachable exactly through these three
