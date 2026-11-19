@@ -11036,16 +11036,30 @@ ApplicationWindow {
         // section is the stream Notifications level switch (reference
         // notificationPickerItem: heading + size-sm segmented switch, clicking a
         // level closes the menu and persists the wire mode). No hover background:
-        // the reference custom item is not a clickable row.
-        MenuItem {
+        // the reference custom item is not a clickable row. Issue #442: like the
+        // reference's type-"custom" dropdown entry it must also stay out of the
+        // menu's keyboard highlight navigation (arrow keys keep stepping rename
+        // -> new topic -> archive). QQuickMenu can only make a MenuItem the
+        // current item, so the block is a plain Item delegate wrapper: that
+        // removes it from highlight navigation while its segment Buttons stay
+        // clickable, which a disabled MenuItem would not. The MouseArea keeps the
+        // pinned #97 fallthrough: a press that lands on the heading or on a
+        // disabled segment (inert plain-Item area, below the Column in stacking
+        // order so live segments win) closes the menu without posting anything.
+        Item {
             objectName: "streamNotificationItem"
             implicitWidth: 278
-            leftPadding: 8
-            rightPadding: 8
-            topPadding: 4
-            bottomPadding: 4
-            background: null
-            contentItem: Column {
+            implicitHeight: streamNotificationColumn.implicitHeight + 8
+            Accessible.ignored: true
+            MouseArea {
+                anchors.fill: parent
+                onClicked: streamMenu.close()
+            }
+            Column {
+                id: streamNotificationColumn
+                x: 8
+                y: 4
+                width: parent.width - 16
                 spacing: 4
                 Text {
                     objectName: "streamNotificationsHeading"
