@@ -8,6 +8,12 @@ the tray, and the folder rail recovers from a renewal-interrupted write:
   rows carry the partner status line, pinned rows show the pin marker, rows
   with an unread mention carry the mention badge, and passive-only unread
   renders the counter in the muted gray variant.
+- Muted conversations are visible at a glance: muted stream rows and topics
+  with a mute override carry the crossed-bell glyph, following topics carry
+  the follow glyph, and effectively silent rows render dimmed. The stream
+  context menu offers the reference notification levels - all messages,
+  mentions only, muted - switches them in place, and locks each switch while
+  its write is in flight.
 - The chat header shows the member and online counters for channels and
   topics under the title - singular forms handled - and the encrypted-channel
   header now gets its own member caption instead of an empty placeholder;
