@@ -31875,6 +31875,88 @@ private slots:
         QTest::keyClick(window,Qt::Key_Escape);
     }
 
+    // Issue #423: a same-owner token renewal while a folder create is in
+    // flight must settle the held operation with the retryable interrupted
+    // notice (distinct from success), keep the dialogue open with submit
+    // re-enabled, fence the old reply, and let the renewed session dispatch
+    // a fresh POST that finally closes the modal and appends the row.
+    void folderRenewalInterruptsHeldCreateAndDialogueRetries()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString createdUuid = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        MockServer server;
+        auto releases=std::make_shared<std::vector<std::function<void()>>>();
+        auto posts=std::make_shared<int>(0);
+        server.handler=[&](const Request &request)->Response{
+            const auto path=request.target.path();
+            if(request.method=="POST"&&path.endsWith("/messenger/folders/")){
+                ++*posts;
+                Response deferred{QJsonObject{{"uuid",createdUuid},
+                    {"title",request.body.value("title").toString()},
+                    {"background_color_value",request.body.value("background_color_value")}}};
+                deferred.defer=[releases](std::function<void()> send){releases->push_back(std::move(send));};
+                return deferred;
+            }
+            if(path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0x2563eb}}}};
+            if(path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if(path=="/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if(path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if(path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if(path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Folder renewal teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+folderFocus), 5000);
+        click(window,visibleItem("folderAddButton"));
+        auto *dialog=window->findChild<QObject*>("folderFormDialog"); QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->property("visible").toBool(),2000);
+        auto *nameField=visibleItem("folderNameField"); QVERIFY(nameField);
+        nameField->forceActiveFocus();
+        QInputMethodEvent typed; typed.setCommitString("Held");
+        QCoreApplication::sendEvent(nameField,&typed);
+        auto *submit=visibleItem("folderFormSubmit"); QVERIFY(submit);
+        QTRY_VERIFY_WITH_TIMEOUT(submit->isEnabled(),2000);
+        click(window,submit);
+        QTRY_VERIFY_WITH_TIMEOUT(*posts>=1,3000); // the create is in flight
+        QVERIFY(dialog->property("visible").toBool()); // the modal waits with its spinner
+        // Same-owner renewal: the replacement access token bumps the generation.
+        api.setAccessToken("synthetic-renewed-access-token");
+        // The interrupted outcome lands as the retryable notice while the
+        // dialogue stays open with submit re-enabled (promise-not-true).
+        auto *toast=window->findChild<QObject*>("folderErrorToast"); QVERIFY(toast);
+        QTRY_VERIFY_WITH_TIMEOUT(toast->property("visible").toBool(),3000);
+        QCOMPARE(visibleItem("folderErrorText")->property("text").toString(),
+            QStringLiteral("The folder change was interrupted by a session refresh. Try again."));
+        QVERIFY(dialog->property("visible").toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(submit->isEnabled(),2000);
+        // The retired reply lands on a fenced generation and settles nothing.
+        for (auto &send : *releases) send(); releases->clear();
+        QTest::qWait(250);
+        QVERIFY(dialog->property("visible").toBool());
+        // The renewed session retries: a fresh POST dispatches and settles.
+        click(window,submit);
+        QTRY_VERIFY_WITH_TIMEOUT(*posts>=2,3000);
+        for (auto &send : *releases) send();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("visible").toBool(),3000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-"+createdUuid),3000);
+    }
+
     // Review finding (cid 4616033386): the edit prefill folded a stored black
     // (background_color_value 0x00000000) into "unset" and fell back to the
     // preset-0 blue, so saving a name-only rename repainted the folder. Black
