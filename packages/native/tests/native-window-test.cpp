@@ -167,6 +167,20 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+// Issue #420: QtTest warns on any mouse event outside the window and window
+// warnings fail cases, so a click on a control inside a scrolling page body
+// must be gated on a real viewport reachability check. True when the item's
+// whole bounding box maps inside the window (top-left scene origin plus
+// size within the window extent).
+static bool itemInsideWindow(QQuickWindow *window, QQuickItem *item)
+{
+    if (!item) return false;
+    const QPointF top = item->mapToScene(QPointF(0, 0));
+    return top.x() >= 0.0 && top.y() >= 0.0
+        && top.x() + item->width() <= window->width()
+        && top.y() + item->height() <= window->height();
+}
+
 // Issue #216: a vote (or add-option) response re-projects the row through
 // replaceMessages, which rebuilds the option Repeater inside the reused row
 // delegate. Qt's async incubation of that rebuild can leave a dying delegate
@@ -30281,11 +30295,79 @@ private slots:
                  QString("Copy snapshot"));
         // Advanced snapshot collapses the pretty JSON block (325-334). The
         // collapsed block is invisible, so only the expanded one is findable.
+        // Issue #420: the memory panel (#416) makes the collected page taller
+        // than the 900 px fixture, so the toggle starts below the fold. The
+        // reference keeps it reachable with its overflow-auto document flow
+        // (logs-page.ui.tsx:309); the native body Flickable exposes the same
+        // scroll-into-view. Scroll first and assert the toggle actually maps
+        // inside the window before clicking - a blind click at off-window
+        // coordinates is not acceptable.
         QCOMPARE(page->property("advancedExpanded").toBool(), false);
         QVERIFY(!visibleItem("diagnosticsSnapshotPre"));
-        click(window, visibleItem("diagnosticsAdvancedToggle"));
+        auto *bodyFlick=visibleItem("diagnosticsContent"); QVERIFY(bodyFlick);
+        auto *advancedToggle=visibleItem("diagnosticsAdvancedToggle"); QVERIFY(advancedToggle);
+        QMetaObject::invokeMethod(bodyFlick, "scrollItemIntoView",
+                                  Q_ARG(QQuickItem*, advancedToggle));
+        const qreal scrolledContentY=bodyFlick->property("contentY").toReal();
+        QTRY_COMPARE_WITH_TIMEOUT(bodyFlick->property("contentY").toReal(), scrolledContentY, 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(itemInsideWindow(window, advancedToggle), 4000);
+        click(window, advancedToggle);
         QCOMPARE(page->property("advancedExpanded").toBool(), true);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
+    }
+
+    // Issue #420: with the memory panel (#416) the advanced snapshot toggle
+    // sits below the fold of the 900 px window fixture. The page body is a
+    // Flickable mirroring the reference's scrolling document
+    // (logs-page.ui.tsx:309), so the toggle must become reachable through
+    // page scrolling: scroll it into view, assert its box maps fully inside
+    // the viewport, then click it in-viewport and see the block expand.
+    void diagnosticsAdvancedToggleScrollsIntoViewport()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Advanced toggle teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        auto *body=visibleItem("diagnosticsContent"); QVERIFY(body);
+        auto *toggle=visibleItem("diagnosticsAdvancedToggle"); QVERIFY(toggle);
+        // The content overflows the viewport, and the toggle's unscrolled
+        // scene position sits at or below the window bottom - the exact
+        // off-window click the issue reports (mouse event at y=913).
+        const qreal bodyHeight=body->height();
+        const qreal fullContentHeight=body->property("contentHeight").toReal();
+        QVERIFY2(fullContentHeight>bodyHeight, qPrintable(QStringLiteral("content %1 body %2")
+                 .arg(fullContentHeight).arg(bodyHeight)));
+        const qreal beforeTopY=toggle->mapToScene(QPointF(0, 0)).y();
+        QVERIFY2(beforeTopY>=window->height(), qPrintable(QStringLiteral("toggle expected below the "
+                 "900 px fold, mapped at y=%1").arg(beforeTopY)));
+        // Scrolling the page Flickable brings the whole toggle inside the
+        // viewport: top edge >= 0 and bottom edge <= window height.
+        QMetaObject::invokeMethod(body, "scrollItemIntoView", Q_ARG(QQuickItem*, toggle));
+        const qreal scrolledContentY=body->property("contentY").toReal();
+        QVERIFY2(scrolledContentY>0.0, qPrintable(QStringLiteral("contentY stayed %1").arg(scrolledContentY)));
+        QTRY_COMPARE_WITH_TIMEOUT(body->property("contentY").toReal(), scrolledContentY, 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(itemInsideWindow(window, toggle), 4000);
+        const QPointF afterTop=toggle->mapToScene(QPointF(0, 0));
+        QVERIFY2(afterTop.y()>=0.0 && afterTop.y()+toggle->height()<=window->height(),
+                 qPrintable(QStringLiteral("toggle box %1..%2 outside window height %3")
+                            .arg(afterTop.y()).arg(afterTop.y()+toggle->height()).arg(window->height())));
+        // The click lands inside the window and expands the block; the
+        // expansion grows the content below the toggle, so it stays visible.
+        click(window, toggle);
+        QCOMPARE(page->property("advancedExpanded").toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
+        QVERIFY2(itemInsideWindow(window, toggle), "the toggle left the viewport after expanding");
     }
 
     // Issue #52 (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel"):
