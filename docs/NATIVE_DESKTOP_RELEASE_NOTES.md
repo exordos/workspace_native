@@ -1,3 +1,27 @@
+# Workspace Native 0.39.0 - Linux development preview
+
+The sidebar rows grow their reference state badges, the chat header reports
+membership, an active call keeps the display awake and announces itself in
+the tray, and the folder rail recovers from a renewal-interrupted write:
+
+- Sidebar stream and direct rows now mirror the reference row states: direct
+  rows carry the partner status line, pinned rows show the pin marker, rows
+  with an unread mention carry the mention badge, and passive-only unread
+  renders the counter in the muted gray variant.
+- The chat header shows the member and online counters for channels and
+  topics under the title - singular forms handled - and the encrypted-channel
+  header now gets its own member caption instead of an empty placeholder;
+  direct chats keep the partner sub-line instead.
+- While a call is active the client asks the desktop to stay awake, releasing
+  the request when the call ends even if the desktop service answers late,
+  and the tray tooltip names the ongoing call in both locales.
+- Folder operations interrupted by a session renewal no longer strand the
+  folder rail: the interrupted mutation is reconciled after re-authorization
+  - including a write that commits later than the check - so the rail
+  converges on the server state without a restart.
+
+---
+
 # Workspace Native 0.38.0 - Linux development preview
 
 The diagnostics page grows the live memory panel, the folder rail gains its
