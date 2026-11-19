@@ -9275,6 +9275,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // older page); settle its transient state so reopen/retry/load-more can
         // dispatch again under the renewed session.
         interruptFeedRequest();
+        // Issue #423: the same bump retires an in-flight folder create/rename/
+        // delete; the retired callback can never clear the admission flag, so
+        // settle the operation here with a retryable interrupted outcome.
+        interruptFolderMutation();
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
         // so report the drop here: it clears the single-probe guard and lets
@@ -12931,6 +12935,38 @@ void NativeController::requestAddFolder()
 // folder mutation is in flight at a time (ownStatus ticket guard), and a
 // settled mutation updates the rail incrementally (append / in-place
 // update / removal) instead of re-fetching the whole collection.
+// Issue #423 (docs/NATIVE_DESKTOP_FOLDERS.md "Session-renewal fencing"): a
+// generation bump retires the folder transport callback, so it can never
+// clear the single-flight admission flag. The generation-change handler
+// settles the operation here: the ticket bump keeps the retired reply fenced
+// (a late answer fails both the ticket and the captured-generation checks and
+// can never settle a newer operation or touch the rail), the released flag
+// lets the renewed session dispatch the next mutation, and - because the
+// interrupted write may or may not have been applied - the rail is
+// reconciled from the authoritative GET /folders/ instead of guessed. The
+// projected error is the retryable interrupted outcome: distinct from
+// success, it keeps the reference dialogue open (promise-not-true contract)
+// with submit re-enabled.
+void NativeController::interruptFolderMutation()
+{
+    if (!m_folderMutationPending) return;
+    const auto owner = creationOwnerKey();
+    const bool sameOwner = !owner.isEmpty() && m_folderMutationOwner == owner && authenticated();
+    ++m_folderMutationTicket;
+    m_folderMutationPending = false;
+    m_folderMutationKind.clear();
+    if (!sameOwner) { // sign-out / owner switch: the full reset owns the rest
+        m_folderMutationOwner.clear();
+        m_folderMutationError.clear();
+        emit folderMutationChanged();
+        return;
+    }
+    m_folderMutationGeneration = m_api->generation();
+    m_folderMutationError = tr("The folder change was interrupted by a session refresh. Try again.");
+    emit folderMutationChanged();
+    loadFolders();
+}
+
 QVariantMap NativeController::folderMutation() const
 {
     if (!authenticated()) return {};

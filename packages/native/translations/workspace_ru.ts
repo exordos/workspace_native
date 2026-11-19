@@ -2694,6 +2694,10 @@
         <source>Could not delete folder</source>
         <translation>Не удалось удалить папку</translation>
     </message>
+    <message>
+        <source>The folder change was interrupted by a session refresh. Try again.</source>
+        <translation>Изменение папки прервано обновлением сессии. Повторите попытку.</translation>
+    </message>
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
