@@ -110,6 +110,9 @@ class NativeController final : public QObject {
     // authentication and the selected (non-direct) stream.
     Q_PROPERTY(int chatHeaderMemberCount READ chatHeaderMemberCount NOTIFY stateChanged)
     Q_PROPERTY(int chatHeaderOnlineCount READ chatHeaderOnlineCount NOTIFY stateChanged)
+    // Issue #438: the chat header publishes whether it is actually on screen;
+    // only then may the member projection fetch pages for a new selection.
+    Q_PROPERTY(bool chatHeaderVisible READ chatHeaderVisible WRITE setChatHeaderVisible NOTIFY stateChanged)
     Q_PROPERTY(bool channelInfoIsOwner READ channelInfoIsOwner NOTIFY stateChanged)
     Q_PROPERTY(bool channelInfoLoading READ channelInfoLoading NOTIFY stateChanged)
     Q_PROPERTY(QString channelInfoNotificationMode READ channelInfoNotificationMode NOTIFY stateChanged)
@@ -374,6 +377,9 @@ public:
     // Issue #89: chat header caption counts (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md).
     int chatHeaderMemberCount() const;
     int chatHeaderOnlineCount() const;
+    // Issue #438: visibility gate for the header's member-page fetches.
+    bool chatHeaderVisible() const { return m_chatHeaderVisible; }
+    void setChatHeaderVisible(bool visible);
     bool channelInfoIsOwner() const;
     bool channelInfoLoading() const { return m_channelInfoLoading; }
     QString channelInfoNotificationMode() const;
@@ -1803,9 +1809,14 @@ private:
     void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                    QStringList accepted, QSet<QString> seenUsers);
     void applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows);
+    // Issue #438: the automatic fetch trigger, scoped the same way #434 scoped
+    // the binding-event NOTIFY: only a selection edge on an on-screen header
+    // may load member pages; the same owner+stream never refetches on its own.
+    void ensureChatHeaderMembers();
     QString m_chatHeaderMembersStream;
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
+    bool m_chatHeaderVisible = false;
     quint64 m_chatHeaderMembersTicket = 0;
     // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
     // membership event that lands while a member page load is in flight is
