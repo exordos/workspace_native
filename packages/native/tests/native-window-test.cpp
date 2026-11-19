@@ -32254,6 +32254,74 @@ private slots:
             qPrintable(QStringLiteral("height=%1 single line=%2")
                 .arg(error->height()).arg(QFontMetricsF(errorFont).height())));
     }
+
+    // Issue #85 review (cid 4623255478): the horizontal chips must not be
+    // pointer-only like the strip MouseArea. Each chip takes Tab focus in
+    // left-to-right order, Return and Space activate it, and the accessible
+    // Press action selects it, all through the same selection path a click
+    // drives (closeDrafts + selectFolder).
+    void horizontalFolderRailKeyboardAndAccessibleActivationSelectsChips()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        const auto allUuid=QStringLiteral("00000000-0000-0000-0000-000000000000");
+        const auto personalUuid=QStringLiteral("00000000-0000-0000-0000-000000000001");
+        const auto channelsUuid=QStringLiteral("00000000-0000-0000-0000-000000000002");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto target = request.target.path();
+            if (target.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid",allUuid},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",personalUuid},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",channelsUuid},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}}}};
+            if (target.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (target == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (target.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (target.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (target.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(path);
+        preferences.setLocale("en");
+        preferences.setFolderRailLayout("horizontal");
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folderRailHorizontal") && visibleItem("folder-personal"), 5000);
+        QCOMPARE(controller.selectedFolder(), allUuid);
+        // The second chip (All is pinned first, Personal is next) is a
+        // focusable control: it holds the window's active focus.
+        auto *personalChip=visibleItem("folder-personal"); QVERIFY(personalChip);
+        personalChip->forceActiveFocus(Qt::TabFocusReason);
+        QCOMPARE(window->activeFocusItem(), personalChip);
+        // Enter activates the chip like the strip click does.
+        QTest::keyClick(window,Qt::Key_Return);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
+        // Tab walks the strip left to right: Personal -> Channels.
+        auto *channelsChip=visibleItem("folder-channels"); QVERIFY(channelsChip);
+        QTest::keyClick(window,Qt::Key_Tab);
+        QCOMPARE(window->activeFocusItem(), channelsChip);
+        // Space activates too.
+        QTest::keyClick(window,Qt::Key_Space);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), channelsUuid, 2000);
+        // The chip is a Button to assistive tech and its Press action
+        // activates the same selection path.
+        auto *accessible=QAccessible::queryAccessibleInterface(personalChip); QVERIFY(accessible);
+        QCOMPARE(accessible->role(),QAccessible::Button);
+        auto *actions=accessible->actionInterface(); QVERIFY(actions);
+        QVERIFY(actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
+    }
 };
 
 
