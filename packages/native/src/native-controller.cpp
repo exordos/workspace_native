@@ -4246,6 +4246,11 @@ void NativeController::refreshChatHeaderMembers()
     // selectWorkspaceChatHeaderView returns the directPrivate view without
     // any counts.
     const auto ticket = ++m_chatHeaderMembersTicket;
+    // Issue #89 round 3 (finding 4628746243): a reload starts from a clean
+    // event log; anything the superseded load left pending is meaningless
+    // for this snapshot.
+    m_chatHeaderMembersLoading = false;
+    m_chatHeaderMembersPendingEvents.clear();
     if (!authenticated() || stream.isEmpty() || !row || row->privateStream) {
         m_chatHeaderMembersStream.clear();
         m_chatHeaderMembersOwner.clear();
@@ -4264,6 +4269,7 @@ void NativeController::refreshChatHeaderMembers()
             emit stateChanged();
         }
     }
+    m_chatHeaderMembersLoading = true;
     loadChatHeaderMembersPage(QString{}, ticket, stream, {}, {});
 }
 
@@ -4280,18 +4286,36 @@ void NativeController::loadChatHeaderMembersPage(const QString &marker, quint64 
         if (!chatHeaderMembersContext(owner, ticket, stream)) return;
         if (!result.ok() || !result.data.isArray()) {
             // A rejected page keeps the previous member set untouched; the
-            // next selection refreshes again (same rule as #132).
+            // next selection refreshes again (same rule as #132). The load
+            // has ended, so later events apply in place against the kept set.
+            m_chatHeaderMembersLoading = false;
+            m_chatHeaderMembersPendingEvents.clear();
             return;
         }
         const auto rows = result.data.toArray();
         // Same binding page contract as the channel info member pages.
-        if (!creationBindings(rows, m_session->project(), stream, &seenUsers)) return;
+        if (!creationBindings(rows, m_session->project(), stream, &seenUsers)) {
+            m_chatHeaderMembersLoading = false;
+            m_chatHeaderMembersPendingEvents.clear();
+            return;
+        }
         for (const auto &value : rows)
             accepted.append(value.toObject().value("user_uuid").toString().toLower());
         if (!result.nextMarker.isEmpty()) {
             loadChatHeaderMembersPage(QString::fromUtf8(result.nextMarker), ticket, stream, accepted, seenUsers);
             return;
         }
+        // Issue #89 round 3 (PR #432 review finding 4628746243): membership
+        // events that landed while this snapshot was in flight already moved
+        // the visible set in place; replay them onto the older page result
+        // so completion never drops them (add-if-absent / remove-if-present
+        // is idempotent when the snapshot already reflects the event).
+        for (const auto &event : std::as_const(m_chatHeaderMembersPendingEvents)) {
+            if (event.first == QLatin1String("stream_binding.deleted")) accepted.removeAll(event.second);
+            else if (!accepted.contains(event.second)) accepted.append(event.second);
+        }
+        m_chatHeaderMembersLoading = false;
+        m_chatHeaderMembersPendingEvents.clear();
         const auto changed = m_chatHeaderMemberUuids != accepted;
         m_chatHeaderMemberUuids = accepted;
         // Issue #89 round 3 (issue #434): the read-path harness pins the
@@ -4314,6 +4338,15 @@ void NativeController::applyChatHeaderMembersBindingEvent(const QString &kind, c
     if (kind == QLatin1String("stream_binding.updated")) return;
     if (!authenticated() || m_stream.isEmpty() || m_chatHeaderMembersStream != m_stream
         || m_chatHeaderMembersOwner != ownerKey()) return;
+    // Issue #89 round 3 (finding 4628746243): while a page load is in flight
+    // the same event is ALSO remembered, so the completion can reconcile the
+    // older snapshot with it (the in-place update alone is not enough).
+    if (m_chatHeaderMembersLoading) {
+        for (const auto &value : rows) {
+            const auto user = value.toObject().value("user_uuid").toString().toLower();
+            if (!user.isEmpty()) m_chatHeaderMembersPendingEvents.append({kind, user});
+        }
+    }
     QStringList next = m_chatHeaderMemberUuids;
     for (const auto &value : rows) {
         const auto user = value.toObject().value("user_uuid").toString().toLower();
