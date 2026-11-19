@@ -96,10 +96,15 @@ loader contract (`refreshChannelInfo` / `loadChannelInfoPage`):
   title line), objectName `encryptedChatHeaderCounters`.
 - Direct chats render `directConversationHeader` instead; both counter
   items are gated off and the controller never counts for direct streams.
-- Refresh trigger: a `Connections` on `selectedStreamChanged` (plus initial
-  authentication and the catalog-ready transition) calls
-  `controller.refreshChatHeaderMembers()`, keeping the projection
-  selection-scoped and zero-cost for tests that never mount the header.
+- Refresh trigger (issue #438 fix): the header publishes its on-screen state
+  through the `chatHeaderVisible` property (a `Binding` on the header item's
+  `visible`); the controller fetches a member page only when the selected
+  stream actually changes (`activateStream`'s commit with a different stream)
+  while the header is on screen and favorites is closed, and only when that
+  owner+stream has no projection yet. The original trigger - a `Connections`
+  with `onSelectedStreamChanged`/`onAuthenticatedChanged` handlers - resolved
+  to those properties' NOTIFY, which is the shared `stateChanged`, so every
+  state change re-fetched (see the #438 section below).
 
 ### Translations
 
@@ -131,3 +136,57 @@ extraction and fails on any unreviewed source.
   caption keeps the header contract (12px), not the drawer's.
 - Qt catalogs carry three ru plural forms (one/few/many), which matches the
   reference categories exactly; `other` only exists for other languages.
+
+## Issue #438: fetch scoping fix (release 0.39.0 blocker)
+
+PR #432's automatic trigger broke two gui ctest groups at tip `096110d`:
+
+- The `Connections` handlers were named `onSelectedStreamChanged` /
+  `onAuthenticatedChanged`, but `selectedStream` and `authenticated` are
+  `Q_PROPERTY`s whose NOTIFY is the shared `stateChanged`. QML resolves an
+  `on<Property>Changed` handler to that NOTIFY, so every state change in the
+  app (draft edits, presence ticks, busy flips) called
+  `refreshChatHeaderMembers()` - which re-fetched unconditionally. Window
+  fixtures that pin exact request traffic (`messageTopicReferenceUsesThe
+  CanonicalRoute`, `selectedDeletedTopicKeepsAnExplicitMainRouteUntil
+  CanonicalOpening`, `globalChannelCreationUsesVerifiedHttp`, the
+  aggregate-prepend scroll row) saw repeated `stream_bindings` GETs, and the
+  #434-pinned e2ee request budgets (exactly one binding GET per authority
+  refresh) broke for the same reason.
+- One such late completion raced a fixture teardown: a member-page response
+  was delivered into a `WindowProfileFixture` mock handler whose fallback
+  chain had already gone away, invoking an empty `std::function`
+  (`std::bad_function_call` SIGABRT after
+  `windowProfileShareLinkFetchesAndReportsFailure`).
+
+Fix (same scoping discipline as #434's NOTIFY gate, applied to the fetch):
+
+- `NativeController::ensureChatHeaderMembers()` is the only automatic
+  trigger. It runs on selection edges (an `activateStream` commit whose
+  stream differs from the previous one) and on the `authenticated` signal.
+  A member page loads only while `chatHeaderVisible` is set (a `Binding`
+  fed by the header item's effective `visible`) and favorites is closed,
+  and only when the current owner+stream has no projection yet - so
+  mounting a window, topic switches, feed/inbox overlays and hidden
+  controllers produce zero member traffic. Empty or direct selections clear
+  the projection without a request.
+- `setChatHeaderVisible` stays silent on `stateChanged`; its QML value
+  expression reads only the item's `visible` (reading any controller
+  property would loop, since they all notify through `stateChanged`).
+- The forced reloads for channel-info member mutations and the explicit
+  `refreshChatHeaderMembers()` QML entry point keep their current behavior.
+- Test migrations (the reference genuinely reads the member page when the
+  visible header opens a different conversation, exactly as the #364
+  migration treated lagging master cases): `WindowTopicLinkFixture` now
+  counts the routed `stream_bindings` GET (`routeBindingGets`/
+  `routeBindingStreams`) and pins it - one read for the destination stream
+  in `messageTopicReferenceUsesTheCanonicalRoute(cross-canonical)` and
+  `selectedDeletedTopic...(selected-deletion-opens-owned-canonical-topic)`,
+  zero elsewhere; `globalChannelCreationUsesVerifiedHttp` expects the one
+  read of the created channel (`bindingGets - initialBindings == 1`). The
+  pinned `native-native-e2ee-ui` budgets were not touched.
+- Regression coverage: `chatHeaderCountersFetchFollowsVisibleSelectionEdges`
+  (controller) pins headless silence, mount-is-not-an-edge, one page per new
+  visible selection, no refetch on re-activation, direct clear without a
+  request, and the ticket fence for a page that completes after its
+  selection was replaced (the deferred-response race behind the abort).
