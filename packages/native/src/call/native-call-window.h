@@ -131,6 +131,17 @@ public:
     // alone (jitsi-call-permissions.lib.ts grant scope, review finding 3).
     Q_INVOKABLE bool isMeetingOrigin(const QString &origin) const;
 
+    // #87 display-capture decision point for the embed surface. Qt's
+    // QWebEnginePermission carries no frame identity, so the shell models the
+    // reference frame subtree (workspace_ui 61dacef7 main.ts:996-1020):
+    // while this call is open and the embed is Ready, the live Jitsi meeting
+    // document is the live child frame; every other requesting origin is
+    // modeled as a foreign (main-frame) request, and a request explicitly
+    // flagged as main-frame is denied even when its origin matches.
+    // See docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md.
+    Q_INVOKABLE bool isDisplayCaptureRequestAllowed(bool isMainFrame,
+        const QString &requestingUrl) const;
+
     // Window-side sync for the fullscreen transition: when the hosting window
     // leaves (or enters) fullscreen outside the shell, the controller state
     // follows (review finding 4).

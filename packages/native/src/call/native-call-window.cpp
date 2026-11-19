@@ -1,5 +1,6 @@
 #include "call/native-call-window.h"
 
+#include "call/display-capture-policy.h"
 #include "call/jitsi-call.h"
 
 #include <QUrl>
@@ -303,6 +304,24 @@ bool JitsiCallWindowController::isMeetingOrigin(const QString &origin) const
     return request.scheme().compare(meeting.scheme(), Qt::CaseInsensitive) == 0
         && request.host().compare(meeting.host(), Qt::CaseInsensitive) == 0
         && effectivePort(request) == effectivePort(meeting);
+}
+
+bool JitsiCallWindowController::isDisplayCaptureRequestAllowed(bool isMainFrame,
+    const QString &requestingUrl) const
+{
+    // The frame model is deliberately minimal (see the header note): the
+    // embed surface loads only the meeting document, so the subtree is that
+    // one frame and only while it is live - an embed that never reached
+    // Ready, a failed load, or a closed call leaves no live frame and every
+    // request denies. The https rule and the main-frame denial are the pure
+    // predicate's, unchanged from the reference.
+    QList<DisplayCaptureFrame> frames;
+    if (m_mode != Closed && m_embedState == Ready && !m_roomName.isEmpty()) {
+        DisplayCaptureFrame meetingFrame;
+        meetingFrame.url = QUrl(meetingUrl());
+        frames.append(meetingFrame);
+    }
+    return isAllowedDisplayCapture(isMainFrame, QUrl(requestingUrl), frames);
 }
 
 void JitsiCallWindowController::syncFullscreen(bool fullscreen)

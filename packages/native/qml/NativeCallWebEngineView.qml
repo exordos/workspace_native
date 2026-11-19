@@ -49,6 +49,9 @@ Item {
     readonly property int permissionMediaAudioCapture: 1
     readonly property int permissionMediaVideoCapture: 2
     readonly property int permissionMediaAudioVideoCapture: 3
+    // #87: DesktopVideoCapture - the getDisplayMedia request Jitsi raises
+    // when the user starts a screen share.
+    readonly property int permissionDesktopVideoCapture: 4
 
     function grantPolicy(permission) {
         allowPolicyApplied = true
@@ -94,14 +97,30 @@ Item {
         // #251 (with the #237 contract preserved): deny-by-default allowlist
         // - microphone/camera capture (alone or combined) is granted ONLY to
         // the validated meeting origin, never to an arbitrary requesting
-        // frame; every other request (including display capture, whose
-        // source picker is #87's scope, and notifications) is denied through
-        // the real Qt permission object. Fullscreen arrives separately on
-        // fullScreenRequested, not as a capture permission.
+        // frame; every other request (notifications included) is denied
+        // through the real Qt permission object. Fullscreen arrives
+        // separately on fullScreenRequested, not as a capture permission.
+        // #87: display capture is its own branch - it is granted only to the
+        // live secure Jitsi frame through the controller's frame-subtree gate
+        // (the native counterpart of the reference
+        // isAllowedJitsiDisplayCaptureRequest, workspace_ui 61dacef7
+        // main.ts:996-1020; see docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md).
+        // Qt's QWebEnginePermission carries no frame identity, so a match
+        // against a live child frame origin is itself the proof that the
+        // request did not come from the embedding document; the gate still
+        // denies any request flagged as a main-frame request outright.
         onPermissionRequested: (permission) => {
+            const type = permission.permissionType
+            if (type === host.permissionDesktopVideoCapture) {
+                if (host.controller
+                    && host.controller.isDisplayCaptureRequestAllowed(false, permission.origin))
+                    host.grantPolicy(permission)
+                else
+                    permission.deny()
+                return
+            }
             const trusted = host.controller
                 && host.controller.isMeetingOrigin(permission.origin)
-            const type = permission.permissionType
             if (trusted && (type === host.permissionMediaAudioCapture
                 || type === host.permissionMediaVideoCapture
                 || type === host.permissionMediaAudioVideoCapture))

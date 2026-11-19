@@ -22,6 +22,12 @@
 #include "power-watcher.h"
 #include "native-call-awareness.h"
 #include "native-desktop.h"
+#include "call/native-call-window.h"
+#include "call/display-capture-policy.h"
+#include "call/screen-share-source-picker.h"
+#include <QDBusObjectPath>
+#include <QDBusVariant>
+#include <QTimer>
 #include "mock-server.h"
 
 #include <QElapsedTimer>
@@ -1706,6 +1712,76 @@ QJsonObject selfDefaultTopicDto()
     auto row = creationTopic(selfDefaultTopic, selfStreamId, "Personal notes");
     row["is_default"] = true;
     return row;
+}
+
+class PortalRequestStub;
+
+// #87: minimal org.freedesktop.portal.Desktop / Screenshot stand-in on the
+// session bus, matching the contract the picker's default transport drives:
+// PictureUri(parent_window s, options a{sv}) -> o request path, then that
+// Request object emits Response(u code, a{sv} results) whose PictureUri
+// member arrives wrapped in a variant (the QDBusVariant form).
+class PortalScreenshotStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+    QString pictureUri = QStringLiteral("file:///tmp/lane87-portal-shot.png");
+    quint32 responseCode = 0; // 0 succeeded, 1 cancelled (portal semantics)
+    QString requestPath = QStringLiteral("/org/freedesktop/portal/desktop/request/87/87");
+    int pictureUriCalls = 0;
+    PortalRequestStub *requestObject = nullptr;
+};
+
+class PortalRequestStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+};
+
+class PortalRequestAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
+public:
+    explicit PortalRequestAdaptor(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+signals:
+    void Response(quint32 code, const QVariantMap &results);
+};
+
+class PortalScreenshotAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Screenshot")
+public:
+    explicit PortalScreenshotAdaptor(PortalScreenshotStub *stub)
+        : QDBusAbstractAdaptor(stub), m_stub(stub) {}
+
+public slots:
+    QDBusObjectPath PictureUri(const QString &parentWindow, const QVariantMap &options);
+
+private:
+    PortalScreenshotStub *m_stub;
+};
+
+QDBusObjectPath PortalScreenshotAdaptor::PictureUri(const QString &parentWindow, const QVariantMap &options)
+{
+    Q_UNUSED(parentWindow)
+    Q_UNUSED(options)
+    ++m_stub->pictureUriCalls;
+    auto *request = m_stub->requestObject;
+    auto *adaptor = request->findChild<PortalRequestAdaptor *>();
+    // The portal answers after the request object path is already in the
+    // client's hands; a short delay keeps the emission ordered after the
+    // client returns from the blocking call and subscribes.
+    QTimer::singleShot(250, request, [request, adaptor, stub = m_stub] {
+        const QVariantMap results {
+            {QStringLiteral("PictureUri"), QVariant::fromValue(QDBusVariant(stub->pictureUri))}
+        };
+        adaptor->Response(stub->responseCode, results);
+    });
+    return QDBusObjectPath(m_stub->requestPath);
 }
 
 class NativeControllerTest final : public QObject {
@@ -26023,6 +26099,257 @@ private slots:
         preferences.setAuthIdleTimeout(QStringLiteral("never"));
         QVERIFY(!guard->active());
         QVERIFY(!c.isAuthGuardActive());
+    }
+
+    // ---- Issue #87 display-capture gate and share-source picker
+    // (docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md) ----
+
+    static QList<workspace::DisplayCaptureFrame> liveCaptureFrames()
+    {
+        QList<workspace::DisplayCaptureFrame> frames;
+        frames.append({QUrl(QStringLiteral("https://meet.example.com/room")), false});
+        return frames;
+    }
+
+    void displayCaptureGateDeniesMainFrameRequests()
+    {
+        const auto frames = liveCaptureFrames();
+        // The very origin of the live Jitsi child frame, but flagged as the
+        // embedding main frame: the reference handler (main.ts:1003) denies
+        // the main frame before any origin check can save it.
+        QVERIFY(!workspace::isAllowedDisplayCapture(true,
+            QUrl(QStringLiteral("https://meet.example.com/room")), frames));
+        // Without any frames at all the main frame still has no path to capture.
+        QList<workspace::DisplayCaptureFrame> empty;
+        QVERIFY(!workspace::isAllowedDisplayCapture(true,
+            QUrl(QStringLiteral("https://meet.example.com/room")), empty));
+    }
+
+    void displayCaptureGateDeniesInsecureRequestingOrigins()
+    {
+        const auto frames = liveCaptureFrames();
+        // Same host and path as the live frame, but plain http (main.ts:1009).
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("http://meet.example.com/room")), frames));
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("file:///tmp/page.html")), frames));
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("meet.example.com/room")), frames));
+        QVERIFY(!workspace::isAllowedDisplayCapture(false, QUrl(), frames));
+    }
+
+    void displayCaptureGateDeniesOriginsOutsideTheLiveFrameSubtree()
+    {
+        const auto frames = liveCaptureFrames();
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://evil.example/room")), frames));
+        // A different port is a different origin in both default-port forms.
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com:8443/room")), frames));
+        // No frames at all: nothing can match the requesting origin.
+        QList<workspace::DisplayCaptureFrame> empty;
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/room")), empty));
+    }
+
+    void displayCaptureGateDeniesDetachedFrameOrigins()
+    {
+        QList<workspace::DisplayCaptureFrame> detachedOnly;
+        detachedOnly.append({QUrl(QStringLiteral("https://meet.example.com/room")), true});
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/room")), detachedOnly));
+        // A detached match alongside a live unrelated frame still denies.
+        QList<workspace::DisplayCaptureFrame> mixed;
+        mixed.append({QUrl(QStringLiteral("https://meet.example.com/room")), true});
+        mixed.append({QUrl(QStringLiteral("https://other.example/room")), false});
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/room")), mixed));
+    }
+
+    void displayCaptureGateAllowsLiveSecureChildFrameOrigins()
+    {
+        const auto frames = liveCaptureFrames();
+        QVERIFY(workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/room")), frames));
+        // Origin equality, not path equality (main.ts:1015 compares origins).
+        QVERIFY(workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/other/path?q=1")), frames));
+        // WHATWG origin form: the default https port drops and the host is
+        // case-insensitive on both sides of the comparison.
+        QList<workspace::DisplayCaptureFrame> defaultPortFrame;
+        defaultPortFrame.append({QUrl(QStringLiteral("https://meet.example.com:443/room")), false});
+        QVERIFY(workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://MEET.example.com/room")), defaultPortFrame));
+        // A non-default port must be kept on both sides.
+        QList<workspace::DisplayCaptureFrame> altPortFrame;
+        altPortFrame.append({QUrl(QStringLiteral("https://meet.example.com:8443/room")), false});
+        QVERIFY(workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com:8443/r")), altPortFrame));
+        QVERIFY(!workspace::isAllowedDisplayCapture(false,
+            QUrl(QStringLiteral("https://meet.example.com/r")), altPortFrame));
+    }
+
+    void callWindowDisplayCaptureGateGrantsOnlyTheLiveJitsiFrame()
+    {
+        workspace::JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/workspace-87-room"));
+        call.insert(QStringLiteral("meetUrl"), QStringLiteral("https://meet.example.com"));
+        shell.open(call);
+        // Loading is not live: no frame entry exists before the embed is Ready.
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("https://meet.example.com/room")));
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Ready));
+        QVERIFY(shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("https://meet.example.com/room")));
+        // Integration negative: a mock main frame cannot obtain capture even
+        // when it carries the very meeting origin the live frame holds.
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(true,
+            QStringLiteral("https://meet.example.com/room")));
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("http://meet.example.com/room")));
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("https://evil.example/room")));
+        // Shell minimize keeps the one live embed alive, so the grant follows.
+        shell.toggleMinimize();
+        QVERIFY(shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("https://meet.example.com/room")));
+        // Closing detaches the frame subtree: no request is allowed any more.
+        shell.close();
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("https://meet.example.com/room")));
+    }
+
+    void callWindowDisplayCaptureGateStaysClosedForInsecureMeetHosts()
+    {
+        workspace::JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("http://meet.example.com/workspace-87-room"));
+        call.insert(QStringLiteral("meetUrl"), QStringLiteral("http://meet.example.com"));
+        shell.open(call);
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Ready));
+        // The https rule is absolute: a live insecure meeting frame gets no
+        // capture just because it is the live frame.
+        QVERIFY(!shell.isDisplayCaptureRequestAllowed(false,
+            QStringLiteral("http://meet.example.com/room")));
+    }
+
+    void shareSourcePickerFallsBackToTheQtScreenModelWithoutPortal()
+    {
+        workspace::ScreenShareSourcePicker picker;
+        picker.setPortalProbe([] { return false; });
+        QSignalSpy selected(&picker, &workspace::ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(selected.count(), 1);
+        const auto source = selected.at(0).at(0).toMap();
+        QVERIFY(!source.value(QStringLiteral("fromPortal")).toBool());
+        QVERIFY(!source.value(QStringLiteral("name")).toString().isEmpty());
+        // The fallback publishes exactly Qt's own screen list, so the same
+        // call is deterministic on a display without a portal.
+        QCOMPARE(int(workspace::ScreenShareSourcePicker::screenModelSources().size()),
+            int(QGuiApplication::screens().size()));
+        QVERIFY(!workspace::ScreenShareSourcePicker::screenModelSources().isEmpty());
+    }
+
+    void shareSourcePickerReportsPortalBridgeResults()
+    {
+        workspace::ScreenShareSourcePicker picker;
+        picker.setPortalProbe([] { return true; });
+        QSignalSpy selected(&picker, &workspace::ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        picker.setPortalRequest([](workspace::ScreenShareSourcePicker::Source &source,
+            QString &error) {
+            Q_UNUSED(error)
+            source.id = QStringLiteral("portal-1");
+            source.name = QStringLiteral("Whole screen");
+            source.uri = QStringLiteral("file:///tmp/lane87-bridge.png");
+            source.fromPortal = true;
+            return true;
+        });
+        picker.requestSource();
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(selected.count(), 1);
+        const auto source = selected.at(0).at(0).toMap();
+        QCOMPARE(source.value(QStringLiteral("uri")).toString(),
+            QStringLiteral("file:///tmp/lane87-bridge.png"));
+        QVERIFY(source.value(QStringLiteral("fromPortal")).toBool());
+        picker.setPortalRequest([](workspace::ScreenShareSourcePicker::Source &source,
+            QString &error) {
+            Q_UNUSED(source)
+            error = QStringLiteral("bridge rejected the pick");
+            return false;
+        });
+        picker.requestSource();
+        // The earlier success stays published; the failed pick only reports.
+        QCOMPARE(selected.count(), 1);
+        QCOMPARE(failed.count(), 1);
+        QCOMPARE(failed.at(0).at(0).toString(), QStringLiteral("bridge rejected the pick"));
+    }
+
+    void shareSourcePickerDrivesThePortalScreenshotContract()
+    {
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected())
+            QSKIP("the session bus is unavailable");
+        PortalScreenshotStub stub;
+        PortalRequestStub request;
+        auto *requestAdaptor = new PortalRequestAdaptor(&request);
+        Q_UNUSED(requestAdaptor)
+        new PortalScreenshotAdaptor(&stub);
+        stub.requestObject = &request;
+        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &stub));
+        QVERIFY(bus.registerObject(stub.requestPath, &request));
+        if (!bus.registerService(QStringLiteral("org.freedesktop.portal.Desktop")))
+            QSKIP("a real portal service owns org.freedesktop.portal.Desktop");
+        auto cleanup = qScopeGuard([&] {
+            bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
+            bus.unregisterObject(stub.requestPath);
+            bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
+        });
+        workspace::ScreenShareSourcePicker picker; // default probe and default transport
+        QSignalSpy selected(&picker, &workspace::ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        QTRY_VERIFY_WITH_TIMEOUT(selected.count() == 1 || failed.count() == 1, 8000);
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(stub.pictureUriCalls, 1);
+        const auto source = selected.at(0).at(0).toMap();
+        QCOMPARE(source.value(QStringLiteral("uri")).toString(), stub.pictureUri);
+        QVERIFY(source.value(QStringLiteral("fromPortal")).toBool());
+
+        // The portal cancel code must surface as a translated failure, not a
+        // hang and not a fallback source.
+        stub.responseCode = 1;
+        QSignalSpy failedAgain(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        QTRY_VERIFY_WITH_TIMEOUT(failedAgain.count() == 1, 8000);
+        QCOMPARE(selected.count(), 1); // only the earlier real pick; the cancel adds no source
+        QCOMPARE(stub.pictureUriCalls, 2);
+        QVERIFY(!failedAgain.at(0).at(0).toString().isEmpty());
+    }
+
+    void shareSourcePickerParsesThePortalPictureUriResultForm()
+    {
+        QString error;
+        const QVariantMap wrapped {
+            {QStringLiteral("PictureUri"), QVariant::fromValue(QDBusVariant(
+                QStringLiteral("file:///tmp/wrapped.png")))}
+        };
+        QCOMPARE(workspace::ScreenShareSourcePicker::pictureUriFromResult(wrapped, error),
+            QStringLiteral("file:///tmp/wrapped.png"));
+        QVERIFY(error.isEmpty());
+        const QVariantMap plain {{QStringLiteral("PictureUri"), QStringLiteral("file:///tmp/plain.png")}};
+        QCOMPARE(workspace::ScreenShareSourcePicker::pictureUriFromResult(plain, error),
+            QStringLiteral("file:///tmp/plain.png"));
+        const QVariantMap none;
+        QVERIFY(workspace::ScreenShareSourcePicker::pictureUriFromResult(none, error).isEmpty());
+        QVERIFY(!error.isEmpty());
     }
 
     // ---- Issue #214 polls foundation ----
