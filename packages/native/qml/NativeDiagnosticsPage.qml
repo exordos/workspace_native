@@ -1169,6 +1169,31 @@ FocusScope {
         }
     }
 
+    // Issue #420: the reference scrolls as a plain document, but a bare
+    // Flickable ignores wheel events, so this button-less overlay (the
+    // Main.qml message-list idiom) translates vertical wheel turns into
+    // content steps and keeps the event. Presses pass through (NoButton)
+    // and zero-vertical deltas propagate, so the nested table scroller
+    // still receives its horizontal turns.
+    MouseArea {
+        objectName: "diagnosticsWheelCatcher"
+        anchors.top: header.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        acceptedButtons: Qt.NoButton
+        propagateComposedEvents: true
+        onWheel: (wheel) => {
+            if (wheel.angleDelta.y === 0) {
+                wheel.accepted = false
+                return
+            }
+            const maxScroll = Math.max(0, content.contentHeight - content.height)
+            content.contentY = Math.min(maxScroll, Math.max(0, content.contentY - wheel.angleDelta.y))
+            wheel.accepted = true
+        }
+    }
+
     // ---- Issue #51: session log viewer modal ------------------------------
     // logs-view-modal.ui.tsx at 61dacef78: dialog content max-h-[85vh]
     // max-w-4xl rounded-xl border-border-subtle bg-card-bg p-0 over a

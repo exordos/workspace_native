@@ -30352,7 +30352,14 @@ private slots:
         QVERIFY2(beforeTopY>=window->height(), qPrintable(QStringLiteral("toggle expected below the "
                  "900 px fold, mapped at y=%1").arg(beforeTopY)));
         // Scrolling the page Flickable brings the whole toggle inside the
-        // viewport: top edge >= 0 and bottom edge <= window height.
+        // viewport: top edge >= 0 and bottom edge <= window height. First
+        // the user path: the reference document scrolls on wheel events, so
+        // the page body must translate vertical wheel turns into content
+        // steps (a bare Flickable would ignore them).
+        const QPointF wheelPoint=body->mapToScene(QPointF(body->width()/2.0, body->height()/2.0)).toPoint();
+        QCOMPARE(body->property("contentY").toReal(), 0.0);
+        QTest::wheelEvent(window, wheelPoint, QPoint(0, -120));
+        QTRY_VERIFY_WITH_TIMEOUT(body->property("contentY").toReal() > 0.0, 4000);
         QMetaObject::invokeMethod(body, "scrollItemIntoView", Q_ARG(QQuickItem*, toggle));
         const qreal scrolledContentY=body->property("contentY").toReal();
         QVERIFY2(scrolledContentY>0.0, qPrintable(QStringLiteral("contentY stayed %1").arg(scrolledContentY)));
