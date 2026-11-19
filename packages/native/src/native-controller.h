@@ -407,6 +407,11 @@ public:
     Q_INVOKABLE void archiveChat(const QString &id);
     Q_INVOKABLE void renameChat(const QString &id, const QString &name);
     Q_INVOKABLE void markChatRead(const QString &id);
+    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream menu
+    // level switch for any stream, not just the open one; the write contract is
+    // the chat-info switch's one (same endpoint, payload and canonical answer).
+    Q_INVOKABLE void setStreamNotificationMode(const QString &id, const QString &mode);
+    Q_INVOKABLE bool streamNotificationBusy(const QString &id) const;
     Q_INVOKABLE QVariantMap chatActionState(const QString &id) const;
     QVariantList streams() const;
     QVariantList folders() const;

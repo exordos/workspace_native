@@ -62,6 +62,13 @@
     </context>
     <context>
         <name>Main</name>
+        <!-- Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream
+             menu Notifications section, measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
+             packages/web/src/i18n/locales/ru.json (channel.* keys). -->
+        <message><source>Notifications</source><translation>Уведомления</translation></message>
+        <message><source>Mentions only</source><translation>Только при упоминаниях</translation></message>
+        <message><source>Muted</source><translation>Без уведомлений</translation></message>
+        <message><source>All messages</source><translation>Все сообщения</translation></message>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Account deactivated</source><translation>Пользователь заблокирован</translation></message>
         <!-- Issue #88 (docs/NATIVE_DESKTOP_DM_HEADER_STATUS.md): reference

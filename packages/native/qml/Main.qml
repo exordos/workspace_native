@@ -1000,6 +1000,35 @@ ApplicationWindow {
         const rows = root.controller.streams;
         return root.controller.chatActionState(streamMenuTarget);
     }
+    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream menu
+    // level switch model. Order and glyphs follow STREAM_NOTIFICATION_LEVEL_OPTIONS;
+    // direct-private streams exclude the mentions_only default level
+    // (DIRECT_PRIVATE_STREAM_NOTIFICATION_OPTIONS), matching the reference filter.
+    readonly property var streamMenuNotificationOptions: {
+        const rows = root.controller.streams;
+        const stream = root.currentStream(streamMenuTarget);
+        const options = [
+            {mode: "mentions_only", objectName: "streamMenuNotifDefault",
+             asset: "at.svg", label: qsTr("Mentions only")},
+            {mode: "muted", objectName: "streamMenuNotifMuted",
+             asset: "bell_off.svg", label: qsTr("Muted")},
+            {mode: "all_messages", objectName: "streamMenuNotifSubscribed",
+             asset: "bell.svg", label: qsTr("All messages")}
+        ];
+        if (stream && Boolean(stream.isDirect)) return options.slice(1);
+        return options;
+    }
+    // Issue #97 review (cid 4629685053): the level switch must be inactive while
+    // its target stream has a notification write in flight, because the
+    // controller silently rejects a second same-stream request. streamNotificationBusy
+    // is an invokable, so the channelInfoNotificationBusy read (NOTIFY stateChanged,
+    // which the controller emits whenever a request slot is taken or released)
+    // pins this binding to every busy transition, including ones that land while
+    // the menu is already open.
+    readonly property bool streamMenuNotificationBusy: {
+        const stateTick = root.controller.channelInfoNotificationBusy;
+        return root.streamMenuTarget !== "" && root.controller.streamNotificationBusy(root.streamMenuTarget);
+    }
     function openChatAction(mode) {
         const stream = currentStream(streamMenuTarget);
         if (!stream || !(mode === "archive" ? streamMenuState.canArchive : streamMenuState.available)) return;
@@ -4889,6 +4918,11 @@ ApplicationWindow {
                         colors: root.colors
                         objectName: "stream-" + streamDelegate.modelData.id
                         width: parent.width
+                        // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md):
+                        // the reference applies opacity-70 to a fully-muted stream
+                        // row surface (isWorkspaceStreamFullyMuted, precomputed as
+                        // modelData.fullyMuted by the controller).
+                        opacity: Boolean(streamDelegate.modelData.fullyMuted) ? 0.7 : 1.0
                         // Compact: 6 px (py-1.5) + the tallest content line; the avatar
                         // only occupies the line box in latestTopic mode at the sm size
                         // (6 + 32 + 6), the plain compact box is 6 + 20 + 6 (design doc 1.1).
@@ -5156,6 +5190,31 @@ ApplicationWindow {
                                     Row {
                                         id: streamMetaRow
                                         spacing: 4
+                                        Item {
+                                            objectName: "streamNotif-" + streamDelegate.modelData.id
+                                            // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md):
+                                            // the reference meta line's first child - a 20 px slot
+                                            // with a centered 16 px muted glyph (workspace-notification-mode
+                                            // .ui.tsx), rendered only when the stream's own mode is muted.
+                                            visible: String(streamDelegate.modelData.notificationMode || "") === "muted"
+                                            width: 20; height: 20
+                                            Accessible.ignored: true
+                                            Image {
+                                                objectName: "streamNotifGlyph-" + streamDelegate.modelData.id
+                                                anchors.centerIn: parent
+                                                width: 16; height: 16
+                                                source: "qrc:/workspace/icons/bell_off.svg"
+                                                sourceSize.width: 16
+                                                sourceSize.height: 16
+                                                asynchronous: false
+                                                layer.enabled: true
+                                                layer.effect: MultiEffect {
+                                                    colorizationColor: root.colors["text-muted"]
+                                                    colorization: 1.0
+                                                }
+                                                Accessible.ignored: true
+                                            }
+                                        }
                                         Image {
                                             objectName: "streamPin-" + streamDelegate.modelData.id
                                             visible: Boolean(streamDelegate.modelData.pinned)
@@ -5265,6 +5324,10 @@ ApplicationWindow {
                             colors: root.colors
                             objectName: "topic-" + modelData.id
                             width: streamList.width
+                            // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md):
+                            // effectively-muted topic rows (per-topic mute, or default
+                            // under a muted stream) render at opacity-70.
+                            opacity: Boolean(modelData.effectivelyMuted) ? 0.7 : 1.0
                             // Compact: py-1.5 (6 px) + the single 20 px title line, the
                             // preview line is dropped by the reference (sidebar-workspace.ui.tsx:231).
                             height: streamDelegate.compactDensity ? 32 : 56
@@ -5290,8 +5353,11 @@ ApplicationWindow {
                                 id: topicRowSurface
                                 // The reference meta column is min-w-10 with the badge on top
                                 // and the timestamp at the bottom; both share one width slot.
+                                // Issue #97: the mute indicator slot (20 px + the 4 px gap)
+                                // flows ahead of the unread badge and extends the top line.
                                 readonly property real metaWidth: Math.max(
-                                    topicUnread.visible ? topicUnread.width : 0,
+                                    (topicUnread.visible ? topicUnread.width : 0)
+                                        + (topicNotif.visible ? 24 : 0),
                                     topicTime.visible ? topicTime.implicitWidth : 0)
                                 Rectangle {
                                     objectName: "topicBar-" + topicButton.modelData.id
@@ -5374,6 +5440,47 @@ ApplicationWindow {
                                         textFormat: Text.PlainText
                                         font.pixelSize: 11
                                         color: root.colors["badge-text"]
+                                    }
+                                }
+                                Item {
+                                    id: topicNotif
+                                    objectName: "topicNotif-" + topicButton.modelData.id
+                                    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md):
+                                    // the reference indicator on the topic meta line's first
+                                    // slot, ahead of the unread badge (flex gap-1 flows it to
+                                    // the row edge when no badge/chevron is visible). Glyph per
+                                    // mapWorkspaceTopicNotificationModeToLevel; the reference
+                                    // isDirectPrivate port is the stream row's isDirect.
+                                    readonly property string glyph: {
+                                        const mode = String(topicButton.modelData.notificationMode || "")
+                                        if (mode === "mute") return "bell_off.svg"
+                                        if (mode === "unmute")
+                                            return Boolean(streamDelegate.modelData.isDirect)
+                                                ? "topic_follow.svg" : "at.svg"
+                                        if (mode === "follow") return "topic_follow.svg"
+                                        return ""
+                                    }
+                                    visible: glyph.length > 0
+                                    width: 20; height: 20
+                                    y: streamDelegate.compactDensity ? 6 : 8
+                                    anchors.right: topicUnread.visible ? topicUnread.left : topicRowSurface.right
+                                    anchors.rightMargin: topicUnread.visible ? 4 : 8
+                                    Accessible.ignored: true
+                                    Image {
+                                        objectName: "topicNotifGlyph-" + topicButton.modelData.id
+                                        anchors.centerIn: parent
+                                        width: 16; height: 16
+                                        source: topicNotif.glyph.length
+                                            ? "qrc:/workspace/icons/" + topicNotif.glyph : ""
+                                        sourceSize.width: 16
+                                        sourceSize.height: 16
+                                        asynchronous: false
+                                        layer.enabled: true
+                                        layer.effect: MultiEffect {
+                                            colorizationColor: root.colors["text-muted"]
+                                            colorization: 1.0
+                                        }
+                                        Accessible.ignored: true
                                     }
                                 }
                                 Text {
@@ -10915,6 +11022,80 @@ ApplicationWindow {
             radius: 6
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
+        }
+        // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the first
+        // section is the stream Notifications level switch (reference
+        // notificationPickerItem: heading + size-sm segmented switch, clicking a
+        // level closes the menu and persists the wire mode). No hover background:
+        // the reference custom item is not a clickable row.
+        MenuItem {
+            objectName: "streamNotificationItem"
+            implicitWidth: 278
+            leftPadding: 8
+            rightPadding: 8
+            topPadding: 4
+            bottomPadding: 4
+            background: null
+            contentItem: Column {
+                spacing: 4
+                Text {
+                    objectName: "streamNotificationsHeading"
+                    text: qsTr("Notifications")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 10
+                    font.weight: Font.Medium
+                    color: root.colors["text-muted"]
+                }
+                Rectangle {
+                    objectName: "streamNotificationSwitch"
+                    width: parent.width
+                    height: 32
+                    radius: 6
+                    color: root.colors["bg"]
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        spacing: 2
+                        Repeater {
+                            model: root.streamMenuNotificationOptions
+                            delegate: Button {
+                                required property var modelData
+                                objectName: modelData.objectName
+                                // Review cid 4629685053: a second selection while a
+                                // write for this stream is in flight would be silently
+                                // rejected, so the whole switch goes inactive for the
+                                // busy stream only (per-stream busy flag).
+                                enabled: !root.streamMenuNotificationBusy
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 28
+                                padding: 0
+                                display: AbstractButton.IconOnly
+                                property bool isCurrent: {
+                                    const rows = root.controller.streams;
+                                    const stream = root.currentStream(root.streamMenuTarget);
+                                    return stream != null
+                                        && String(stream.notificationMode || "") === String(modelData.mode);
+                                }
+                                icon.source: "qrc:/workspace/icons/" + modelData.asset
+                                icon.width: 22
+                                icon.height: 22
+                                icon.color: isCurrent ? root.colors["icon-active"] : root.colors["text-muted"]
+                                Accessible.name: modelData.label
+                                background: Rectangle {
+                                    radius: 6
+                                    color: parent.isCurrent ? root.colors["card-bg"] : "transparent"
+                                    opacity: parent.enabled ? 1.0 : 0.5
+                                }
+                                onClicked: {
+                                    const target = root.streamMenuTarget
+                                    streamMenu.close()
+                                    root.controller.setStreamNotificationMode(target, String(modelData.mode))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         MessageMenuAction {
             objectName: "streamMarkReadAction"

@@ -4075,6 +4075,53 @@ void NativeController::setChannelInfoNotificationMode(const QString &mode)
     });
 }
 
+bool NativeController::streamNotificationBusy(const QString &id) const
+{
+    return m_channelInfoNotificationInFlight.contains(id);
+}
+
+// Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the sidebar stream
+// menu's level switch. The endpoint, payload, validation and canonical-response
+// admission mirror setChannelInfoNotificationMode (reference updateStreamNotifications
+// -> POST streams/{id}/actions/notifications/invoke), but this entry point
+// addresses any stream: the store row updates even while another stream is open,
+// because the sidebar menu never changes the selection.
+void NativeController::setStreamNotificationMode(const QString &id, const QString &mode)
+{
+    const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
+        [&id](const Stream &row) { return row.uuid == id; });
+    if (!authenticated() || entry == m_streams.end()) return;
+    // One in-flight request per stream, sharing the chat-info switch's slots so
+    // both surfaces observe the same busy state for the same stream.
+    if (m_channelInfoNotificationInFlight.contains(id)) return;
+    if (entry->notificationMode.isEmpty() || entry->notificationMode == mode
+        || !channelModes.contains(mode)) return;
+    const auto owner = ownerKey();
+    const auto generation = m_api->generation();
+    const auto token = ++m_channelInfoNotificationToken;
+    m_channelInfoNotificationInFlight.insert(id, token);
+    emit stateChanged();
+    request("POST", messenger + "/streams/" + id + "/actions/notifications/invoke",
+        QJsonObject{{"notification_mode", mode}}, {},
+        [this, owner, generation, id, token](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
+        if (m_channelInfoNotificationInFlight.value(id) != token) return;
+        m_channelInfoNotificationInFlight.remove(id);
+        const auto parsed = result.ok() && result.data.isObject()
+            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
+        const auto current = std::find_if(m_streams.begin(), m_streams.end(),
+            [&id](const Stream &row) { return row.uuid == id; });
+        if (!parsed || parsed->uuid != id || current == m_streams.end()) {
+            // Failed or foreign answer: release the slot and keep the old level.
+            emit stateChanged();
+            return;
+        }
+        *current = *parsed;
+        emit streamsChanged();
+        emit stateChanged();
+    });
+}
+
 void NativeController::removeChannelInfoMember(const QString &bindingUuid)
 {
     const auto *stream = channelInfoStreamRow();
@@ -9207,6 +9254,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         &NativeController::sidebarCatalogStateChanged);
     connect(this, &NativeController::sidebarStreamsChanged, this,
         &NativeController::sidebarCatalogStateChanged);
+    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): a stream row's
+    // mute rank and fully-muted dim depend on its topics' notification modes, so
+    // a topic catalog change re-publishes the sidebar rows (the sidebarCatalogState
+    // edge above is downstream and never requests topics: no cycle).
+    connect(this, &NativeController::topicsChanged, this,
+        &NativeController::sidebarStreamsChanged);
     m_connectionCountdown.setInterval(1000);
     connect(&m_connectionCountdown, &QTimer::timeout, this, [this] {
         if (m_rateLimitedUntilMs <= QDateTime::currentMSecsSinceEpoch()) {
@@ -12833,6 +12886,12 @@ QVariantList NativeController::streams() const
             row["statusText"] = QString{};
         }
         row["pinned"] = false;
+        // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the row mute
+        // projection. The indicator rides the raw stream mode (visible when it is
+        // "muted"); the 0.7 dim rides isWorkspaceStreamFullyMuted, which is exactly
+        // the streamGroupRank mute rank (muted with no explicitly un-muted topic).
+        row["notificationMode"] = stream.notificationMode;
+        row["fullyMuted"] = streamGroupRank(stream) == 1;
         // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md): same
         // resolveAvatarBackgroundColor derivation as the drafts surface below
         // in draftPage(); direct rows never carry a stream color.
@@ -13670,6 +13729,12 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
             {"unread", topic->unread}, {"activeUnread", topic->activeUnread}, {"passiveUnread", topic->passiveUnread},
             {"lastMessage", topic->lastMessage}, {"done", topic->done},
             {"activityMicros", timestamps.value(topic->lastMessage, topic->updatedMicros)}};
+        // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the raw topic
+        // mode drives the indicator glyph (mute/unmute/follow render, default not);
+        // effectivelyMuted is isWorkspaceTopicEffectivelyMuted - the same predicate
+        // the rank lambda above ranks.
+        row.insert(QStringLiteral("notificationMode"), topic->notificationMode);
+        row.insert(QStringLiteral("effectivelyMuted"), rank(topic) == 1);
         row.insert(rowPreviewFields(topic->lastMessage));
         result.append(row);
     }

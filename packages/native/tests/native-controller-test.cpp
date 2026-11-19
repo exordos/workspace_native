@@ -31624,6 +31624,94 @@ private slots:
         QCOMPARE(moreChanges.count(), 0);
         QCOMPARE(bindingRequests, baselineRequests + 2);
     }
+
+    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the sidebar stream
+    // menu writes notification_mode through the same invoke endpoint, payload and
+    // canonical-response rules as the chat-info switch, and it must also work for a
+    // stream that is not the selected one: one request per level change, a per-stream
+    // busy slot that rejects repeats while in flight, same-level no-ops, and the
+    // streams()/topics() row projection of the mute state.
+    void streamNotificationModeWritePathTargetsAnyStream()
+    {
+        Fixture f;
+        QJsonObject primary = creationChannel(streamId, "Muted board");
+        primary["notification_mode"] = "muted";
+        QJsonObject target = creationChannel(archiveId, "Silent channel");
+        QJsonArray served{primary, target};
+        f.streams = [&served](const Request &) { return Response{served}; };
+        QJsonObject defaultTopic = creationTopic(topicId, streamId, "Native topic");
+        defaultTopic["notification_mode"] = "default";
+        QJsonObject followed = creationTopic(secondTopicId, streamId, "Followed topic");
+        followed["is_default"] = false; followed["notification_mode"] = "follow";
+        f.topics = [&defaultTopic, &followed](const Request &) {
+            return Response{QJsonArray{defaultTopic, followed}};
+        };
+        int posts = 0; QString postPath; QJsonObject postBody;
+        std::function<void()> release;
+        const auto original = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path().endsWith("/actions/notifications/invoke")) {
+                ++posts; postPath = request.target.path(); postBody = request.body;
+                target["notification_mode"] = request.body.value("notification_mode");
+                target["updated_at"] = "2026-01-02T11:00:00Z";
+                served = QJsonArray{primary, target};
+                Response response{target, 200, 0, {}};
+                response.defer = [&](std::function<void()> send) { release = std::move(send); };
+                return response;
+            }
+            return original(request);
+        };
+        auto &c = f.controller;
+        c.login(f.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 2);
+        c.selectStream(streamId);
+        QTRY_VERIFY(!c.topics().isEmpty());
+        QTRY_VERIFY(!c.busy());
+        const auto streamRow = [&](const QString &id) {
+            for (const auto &value : c.streams())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+        const auto topicRow = [&](const QString &id) {
+            for (const auto &value : c.topics())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+        // Row projections: the muted board carries its explicit follow, so it is not
+        // fully muted, while its default topic is effectively muted and the followed
+        // topic is not.
+        QCOMPARE(streamRow(streamId).value("notificationMode").toString(), QStringLiteral("muted"));
+        QVERIFY(!streamRow(streamId).value("fullyMuted").toBool());
+        QCOMPARE(topicRow(topicId).value("notificationMode").toString(), QStringLiteral("default"));
+        QVERIFY(topicRow(topicId).value("effectivelyMuted").toBool());
+        QCOMPARE(topicRow(secondTopicId).value("notificationMode").toString(), QStringLiteral("follow"));
+        QVERIFY(!topicRow(secondTopicId).value("effectivelyMuted").toBool());
+        // Invalid inputs send nothing: unknown mode, unknown stream, same level.
+        c.setStreamNotificationMode(archiveId, "whisper");
+        c.setStreamNotificationMode(QStringLiteral("00000000-0000-4000-8000-0000000000ee"), QStringLiteral("muted"));
+        c.setStreamNotificationMode(archiveId, QStringLiteral("all_messages"));
+        QTest::qWait(200);
+        QCOMPARE(posts, 0);
+        // The unselected target stream gets exactly one held request; the busy slot
+        // is per stream and repeats are rejected while it is in flight.
+        c.setStreamNotificationMode(archiveId, QStringLiteral("muted"));
+        QTRY_COMPARE(posts, 1);
+        QVERIFY(postPath.endsWith("/streams/" + archiveId + "/actions/notifications/invoke"));
+        QCOMPARE(postBody.value("notification_mode").toString(), QStringLiteral("muted"));
+        QVERIFY(c.streamNotificationBusy(archiveId));
+        QVERIFY(!c.streamNotificationBusy(streamId));
+        c.setStreamNotificationMode(archiveId, QStringLiteral("mentions_only"));
+        QTest::qWait(200);
+        QCOMPARE(posts, 1);
+        release();
+        QTRY_VERIFY(!c.streamNotificationBusy(archiveId));
+        // The canonical response lands in the store: muted and, with no topics on
+        // this stream, fully muted. The selected stream is untouched.
+        QTRY_COMPARE(streamRow(archiveId).value("notificationMode").toString(), QStringLiteral("muted"));
+        QVERIFY(streamRow(archiveId).value("fullyMuted").toBool());
+        QCOMPARE(streamRow(streamId).value("notificationMode").toString(), QStringLiteral("muted"));
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

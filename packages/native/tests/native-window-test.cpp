@@ -32882,6 +32882,276 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
             QStringLiteral("2 members, 1 online"), 5000);
     }
+
+    // docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md (issue #97): a stream row shows
+    // the 16 px bell_off indicator whenever its own notification_mode is "muted",
+    // and topic rows carry the per-override glyph (mute -> bell_off, follow ->
+    // topic_follow, default -> none). The 0.7 row dim covers fully-muted stream
+    // rows (muted with no explicitly-following topic) and effectively-muted topic
+    // rows (per-topic mute, or default under a muted stream); a muted stream that
+    // some topic follows keeps the indicator but stays at full opacity.
+    void windowSidebarMuteIndicatorsAndRowDimming()
+    {
+        WindowChannelFixture fixture;
+        const QString silent = QStringLiteral("97000000-0000-4000-8000-970000000001");
+        const QString releasesId = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) {
+                auto response = fallback(request);
+                auto rows = response.data.toArray();
+                for (int i = 0; i < rows.size(); ++i) {
+                    auto row = rows[i].toObject();
+                    if (row.value("uuid").toString() == streamId) row["notification_mode"] = "muted";
+                    rows[i] = row;
+                }
+                auto silentRow = windowChannel(silent, "Silent announcements");
+                silentRow["notification_mode"] = "muted";
+                rows.append(silentRow);
+                response.data = rows;
+                return response;
+            }
+            if (request.method == "GET" && path.endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == streamId) {
+                auto planning = windowChannelTopic(secondTopicId, streamId, "Planning");
+                planning["is_default"] = false; planning["notification_mode"] = "mute";
+                auto releases = windowChannelTopic(releasesId, streamId, "Releases");
+                releases["is_default"] = false; releases["notification_mode"] = "follow";
+                return Response{QJsonArray{windowChannelTopic(topicId, streamId, "General Topic"),
+                    planning, releases}};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mute-rows.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Sidebar mute rows teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("topic-" + topicId), 4000);
+        const auto opacityOf = [&](const QString &name) -> double {
+            auto *row = visibleItem(name);
+            return row ? row->property("opacity").toDouble() : -1.0;
+        };
+        const auto glyphSource = [&](const QString &name) -> QString {
+            auto *glyphItem = visibleItem(name);
+            return glyphItem ? glyphItem->property("source").toString() : QString{};
+        };
+        // The muted board: indicator on, but its follow topic keeps the row undimmed.
+        // The dim depends on the topic catalog, so give the refreshed row a moment.
+        QVERIFY(visibleItem("streamNotif-" + streamId));
+        QVERIFY(glyphSource("streamNotifGlyph-" + streamId).endsWith("bell_off.svg"));
+        QTRY_COMPARE_WITH_TIMEOUT(opacityOf("stream-" + streamId), 1.0, 2000);
+        // The fully-muted stream (muted, no topics at all) dims at 0.7 with the glyph.
+        QVERIFY(visibleItem("streamNotif-" + silent));
+        QCOMPARE(opacityOf("stream-" + silent), 0.7);
+        // Default topic under the muted stream: effectively muted, dimmed, no glyph.
+        QCOMPARE(opacityOf("topic-" + topicId), 0.7);
+        QVERIFY(!visibleItem("topicNotif-" + topicId));
+        // The per-topic mute dims and shows bell_off; follow shows topic_follow undimmed.
+        QCOMPARE(opacityOf("topic-" + secondTopicId), 0.7);
+        QVERIFY(glyphSource("topicNotifGlyph-" + secondTopicId).endsWith("bell_off.svg"));
+        QCOMPARE(opacityOf("topic-" + releasesId), 1.0);
+        QVERIFY(glyphSource("topicNotifGlyph-" + releasesId).endsWith("topic_follow.svg"));
+    }
+
+    // docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md (issue #97): the stream context
+    // menu carries the Notifications level switch first (at/bell_off/bell for a
+    // channel, the mentions-only default level excluded for direct-private chats).
+    // Selecting a level closes the menu and posts {notification_mode} against
+    // streams/{id}/actions/notifications/invoke; the canonical response flips the
+    // sidebar row (indicator + 0.7 dim) and a same-level repeat sends nothing.
+    void windowStreamContextMenuNotificationSwitch()
+    {
+        WindowChannelFixture fixture;
+        const QString direct = QStringLiteral("97000000-0000-4000-8000-970000000002");
+        int notifPosts = 0; QJsonObject notifBody; QString notifPath;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
+                ++notifPosts; notifPath = path; notifBody = request.body;
+                auto row = windowChannel(streamId, "Product team");
+                row["notification_mode"] = request.body.value("notification_mode");
+                row["updated_at"] = "2026-01-02T11:00:00Z";
+                return Response{row};
+            }
+            if (request.method == "GET" && path.endsWith("/streams/")) {
+                auto response = fallback(request);
+                auto rows = response.data.toArray();
+                auto directRow = windowChannel(direct, "Alice Adams");
+                directRow["private"] = true; directRow["direct_user_uuid"] = channelPeer;
+                rows.append(directRow);
+                response.data = rows;
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mute-menu.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Stream menu notifications teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
+        const auto openMenu = [&](const QString &rowName) {
+            auto *row = visibleItem(rowName); QVERIFY(row);
+            QTest::mouseClick(window, Qt::RightButton, {},
+                row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
+            auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+            QTRY_VERIFY(menu->property("opened").toBool());
+        };
+        // The channel menu offers all three levels with the Notifications heading.
+        openMenu("stream-" + streamId);
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        QVERIFY(visibleItem("streamNotificationsHeading"));
+        QVERIFY(visibleItem("streamMenuNotifDefault"));
+        QVERIFY(visibleItem("streamMenuNotifMuted"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        // Switching to Muted closes the menu and persists through the invoke endpoint.
+        click(window, visibleItem("streamMenuNotifMuted"));
+        QTRY_VERIFY(!menu->property("opened").toBool());
+        QTRY_COMPARE(notifPosts, 1);
+        QVERIFY(notifPath.endsWith("/streams/" + streamId + "/actions/notifications/invoke"));
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("muted"));
+        // The canonical response flips the row: the mute glyph appears and the row dims.
+        QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
+        QTRY_COMPARE(visibleItem("stream-" + streamId)->property("opacity").toDouble(), 0.7);
+        // Re-opening and clicking the current level sends nothing.
+        openMenu("stream-" + streamId);
+        click(window, visibleItem("streamMenuNotifMuted"));
+        QTest::qWait(300);
+        QCOMPARE(notifPosts, 1);
+        // The direct-private menu excludes the mentions-only default level.
+        openMenu("stream-" + direct);
+        QVERIFY(!visibleItem("streamMenuNotifDefault"));
+        QVERIFY(visibleItem("streamMenuNotifMuted"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        menu->setProperty("visible", false);
+    }
+
+    // Issue #97 review (cid 4629685053): while a notification write for a stream
+    // is in flight the menu's level switch must be disabled for that stream.
+    // The first write is held by the mock server's response gate (never sleeps),
+    // so the busy window is fully deterministic: the reopened menu shows all
+    // three levels inactive, a press on a disabled level posts no second
+    // request, another stream's menu stays interactive, and the switch
+    // re-enables live (menu still open) the moment the held response settles.
+    void windowStreamContextMenuNotificationSwitchDisabledWhileBusy()
+    {
+        WindowChannelFixture fixture;
+        const QString other = QStringLiteral("97000000-0000-4000-8000-970000000003");
+        int notifPosts = 0; QJsonObject notifBody;
+        bool deferNext = false;
+        std::vector<std::function<void()>> releases;
+        const auto fallback = fixture.server.handler;
+        auto gate = qScopeGuard([&]{ fixture.server.handler = fallback;
+            for (auto &release : releases) if (release) release(); });
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
+                ++notifPosts; notifBody = request.body;
+                auto row = windowChannel(streamId, "Product team");
+                row["notification_mode"] = request.body.value("notification_mode");
+                row["updated_at"] = "2026-01-02T11:00:00Z";
+                Response response{row};
+                if (deferNext) {
+                    deferNext = false;
+                    response.defer = [&releases](std::function<void()> send)
+                    { releases.push_back(std::move(send)); };
+                }
+                return response;
+            }
+            if (request.method == "GET" && path.endsWith("/streams/")) {
+                auto response = fallback(request);
+                auto rows = response.data.toArray();
+                rows.append(windowChannel(other, "Ops"));
+                response.data = rows;
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("busy-menu.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Busy stream menu teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
+        const auto openMenu = [&](const QString &rowName) {
+            auto *row = visibleItem(rowName); QVERIFY(row);
+            QTest::mouseClick(window, Qt::RightButton, {},
+                row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
+            auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+            QTRY_VERIFY(menu->property("opened").toBool());
+        };
+        const auto levelEnabled = [&](const QString &name) -> bool {
+            auto *button = visibleItem(name);
+            return button && button->property("enabled").toBool();
+        };
+        // First write: held by the gate, so the stream stays busy on purpose.
+        deferNext = true;
+        openMenu("stream-" + streamId);
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        click(window, visibleItem("streamMenuNotifMuted"));
+        QTRY_VERIFY(!menu->property("opened").toBool());
+        QTRY_COMPARE(notifPosts, 1);
+        QVERIFY(controller.streamNotificationBusy(streamId));
+        QVERIFY(!controller.streamNotificationBusy(other));
+        // The reopened menu shows the whole level switch disabled for the
+        // busy stream. Pressing a disabled level falls through (the popup
+        // treats it as an outside press and dismisses) but never posts a
+        // second same-stream request.
+        openMenu("stream-" + streamId);
+        QVERIFY(!levelEnabled("streamMenuNotifDefault"));
+        QVERIFY(!levelEnabled("streamMenuNotifMuted"));
+        QVERIFY(!levelEnabled("streamMenuNotifSubscribed"));
+        click(window, visibleItem("streamMenuNotifSubscribed"));
+        QTRY_VERIFY(!menu->property("opened").toBool());
+        QCOMPARE(notifPosts, 1);
+        // Per-stream busy: the other stream's menu is untouched by stream A's
+        // in-flight write.
+        openMenu("stream-" + other);
+        QVERIFY(levelEnabled("streamMenuNotifMuted"));
+        QVERIFY(levelEnabled("streamMenuNotifSubscribed"));
+        // Back on A: disabled again while its write is still held.
+        openMenu("stream-" + streamId);
+        QVERIFY(!levelEnabled("streamMenuNotifMuted"));
+        // Releasing the held response releases the slot live: the still-open
+        // menu's switch re-enables without reopening.
+        releases[0](); releases[0] = {};
+        QTRY_VERIFY(!controller.streamNotificationBusy(streamId));
+        QTRY_VERIFY(levelEnabled("streamMenuNotifMuted"));
+        // Interactive again: the next level change goes through normally.
+        click(window, visibleItem("streamMenuNotifSubscribed"));
+        QTRY_VERIFY(!menu->property("opened").toBool());
+        QTRY_COMPARE(notifPosts, 2);
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+    }
 };
 
 
