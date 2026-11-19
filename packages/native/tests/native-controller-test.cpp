@@ -31472,6 +31472,71 @@ private slots:
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
         QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 2);
     }
+
+    // Issue #89 round 3 (issue #434): the read path pins zero extra
+    // stream_bindings GETs per realtime binding event on the selected
+    // stream, so the header projection must adjust locally instead of
+    // reloading, and a member/role refresh that does not move the member or
+    // online values must not re-notify stateChanged at all.
+    void chatHeaderCountersDoNotReNotifyOnSelectedStreamRoleUpdates()
+    {
+        Fixture f;
+        int bindingRequests = 0;
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberA, "alice", "active"),
+            userRow(channelMemberB, "bob", "idle")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user, const QString &stream) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        const QString otherStream = QStringLiteral("8e0d0000-0000-4000-8000-000000000009");
+        f.streams = [&otherStream](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"role", "owner"}},
+                QJsonObject{{"uuid", otherStream}, {"project_id", projectId},
+                    {"name", "Solo channel"}, {"encryption", false}}}};
+        };
+        QJsonArray bound{binding("61000000-0000-4000-8000-000000000001", userId, streamId),
+            binding("61000000-0000-4000-8000-000000000002", channelMemberB, streamId)};
+        f.bindings = [&bound, &bindingRequests, &streamId](const Request &request) {
+            ++bindingRequests;
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            return Response{stream == streamId ? bound : QJsonArray{}};
+        };
+        QVERIFY(f.start({}, 2));
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        const auto requests = bindingRequests;
+        // Every applied realtime event already re-notifies stateChanged once
+        // at the end of applyRealtimeEvent (pre-existing master behavior);
+        // the pinned contract is that a membership-neutral binding event
+        // adds NO extra emission and NO extra stream_bindings GET.
+        QSignalSpy changes(&f.controller, &NativeController::stateChanged); QVERIFY(changes.isValid());
+        // A foreign member's demotion keeps membership and presence: it must
+        // neither move the counts nor fetch the binding list again.
+        auto foreign = bound.last().toObject(); foreign["role"] = "moderator";
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_binding.updated", foreign, 13)));
+        QCOMPARE(changes.count(), 1);
+        // The read path's own-binding authority refresh (#434's issuer-role
+        // reproduction) is likewise membership-neutral for the caption.
+        auto own = bound.first().toObject(); own["role"] = "administrator";
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_binding.updated", own, 14)));
+        QTest::qWait(250);
+        QCOMPARE(changes.count(), 2);
+        QCOMPARE(bindingRequests, requests);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)

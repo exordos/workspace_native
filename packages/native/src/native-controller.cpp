@@ -4292,9 +4292,37 @@ void NativeController::loadChatHeaderMembersPage(const QString &marker, quint64 
             loadChatHeaderMembersPage(QString::fromUtf8(result.nextMarker), ticket, stream, accepted, seenUsers);
             return;
         }
+        const auto changed = m_chatHeaderMemberUuids != accepted;
         m_chatHeaderMemberUuids = accepted;
-        emit stateChanged();
+        // Issue #89 round 3 (issue #434): the read-path harness pins the
+        // notifications around authority refreshes, so a page that re-serves
+        // the same member set must not re-notify stateChanged.
+        if (changed) emit stateChanged();
     });
+}
+
+// Issue #89 round 3 (issue #434): a realtime binding event for the selected
+// stream moves the header caption counts by adjusting the loaded projection
+// in place. It must NOT reload stream_bindings: the E2EE read-path tests pin
+// exactly one binding GET per authority refresh, and the extra GET the
+// reload issued was the regression. Role-only updates (stream_binding.updated)
+// never change membership or online, so they never re-notify; membership
+// events re-notify only when the open conversation's member set actually
+// changes, and only while the projection belongs to that conversation.
+void NativeController::applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows)
+{
+    if (kind == QLatin1String("stream_binding.updated")) return;
+    if (!authenticated() || m_stream.isEmpty() || m_chatHeaderMembersStream != m_stream
+        || m_chatHeaderMembersOwner != ownerKey()) return;
+    QStringList next = m_chatHeaderMemberUuids;
+    for (const auto &value : rows) {
+        const auto user = value.toObject().value("user_uuid").toString().toLower();
+        if (kind == QLatin1String("stream_binding.deleted")) next.removeAll(user);
+        else if (!next.contains(user)) next.append(user);
+    }
+    if (next == m_chatHeaderMemberUuids) return;
+    m_chatHeaderMemberUuids = next;
+    emit stateChanged();
 }
 
 // ---- Issue #134 user profile drawer content ----
@@ -12018,10 +12046,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         // Issue #89 round 2 (PR #432 review): binding changes for the
         // selected stream must move the header caption counts; the QML
-        // triggers only cover selection and authentication. The refresh is
-        // owner/ticket-guarded and emits nothing synchronously while the
-        // selection still matches, so no QML write-back cascade can form.
-        if (stream == m_stream) refreshChatHeaderMembers();
+        // triggers only cover selection and authentication. Round 3
+        // (issue #434): this adjusts the loaded projection in place instead
+        // of reloading stream_bindings, so the read path's pinned binding
+        // GET/notify budgets are untouched by role-only or membership events.
+        if (stream == m_stream) applyChatHeaderMembersBindingEvent(kind, rows);
         if (responseRowsChanged) {
             // Waiting for fresh authority must not leave the old Request row
             // admitting input while the controlled detail response is pending.

@@ -1797,6 +1797,7 @@ private:
     bool chatHeaderMembersContext(const QString &owner, quint64 ticket, const QString &stream) const;
     void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                    QStringList accepted, QSet<QString> seenUsers);
+    void applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows);
     QString m_chatHeaderMembersStream;
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;

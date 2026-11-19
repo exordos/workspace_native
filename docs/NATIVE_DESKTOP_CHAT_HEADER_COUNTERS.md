@@ -60,9 +60,15 @@ loader contract (`refreshChannelInfo` / `loadChannelInfoPage`):
   `stateChanged()` when the user's status actually changed, so the header
   caption re-renders when presence projection changes (the directory
   refresh path already emits `stateChanged()`).
-- Binding add/remove realtime events intentionally do not reload the
-  header projection in this slice; selection-driven refresh covers the
-  acceptance matrix.
+- Realtime binding events (`stream_bindings.created` / `stream_binding.deleted`
+  on the selected stream) adjust the loaded member projection in place -
+  membership add/remove only, with a `stateChanged()` re-notify reserved for
+  a real change of the open conversation's member set. They never reload
+  `stream_bindings`: the E2EE read path pins exactly one binding GET per
+  authority refresh (issue #434), and a `stream_binding.updated` role change
+  never moves membership or online, so it never notifies at all. The same
+  change-gate applies to a completed page load that re-serves the identical
+  member set.
 
 ### QML (`packages/native/qml/Main.qml`)
 
