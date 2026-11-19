@@ -357,6 +357,10 @@ private:
     UpowerStub *m_owner;
 };
 
+// Mirrors CallAwareness's private InhibitCallTimeoutMs (native-call-awareness.cpp)
+// so the slow-service cases can sit exactly past the client-side deadline.
+const int InhibitCallTimeoutMs = 2000;
+
 // Display-sleep inhibitor stubs for the call-awareness cases (issue #86),
 // exported on the private bus below exactly like the real freedesktop
 // services answer Inhibit/UnInhibit on the session bus.
@@ -368,6 +372,7 @@ public:
     QList<QPair<QString, QString>> inhibits; // (application, reason)
     QList<uint> uninhibits;
     uint cookie = 1701;
+    int inhibitDelayMs = 0; // held daemon-side reply for the slow-service cases
 };
 
 class ScreenSaverAdaptor final : public QDBusAbstractAdaptor
@@ -380,6 +385,15 @@ public slots:
     uint Inhibit(const QString &application, const QString &reason)
     {
         m_owner->inhibits.append(qMakePair(application, reason));
+        if (m_owner->inhibitDelayMs > 0) {
+            // The fixture's "daemon side" dispatches this call on the shared
+            // thread; keep pumping events so the bus and the client's own
+            // deadline timers keep moving while the reply is held
+            // (the UpowerAdaptor precedent).
+            QDeadlineTimer deadline(m_owner->inhibitDelayMs);
+            while (!deadline.hasExpired())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        }
         return m_owner->cookie;
     }
     void UnInhibit(uint cookie) { m_owner->uninhibits.append(cookie); }
@@ -30749,6 +30763,76 @@ private slots:
         QVERIFY(!awareness.callActive());
         QCOMPARE(awareness.inhibitCookie(), 0u);
         QCOMPARE(states.count(), 3);
+    }
+
+    // --- issue #86 fix round: regression tests for the exordy findings ---
+
+    void lateInhibitReplyAfterCallEndDoesNotLeakInhibitor()
+    {
+        // Finding 1: ending the call while the Inhibit request is pending
+        // used to leave the pending guard set, so no later call could ever
+        // acquire an inhibitor again.
+        PowerBusFixture bus("call-latereply");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        saver.inhibitDelayMs = 400;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        awareness.callStarted("quick", 2);
+        awareness.callEnded(); // while the Inhibit is still in flight
+        QTRY_VERIFY_WITH_TIMEOUT(saver.inhibits.size() >= 1, 3000);
+        // The next call acquires its own inhibitor instead of being rejected
+        // by the stale pending flag from the ended call.
+        awareness.callStarted("next", 1);
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        // The late reply of the ended call granted an inhibitor nobody asked
+        // for any more: it is released the moment it lands, so display sleep
+        // is never left stuck.
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(saver.uninhibits.first(), 1701u);
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+    }
+
+    void inhibitedCallStateSurvivesASlowInhibitServiceGrantingLate()
+    {
+        // Findings 2 and 3: a service that answers Inhibit after the
+        // client-side deadline must never leave the inhibitor held without a
+        // known cookie. The timeout may discard the grant for the call, but
+        // the late reply still reaches the client and is released the moment
+        // it lands - the deadline never throws away the way back.
+        PowerBusFixture bus("call-slowlate");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        saver.inhibitDelayMs = InhibitCallTimeoutMs + 600;
+        saver.cookie = 1900;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        awareness.callStarted("patience", 4);
+        awareness.callEnded(); // the service is still chewing on the request
+        // Past the deadline: nothing is treated as pending any more.
+        QTest::qWait(InhibitCallTimeoutMs + 200);
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+        QTRY_VERIFY_WITH_TIMEOUT(saver.inhibits.size() >= 1, InhibitCallTimeoutMs + 2500);
+        // Past the late reply: the granted cookie was released even though
+        // the call is over and no cookie was ever held by the client.
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, InhibitCallTimeoutMs + 2500);
+        QCOMPARE(saver.uninhibits.first(), 1900u);
+        // And the state machine is fully reusable for the next call.
+        saver.inhibitDelayMs = 0;
+        saver.cookie = 1901;
+        awareness.callStarted("after", 2);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1901u, 3000);
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+        QCOMPARE(saver.uninhibits.last(), 1901u);
     }
 
     void futureCallSurfaceInvokesTheQmlInvokables()
