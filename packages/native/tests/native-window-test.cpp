@@ -930,7 +930,13 @@ public:
                 routeBindingStreams.append(
                     QUrlQuery(request.target).queryItemValue("stream_uuid"));
             }
-            if (record && !path.endsWith("/stream_bindings/")) {
+            // Issue #438 review (finding 4633233527): exclude only that
+            // counted member-page GET from the unexpected list. The previous
+            // path-only exclusion also hid POST/DELETE on the same path, and
+            // accidental mutations must always leave a line here.
+            if (record
+                && !(request.method == "GET"
+                     && path == "/api/workspace/v1/messenger/stream_bindings/")) {
                 // A link must not reload global catalogs or the user directory.
                 unexpected.append(QString::fromUtf8(request.method) + " " + request.target.toString());
             }
@@ -33240,8 +33246,11 @@ private slots:
         auto drive = [&nm](QNetworkReply *reply) {
             QSignalSpy finished(reply, &QNetworkReply::finished);
             QVERIFY(finished.isValid());
+            const bool done = finished.wait(5000);
+            const auto line = QStringLiteral("finished=%1 error=%2 url=%3")
+                .arg(reply->isFinished()).arg(reply->error()).arg(reply->url().toString());
             reply->deleteLater();
-            QVERIFY(finished.wait(5000));
+            QVERIFY2(done, qPrintable(line));
         };
         drive(nm.get(QNetworkRequest(QUrl(endpoint.toString()
             + QStringLiteral("?stream_uuid=") + streamId))));
