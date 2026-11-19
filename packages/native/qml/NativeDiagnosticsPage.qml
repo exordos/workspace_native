@@ -596,6 +596,25 @@ FocusScope {
         contentHeight: column.height + 16
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+        // Issue #420: the reference page body is a scrolling document
+        // (logs-page.ui.tsx:309 overflow-auto), so with the memory panel
+        // (#416) adding height above the advanced snapshot block, every
+        // control stays reachable by scrolling. Expose that same
+        // scroll-into-view affordance programmatically: scroll the minimum
+        // distance so the target sits inside the viewport with a small
+        // margin, clamped to the content bounds.
+        function scrollItemIntoView(target: Item): void {
+            if (!target)
+                return
+            const origin = target.mapToItem(content.contentItem, 0, 0)
+            const margin = 8
+            if (origin.y < content.contentY + margin)
+                content.contentY = Math.max(0, origin.y - margin)
+            else if (origin.y + target.height > content.contentY + content.height - margin)
+                content.contentY = Math.min(Math.max(0, content.contentHeight - content.height),
+                                            origin.y + target.height - content.height + margin)
+        }
+
         Column {
             id: column
             x: 8
