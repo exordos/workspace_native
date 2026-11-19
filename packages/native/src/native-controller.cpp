@@ -11131,6 +11131,7 @@ void NativeController::reset()
     m_folderMutationError.clear();
     m_folderMutationPending = false;
     ++m_folderMutationTicket;
+    ++m_folderMutationFollowup; // disarm any pending late-commit reconcile of the old owner
     m_archiveOperations.clear();
     m_chatActions.clear();
     m_topics.clear();
@@ -12947,6 +12948,13 @@ void NativeController::requestAddFolder()
 // projected error is the retryable interrupted outcome: distinct from
 // success, it keeps the reference dialogue open (promise-not-true contract)
 // with submit re-enabled.
+// Review 4628637592: how long after a renewal interrupt the one bounded
+// follow-up folder reconcile waits. The interrupted write was already
+// dispatched, so its server-side commit lands within roughly a request
+// round trip of the renewal; a single delayed re-read bounds the invisible-
+// commit window without turning the rail into a poller.
+static constexpr int kFolderLateCommitReconcileMs = 1500;
+
 void NativeController::interruptFolderMutation()
 {
     if (!m_folderMutationPending) return;
@@ -12965,6 +12973,21 @@ void NativeController::interruptFolderMutation()
     m_folderMutationError = tr("The folder change was interrupted by a session refresh. Try again.");
     emit folderMutationChanged();
     loadFolders();
+    // Review 4628637592: that GET can answer before the interrupted write
+    // commits server-side. The renewal aborted the request's transport, so
+    // the late commit is unobservable from the reply (it never reaches this
+    // controller) and realtime folder events never touch the rail. Bound the
+    // window with exactly one delayed re-read of the authoritative list,
+    // fired once the interrupted write can no longer race the reconcile. It
+    // is fenced to this interrupt (owner + follow-up token) and skipped while
+    // a newer mutation already owns the rail.
+    const auto followup = ++m_folderMutationFollowup;
+    QTimer::singleShot(kFolderLateCommitReconcileMs, this, [this, owner, followup] {
+        if (followup != m_folderMutationFollowup) return; // superseded or reset
+        if (!authenticated() || owner != creationOwnerKey()) return;
+        if (m_folderMutationPending) return; // a newer mutation owns the rail now
+        loadFolders();
+    });
 }
 
 QVariantMap NativeController::folderMutation() const

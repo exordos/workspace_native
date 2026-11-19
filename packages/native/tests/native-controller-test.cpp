@@ -28853,6 +28853,90 @@ private slots:
             QVERIFY(folder.toMap().value("title").toString() != QStringLiteral("Old"));
     }
 
+    // Review 4628637592: the single reconciliation GET can complete while the
+    // interrupted write is still applying on the server (the renewal aborted
+    // the client-side transport, so that late commit is invisible: the reply
+    // never reaches the controller and folder events do not update the rail).
+    // The controller must therefore also run one bounded follow-up reconcile
+    // once the interrupted write can no longer race it, so the projection
+    // ends up on the committed server state instead of predating it.
+    void folderRenewalReconcilesAgainWhenInterruptedWriteCommitsLate()
+    {
+        FolderRailFixture f;
+        const auto serverRows = std::make_shared<QJsonArray>(QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0)});
+        f.folders = Response{*serverRows};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        const auto fallback = f.server.handler;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto gets = std::make_shared<int>(0);
+        const auto lateUuid = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        f.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messenger/folders/")) {
+                ++*gets;
+                return Response{*serverRows};
+            }
+            if (request.method == "POST" && path.endsWith("/messenger/folders/")) {
+                const auto title = request.body.value("title").toString();
+                Response deferred{QJsonObject{{"uuid", lateUuid}, {"title", title},
+                    {"system_type", "created"}, {"unread_count", 0}, {"background_color_value", 0x2563eb}}};
+                // The server applies the write at the moment its response
+                // goes out: the commit becomes visible exactly when the
+                // (already client-aborted) transport finishes.
+                deferred.defer = [gates, serverRows, lateUuid, title](std::function<void()> send) {
+                    gates->push_back([serverRows, lateUuid, title, send]() {
+                        serverRows->append(folderRailFolder(lateUuid, title, "created", 0, 0x2563eb));
+                        send();
+                    });
+                };
+                return deferred;
+            }
+            return fallback(request);
+        };
+        const auto lateVisible = [&]{
+            for (const auto &folder : f.controller.folders())
+                if (folder.toMap().value("id").toString() == lateUuid) return true;
+            return false;
+        };
+        f.controller.createFolder("Late", 0xff2563eb);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 4000); // the create is in flight
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            const auto mutation = f.controller.folderMutation();
+            return mutation.value("kind").toString().isEmpty()
+                && !mutation.value("pending").toBool()
+                && mutation.value("error").toString()
+                    == QStringLiteral("The folder change was interrupted by a session refresh. Try again.");
+        })(), 4000);
+        // The interrupt-time reconciliation completes while the write has not
+        // committed yet: its answer came back without the created row.
+        QTRY_VERIFY_WITH_TIMEOUT(*gets >= 1, 4000);
+        QTest::qWait(250); // the reconciliation answer is processed onto the rail
+        QCOMPARE(*gets, 1);
+        QVERIFY(!lateVisible());
+        // The retired write now finishes: the server commits, but the reply is
+        // fenced at the client and folder events do not touch the rail.
+        (*gates)[0]();
+        // The projection must still end up on the committed state: exactly one
+        // bounded follow-up reconcile re-reads the authoritative list once the
+        // interrupted write can no longer change it.
+        QTRY_VERIFY_WITH_TIMEOUT(lateVisible(), 7000);
+        QVERIFY(*gets >= 2);
+        // The fenced reply settled nothing about the operation state.
+        const auto mutation = f.controller.folderMutation();
+        QVERIFY(!mutation.value("pending").toBool());
+        QVERIFY(mutation.value("kind").toString().isEmpty());
+        QCOMPARE(mutation.value("error").toString(),
+            QStringLiteral("The folder change was interrupted by a session refresh. Try again."));
+        // Bounded: the follow-up reconciles once, not in a loop.
+        const auto getsAfterFollowup = *gets;
+        QTest::qWait(500);
+        QCOMPARE(*gets, getsAfterFollowup);
+    }
+
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
 
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()

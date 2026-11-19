@@ -179,13 +179,26 @@ the other `interrupt*` settles) now also settles the folder mutation:
   `GET /folders/` under the renewed session, so the rail reconciles to the
   server truth (a silently applied create reappears, an unapplied delete
   keeps its row).
+- That single reconcile can answer before the interrupted write commits:
+  the renewal aborted the write's client-side transport, so its late
+  server-side commit is unobservable (the reply never reaches the
+  controller and realtime folder events do not touch the rail). Review
+  cid 4628637592: the settlement therefore also arms exactly one bounded
+  follow-up reconcile, fired ~1.5 s later - once the interrupted write can
+  no longer race the read - re-reading `GET /folders/` under the same
+  fences (same owner, renewed session still current, no newer mutation in
+  flight). The follow-up token is bumped by a newer interrupt and by the
+  owner-change reset, so at most one delayed re-read exists per interrupt
+  and none survives a sign-out.
 - A sign-out or owner switch instead falls through to the full controller
   reset, which already drops the flag with the rail.
 
 `native-controller-test` cases: `folderRenewalInterruptsHeldCreateAndAllowsRetry`,
 `folderRenewalInterruptsHeldRenameAndAllowsRetry`,
 `folderRenewalInterruptsHeldDeleteAndAllowsRetry`,
-`lateFolderMutationReplyCannotSettleNewOperationAfterRenewal`.
+`lateFolderMutationReplyCannotSettleNewOperationAfterRenewal`,
+`folderRenewalReconcilesAgainWhenInterruptedWriteCommitsLate` (late server
+commit lands on the rail through the bounded follow-up reconcile).
 
 ## Deviations and follow-ups
 
