@@ -69,7 +69,13 @@ private:
     int m_participants = -1;
     std::optional<quint32> m_cookie;
     ServiceKind m_inhibitService = ServiceKind::None;
-    bool m_inhibitPending = false;
+    // Identifies the one Inhibit request whose reply is still awaited
+    // (generation + service), -1/None while no reply is pending. Tracked per
+    // generation (issue #86 review): a reply left in flight by an already
+    // ended call never blocks a new call from acquiring its own inhibitor,
+    // and a reply that lands after the deadline is recognisably late.
+    int m_inhibitPendingGeneration = -1;
+    ServiceKind m_inhibitPendingKind = ServiceKind::None;
     int m_inhibitGeneration = 0;
 };
 
