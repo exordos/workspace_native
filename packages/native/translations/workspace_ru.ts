@@ -4032,8 +4032,8 @@
             <translation>Захват экрана</translation>
         </message>
         <message>
-            <source>The screen share result did not include a picture.</source>
-            <translation>Результат выбора источника не содержит изображения.</translation>
+            <source>The screen share result did not include a selectable stream.</source>
+            <translation>Результат выбора источника не содержит доступного для захвата потока.</translation>
         </message>
         <message>
             <source>The screen share source selection timed out.</source>

@@ -100,20 +100,27 @@ Item {
         // frame; every other request (notifications included) is denied
         // through the real Qt permission object. Fullscreen arrives
         // separately on fullScreenRequested, not as a capture permission.
-        // #87: display capture is its own branch - it is granted only to the
-        // live secure Jitsi frame through the controller's frame-subtree gate
-        // (the native counterpart of the reference
-        // isAllowedJitsiDisplayCaptureRequest, workspace_ui 61dacef7
-        // main.ts:996-1020; see docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md).
-        // Qt's QWebEnginePermission carries no frame identity, so a match
-        // against a live child frame origin is itself the proof that the
-        // request did not come from the embedding document; the gate still
-        // denies any request flagged as a main-frame request outright.
+        // #87 round 2 (findings 1/2): display capture FAILS CLOSED until a
+        // trustworthy frame identity exists. Qt 6.10.2 delivers the
+        // getDisplayMedia request as a QWebEnginePermission exposing only
+        // origin and permissionType (qwebenginepermission.h:30-33, 70-71):
+        // no frame object, no main-frame flag, no frame tree. This view loads
+        // the meeting URL as its own main document, so a main-frame request
+        // carries the meeting origin and an origin match cannot tell it from
+        // the child-frame request the reference gate allows - the reference
+        // denies unless the child-frame proof holds (workspace_ui 61dacef7
+        // main.ts:996-1020), so the native counterpart (the controller's
+        // frame-trust gate) denies whenever the requesting frame cannot be
+        // verified, which on this runtime is every request. The previous
+        // round hardcoded isMainFrame=false into the modeled child-frame
+        // check; fabricating frame identity is exactly what findings 1/2
+        // condemned and must never return.
+        // See docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md.
         onPermissionRequested: (permission) => {
             const type = permission.permissionType
             if (type === host.permissionDesktopVideoCapture) {
                 if (host.controller
-                    && host.controller.isDisplayCaptureRequestAllowed(false, permission.origin))
+                    && host.controller.isDisplayCaptureRequestTrustworthy(permission.origin))
                     host.grantPolicy(permission)
                 else
                     permission.deny()
