@@ -1,3 +1,29 @@
+# Workspace Native 0.38.0 - Linux development preview
+
+The diagnostics page grows the live memory panel, the folder rail gains its
+reference layout options, and direct chats gain the partner status caption:
+
+- The memory section polls every three seconds and refreshes in place: the
+  JS heap card carries its heap-limit detail and a usage progress bar, the
+  total app memory, system free memory and device RAM cards report the
+  machine facts, and the process table lists Type, PID, Working set, Peak
+  and CPU rows. A free-memory reading the OS does not report is left out
+  instead of being shown as zero, and the table scrolls horizontally rather
+  than clipping its columns in narrow windows.
+- The folder rail now offers both reference layouts: the vertical list and
+  the horizontal chip strip, toggled from the rail's context menu together
+  with the show-system-folders option, and both choices persist across
+  restarts. The horizontal rail scrolls under pointer drag, every chip is
+  reachable with Tab and activatable with Return or Space, and the selected
+  chip keeps the reference visuals.
+- The direct chat header resolves its sub-line in the reference precedence:
+  deactivated, then typing, then the custom status with its emoji, then
+  presence and last seen. The whole partner block is now a real focusable
+  button that opens the profile drawer from the keyboard with a visible
+  accent focus ring, in both locales and both modes.
+
+---
+
 # Workspace Native 0.37.0 - Linux development preview
 
 The folder rail becomes fully editable and the diagnostics page gains the
