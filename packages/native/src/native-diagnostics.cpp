@@ -283,8 +283,9 @@ QByteArray memoryReadProc(const QString &path)
 }
 
 // Parses "Key:   <value> kB" lines of /proc/<pid>/status and /proc/meminfo.
-// Returns 0 when the key is missing or malformed (the unavailable fallback).
-qint64 memoryProcKb(const QByteArray &contents, const QByteArray &key)
+// Reports whether the key parsed at all: a missing or malformed line yields
+// std::nullopt, so callers can tell "absent" from a genuine 0 kB reading.
+std::optional<qint64> memoryProcKbParsed(const QByteArray &contents, const QByteArray &key)
 {
     const QByteArray prefix = key + ':';
     for (const QByteArray &line : contents.split('\n')) {
@@ -296,7 +297,14 @@ qint64 memoryProcKb(const QByteArray &contents, const QByteArray &key)
         if (ok && parsed >= 0)
             return parsed;
     }
-    return 0;
+    return std::nullopt;
+}
+
+// Zero-fallback convenience for keys whose card does not gate on the parse
+// result (see the memory panel capability flags in snapshot()).
+qint64 memoryProcKb(const QByteArray &contents, const QByteArray &key)
+{
+    return memoryProcKbParsed(contents, key).value_or(0);
 }
 
 #if defined(Q_OS_LINUX)
@@ -358,6 +366,9 @@ QVariantMap NativeMemoryDiagnostics::snapshot() const
     qint64 totalKb = 0;
     qint64 freeKb = 0;
     qint64 availableKb = 0;
+    // exordy review PRRT_kwDOVmpjls65Qz-z: the free-memory card may only
+    // render when the MemFree line actually parsed, never off the 0 fallback.
+    bool freeParsed = false;
     QVariantList processes;
 #if defined(Q_OS_LINUX)
     const QByteArray status = memoryReadProc(m_procRoot + QStringLiteral("/self/status"));
@@ -365,7 +376,9 @@ QVariantMap NativeMemoryDiagnostics::snapshot() const
     const qint64 peakKb = memoryProcKb(status, "VmHWM");
     const QByteArray meminfo = memoryReadProc(m_procRoot + QStringLiteral("/meminfo"));
     totalKb = memoryProcKb(meminfo, "MemTotal");
-    freeKb = memoryProcKb(meminfo, "MemFree");
+    const auto freeKbOpt = memoryProcKbParsed(meminfo, "MemFree");
+    freeParsed = freeKbOpt.has_value();
+    freeKb = freeKbOpt.value_or(0);
     availableKb = memoryProcKb(meminfo, "MemAvailable");
     // Monotonic peak: kernel VmHWM plus the cross-poll clamp, so a regressing
     // fixture peak can never lower the reported value.
@@ -394,6 +407,7 @@ QVariantMap NativeMemoryDiagnostics::snapshot() const
     capabilities.insert(QStringLiteral("processMetricsAvailable"), !processes.isEmpty());
     capabilities.insert(QStringLiteral("systemMemoryAvailable"),
         totalKb > 0 && availableKb > 0 && availableKb <= totalKb);
+    capabilities.insert(QStringLiteral("systemMemoryFreeAvailable"), freeParsed);
     QVariantMap snapshot;
     snapshot.insert(QStringLiteral("collectedAt"), memoryIsoTimestampNow());
     snapshot.insert(QStringLiteral("runtime"), QStringLiteral("native"));

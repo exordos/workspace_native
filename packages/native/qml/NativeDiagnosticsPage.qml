@@ -208,11 +208,17 @@ FocusScope {
             cards.push({ key: "app", label: qsTr("Total app memory"),
                 value: page.formatKilobytes(Number(app.totalWorkingSetKb || 0)),
                 detail: "" });
-        if (capabilities.systemMemoryAvailable === true)
+        // exordy review PRRT_kwDOVmpjls65Qz-z: the free-memory card gates on
+        // its own capability flag (MemFree parsed successfully), never on the
+        // parser's 0 fallback; the "N total" detail still needs the
+        // total/available capability to avoid a fabricated zero there.
+        if (capabilities.systemMemoryFreeAvailable === true)
             cards.push({ key: "systemFree", label: qsTr("System free memory"),
                 value: page.formatKilobytes(Number(system.freeKb || 0)),
-                detail: qsTr("%1 total")
-                    .arg(page.formatKilobytes(Number(system.totalKb || 0))) });
+                detail: capabilities.systemMemoryAvailable === true
+                    ? qsTr("%1 total")
+                        .arg(page.formatKilobytes(Number(system.totalKb || 0)))
+                    : "" });
         return cards;
     }
 
