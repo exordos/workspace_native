@@ -5295,21 +5295,38 @@ ApplicationWindow {
                         }
                     }
                 }
-                MouseArea {
+                AbstractButton {
                     // Issue #88 (reference chat-header-direct.ui.tsx:7-8,
                     // 47-55): the whole partner block is one overlay button
                     // (aria-label a11y.openUserProfile) that opens the partner
                     // profile drawer already wired from #134. The reference
                     // renders the overlay only with a profile handler; here
                     // that precondition is a known direct peer id.
+                    // Exordy review PRRT_kwDOVmpjls65SUMo: a real focusable
+                    // control instead of a MouseArea, so Tab reaches it and
+                    // both Enter and Space activate it. With no background and
+                    // no contentItem it paints nothing: pixel-identical to
+                    // the previous transparent overlay.
                     id: directPartnerProfileAction
                     objectName: "directPartnerProfileAction"
                     anchors.fill: directConversationRow
                     visible: directConversationRow.visible
                         && String(root.controller.directPeer.id || "").length > 0
                     enabled: visible
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
+                    focusPolicy: Qt.TabFocus | Qt.ClickFocus
+                    padding: 0
+                    spacing: 0
+                    // Reference overlay classes: rounded-lg plus
+                    // focus-visible:ring-2 ring-accent-soft
+                    // (chat-header-direct.ui.tsx:10). The ring paints only
+                    // with keyboard focus, so idle pixels stay identical.
+                    background: Rectangle {
+                        radius: 8
+                        color: "transparent"
+                        border.width: directPartnerProfileAction.visualFocus ? 2 : 0
+                        border.color: root.colors["accent-soft"]
+                    }
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Open profile: %1")
                         .arg(String(root.controller.directPeer.displayName || ""))
