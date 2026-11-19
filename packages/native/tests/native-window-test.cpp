@@ -30234,6 +30234,69 @@ private slots:
                  "systemFree card must not render a zero reading for a missing MemFree");
     }
 
+    // exordy review PRRT_kwDOVmpjls65Qz-2: the process table columns total
+    // 408 px (96+64+96+96+56 min) and the old flexible CPU column pushed the
+    // header/rows past the panel width with no way to reach the clipped cells.
+    // The table must live in a horizontal Flickable whose contentWidth exposes
+    // every column, with the rows sized to that content width, never wider.
+    void diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto proc = directory.filePath("proc");
+        QVERIFY(QDir(proc).mkpath(QStringLiteral("self")));
+        const auto writeProc=[&](const QString &name, const QByteArray &body){
+            QFile file(proc + name); QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(body); };
+        writeProc(QStringLiteral("/self/status"), QByteArrayLiteral(
+            "Name:\tworkspace-native\nPid:\t4242\nVmSize:\t   20480 kB\n"
+            "VmHWM:\t   9216 kB\nVmRSS:\t   8192 kB\nThreads:\t7\n"));
+        writeProc(QStringLiteral("/meminfo"), QByteArrayLiteral(
+            "MemTotal:        8388608 kB\nMemFree:          524288 kB\n"
+            "MemAvailable:    4194304 kB\n"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        controller.setDiagnosticsMemoryProcRoot(proc);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Table scroller teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *scroller=visibleItem("diagnosticsMemoryTableScroller");
+        QVERIFY2(scroller, "process table needs a horizontal Flickable (diagnosticsMemoryTableScroller)");
+        QVERIFY2(scroller->clip(), "the table scroller must clip to the panel width");
+        auto *scrollerParent=scroller->parentItem(); QVERIFY(scrollerParent);
+        QVERIFY2(scroller->width() <= scrollerParent->width() + 1.0,
+                 qPrintable(QStringLiteral("scroller %1 px wider than its panel column %2 px")
+                     .arg(scroller->width()).arg(scrollerParent->width())));
+        // Sum the header column widths: every column must fit inside the
+        // scrollable content width (clipped cells are reachable by scrolling).
+        auto *header=visibleItem("diagnosticsMemoryTableHeader"); QVERIFY(header);
+        const qreal contentWidth=scroller->property("contentWidth").toReal();
+        QVERIFY2(contentWidth >= 408.0,
+                 qPrintable(QStringLiteral("contentWidth %1 below the 408 px column floor").arg(contentWidth)));
+        qreal columns=0.0;
+        for (const char *key : {"type", "pid", "workingSet", "peak", "cpu"}) {
+            auto *cell=header->findChild<QQuickItem*>(
+                QStringLiteral("diagnosticsMemoryTableHeader-%1").arg(QLatin1String(key)));
+            QVERIFY2(cell, QStringLiteral("missing header column %1").arg(QLatin1String(key)).toUtf8().constData());
+            columns += cell->width();
+        }
+        QVERIFY2(columns <= contentWidth + 1.0,
+                 qPrintable(QStringLiteral("columns %1 px exceed scrollable content %2 px")
+                     .arg(columns).arg(contentWidth)));
+        // The data row is sized to the scrollable content, never beyond it.
+        auto *row=visibleItem("diagnosticsMemoryProcessRow-0"); QVERIFY(row);
+        QVERIFY2(row->width() <= contentWidth + 1.0,
+                 qPrintable(QStringLiteral("row %1 px wider than content %2 px")
+                     .arg(row->width()).arg(contentWidth)));
+    }
+
     // Review 4611502344 on #404: an API-generation change (token loss,
     // account/server switch) drops the in-flight ping callback, so the page
     // used to sit in loading forever. The bump must settle the ping as a
