@@ -14640,12 +14640,6 @@ void NativeController::reloadSnapshot()
     // snapshot part: a missing /folders/ answer degrades to system slots
     // instead of gating the conversation projection.
     loadFolders();
-    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the reference sidebar knows
-    // unread personal mentions from the messenger index at bootstrap; natively the index
-    // walked only when the mentions surface opened, leaving row badges empty until then.
-    // One guarded walk rides the same bootstrap; a failed answer degrades to no badges.
-    if (!m_mentionIndexReady && !m_mentionIndexWalking)
-        loadMentionIndex();
     notifyTrustChanged();
     const auto chatAccess = m_chatAccessRevision;
     const auto chatOwner = ownerKey();

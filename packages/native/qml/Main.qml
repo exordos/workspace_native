@@ -5015,17 +5015,76 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 spacing: 0
-                                Text {
+                                Row {
+                                    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md):
+                                    // reference sidebar-chat-title-with-status.ui.tsx is a
+                                    // 4 px flex line where the direct status text carries
+                                    // shrink-[9999]: it absorbs nearly all overflow and
+                                    // truncates before the name does; the emoji is shrink-0.
+                                    // The priority is reproduced with explicit widths: the
+                                    // status takes only what the name and emoji leave over,
+                                    // and the name takes back whatever the status gave up.
+                                    id: streamTitleLine
+                                    objectName: "streamTitleLine-" + streamDelegate.modelData.id
                                     Layout.fillWidth: true
                                     Layout.alignment: Qt.AlignTop
-                                    text: root.streamDisplayName(streamDelegate.modelData)
-                                    textFormat: Text.PlainText
-                                    color: root.colors["text-primary"]
-                                    font.pixelSize: 14
-                                    font.weight: Font.Medium
-                                    lineHeightMode: Text.FixedHeight
-                                    lineHeight: 20
-                                    elide: Text.ElideRight
+                                    spacing: 4
+                                    readonly property real nameNeed: streamTitleName.implicitWidth
+                                    readonly property real emojiNeed: streamTitleEmoji.visible
+                                        ? streamTitleEmoji.implicitWidth : 0
+                                    readonly property real statusNeed: streamTitleStatus.visible
+                                        ? streamTitleStatus.implicitWidth : 0
+                                    readonly property real gapNeed: 4 * Math.max(0, 1
+                                        + (streamTitleEmoji.visible ? 1 : 0)
+                                        + (streamTitleStatus.visible ? 1 : 0) - 1)
+                                    readonly property real statusWidth: streamTitleStatus.visible
+                                        ? Math.max(0, Math.min(statusNeed,
+                                            width - gapNeed - emojiNeed - nameNeed)) : 0
+                                    readonly property real nameWidth: Math.min(nameNeed,
+                                        Math.max(0, width - gapNeed - emojiNeed - statusWidth))
+                                    Text {
+                                        id: streamTitleName
+                                        objectName: "streamTitleName-" + streamDelegate.modelData.id
+                                        width: streamTitleLine.nameWidth
+                                        text: root.streamDisplayName(streamDelegate.modelData)
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-primary"]
+                                        font.pixelSize: 14
+                                        font.weight: Font.Medium
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        id: streamTitleEmoji
+                                        objectName: "streamTitleEmoji-" + streamDelegate.modelData.id
+                                        // Direct rows only (sidebar-workspace.ui.tsx:430);
+                                        // the controller already filtered the raw DTO emoji
+                                        // through the resolveWorkspaceStatusEmojiDisplay port.
+                                        visible: text.length > 0
+                                        text: Boolean(streamDelegate.modelData.isDirect)
+                                            ? String(streamDelegate.modelData.statusEmoji || "") : ""
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-primary"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        Accessible.ignored: true
+                                    }
+                                    Text {
+                                        id: streamTitleStatus
+                                        objectName: "streamTitleStatus-" + streamDelegate.modelData.id
+                                        visible: text.length > 0
+                                        width: streamTitleLine.statusWidth
+                                        text: Boolean(streamDelegate.modelData.isDirect)
+                                            ? String(streamDelegate.modelData.statusText || "") : ""
+                                        textFormat: Text.PlainText
+                                        color: root.colors["text-muted"]
+                                        font.pixelSize: 12
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 20
+                                        elide: Text.ElideRight
+                                    }
                                 }
                                 Item {
                                     Layout.fillHeight: true
@@ -5075,35 +5134,92 @@ ApplicationWindow {
                                 spacing: 0
                                 Item {
                                     Layout.alignment: Qt.AlignTop | Qt.AlignRight
-                                    implicitWidth: Math.max(20, streamUnread.implicitWidth + 8)
+                                    implicitWidth: streamMetaRow.implicitWidth
                                     implicitHeight: 20
-                                    Rectangle {
-                                        anchors.right: parent.right
-                                        width: parent.width; height: 20; radius: 10
-                                        visible: Number(streamDelegate.modelData.unread) > 0 && !expandTopics.visible
-                                        color: root.colors["badge-bg"]
-                                        Text {
-                                            id: streamUnread
-                                            anchors.centerIn: parent
-                                            text: root.countText(Number(streamDelegate.modelData.unread))
-                                            textFormat: Text.PlainText
-                                            color: root.colors["badge-text"]
-                                            font.pixelSize: 11
+                                    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md):
+                                    // the reference meta top row (sidebar-chat-row-meta
+                                    // .ui.tsx) flows pin (12 px text-text-muted), then the
+                                    // mention badge, then the unread/chevron action slot,
+                                    // gap-1. The badges flow as trailing Row children; the
+                                    // existing slot keeps its anchors.right internals.
+                                    Row {
+                                        id: streamMetaRow
+                                        spacing: 4
+                                        Image {
+                                            objectName: "streamPin-" + streamDelegate.modelData.id
+                                            visible: Boolean(streamDelegate.modelData.pinned)
+                                            width: 12; height: 12
+                                            source: "qrc:/workspace/icons/pin.svg"
+                                            sourceSize.width: 12
+                                            sourceSize.height: 12
+                                            asynchronous: false
+                                            layer.enabled: true
+                                            layer.effect: MultiEffect {
+                                                colorizationColor: root.colors["text-muted"]
+                                                colorization: 1.0
+                                            }
+                                            Accessible.ignored: true
                                         }
-                                    }
-                                    NativeIconButton {
-                                        id: expandTopics
-                                        objectName: "expandTopics-" + streamDelegate.modelData.id
-                                        anchors.right: parent.right
-                                        width: 20; height: 20; glyphSize: 16
-                                        colors: root.colors; asset: "chevron-down.svg"
-                                        rotation: streamDelegate.expanded ? 180 : 0
-                                        help: streamDelegate.expanded ? qsTr("Collapse topics") : qsTr("Expand topics")
-                                        visible: !root.normalizedSidebarQuery.length && Boolean(streamDelegate.sidebarTopicState.known) && Number(streamDelegate.sidebarTopicState.count) > 0
-                                            && (streamButton.hovered || streamButton.activeFocus || activeFocus || hovered)
-                                        onClicked: {
-                                            if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
-                                            root.controller.toggleSidebarStream(streamDelegate.modelData.id);
+                                        Rectangle {
+                                            objectName: "streamMention-" + streamDelegate.modelData.id
+                                            // MentionBadge default size (mention-badge.tsx):
+                                            // h-5 min-w-[20px] px-1.5 text-[11px], glyph @,
+                                            // aria-hidden, untranslated title.
+                                            visible: Boolean(streamDelegate.modelData.hasMention)
+                                            width: Math.max(20, streamMentionGlyph.implicitWidth + 12)
+                                            height: 20
+                                            radius: 10
+                                            color: root.colors["badge-bg"]
+                                            Accessible.ignored: true
+                                            Text {
+                                                id: streamMentionGlyph
+                                                objectName: "streamMentionGlyph-" + streamDelegate.modelData.id
+                                                anchors.centerIn: parent
+                                                text: "@"
+                                                textFormat: Text.PlainText
+                                                color: root.colors["badge-text"]
+                                                font.pixelSize: 11
+                                            }
+                                        }
+                                        Item {
+                                            implicitWidth: Math.max(20, streamUnread.implicitWidth + 8)
+                                            implicitHeight: 20
+                                            Rectangle {
+                                                objectName: "streamUnreadBadge-" + streamDelegate.modelData.id
+                                                anchors.right: parent.right
+                                                width: parent.width; height: 20; radius: 10
+                                                visible: Number(streamDelegate.modelData.displayedUnread || 0) > 0
+                                                    && !expandTopics.visible
+                                                // resolveWorkspaceDisplayedUnread: a passive
+                                                // (muted) unread renders with the gray
+                                                // notice-disable badge variant, active stays
+                                                // the accent one.
+                                                color: Boolean(streamDelegate.modelData.unreadPassive)
+                                                    ? root.colors["notice-disable"] : root.colors["badge-bg"]
+                                                Text {
+                                                    id: streamUnread
+                                                    anchors.centerIn: parent
+                                                    text: root.countText(Number(streamDelegate.modelData.displayedUnread || 0))
+                                                    textFormat: Text.PlainText
+                                                    color: root.colors["badge-text"]
+                                                    font.pixelSize: 11
+                                                }
+                                            }
+                                            NativeIconButton {
+                                                id: expandTopics
+                                                objectName: "expandTopics-" + streamDelegate.modelData.id
+                                                anchors.right: parent.right
+                                                width: 20; height: 20; glyphSize: 16
+                                                colors: root.colors; asset: "chevron-down.svg"
+                                                rotation: streamDelegate.expanded ? 180 : 0
+                                                help: streamDelegate.expanded ? qsTr("Collapse topics") : qsTr("Expand topics")
+                                                visible: !root.normalizedSidebarQuery.length && Boolean(streamDelegate.sidebarTopicState.known) && Number(streamDelegate.sidebarTopicState.count) > 0
+                                                    && (streamButton.hovered || streamButton.activeFocus || activeFocus || hovered)
+                                                onClicked: {
+                                                    if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
+                                                    root.controller.toggleSidebarStream(streamDelegate.modelData.id);
+                                                }
+                                            }
                                         }
                                     }
                                 }
