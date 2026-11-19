@@ -1175,6 +1175,10 @@ FocusScope {
     // content steps and keeps the event. Presses pass through (NoButton)
     // and zero-vertical deltas propagate, so the nested table scroller
     // still receives its horizontal turns.
+    // exordy #421 review: touchpads report scrolling as pixelDelta with a
+    // zero angleDelta, which the bare Flickable also ignores, so vertical
+    // pixel deltas drive the same step. Positive deltas mean scroll-up in
+    // both delta channels, hence contentY -= delta for each.
     MouseArea {
         objectName: "diagnosticsWheelCatcher"
         anchors.top: header.bottom
@@ -1184,12 +1188,13 @@ FocusScope {
         acceptedButtons: Qt.NoButton
         propagateComposedEvents: true
         onWheel: (wheel) => {
-            if (wheel.angleDelta.y === 0) {
+            const vertical = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : wheel.pixelDelta.y
+            if (vertical === 0) {
                 wheel.accepted = false
                 return
             }
             const maxScroll = Math.max(0, content.contentHeight - content.height)
-            content.contentY = Math.min(maxScroll, Math.max(0, content.contentY - wheel.angleDelta.y))
+            content.contentY = Math.min(maxScroll, Math.max(0, content.contentY - vertical))
             wheel.accepted = true
         }
     }
