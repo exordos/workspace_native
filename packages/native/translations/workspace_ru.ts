@@ -516,6 +516,22 @@
             <translation>Добавить папку</translation>
         </message>
         <message>
+            <source>Display vertically</source>
+            <translation>Отобразить вертикально</translation>
+        </message>
+        <message>
+            <source>Display horizontally</source>
+            <translation>Отобразить горизонтально</translation>
+        </message>
+        <message>
+            <source>Show system folders</source>
+            <translation>Показать системные папки</translation>
+        </message>
+        <message>
+            <source>Hide system folders</source>
+            <translation>Скрыть системные папки</translation>
+        </message>
+        <message>
             <source>Choose a conversation</source>
             <translation>Выберите беседу</translation>
         </message>
