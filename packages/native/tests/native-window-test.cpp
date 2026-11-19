@@ -3001,6 +3001,120 @@ public:
     Q_INVOKABLE void open(const QUrl &url) { urls.append(url); }
 };
 
+// Issue #89: scene for the chat header member/online caption
+// (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md, reference chat-header-channel.ui.tsx
+// caption `t("channel.participants") + ", " + t("channel.online")`). Serves a
+// two-member channel (viewer active + idle peer -> "2 members, 1 online"),
+// a single-member channel (viewer only -> the en singular branch), a direct
+// chat (never shows a caption) and a user directory with presence statuses.
+class WindowChatHeaderCountersFixture {
+public:
+    MockServer server;
+    QJsonArray users;
+    QJsonObject pairStream, soloStream, directStream;
+    QString soloStreamId = QStringLiteral("8e0d0000-0000-4000-8000-000000000008");
+    QString soloTopicId = QStringLiteral("8e0d0000-0000-4000-8000-000000000018");
+    QString directTopicId = QStringLiteral("8e0d0000-0000-4000-8000-000000000019");
+    static QString headerBindingId(int number)
+    {
+        return QStringLiteral("83500000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0'));
+    }
+    WindowChatHeaderCountersFixture()
+    {
+        pairStream = windowChannel(streamId, "Counter channel");
+        soloStream = windowChannel(soloStreamId, "Solo desk");
+        directStream = windowChannel(windowDirectId(), "Direct");
+        directStream["private"] = true;
+        directStream["direct_user_uuid"] = channelPeer;
+        users = QJsonArray{
+            headerUser(userId, "cassi", "Cassi", "active"),
+            headerUser(channelPeer, "alice", "Alice", "idle")};
+        server.handler = [this](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto streamQuery = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (request.method == "GET" && path.endsWith("/streams/") && !path.contains("/messages/"))
+                return {QJsonArray{pairStream, soloStream, directStream}};
+            if (request.method == "GET" && path.endsWith("/streams/" + streamId)) return {pairStream};
+            if (request.method == "GET" && path.endsWith("/streams/" + soloStreamId)) return {soloStream};
+            if (request.method == "GET" && path.endsWith("/streams/" + windowDirectId()))
+                return {directStream};
+            if (request.method == "GET" && path.endsWith("/users/")) return {users};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                if (streamQuery == soloStreamId)
+                    return {QJsonArray{windowChannelTopic(soloTopicId, soloStreamId, "Solo general")}};
+                if (streamQuery == windowDirectId())
+                    return {QJsonArray{windowChannelTopic(directTopicId, windowDirectId(), "Direct general")}};
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Counter general")}};
+            }
+            if (request.method == "GET" && path.endsWith("/stream_bindings/")) {
+                if (streamQuery == soloStreamId)
+                    return {QJsonArray{headerBinding(headerBindingId(1), userId, soloStreamId)}};
+                if (streamQuery == windowDirectId())
+                    return {QJsonArray{headerBinding(headerBindingId(2), userId, windowDirectId())}};
+                return {QJsonArray{headerBinding(headerBindingId(3), userId, streamId),
+                    headerBinding(headerBindingId(4), channelPeer, streamId)}};
+            }
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+    }
+    static QJsonObject headerUser(const QString &id, const QString &username,
+                                  const QString &name, const QString &status)
+    {
+        return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", name},
+            {"source", "iam"}, {"avatar", QJsonValue::Null},
+            {"email", username + "@example.invalid"}, {"status", status},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+    }
+    static QJsonObject headerBinding(const QString &id, const QString &user, const QString &stream)
+    {
+        return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+            {"user_uuid", user}, {"who_uuid", userId},
+            {"role", user == userId ? "owner" : "member"},
+            {"notification_mode", "all_messages"},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+    }
+};
+
+struct WindowChatHeaderCountersScene {
+    WindowChatHeaderCountersFixture fixture;
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    ApiClient api{nullptr, true};
+    Session session;
+    NativeController controller;
+    QQmlApplicationEngine engine;
+    QPointer<QQuickWindow> window;
+    WindowChatHeaderCountersScene()
+        : preferences(directory.filePath("chat-header.ini")), session(&api), controller(&api, &session)
+    {
+        QVERIFY(directory.isValid());
+        preferences.setLocale("en");
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user",
+            "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 3);
+    }
+    ~WindowChatHeaderCountersScene()
+    {
+        if (window && !closeIncubatedTestWindow(engine, window))
+            QTest::qFail("chat header scene teardown", __FILE__, __LINE__);
+    }
+    QString text(const QString &name)
+    {
+        auto *item = visibleItem(name);
+        return item ? item->property("text").toString() : QString();
+    }
+};
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -32720,6 +32834,53 @@ private slots:
         QVERIFY(actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
         actions->doAction(QAccessibleActionInterface::pressAction());
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
+    }
+
+    // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the channel
+    // header caption renders `t("channel.participants") + ", " +
+    // t("channel.online")` ("2 members, 1 online" for en, singular branch
+    // "1 member"), follows presence projection changes and never renders on
+    // direct chats.
+    void chatHeaderCountersRenderMembersAndOnline()
+    {
+        WindowChatHeaderCountersScene scene;
+        scene.controller.selectStream(streamId);
+        QTRY_VERIFY(!scene.controller.topics().isEmpty());
+        // The caption waits on the binding projection; the viewer is active
+        // and Alice is idle, so 1 of the 2 members is online.
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
+            QStringLiteral("2 members, 1 online"), 5000);
+        // A presence projection change moves the online half.
+        auto flip = scene.fixture.users[1].toObject();
+        flip["kind"] = "user.updated";
+        flip["status"] = "active";
+        flip["updated_at"] = "2026-01-02T10:01:00Z";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+            {"schema_version", 1}, {"epoch_version", 500},
+            {"uuid", QStringLiteral("a5000000-0000-4000-8000-000000000001")},
+            {"project_id", projectId}, {"user_uuid", userId},
+            {"object_type", "user"}, {"action", "updated"}, {"payload", flip},
+            {"created_at", flip.value("updated_at")}, {"updated_at", flip.value("updated_at")}}));
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
+            QStringLiteral("2 members, 2 online"), 5000);
+    }
+
+    void chatHeaderCountersSingularAndHiddenForDirectChats()
+    {
+        WindowChatHeaderCountersScene scene;
+        // en singular branch: the en.json oracle is "{count} member".
+        scene.controller.selectStream(scene.fixture.soloStreamId);
+        QTRY_VERIFY(!scene.controller.topics().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
+            QStringLiteral("1 member, 1 online"), 5000);
+        // Direct chats use the direct header and never show the caption.
+        scene.controller.selectStream(windowDirectId());
+        QTRY_VERIFY(scene.controller.isDirectConversation());
+        QTRY_VERIFY(!visibleItem("chatHeaderCounters"));
+        // Switching back projects the pair channel's counts, not stale ones.
+        scene.controller.selectStream(streamId);
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
+            QStringLiteral("2 members, 1 online"), 5000);
     }
 };
 

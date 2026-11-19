@@ -260,6 +260,17 @@ ApplicationWindow {
     readonly property var chatEncryption: root.controller.encryption
     readonly property bool encryptedConversation: root.controller.authenticated && root.controller.hasConversation && root.selectedStreamEncrypted
     readonly property string encryptedStreamName: root.controller.selectedStream.length ? root.selectedName(root.controller.streams, root.controller.selectedStream) || root.selectedName(root.controller.archivedChats, root.controller.selectedStream) : ""
+    // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the caption of
+    // chat-header-channel.ui.tsx - t("channel.participants", {count}) + ", " +
+    // t("channel.online", {count}). The plural sources match the reviewed
+    // catalog entries of the channel info subline (NativeChannelInfo.qml).
+    function chatHeaderCountersText() {
+        const members = root.controller.chatHeaderMemberCount
+        const online = root.controller.chatHeaderOnlineCount
+        const membersLabel = members === 1 ? qsTr("%n member", "", members)
+                                           : qsTr("%n members", "", members)
+        return membersLabel + ", " + qsTr("%n online", "", online)
+    }
     readonly property var encryptedReadSummary: {
         const result = { ready: 0, missing: 0, error: 0, preparing: 0, currentReady: false };
         if (!root.encryptedConversation)
@@ -5472,6 +5483,14 @@ ApplicationWindow {
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
                 color: root.colors["bg-elevated"]
+                Connections {
+                    // Issue #89: the member/online caption follows the current
+                    // selection; the controller itself clears the projection
+                    // for direct chats and empty selections.
+                    target: root.controller
+                    function onSelectedStreamChanged() { root.controller.refreshChatHeaderMembers() }
+                    function onAuthenticatedChanged() { root.controller.refreshChatHeaderMembers() }
+                }
                 // Favorites presentation (issue #70): ChatFavoritesHeader shows only
                 // the h1 title - text-base font-semibold text-text-primary
                 // (chat-header-favorites.ui.tsx:5-10); the ordinary topic/direct/
@@ -5517,6 +5536,23 @@ ApplicationWindow {
                         font.pixelSize: 14
                         elide: Text.ElideRight
                     }
+                }
+                Text {
+                    objectName: "chatHeaderCounters"
+                    // Issue #89: text-xs text-text-muted at mt-0.5 under the
+                    // 14px title (chat-header-channel.ui.tsx); hidden for
+                    // direct chats and before the projection arrives (a bound
+                    // creator means a live stream always has >= 1 member).
+                    visible: !root.controller.isDirectConversation && !root.encryptedConversation
+                        && !root.controller.favoritesVisible && root.controller.chatHeaderMemberCount > 0
+                    x: 20
+                    y: 30
+                    width: parent.width - 100
+                    text: root.chatHeaderCountersText()
+                    textFormat: Text.PlainText
+                    font.pixelSize: 12
+                    color: root.colors["text-muted"]
+                    elide: Text.ElideRight
                 }
                 RowLayout {
                     objectName: "encryptedConversationHeader"
@@ -5595,9 +5631,22 @@ ApplicationWindow {
                         Item {
                             objectName: "encryptedParticipantsPlaceholder"
                             y: 24; width: parent.width; height: 18
-                            // Binding/presence counts are not projected by the
-                            // current controller. Keep source geometry, no guess.
-                            Accessible.ignored: true
+                            Text {
+                                objectName: "encryptedChatHeaderCounters"
+                                // Issue #89: the mt-1 leading-[18px] text-xs
+                                // text-text-muted caption of the encrypted
+                                // header variant (chat-header-channel.ui.tsx).
+                                visible: root.controller.chatHeaderMemberCount > 0
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                height: 18
+                                text: root.chatHeaderCountersText()
+                                textFormat: Text.PlainText
+                                font.pixelSize: 12
+                                lineHeightMode: Text.FixedHeight; lineHeight: 18
+                                color: root.colors["text-muted"]
+                                elide: Text.ElideRight
+                            }
                         }
                     }
                 }
