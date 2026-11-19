@@ -4115,6 +4115,10 @@ void NativeController::removeChannelInfoMember(const QString &bindingUuid)
         ++m_channelInfoTicket;
         m_channelInfoLoading = false;
         emit stateChanged();
+        // Issue #89 round 2 (PR #432 review): this removed one of the
+        // selected stream's bindings (guarded above), so the header member
+        // projection must re-read the authoritative binding set.
+        refreshChatHeaderMembers();
     });
 }
 
@@ -4194,6 +4198,10 @@ void NativeController::addChannelInfoMembers(const QStringList &userUuids)
         ++m_channelInfoAddSettled;
         emit channelInfoAddSettledChanged();
         emit stateChanged();
+        // Issue #89 round 2 (PR #432 review): these bindings joined the
+        // selected stream (guarded above), so the header member projection
+        // must re-read the authoritative binding set.
+        refreshChatHeaderMembers();
     });
 }
 
@@ -12008,6 +12016,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 && (kind == "stream_binding.deleted" || row.value("role").toString() != "owner"))
                 loseChannelCreationAccess(stream);
         }
+        // Issue #89 round 2 (PR #432 review): binding changes for the
+        // selected stream must move the header caption counts; the QML
+        // triggers only cover selection and authentication. The refresh is
+        // owner/ticket-guarded and emits nothing synchronously while the
+        // selection still matches, so no QML write-back cascade can form.
+        if (stream == m_stream) refreshChatHeaderMembers();
         if (responseRowsChanged) {
             // Waiting for fresh authority must not leave the old Request row
             // admitting input while the controlled detail response is pending.
