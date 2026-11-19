@@ -21,6 +21,10 @@ reference layout options, and direct chats gain the partner status caption:
   presence and last seen. The whole partner block is now a real focusable
   button that opens the profile drawer from the keyboard with a visible
   accent focus ring, in both locales and both modes.
+- The diagnostics page now scrolls with mouse wheel and touchpad gestures, so
+  the advanced snapshot section stays reachable on short windows: the page body
+  follows every scroll gesture and the advanced row can be scrolled into view
+  and opened without leaving the viewport.
 
 ---
 
