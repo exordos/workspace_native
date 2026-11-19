@@ -164,3 +164,47 @@ Controller group `native-controller-test`: `streamNotificationModeWritePathTarge
 exercises the unselected-stream write (path, body, busy rejection while in flight,
 same-mode no-op, `streams()` row `notificationMode`/`fullyMuted` updates) and the
 `topics()` row `notificationMode`/`effectivelyMuted` projection.
+
+## 4. Issue #442: coexistence with the stream menu layout-wait contracts
+
+The window-layer stream-menu contracts (`awaitTopicMenuLayout` and the explicit pins
+in `realMenuInputWaitsForSourceLayout`, `native-window-test.cpp`) were written against
+the pre-#97 menu and pinned its anatomy: a collapsed opened state (menu height 10 =
+5+5 padding, `contentHeight` 0) and a settled press height of 118 (3 visible 36 px
+source rows + padding), with mouse input gated on the full source-row layout. The #97
+level switch prepends a first entry to the menu, so those pins failed deterministically
+on tip e29a7b7 (observed 32 vs pinned 10 at open; the `ready()` sum could never settle
+to the pre-#97 total), which is the whole named failure family of issue #442.
+
+Reference measurement (workspace_ui @ `61dacef78dab2f5d0be76f283bebf49fe29b84af`, the
+sha pinned at the head of this document): `sidebar-workspace-context-menu.ui.tsx`
+builds the menu as `const items: DropdownMenuItem[] = [notificationPickerItem]`
+(line 537) - the level switch is the static first entry of the opened dropdown and is
+not gated on any async population; its value comes from the store with an
+`?? "mentions_only"` fallback (`useWorkspaceStreamNotificationMode`, lines 214-218).
+The level rows therefore render with the menu, not after a population pass, so the
+preferred production scoping (deferring the block until the source rows lay out)
+would contradict the reference. Following the #362 precedent, the pinned values were
+migrated test-side to the new anatomy while keeping the invariant intact and stronger:
+`ready()` now requires the settled `contentHeight` to equal the visible Notifications
+block plus the visible source rows, and the popup must still contain the target row
+before any synthesized mouse input.
+
+Migrated pins (`realMenuInputWaitsForSourceLayout`): opened state 10/0 -> 68/58
+(padding + the fully materialized 58 px block: 14 px heading, 4 px spacing, 32 px
+switch, 8 px paddings; the source rows are still absent from `contentHeight` at that
+frame) and press-time full height 118 -> 176 (= 10 padding + 58 block + 3 x 36 rows).
+`awaitTopicMenuLayout` counts `streamNotificationItem` first in its expected sum.
+
+Production correction found while measuring the navigation parity: unlike the
+reference's type-`custom` dropdown entry, the shipped #97 block was a `MenuItem`, so
+it became a keyboard highlight stop (Down landed on the block, Enter then fired the
+wrong action; `sidebarChannelOffersTopicCreationWithoutChangingSelection` failed this
+way). The Qt 6 navigation can only make a `MenuItem` the current item, so the block is
+now a plain `Item` delegate - navigation skips it while the segment Buttons stay
+clickable (a disabled `MenuItem` alternative was measured and rejected: it swallowed
+the segment clicks). A `MouseArea` under the content preserves the pinned #97
+fallthrough where a press on the heading or on a disabled segment closes the menu
+without posting. The block occupies model slot 0 but is navigation-inert, so that
+test's `currentIndex` pin shifted 2 -> 3 (slot order: block 0, hidden read 1,
+rename 2, new topic 3).
