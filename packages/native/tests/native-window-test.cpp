@@ -31639,6 +31639,260 @@ private slots:
             QStringLiteral("Renamed"),3000);
         QCOMPARE(controller.folders().last().toMap().value("color").toUInt(), 0u);
     }
+
+    // docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md (issue #85): the folder
+    // context menu flips folderRailLayout; the horizontal 44 px strip mounts
+    // inside the sidebar below the activity panel (sidebar-shell.ui.tsx
+    // activityPanelBottomSlot), and the choice survives a recreated
+    // preferences object plus a fresh window on the same settings file.
+    void folderRailLayoutTogglesHorizontallyAndSurvivesRestart()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",7},{"background_color_value",0x2563eb}}}};
+            if (path.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (path.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (path.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(path);
+        preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Layout toggle teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-all") && visibleItem("folder-"+folderFocus), 5000);
+        // The vertical rail renders first and the menu offers the other mode
+        // (folder-rail-context-menu.lib.ts shows the action, not the state).
+        QVERIFY(!visibleItem("folderRailHorizontal"));
+        QCOMPARE(preferences.folderRailLayout(), QStringLiteral("vertical"));
+        const auto sceneCenter=[&](QQuickItem *entry){
+            return entry->mapToScene(QPointF(entry->width()/2,entry->height()/2)).toPoint();};
+        auto *allCell=visibleItem("folder-all"); QVERIFY(allCell);
+        QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,sceneCenter(allCell));
+        auto *toggleLayout=visibleItem("folderMenuToggleLayout"); QVERIFY(toggleLayout);
+        QCOMPARE(toggleLayout->property("text").toString(), QStringLiteral("Display horizontally"));
+        QVERIFY(toggleLayout->property("enabled").toBool());
+        click(window,toggleLayout);
+        // The strip replaces the 72 px column: 44 px tall (h-11), full
+        // sidebar width, chips 32 px tall (h-8), and the divider below it.
+        auto *strip=visibleItem("folderRailHorizontal"); QVERIFY(strip);
+        QCOMPARE(strip->height(), qreal(44));
+        auto *side=visibleItem("sidebar"); QVERIFY(side);
+        QCOMPARE(strip->width(), side->width());
+        auto *chip=visibleItem("folder-"+folderFocus); QVERIFY(chip);
+        QCOMPARE(chip->height(), qreal(32));
+        QVERIFY(visibleItem("folderRailDivider"));
+        QVERIFY(!visibleItem("folderRail")); // the vertical column is gone
+        QCOMPARE(preferences.folderRailLayout(), QStringLiteral("horizontal"));
+        // Selecting a chip in the strip still scopes the rail (and the menu
+        // now offers the vertical alternative).
+        auto *allChip=visibleItem("folder-all"); QVERIFY(allChip);
+        click(window,allChip);
+        QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,sceneCenter(visibleItem("folder-all")));
+        auto *backToggle=visibleItem("folderMenuToggleLayout"); QVERIFY(backToggle);
+        QCOMPARE(backToggle->property("text").toString(), QStringLiteral("Display vertically"));
+        QTest::keyClick(window,Qt::Key_Escape);
+        // App-restart parity: a recreated preferences object reloads the
+        // stored layout, and a fresh window renders the horizontal rail
+        // before any interaction.
+        NativePreferences reopened(path);
+        QCOMPARE(reopened.folderRailLayout(), QStringLiteral("horizontal"));
+        reopened.setLocale("en");
+        QQmlApplicationEngine engine2; loadNativeUi(engine2,&controller,&reopened);
+        auto *window2=qobject_cast<QQuickWindow *>(engine2.rootObjects().value(0)); QVERIFY(window2);
+        QVERIFY(QTest::qWaitForWindowExposed(window2));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folderRailHorizontal"), 5000);
+        QVERIFY(visibleItem("folder-"+folderFocus));
+        QVERIFY(closeIncubatedTestWindow(engine, window));
+        QVERIFY(closeIncubatedTestWindow(engine2, window2));
+        close.dismiss();
+    }
+
+    // folder-rail-horizontal-view.ui.tsx drag contract: left-button pointer
+    // drag past the 3 px threshold scrolls the strip and suppresses exactly
+    // the click that ended the drag; a press that never crossed the threshold
+    // still selects its chip (folder-rail-horizontal-view.ui.tsx
+    // handlePointerMoveCapture/handleClickCapture).
+    void horizontalFolderRailDragScrollsAndSuppressesTheTrailingClick()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        QStringList customUuids;
+        QJsonArray folders{
+            QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                {"system_type","all"},{"unread_count",0},{"background_color_value",0}}};
+        for (int i = 0; i < 6; ++i) {
+            const auto uuid = QStringLiteral("7d7d7d7d-7d7d-4d7d-8d8d-%1")
+                .arg(i, 12, 16, QLatin1Char('0'));
+            customUuids << uuid;
+            folders.append(QJsonObject{{"uuid",uuid},
+                {"title",QStringLiteral("Box %1").arg(i+1)},
+                {"system_type","created"},{"unread_count",0},{"background_color_value",0x2563eb}});
+        }
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto target = request.target.path();
+            if (target.endsWith("/messenger/folders/")) return {folders};
+            if (target.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha")}};
+            if (target == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (target.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (target.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (target.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(path);
+        preferences.setLocale("en");
+        preferences.setFolderRailLayout("horizontal");
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Rail drag teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        const auto firstChip = QStringLiteral("folder-") + customUuids.first();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folderRailHorizontal") && visibleItem(firstChip), 5000);
+        auto *strip=visibleItem("folderRailHorizontal"); QVERIFY(strip);
+        auto *scroller=strip->findChild<QObject*>("folderRailStrip"); QVERIFY(scroller);
+        const auto contentX=[&]{return scroller->property("contentX").toReal();};
+        const auto allUuid=QStringLiteral("00000000-0000-0000-0000-000000000000");
+        QCOMPARE(controller.selectedFolder(), allUuid);
+        QVERIFY(contentX() == 0.0);
+        // A press with movement below the 3 px threshold is still a click.
+        // Start from the last folder (selected programmatically) so the
+        // threshold click has an observable effect. The Personal chip is the
+        // first chip guaranteed to sit fully inside the strip's clipped
+        // viewport, so synthetic presses always hit it.
+        controller.selectFolder(customUuids.last());
+        QTRY_COMPARE(controller.selectedFolder(), customUuids.last());
+        const auto personalUuid=QStringLiteral("00000000-0000-0000-0000-000000000001");
+        const auto chipPoint=[&](const QString &name){
+            auto *chip=visibleItem(name);
+            return chip->mapToScene(QPointF(chip->width()/2,chip->height()/2)).toPoint();};
+        const auto start=chipPoint(QStringLiteral("folder-personal"));
+        QVERIFY(start.x() < strip->width());
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);
+        QTest::mouseMove(window,start+QPoint(2,0));
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start+QPoint(2,0));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
+        QCOMPARE(contentX(), 0.0);
+        // Back to All, then drag past the threshold: the strip scrolls and
+        // the trailing click must not change the selection.
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(QStringLiteral("folder-all")));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), allUuid, 2000);
+        const auto dragFrom=chipPoint(QStringLiteral("folder-personal"));
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,dragFrom);
+        QTest::mouseMove(window,dragFrom+QPoint(-120,0));
+        QTest::qWait(50);
+        QTest::mouseMove(window,dragFrom+QPoint(-140,0));
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,dragFrom+QPoint(-140,0));
+        QTRY_VERIFY_WITH_TIMEOUT(contentX() > 0.0, 2000);
+        QTest::qWait(200);
+        QCOMPARE(controller.selectedFolder(), allUuid);
+        // The suppression lasts exactly one click: the next plain click on a
+        // (now shifted) chip selects normally.
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(firstChip));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), customUuids.first(), 2000);
+    }
+
+    // Hiding system folders removes Personal and Channels from the rail while
+    // the All chats slot stays pinned and the chat list keeps the All-chats
+    // effective selection (sidebar-shell fallback rule, issue #85 contract).
+    void folderSystemVisibilityToggleHidesPersonalAndChannels()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        const QString folderFocus = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString streamB = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto target = request.target.path();
+            if (target.endsWith("/messenger/folders/"))
+                return {QJsonArray{
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000000"},{"title","All chats"},
+                        {"system_type","all"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000001"},{"title","Personal"},
+                        {"system_type","personal"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid","00000000-0000-0000-0000-000000000002"},{"title","Channels"},
+                        {"system_type","channels"},{"unread_count",0},{"background_color_value",0}},
+                    QJsonObject{{"uuid",folderFocus},{"title","Focus"},{"system_type","created"},
+                        {"unread_count",0},{"background_color_value",0x2563eb}}}};
+            if (target.endsWith("/messenger/streams/"))
+                return {QJsonArray{windowChannel(streamId,"Alpha"), windowChannel(streamB,"Beta")}};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamId) return {windowChannel(streamId,"Alpha")};
+            if (path == "/api/workspace/v1/messenger/streams/"+streamB) return {windowChannel(streamB,"Beta")};
+            if (target.endsWith("/messenger/stream_topics/")) return {QJsonArray{}};
+            if (target.endsWith("/users/")) return {QJsonArray{QJsonObject{{"uuid",userId},{"username","cassi"}}}};
+            if (target.contains("/messages/")) return {QJsonArray{}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(path);
+        preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("System visibility teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(),"synthetic-user","synthetic-password","");
+        QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
+        controller.openProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-personal") && visibleItem("folder-channels"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId) && visibleItem("stream-"+streamB), 3000);
+        const auto rightClick=[&](const QString &objectName){
+            auto *cell=visibleItem(objectName); QVERIFY(cell);
+            const auto point=cell->mapToScene(QPointF(cell->width()/2,cell->height()/2));
+            QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point.toPoint());
+        };
+        rightClick("folder-"+folderFocus);
+        auto *toggleSystem=visibleItem("folderMenuToggleSystemFolders"); QVERIFY(toggleSystem);
+        QCOMPARE(toggleSystem->property("text").toString(), QStringLiteral("Hide system folders"));
+        QVERIFY(toggleSystem->property("enabled").toBool());
+        click(window,toggleSystem);
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("folder-personal") && !visibleItem("folder-channels"), 3000);
+        QVERIFY(visibleItem("folder-all"));
+        QVERIFY(visibleItem("folder-"+folderFocus));
+        // The chat list keeps the All-chats effective selection: both streams
+        // stay visible, and the hidden slots never move the selection.
+        QCOMPARE(controller.selectedFolder(), QStringLiteral("00000000-0000-0000-0000-000000000000"));
+        QVERIFY(visibleItem("stream-"+streamId));
+        QVERIFY(visibleItem("stream-"+streamB));
+        QCOMPARE(preferences.showSystemFolders(), false);
+        // The menu now offers the opposite action and restores the slots.
+        rightClick("folder-"+folderFocus);
+        auto *restore=visibleItem("folderMenuToggleSystemFolders"); QVERIFY(restore);
+        QCOMPARE(restore->property("text").toString(), QStringLiteral("Show system folders"));
+        click(window,restore);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-personal") && visibleItem("folder-channels"), 3000);
+        QCOMPARE(preferences.showSystemFolders(), true);
+        NativePreferences reopened(path);
+        QCOMPARE(reopened.showSystemFolders(), true);
+    }
     // Issue #51 (docs modal section): the session log viewer modal opens from
     // the header View logs button and the Log counts card button, starts in
     // the empty state with Clear/Export disabled, appends lines live while
