@@ -1748,6 +1748,10 @@ private:
     QString m_folderMutationKind, m_folderMutationOwner, m_folderMutationError;
     bool m_folderMutationPending = false;
     quint64 m_folderMutationTicket = 0, m_folderMutationGeneration = 0;
+    // Issue #423 review 4628637592: token for the single bounded follow-up
+    // reconcile armed by a renewal interrupt; bumping it disarms any pending
+    // follow-up (new interrupt, owner reset).
+    quint64 m_folderMutationFollowup = 0;
     // Issue #132 channel info drawer state for the selected stream. The
     // binding rows belong to m_channelInfoStreamId; a projection read with a
     // different selection stays empty, so stale pages can never leak across
