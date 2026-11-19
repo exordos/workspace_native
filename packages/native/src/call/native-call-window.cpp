@@ -327,7 +327,24 @@ bool JitsiCallWindowController::isDisplayCaptureRequestAllowed(bool isMainFrame,
 bool JitsiCallWindowController::isDisplayCaptureRequestTrustworthy(
     const QString &requestingUrl) const
 {
-    return isDisplayCaptureRequestAllowed(false, requestingUrl);
+    // Round 2 (findings 1/2): FAIL CLOSED. Qt 6.10.2's QWebEnginePermission
+    // exposes only origin and permissionType (qwebenginepermission.h:30-33,
+    // 70-71) - no frame object, no main-frame flag, no frame tree - and this
+    // view loads the meeting URL as its own main document, so a request from
+    // the meeting main frame carries exactly the meeting origin. An origin
+    // match therefore cannot distinguish the allowed child-frame request the
+    // reference gate proves (workspace_ui main.ts:996-1020 denies unless the
+    // request is verifiably from a live secure child frame) from the denied
+    // main-frame request: the only sound policy on this runtime is to deny
+    // every request whose frame identity cannot be verified, which is all of
+    // them. The first round's wiring that fed the origin into the modeled
+    // child-frame check fabricated the identity (always claiming
+    // isMainFrame=false) and granted main-frame requests - that is exactly
+    // the scenario findings 1/2 condemned, so the modeled gate above stays
+    // unit-tested as the policy reference but no production request reaches
+    // it until a trustworthy frame identity signal exists.
+    Q_UNUSED(requestingUrl)
+    return false;
 }
 
 void JitsiCallWindowController::syncFullscreen(bool fullscreen)

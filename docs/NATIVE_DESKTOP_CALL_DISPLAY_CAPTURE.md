@@ -79,38 +79,80 @@ empty string for unparseable URLs so a null origin can never match).
 ### Call-surface seam (`JitsiCallWindowController`)
 
 Qt 6.10.2 delivers capture gates as `permissionRequested` with a
-`QWebEnginePermission` that exposes only `origin` and `permissionType`
-(`/usr/include/x86_64-linux-gnu/qt6/QtWebEngineCore/qwebenginepermission.h:30-31,47-59`;
-`DesktopVideoCapture = 4`). Unlike Electron it carries no frame identity, so
-the native shell models the frame subtree itself: while a call is open and
-its embed is Ready, the live Jitsi meeting document is the one live child
-frame; every other requesting origin is modeled as a foreign (main-frame)
-request. The controller exposes
-`isDisplayCaptureRequestAllowed(isMainFrame, requestingUrl)` as the tested
-decision point, and `NativeCallWebEngineView.qml` routes
-`DesktopVideoCapture` through it (an origin match is itself the proof that
-the request did not come from the embedding document). A request flagged as
-a main-frame request is denied even when its origin matches.
+`QWebEnginePermission` that exposes only `origin`, `permissionType`, `state`
+and `isValid`
+(`/usr/include/x86_64-linux-gnu/qt6/QtWebEngineCore/qwebenginepermission.h:30-33,70-71`;
+`DesktopVideoCapture = 4`). That is the complete trustworthy-signal inventory
+this runtime hands the decision point: there is no frame object, no
+main-frame flag and no frame-tree query anywhere on the QML/C++ permission
+surface, while this view loads the meeting URL as its own main document.
+Consequently the reference's positive proof ("not the main frame, and the
+requesting origin belongs to a live secure child frame", `main.ts:1003-1016`)
+can never be established natively: a request from the meeting main frame
+carries exactly the meeting origin, so an origin match cannot separate the
+allowed case from the denied case.
 
-The meeting origin itself follows the existing single-session grant model:
-`close()` returns the controller to `Closed`, which removes the live frame
-entry, so a finished or never-loaded session cannot hold capture either.
+Round 2 therefore states the exact trustworthy signal - none exists on this
+runtime - and makes the production policy FAIL CLOSED:
+`JitsiCallWindowController::isDisplayCaptureRequestTrustworthy(requestingUrl)`
+is the decision point `NativeCallWebEngineView.qml` consults for
+`DesktopVideoCapture`, and it denies unconditionally until a Qt version
+exposes real frame identity. The first round's wiring (hardcoding
+`isMainFrame=false` into the modeled child-frame check) fabricated the very
+identity the reference requires and granted main-frame requests; that is what
+review findings 1 and 2 condemned, and the shipped-source guard now forbids
+the view from ever hardcoding a frame flag again.
+
+The modeled gate stays as the unit-tested policy reference:
+`isDisplayCaptureRequestAllowed(isMainFrame, requestingUrl)` models the
+reference subtree (while a call is open and Ready, the live Jitsi document is
+the one live child frame; `close()` removes the entry) and is the function a
+future trustworthy frame identity feeds into. Until then no production
+request reaches it.
 
 ### Share-source picker (`src/call/screen-share-source-picker.{h,cpp}`)
 
 `ScreenShareSourcePicker` selects the share source through the XDG desktop
-portal `org.freedesktop.portal.Screenshot.PictureUri` on the session bus
-(service `org.freedesktop.portal.Desktop`, object
-`/org/freedesktop/portal/desktop`), the platform analogue of the Electron
-source picker wired at `main.ts:367`. When no portal is registered on the
-session bus, the picker falls back deterministically to Qt's own screen
-model (`QGuiApplication::screens()`), publishing one source per screen.
+portal LIVE source-selection contract
+`org.freedesktop.portal.ScreenCast` on the session bus (service
+`org.freedesktop.portal.Desktop`, object `/org/freedesktop/portal/desktop`),
+the platform analogue of the Electron source picker wired at `main.ts:367`.
+Round 2 (finding 4) replaced the first round's
+`Screenshot.PictureUri` transport, which returned a still PNG path, not a
+streamable source. The shipped exchange, per the portal interface docs:
+
+1. `CreateSession(a{sv})` answers a Request object path whose `Response`
+   carries `session_target` (the session object path);
+2. `SelectSources(s parent_window, o session, a{sv})` with the `types`
+   option mask `screens|windows` (`0x1|0x2`) - this is the source-selection
+   contract proper, the select-screens/select-windows selection (the old
+   `multiple_screens`/`multiple_windows` booleans are the deprecated spelling
+   of the same contract);
+3. `PickStreams(s parent_window, o session, a{sv})` whose `Response` carries
+   `streams` - an array of stream-reference object paths. Those references
+   are the live sources: a capture pipeline resolves one to a PipeWire node
+   through `ScreenCast.OpenPipeWireRemote`, which is why the published
+   source is marked `live: true` and carries the stream reference as its
+   uri. A portal cancel (Response code 1) surfaces as a translated failure.
+
+When no portal is registered on the session bus, the picker falls back
+deterministically to Qt's own screen model (`QGuiApplication::screens()`),
+publishing one streamable monitor source per screen.
+
+Each exchange is tracked by its own serial (finding 3). The exchange owns
+its timeout `QTimer` and the portal Request subscriptions its steps opened,
+and `finishCurrentExchange()` stops the timer and disconnects every
+subscription before completion is published, so neither a stale timer nor a
+late `Response` of a finished exchange can fail or fake a later one;
+while an exchange is in flight the slot's only live subscriptions are that
+exchange's own steps, which answer strictly in call order.
 
 D-Bus notes honoured by the implementation: a value received inside a
 `QVariant` can arrive wrapped in `QDBusVariant` and must be unwrapped before
 use, and list members inside a variant arrive as a `QDBusArgument` stream
 (`beginArray`/`atEnd`/`extract`), while `QDBusMessage` has no per-message
-timeout so the blocking call uses `QDBus::Block` with milliseconds.
+timeout so the deadline rides the connection call and the per-exchange
+timer.
 
 The portal transport and the portal-availability probe are injectable seams
 (the established `std::function` seam pattern of the call surface), so the
@@ -139,17 +181,37 @@ the picker result is the value that gets passed through.
   meeting frame origin, and a mock main frame carrying the very same meeting
   origin cannot obtain capture; an http meeting URL and an unknown origin
   are denied; after close the live frame entry is gone.
+- frame trust (round 2, findings 1/2):
+  `callWindowDisplayCaptureGateFailsClosedWithoutFrameIdentity` - with the
+  embed Ready, the very meeting origin is still denied because the
+  requesting frame's identity cannot be verified.
 - picker: with no portal the fallback deterministically publishes the Qt
   screen-model sources; the injected portal bridge reports a source or a
-  failure; the portal `Result` parsing unwraps `QDBusVariant`.
+  failure;
+  `shareSourcePickerDrivesThePortalScreenCastContract` proves the whole
+  CreateSession/SelectSources/PickStreams exchange against a session-bus
+  portal stub (stream reference published as the live source, the still
+  `PictureUri` API never called, cancel code 1 -> translated failure);
+  `shareSourcePickerCancelsTheCompletedExchangeTimerAndSubscription`
+  reproduces finding 3 (first exchange completes, second exchange starts,
+  the first exchange's timeout deadline elapses inside the second exchange:
+  the second is still decided only by its own portal reply);
+  `shareSourcePickerParsesThePortalStreamResultForm` covers the stream
+  result forms.
 
 `native-call` group: a source-contract guard that the shipped embed view
-routes `DesktopVideoCapture` through the controller gate instead of the
-previous blanket deny, matching the existing shipped-source guard pattern.
+routes `DesktopVideoCapture` through the controller's frame-trust gate and
+never hardcodes a frame flag into the modeled gate (round 2), matching the
+existing shipped-source guard pattern.
 
 ## Not established
 
-Live portal dialog acceptance on a real desktop host (the portal paths here
-are proven over injected transports), actual `getDisplayMedia` source
-selection inside the meeting page (blocked by the Qt API gap above), and
-Wayland/other-platform picker behavior.
+Live portal dialog acceptance on a real desktop host (the ScreenCast
+exchange here is proven against a session-bus portal stub; the live ao wire
+form of `streams` on a real portal could not be exercised by the unit stub -
+Qt cannot re-marshal a self-built `QDBusArgument` array inside a signal -
+although the reader walks any `QDBusArgument` array), actual
+`getDisplayMedia` source selection inside the meeting page (blocked by the
+Qt API gap above), the display-capture grant itself (fail-closed on this
+runtime until Qt exposes frame identity), and Wayland/other-platform picker
+behavior.

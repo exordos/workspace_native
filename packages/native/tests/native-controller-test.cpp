@@ -1824,16 +1824,6 @@ public:
     }
 };
 
-QDBusArgument portalStreamArray(const QStringList &paths)
-{
-    QDBusArgument argument;
-    argument.beginArray(QMetaType::fromType<QDBusObjectPath>());
-    for (const auto &path : paths)
-        argument << QDBusObjectPath(path);
-    argument.endArray();
-    return argument;
-}
-
 class PortalScreenCastAdaptor final : public QDBusAbstractAdaptor
 {
     Q_OBJECT
@@ -1894,10 +1884,13 @@ QDBusObjectPath PortalScreenCastAdaptor::PickStreams(const QString &parentWindow
     Q_UNUSED(session)
     Q_UNUSED(options)
     ++m_stub->pickStreamsCalls;
-    QVariant streamsValue;
-    streamsValue.setValue(portalStreamArray(m_stub->streamPaths));
+    // "streams" travels as an array of stream-reference strings. The ao
+    // (array of object paths) wire form of a live portal cannot be re-shipped
+    // inside a signal-emitted a{sv} with a self-built QDBusArgument (Qt's
+    // re-marshalling path corrupts it), so the stub uses the QStringList-as
+    // form and the result-form case covers both shapes.
     const QVariantMap results {
-        {QStringLiteral("streams"), QVariant::fromValue(QDBusVariant(streamsValue))},
+        {QStringLiteral("streams"), QVariant::fromValue(QDBusVariant(QVariant(m_stub->streamPaths)))},
         {QStringLiteral("name"), QVariant::fromValue(QDBusVariant(m_stub->streamName))}
     };
     return answerWith(results);
@@ -26499,6 +26492,30 @@ private slots:
         QCOMPARE(selected.count(), 1); // only the earlier real pick; the cancel adds no source
         QCOMPARE(cast.createSessionCalls, 2);
         QVERIFY(!failedAgain.at(0).at(0).toString().isEmpty());
+    }
+
+    // Result forms of the live stream reader: the array and plain-string
+    // forms a reply variant demarshal produces (a live portal ships ao; the
+    // reader walks any QDBusArgument array - Qt refuses to read back a
+    // self-built QDBusArgument and corrupts a re-marshalled one inside a
+    // signal, so the array stream form is exercised through QStringList and
+    // the live ao form stays a real-portal verification item). Replaces the
+    // old PictureUri result-form case the finding retired.
+    void shareSourcePickerParsesThePortalStreamResultForm()
+    {
+        QString error;
+        const QVariantMap stringListForm {
+            {QStringLiteral("streams"),
+                QVariant::fromValue(QDBusVariant(QVariant(QStringList { QStringLiteral("screen:0") })))}
+        };
+        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(stringListForm, error),
+            QStringLiteral("screen:0"));
+        const QVariantMap plainForm {{QStringLiteral("streams"), QStringLiteral("screen:1")}};
+        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(plainForm, error),
+            QStringLiteral("screen:1"));
+        const QVariantMap none;
+        QVERIFY(workspace::ScreenShareSourcePicker::streamReferenceFromResult(none, error).isEmpty());
+        QVERIFY(!error.isEmpty());
     }
 
     // #87 round 2 (finding 3): a completed exchange's timeout timer and
