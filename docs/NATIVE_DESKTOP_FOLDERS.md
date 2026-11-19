@@ -151,6 +151,42 @@ mockups were not consulted (same treatment as the #83 rail doc).
   `Delete folder?`, `Are you sure you want to delete "%1"?` all have `ru`
   entries in `packages/native/translations/workspace_ru.ts`.
 
+## Session-renewal fencing of folder mutations (issue #423)
+
+A project-token renewal replaces the access token and advances the API
+generation, which retires every in-flight transport callback - including a
+held folder create/rename/delete. The retired callback returns at its
+generation/ticket fence before it could clear the single-flight admission
+flag, so the projected `folderMutation.pending` read false (the projection
+filters by generation) while the retained flag kept every later mutation
+returning before dispatch for the rest of the session.
+
+The generation-change handler (`ApiClient::sessionChanged` wiring, next to
+the other `interrupt*` settles) now also settles the folder mutation:
+
+- The ticket is bumped and `pending`/`kind` are cleared, so the renewed
+  session can submit the next create/rename/delete without a reset or
+  sign-out, and the retired reply stays fenced: a late old-generation
+  answer fails the ticket and captured-generation checks and can neither
+  settle the new operation nor touch the rail.
+- The projected outcome is a retryable **interrupted** error ("The folder
+  change was interrupted by a session refresh. Try again."), distinct from
+  success and from the three `folder.*Failed` toasts. Through the existing
+  promise-not-true dialogue contract this keeps the form/delete dialogue
+  open with submit re-enabled and shows the notice toast - no QML change.
+- Because the interrupted write may or may not have been applied server-
+  side, the result is unknown: the controller refetches the authoritative
+  `GET /folders/` under the renewed session, so the rail reconciles to the
+  server truth (a silently applied create reappears, an unapplied delete
+  keeps its row).
+- A sign-out or owner switch instead falls through to the full controller
+  reset, which already drops the flag with the rail.
+
+`native-controller-test` cases: `folderRenewalInterruptsHeldCreateAndAllowsRetry`,
+`folderRenewalInterruptsHeldRenameAndAllowsRetry`,
+`folderRenewalInterruptsHeldDeleteAndAllowsRetry`,
+`lateFolderMutationReplyCannotSettleNewOperationAfterRenewal`.
+
 ## Deviations and follow-ups
 
 - The context menu ports only Rename and Delete. The reference layout toggle
