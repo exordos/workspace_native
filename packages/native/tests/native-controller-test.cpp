@@ -27435,6 +27435,55 @@ private slots:
         QVERIFY(absent.value(QStringLiteral("processes")).toList().isEmpty());
     }
 
+    // exordy review PRRT_kwDOVmpjls65Qz-z: the system free-memory card must
+    // not fabricate a zero when MemFree is missing or malformed. The provider
+    // tracks the MemFree parse result as its own capability flag so the card
+    // gates on "parsed successfully" instead of the 0 fallback value.
+    void diagnosticsMemoryProviderMissingMemFreeGatesFreeMetric()
+    {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        QVERIFY(QDir(root.path()).mkpath(QStringLiteral("no-free/self")));
+        QVERIFY(writeMemoryProcFile(root.path() + QStringLiteral("/no-free/self/status"),
+            QByteArrayLiteral("Name:\tworkspace-native\nPid:\t4242\n"
+                              "VmHWM:\t   9216 kB\nVmRSS:\t   8192 kB\n")));
+        // MemTotal/MemAvailable parse cleanly; the MemFree line is absent.
+        QVERIFY(writeMemoryProcFile(root.path() + QStringLiteral("/no-free/meminfo"),
+            QByteArrayLiteral("MemTotal:        8388608 kB\n"
+                              "MemAvailable:    4194304 kB\n")));
+        workspace::diagnostics::NativeMemoryDiagnostics missingFree;
+        missingFree.setProcRoot(root.path() + QStringLiteral("/no-free"));
+        const QVariantMap missingFreeCaps =
+            missingFree.snapshot().value(QStringLiteral("capabilities")).toMap();
+        // The flag is part of the capability contract on every platform.
+        QVERIFY2(missingFreeCaps.contains(QStringLiteral("systemMemoryFreeAvailable")),
+                 qPrintable(QStringLiteral("capabilities keys: %1")
+                     .arg(missingFreeCaps.keys().join(QLatin1Char(',')))));
+        QVERIFY(!missingFreeCaps.value(QStringLiteral("systemMemoryFreeAvailable")).toBool());
+#ifdef Q_OS_LINUX
+        // total+available stay healthy, so systemMemoryAvailable alone is true:
+        // it is MemFree's own flag that must veto the free-memory card.
+        QVERIFY(missingFreeCaps.value(QStringLiteral("systemMemoryAvailable")).toBool());
+        // A malformed MemFree value degrades identically to the missing line.
+        QVERIFY(writeMemoryProcFile(root.path() + QStringLiteral("/no-free/meminfo"),
+            QByteArrayLiteral("MemTotal:        8388608 kB\n"
+                              "MemFree:         not-a-number kB\n"
+                              "MemAvailable:    4194304 kB\n")));
+        const QVariantMap malformedCaps =
+            missingFree.snapshot().value(QStringLiteral("capabilities")).toMap();
+        QVERIFY(!malformedCaps.value(QStringLiteral("systemMemoryAvailable")).toBool()
+                || !malformedCaps.value(QStringLiteral("systemMemoryFreeAvailable")).toBool());
+        QVERIFY(!malformedCaps.value(QStringLiteral("systemMemoryFreeAvailable")).toBool());
+        // A fixture that parses MemFree cleanly opens the gate.
+        QVERIFY(QDir(root.path()).mkpath(QStringLiteral("healthy/self")));
+        QVERIFY(seedMemoryProcFixture(root.path() + QStringLiteral("/healthy"), 8192, 9216));
+        workspace::diagnostics::NativeMemoryDiagnostics healthy;
+        healthy.setProcRoot(root.path() + QStringLiteral("/healthy"));
+        QVERIFY(healthy.snapshot().value(QStringLiteral("capabilities")).toMap()
+                    .value(QStringLiteral("systemMemoryFreeAvailable")).toBool());
+#endif
+    }
+
 #ifdef Q_OS_LINUX
     void diagnosticsMemoryProviderCpuPercentMatchesProcMath()
     {

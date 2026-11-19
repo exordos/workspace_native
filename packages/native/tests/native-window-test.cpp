@@ -30194,6 +30194,46 @@ private slots:
         QVERIFY(visibleItem("diagnosticsMemoryTitle"));
     }
 
+    // exordy review PRRT_kwDOVmpjls65Qz-z: with MemFree missing from the
+    // fixture (total/available intact) the process card and usage bar stay,
+    // but the system free-memory card must not render the fabricated "0 KiB"
+    // reading — the card gates on the MemFree parse result.
+    void diagnosticsMemoryPanelHidesFreeCardWhenMemFreeMissing()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto proc = directory.filePath("proc");
+        QVERIFY(QDir(proc).mkpath(QStringLiteral("self")));
+        const auto writeProc=[&](const QString &name, const QByteArray &body){
+            QFile file(proc + name); QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(body); };
+        writeProc(QStringLiteral("/self/status"), QByteArrayLiteral(
+            "Name:\tworkspace-native\nPid:\t4242\nVmSize:\t   20480 kB\n"
+            "VmHWM:\t   9216 kB\nVmRSS:\t   8192 kB\nThreads:\t7\n"));
+        writeProc(QStringLiteral("/meminfo"), QByteArrayLiteral(
+            "MemTotal:        8388608 kB\nMemAvailable:    4194304 kB\n"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        controller.setDiagnosticsMemoryProcRoot(proc);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("MemFree gate teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        QVERIFY(visibleItem("diagnosticsMemoryCard"));
+        // Process metrics and the total/available usage bar are unaffected.
+        QVERIFY(visibleItem("diagnosticsMemoryMetric-app"));
+        QVERIFY(visibleItem("diagnosticsMemoryBarTrack"));
+        // The free-memory card is the fabricated-zero surface: it stays hidden.
+        QVERIFY2(!visibleItem("diagnosticsMemoryMetric-systemFree"),
+                 "systemFree card must not render a zero reading for a missing MemFree");
+    }
+
     // Review 4611502344 on #404: an API-generation change (token loss,
     // account/server switch) drops the in-flight ping callback, so the page
     // used to sit in loading forever. The bump must settle the ping as a
