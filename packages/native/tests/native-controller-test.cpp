@@ -28517,6 +28517,267 @@ private slots:
         QCOMPARE(f.controller.folders().last().toMap().value("title").toString(), QStringLiteral("First"));
     }
 
+    // ---- Issue #423: session-renewal fencing of folder mutations ----
+    // docs/NATIVE_DESKTOP_FOLDERS.md "Session-renewal fencing of folder
+    // mutations": a same-owner token renewal bumps the API generation while
+    // a folder create/rename/delete response is still in flight. The retired
+    // transport callback can never settle, so the generation-change handler
+    // must clear the single-flight admission flag, present a retryable
+    // interrupted outcome (distinct from success), let the renewed session
+    // dispatch a new operation, keep the late reply fenced, and refetch the
+    // authoritative folder list because the interrupted write's result is
+    // unknown.
+
+    // Held create + generation bump: interrupted outcome, authoritative
+    // refetch, and a fresh POST under the renewed session.
+    void folderRenewalInterruptsHeldCreateAndAllowsRetry()
+    {
+        FolderRailFixture f;
+        const auto serverRows = std::make_shared<QJsonArray>(QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb)});
+        f.folders = Response{*serverRows};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto fallback = f.server.handler;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto posts = std::make_shared<int>(0);
+        auto gets = std::make_shared<int>(0);
+        f.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messenger/folders/")) {
+                ++*gets;
+                return Response{*serverRows};
+            }
+            if (request.method == "POST" && path.endsWith("/messenger/folders/")) {
+                ++*posts;
+                Response deferred{QJsonObject{{"uuid", QStringLiteral("cccccccc-cccc-4ccc-8ccc-cccccccccccc")},
+                    {"title", request.body.value("title").toString()}}};
+                deferred.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return deferred;
+            }
+            return fallback(request);
+        };
+        f.controller.createFolder("Interrupted", 0xff2563eb);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 4000); // the create is in flight
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("create"));
+        // Same-owner renewal: a replacement access token bumps the generation.
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        // AC1: the held create settles as an interrupted outcome distinct from
+        // success and from the createFailed toast, with pending released.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            const auto mutation = f.controller.folderMutation();
+            return mutation.value("kind").toString().isEmpty()
+                && !mutation.value("pending").toBool()
+                && mutation.value("error").toString()
+                    == QStringLiteral("The folder change was interrupted by a session refresh. Try again.");
+        })(), 4000);
+        // The write's result is unknown, so the client refetches the
+        // authoritative list under the renewed session: whatever the server
+        // answers lands on the rail.
+        const auto serverUuid = QStringLiteral("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+        serverRows->append(folderRailFolder(serverUuid, "Reconciled", "created", 0, 0));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            for (const auto &folder : f.controller.folders())
+                if (folder.toMap().value("id").toString() == serverUuid) return true;
+            return false;
+        })(), 4000);
+        QVERIFY(*gets >= 1);
+        // AC2: the renewed session submits a new create without reset or
+        // sign-out: a second POST actually dispatches.
+        const auto gatesBefore = gates->size();
+        const auto postsBefore = *posts;
+        f.controller.createFolder("Retry", 0xff4f46e5);
+        QTRY_VERIFY_WITH_TIMEOUT(*posts >= postsBefore + 1, 4000);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("create"));
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+        // AC3: the retired generation's answer may not settle the new
+        // operation; only the new request's own answer does.
+        for (size_t i = 0; i < gatesBefore; ++i) (*gates)[i]();
+        QTest::qWait(250); // give the retired callback a chance to misfire
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        for (size_t i = gatesBefore; i < gates->size(); ++i) (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(!f.controller.folderMutation().value("pending").toBool(), 4000);
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+    }
+
+    // Held rename + generation bump: same contract on the PUT path; the
+    // interrupted row keeps its old title and a renewed PUT gets dispatched.
+    void folderRenewalInterruptsHeldRenameAndAllowsRetry()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto fallback = f.server.handler;
+        const auto customUuid = f.customUuid;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto puts = std::make_shared<int>(0);
+        f.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/" + customUuid)) {
+                ++*puts;
+                Response deferred{QJsonObject{{"uuid", customUuid},
+                    {"title", request.body.value("title").toString()},
+                    {"system_type", "created"}, {"unread_count", 0},
+                    {"background_color_value", request.body.value("background_color_value")}}};
+                deferred.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return deferred;
+            }
+            return fallback(request);
+        };
+        f.controller.renameFolder(f.customUuid, "Focus 2", 0xffdc2626);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 4000); // the rename is in flight
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            const auto mutation = f.controller.folderMutation();
+            return mutation.value("kind").toString().isEmpty()
+                && !mutation.value("pending").toBool()
+                && mutation.value("error").toString()
+                    == QStringLiteral("The folder change was interrupted by a session refresh. Try again.");
+        })(), 4000);
+        // The interrupted rename never repainted the row.
+        for (const auto &folder : f.controller.folders())
+            if (folder.toMap().value("id").toString() == f.customUuid)
+                QCOMPARE(folder.toMap().value("title").toString(), QStringLiteral("Focus"));
+        // AC2: the renewed session dispatches a fresh PUT.
+        const auto gatesBefore = gates->size();
+        const auto putsBefore = *puts;
+        f.controller.renameFolder(f.customUuid, "Focus 3", 0xffdc2626);
+        QTRY_VERIFY_WITH_TIMEOUT(*puts >= putsBefore + 1, 4000);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("rename"));
+        // AC3: the retired rename answer may not settle the newer operation.
+        for (size_t i = 0; i < gatesBefore; ++i) (*gates)[i]();
+        QTest::qWait(250);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        for (size_t i = gatesBefore; i < gates->size(); ++i) (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(f.controller.folders().last().toMap().value("title").toString()
+            == QStringLiteral("Focus 3"), 4000);
+        QVERIFY(!f.controller.folderMutation().value("pending").toBool());
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+    }
+
+    // Held delete + generation bump: same contract on the DELETE path; the
+    // row survives the interrupted delete and a renewed DELETE is dispatched.
+    void folderRenewalInterruptsHeldDeleteAndAllowsRetry()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+            folderRailFolder(f.customUuid, "Focus", "created", 0, 0x2563eb)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 4, 4000);
+        const auto fallback = f.server.handler;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto deletes = std::make_shared<int>(0);
+        f.server.handler = [&, deletes](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "DELETE" && path.startsWith("/api/workspace/v1/messenger/folders/")
+                && !path.endsWith("/folders/")) {
+                ++*deletes;
+                Response deferred{QJsonObject{}};
+                deferred.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return deferred;
+            }
+            return fallback(request);
+        };
+        f.controller.deleteFolder(f.customUuid);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 4000); // the delete is in flight
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            const auto mutation = f.controller.folderMutation();
+            return mutation.value("kind").toString().isEmpty()
+                && !mutation.value("pending").toBool()
+                && mutation.value("error").toString()
+                    == QStringLiteral("The folder change was interrupted by a session refresh. Try again.");
+        })(), 4000);
+        // The row stays until the authoritative list says otherwise; the
+        // fixture refetch keeps answering with the server truth (Focus in).
+        bool rowSurvives = false;
+        for (const auto &folder : f.controller.folders())
+            if (folder.toMap().value("id").toString() == f.customUuid) rowSurvives = true;
+        QVERIFY(rowSurvives);
+        // AC2: the renewed session dispatches a fresh DELETE.
+        const auto gatesBefore = gates->size();
+        const auto deletesBefore = *deletes;
+        f.controller.deleteFolder(f.customUuid);
+        QTRY_VERIFY_WITH_TIMEOUT(*deletes >= deletesBefore + 1, 4000);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("delete"));
+        // AC3: the retired delete answer may not settle the newer operation.
+        for (size_t i = 0; i < gatesBefore; ++i) (*gates)[i]();
+        QTest::qWait(250);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        for (size_t i = gatesBefore; i < gates->size(); ++i) (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            for (const auto &folder : f.controller.folders())
+                if (folder.toMap().value("id").toString() == f.customUuid) return false;
+            return true;
+        })(), 4000);
+        QVERIFY(!f.controller.folderMutation().value("pending").toBool());
+        QVERIFY(f.controller.folderMutation().value("error").toString().isEmpty());
+    }
+
+    // AC3 head-on: a late old-generation create reply lands while a NEWER
+    // create is in flight after the renewal. It may neither settle the new
+    // operation's single-flight state nor touch the folder rail; only the
+    // newer request's own answer applies.
+    void lateFolderMutationReplyCannotSettleNewOperationAfterRenewal()
+    {
+        FolderRailFixture f;
+        f.folders = Response{QJsonArray{
+            folderRailFolder(allChatsFolder, "All chats", "all", 0, 0)}};
+        QVERIFY(f.start());
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.folders().size(), 3, 4000);
+        const auto fallback = f.server.handler;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto posts = std::make_shared<int>(0);
+        f.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messenger/folders/")) {
+                ++*posts;
+                const auto title = request.body.value("title").toString();
+                Response deferred{QJsonObject{{"uuid",
+                        title == QStringLiteral("Old") ? QStringLiteral("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+                                                      : QStringLiteral("ffffffff-ffff-4fff-8fff-ffffffffffff")},
+                    {"title", title}}};
+                deferred.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return deferred;
+            }
+            return fallback(request);
+        };
+        f.controller.createFolder("Old", 0xff2563eb);
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 4000); // the old create is in flight
+        f.api.setAccessToken("synthetic-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(!f.controller.folderMutation().value("pending").toBool(), 4000);
+        // The renewed session submits a fresh create before the old reply lands.
+        f.controller.createFolder("New", 0xff4f46e5);
+        QTRY_VERIFY_WITH_TIMEOUT(*posts >= 2, 4000);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        // Release the old-generation reply: nothing about the new operation
+        // changes and no old row appears on the rail.
+        (*gates)[0]();
+        QTest::qWait(250);
+        QVERIFY(f.controller.folderMutation().value("pending").toBool());
+        QCOMPARE(f.controller.folderMutation().value("kind").toString(), QStringLiteral("create"));
+        for (const auto &folder : f.controller.folders())
+            QVERIFY(folder.toMap().value("title").toString() != QStringLiteral("Old"));
+        // The newer request's own answer settles it and only its row appears.
+        for (size_t i = 1; i < gates->size(); ++i) (*gates)[i]();
+        QTRY_VERIFY_WITH_TIMEOUT(f.controller.folders().last().toMap().value("title").toString()
+            == QStringLiteral("New"), 4000);
+        QVERIFY(!f.controller.folderMutation().value("pending").toBool());
+        for (const auto &folder : f.controller.folders())
+            QVERIFY(folder.toMap().value("title").toString() != QStringLiteral("Old"));
+    }
+
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
 
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
