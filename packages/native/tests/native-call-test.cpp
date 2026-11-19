@@ -1406,6 +1406,19 @@ private slots:
         QVERIFY(src.contains(QStringLiteral("permission.deny()")));
     }
 
+    // #87: display capture must not stay a blanket deny and must not become a
+    // blanket grant either - the shipped view routes the desktop-capture
+    // permission type through the controller's live-frame gate.
+    void shippedEmbedViewRoutesDisplayCaptureThroughTheGate()
+    {
+        const auto src = readEmbedSource(QStringLiteral("NativeCallWebEngineView.qml"));
+        QVERIFY2(!src.isEmpty(), "the shipped embed view source must be locatable");
+        QVERIFY2(src.contains(QStringLiteral("permissionDesktopVideoCapture")),
+            "the desktop capture permission type must be handled explicitly (#87)");
+        QVERIFY2(src.contains(QStringLiteral("isDisplayCaptureRequestAllowed")),
+            "desktop capture must be gated by the controller live-frame policy (#87)");
+    }
+
     void shippedCallEventGlueSpeaksOnlyTheExternalApiContract()
     {
         const auto src = readEmbedSource(QStringLiteral("web/workspace-call-events.js"));

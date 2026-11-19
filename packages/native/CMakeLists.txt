@@ -41,6 +41,8 @@ add_library(workspace-native-core STATIC
     src/native-drafts.cpp src/native-drafts.h
     src/native-notifications.cpp src/native-notifications.h
     src/call/jitsi-call.cpp src/call/jitsi-call.h
+    src/call/display-capture-policy.cpp src/call/display-capture-policy.h
+    src/call/screen-share-source-picker.cpp src/call/screen-share-source-picker.h
     src/call/native-call-store.cpp src/call/native-call-store.h
     src/call/native-call-window.cpp src/call/native-call-window.h
     src/call/incoming-call.cpp src/call/incoming-call.h

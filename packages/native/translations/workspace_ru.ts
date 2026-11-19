@@ -4018,6 +4018,37 @@
         </message>
     </context>
     <context>
+        <name>workspace::ScreenShareSourcePicker</name>
+        <message>
+            <source>No display is available to share.</source>
+            <translation>Нет доступного для демонстрации экрана.</translation>
+        </message>
+        <message>
+            <source>Screen %1</source>
+            <translation>Экран %1</translation>
+        </message>
+        <message>
+            <source>Screen capture</source>
+            <translation>Захват экрана</translation>
+        </message>
+        <message>
+            <source>The screen share result did not include a picture.</source>
+            <translation>Результат выбора источника не содержит изображения.</translation>
+        </message>
+        <message>
+            <source>The screen share source selection timed out.</source>
+            <translation>Выбор источника демонстрации экрана завершился по истечении времени ожидания.</translation>
+        </message>
+        <message>
+            <source>The screen share source selection was cancelled.</source>
+            <translation>Выбор источника демонстрации экрана отменён.</translation>
+        </message>
+        <message>
+            <source>The system screen picker could not be opened.</source>
+            <translation>Не удалось открыть системный выбор экрана.</translation>
+        </message>
+    </context>
+    <context>
         <name>workspace::JitsiCallWindowController</name>
         <message>
             <source>Call</source>
