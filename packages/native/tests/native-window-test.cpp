@@ -28340,6 +28340,62 @@ private slots:
         QCOMPARE(layer->property("userUuid").toString(),channelPeer);
         QVERIFY(!layer->property("isSelf").toBool());
     }
+    // exordy review PRRT_kwDOVmpjls65SUMo (issue #88 round 1): the partner
+    // profile action must be a real focusable control. With keyboard focus,
+    // both Return and Space open the same partner profile drawer as the click.
+    void directHeaderPartnerBlockKeyboardActivates_data()
+    {
+        QTest::addColumn<int>("key");
+        QTest::newRow("return") << int(Qt::Key_Return);
+        QTest::newRow("space") << int(Qt::Key_Space);
+    }
+    void directHeaderPartnerBlockKeyboardActivates()
+    {
+        QFETCH(int, key);
+        WindowDirectFixture fixture; fixture.seed();
+        fixture.users=QJsonArray{
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+                {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+                {"email","alice@example.invalid"},{"avatar",QJsonValue::Null},
+                {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
+                {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("profile-keyboard.ini"));
+        ApiClient api(nullptr,true); Session session(&api);
+        NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
+        auto closeBeforeEngine=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Profile-keyboard window did not settle before engine teardown",__FILE__,__LINE__);
+        });
+        window->resize(1200,800);QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(),"synthetic","synthetic");
+        QTRY_COMPARE(session.projects().size(),1);session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(),2);
+        preferences.setMode("light");
+        QTRY_VERIFY(visibleItem("stream-"+windowDirectId()));
+        click(window,visibleItem("stream-"+windowDirectId()));
+        QTRY_COMPARE(controller.selectedStream(),windowDirectId());
+        QTRY_VERIFY(!controller.busy());
+        auto *action=visibleItem("directPartnerProfileAction");QVERIFY(action);
+        // Keyboard reachable: the action itself is in the tab order and can
+        // take active focus (a plain MouseArea can be neither).
+        QVERIFY2(action->activeFocusOnTab(),
+            "the partner profile action is not reachable with the keyboard");
+        action->forceActiveFocus(Qt::TabFocusReason);
+        QVERIFY2(action->hasActiveFocus(),
+            "the partner profile action cannot take keyboard focus");
+        QTest::keyClick(window, Qt::Key(key));
+        QTRY_VERIFY(visibleItem("profileLayer"));
+        auto *layer=visibleItem("profileLayer");
+        QCOMPARE(layer->property("userUuid").toString(),channelPeer);
+        QVERIFY(!layer->property("isSelf").toBool());
+    }
     // ---- Issue #45: static Services placeholder hub
     // (docs/NATIVE_DESKTOP_SERVICES.md, workspace_ui
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af services-page.ui.tsx) ----
