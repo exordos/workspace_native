@@ -88,6 +88,19 @@ void NativeDesktop::setUnreadCount(qint64 count)
     refreshLabels();
 }
 
+void NativeDesktop::setCallState(const QString &room, int participants)
+{
+    // Issue #86: empty room restores the bare app-name tooltip; participants
+    // < 0 renders no participant count. The reference rewrites the tooltip
+    // only on call events, but the composition lives here so the unread and
+    // locale repaints in refreshLabels() keep the call suffix alive.
+    if (room == m_callRoom && participants == m_callParticipants)
+        return;
+    m_callRoom = room;
+    m_callParticipants = participants;
+    refreshLabels();
+}
+
 void NativeDesktop::refreshLabels()
 {
     const auto title = tr("Workspace");
@@ -99,7 +112,13 @@ void NativeDesktop::refreshLabels()
     m_mail->setToolTip(tr("Mail is not available in this native preview"));
     m_quit->setText(tr("Quit"));
     m_updates->setText(tr("Check for updates"));
-    m_tray->setToolTip(title);
+    QString tooltip = title;
+    if (!m_callRoom.isEmpty()) {
+        tooltip = tr("%1 - In call: %2").arg(title, m_callRoom);
+        if (m_callParticipants >= 0)
+            tooltip += tr(" (%1 participants)").arg(m_callParticipants);
+    }
+    m_tray->setToolTip(tooltip);
     const auto suffix = m_unread > 0 ? QStringLiteral("-unread.png") : QStringLiteral(".png");
 #if defined(Q_OS_MACOS)
     const auto base = QStringLiteral(":/workspace/tray/tray-icon-mac");

@@ -20,9 +20,13 @@
 #include "native-markdown.h"
 #include "realtime-client.h"
 #include "power-watcher.h"
+#include "native-call-awareness.h"
+#include "native-desktop.h"
 #include "mock-server.h"
 
 #include <QElapsedTimer>
+#include <QWindow>
+#include <QSystemTrayIcon>
 #include <QDeadlineTimer>
 #include <QClipboard>
 #include <QMimeData>
@@ -351,6 +355,63 @@ public:
     }
 private:
     UpowerStub *m_owner;
+};
+
+// Display-sleep inhibitor stubs for the call-awareness cases (issue #86),
+// exported on the private bus below exactly like the real freedesktop
+// services answer Inhibit/UnInhibit on the session bus.
+class ScreenSaverStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+    QList<QPair<QString, QString>> inhibits; // (application, reason)
+    QList<uint> uninhibits;
+    uint cookie = 1701;
+};
+
+class ScreenSaverAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.ScreenSaver")
+public:
+    explicit ScreenSaverAdaptor(ScreenSaverStub *owner) : QDBusAbstractAdaptor(owner), m_owner(owner) {}
+public slots:
+    uint Inhibit(const QString &application, const QString &reason)
+    {
+        m_owner->inhibits.append(qMakePair(application, reason));
+        return m_owner->cookie;
+    }
+    void UnInhibit(uint cookie) { m_owner->uninhibits.append(cookie); }
+private:
+    ScreenSaverStub *m_owner;
+};
+
+class PmInhibitStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+    QList<QPair<QString, QString>> inhibits; // (application, reason)
+    QList<uint> uninhibits;
+    uint cookie = 4242;
+};
+
+class PmInhibitAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.PowerManagement.Inhibit")
+public:
+    explicit PmInhibitAdaptor(PmInhibitStub *owner) : QDBusAbstractAdaptor(owner), m_owner(owner) {}
+public slots:
+    uint Inhibit(const QString &application, const QString &reason)
+    {
+        m_owner->inhibits.append(qMakePair(application, reason));
+        return m_owner->cookie;
+    }
+    void Uninhibit(uint cookie) { m_owner->uninhibits.append(cookie); }
+private:
+    PmInhibitStub *m_owner;
 };
 
 // Private session bus for the power watcher (issue #78) so the tests never
@@ -30530,6 +30591,174 @@ private slots:
         f.controller.reloadSnapshot();
         QTRY_VERIFY_WITH_TIMEOUT(transportErrorCount() >= firstCount + 1, 5000);
         QVERIFY(offlineTransitions() >= 1);
+    }
+
+    // --- issue #86: call awareness (docs/NATIVE_DESKTOP_CALL_AWARENESS.md) ---
+
+    void callStartedHoldsInhibitCookieAndSetsTrayTooltip()
+    {
+        PowerBusFixture bus("call-screensaver");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        // The wiring main.cpp installs: every state change repaints the real
+        // tray tooltip through NativeDesktop (issue #86).
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        QObject::connect(&awareness, &CallAwareness::callStateChanged,
+            &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+        awareness.callStarted("standup", 3);
+        // The tooltip repaint is synchronous; the freedesktop cookie arrives
+        // with the async Inhibit reply (inhibit is never UI-blocking).
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QVERIFY(!saver.inhibits.first().first.isEmpty()); // application id sent
+        QCOMPARE(awareness.activeRoom(), QString("standup"));
+        // The count from call:start is not rendered (reference parity).
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: standup"));
+        awareness.callParticipantsUpdated(5);
+        QCOMPARE(saver.inhibits.size(), 1); // the inhibit is not re-acquired
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: standup (5 participants)"));
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(saver.uninhibits.first(), 1701u);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+    }
+
+    void callRoomSanitizationFollowsTheReferenceRules()
+    {
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName("standup"), QString("standup"));
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName(QString("ca\x01ll\x1fna\x07me\x7f")),
+            QString("callname"));
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName(QString(200, 'r')), QString(128, 'r'));
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName(QString()), QString("Call"));
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName(QString("\x01\x02\x1f\x7f")),
+            QString("Call"));
+        // The reference strips control chars and caps, but never trims.
+        QCOMPARE(workspace::CallAwareness::sanitizeRoomName(QString("   ")), QString("   "));
+        // A long room with interleaved control chars: strip first, then cap at
+        // 128 (reference order: replace().slice()).
+        QString raw;
+        for (int i = 0; i < 160; ++i) raw += QChar('a' + (i % 26));
+        raw.insert(10, QString("\x01\x02\x03"));
+        raw.insert(50, QString("\x7f\x1f"));
+        const auto clean = workspace::CallAwareness::sanitizeRoomName(raw);
+        QCOMPARE(clean.size(), 128);
+        QVERIFY(clean == QString(raw).remove(QChar('\x01')).remove(QChar('\x02'))
+            .remove(QChar('\x03')).remove(QChar('\x7f')).remove(QChar('\x1f')).left(128));
+        // End to end: a control-only room falls back to "Call" in the tooltip,
+        // and the service keeps working on a bus with no inhibitor daemon.
+        PowerBusFixture bus("call-sanitize");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        QObject::connect(&awareness, &CallAwareness::callStateChanged,
+            &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        awareness.callStarted(QString("\x07\x07\x7f"), 1);
+        QCOMPARE(awareness.activeRoom(), QString("Call"));
+        QCOMPARE(awareness.inhibitCookie(), 0u); // no service answered
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: Call"));
+        awareness.callEnded(); // releasing a cookie that was never held is a no-op
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+    }
+
+    void displaySleepInhibitIsAcquiredExactlyOncePerCall()
+    {
+        PowerBusFixture bus("call-once");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        awareness.callStarted("first", 2);
+        awareness.callStarted("second", 2); // a re-start must not re-inhibit
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(awareness.activeRoom(), QString("second"));
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+        awareness.callStarted("third", 1); // the next call acquires afresh
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+    }
+
+    void powerManagementFallbackAndIdleUpdatesAreIgnored()
+    {
+        PowerBusFixture bus("call-pmfallback");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        PmInhibitStub pm;
+        new PmInhibitAdaptor(&pm);
+        QVERIFY(bus.exportObject("/org/freedesktop/PowerManagement/Inhibit", &pm));
+        QVERIFY(bus.claimService("org.freedesktop.PowerManagement.Inhibit"));
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        QObject::connect(&awareness, &CallAwareness::callStateChanged,
+            &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        // While idle a call:update changes nothing (reference activeCallRoom guard).
+        awareness.callParticipantsUpdated(2);
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+        // No ScreenSaver on this bus: the PowerManagement.Inhibit fallback
+        // answers and its cookie is the one held and released.
+        awareness.callStarted("retro", 1);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 4242u, 3000);
+        QCOMPARE(pm.inhibits.size(), 1);
+        awareness.callParticipantsUpdated(3);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: retro (3 participants)"));
+        awareness.callEnded();
+        QTRY_COMPARE_WITH_TIMEOUT(pm.uninhibits.size(), 1, 3000);
+        QCOMPARE(pm.uninhibits.first(), 4242u);
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+    }
+
+    void awarenessDegradesOnABusWithoutInhibitServices()
+    {
+        PowerBusFixture bus("call-bare");
+        if (!bus.ok) QSKIP("a private session bus is unavailable");
+        CallAwareness awareness;
+        awareness.start(bus.watcherBus);
+        QSignalSpy states(&awareness, &CallAwareness::callStateChanged);
+        // A connected bus with neither service: inhibition silently stays off
+        // (cookie 0) while the call state machine keeps working unbroken.
+        awareness.callStarted("nomad", 2);
+        QTest::qWait(500); // past the async timeout window of both services
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+        QCOMPARE(awareness.activeRoom(), QString("nomad"));
+        awareness.callParticipantsUpdated(4);
+        awareness.callEnded();
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(awareness.inhibitCookie(), 0u);
+        QCOMPARE(states.count(), 3);
+    }
+
+    void futureCallSurfaceInvokesTheQmlInvokables()
+    {
+        // The dormant service is reachable exactly through these three
+        // Q_INVOKABLEs (the seam the future call UI and any QML surface use).
+        const auto &meta = workspace::CallAwareness::staticMetaObject;
+        QVERIFY(meta.indexOfMethod("callStarted(QString,int)") >= 0);
+        QVERIFY(meta.indexOfMethod("callParticipantsUpdated(int)") >= 0);
+        QVERIFY(meta.indexOfMethod("callEnded()") >= 0);
     }
 };
 

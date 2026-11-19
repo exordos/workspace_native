@@ -2706,6 +2706,14 @@
             <translation>Workspace</translation>
         </message>
         <message>
+            <source>%1 - In call: %2</source>
+            <translation>%1 - дзвінок: %2</translation>
+        </message>
+        <message>
+            <source> (%1 participants)</source>
+            <translation> (%1 учасників)</translation>
+        </message>
+        <message>
             <source>Messenger</source>
             <translation>Мессенджер</translation>
         </message>

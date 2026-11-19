@@ -3,6 +3,7 @@
 #include "message-images.h"
 #include "file-client.h"
 #include "native-app.h"
+#include "native-call-awareness.h"
 #include "native-controller.h"
 #include "native-desktop.h"
 #include "native-cache-service.h"
@@ -24,6 +25,7 @@
 #include <QIcon>
 #include <QResource>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickStyle>
 #include <QProcess>
 #include <QScopeGuard>
@@ -133,13 +135,25 @@ int main(int argc, char **argv)
     workspace::PowerWatcher powerWatcher;
     controller.setPowerWatcher(&powerWatcher);
     powerWatcher.start();
+    // Issue #86: shell call awareness - dormant until the native call UI
+    // lands (docs/NATIVE_DESKTOP_CALL_AWARENESS.md), but fully wired: a call
+    // inhibits display sleep on the session bus and paints the room into the
+    // tray tooltip. The future call surface reaches it through the QML
+    // context property below.
+    workspace::CallAwareness callAwareness;
+    callAwareness.start();
     QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty("callAwareness", &callAwareness);
     workspace::NativeUpdater updater;
     workspace::loadNativeUi(engine, &controller, &preferences, &avatars, &updater, &messageImages);
     if (engine.rootObjects().isEmpty())
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
     workspace::NativeDesktop desktop(window);
+    // The tray tooltip follows the call state (issue #86): the room with an
+    // optional participant count while active, the bare app name when idle.
+    QObject::connect(&callAwareness, &workspace::CallAwareness::callStateChanged,
+        &desktop, &workspace::NativeDesktop::setCallState);
     // Mirror updater download progress into the window's taskbar progress
     // hint (issue #76): percent/100 while downloading, cleared on downloaded
     // and on error, reproducing the reference setProgressBar semantics. Bare

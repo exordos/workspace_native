@@ -133,6 +133,27 @@ private slots:
         QCOMPARE(activate.count(), 1);
     }
 
+    // Issue #86: while a call is active the tray tooltip carries the room
+    // (docs/NATIVE_DESKTOP_CALL_AWARENESS.md); unread refreshes must keep the
+    // suffix, and the bare app-name tooltip returns with the call.
+    void activeCallRenamesTheTrayTooltipAndRestoresTheBareName()
+    {
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+        desktop.setCallState("standup", -1);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: standup"));
+        desktop.setCallState("standup", 5);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: standup (5 participants)"));
+        desktop.setUnreadCount(7); // the unread repaint must keep the call
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: standup (5 participants)"));
+        QCOMPARE(tray->contextMenu()->actions().first()->text(), QString("Workspace (7)"));
+        desktop.setCallState(QString(), -1);
+        QCOMPARE(tray->toolTip(), QString("Workspace"));
+    }
+
     void desktopQuitShortcutRequestsTheSameGracefulShutdown()
     {
         QWindow window;
