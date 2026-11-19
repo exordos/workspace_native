@@ -283,7 +283,7 @@ static void awaitTopicMenuLayout(QQuickWindow *window,QQuickItem *action,const Q
             || !action->isVisible() || !action->isEnabled() || action->window()!=window || action->height()!=action->implicitHeight()) return false;
         const auto content=list->property("contentHeight").toReal();
         qreal expectedHeight = 0;
-        for (const auto *name : {"streamMarkReadAction", "streamRenameAction", "streamNewTopicAction", "streamArchiveAction"}) {
+        for (const auto *name : {"streamNotificationItem", "streamMarkReadAction", "streamRenameAction", "streamNewTopicAction", "streamArchiveAction"}) {
             const auto *entry = window->findChild<QQuickItem *>(name);
             if (entry && entry->isVisible()) expectedHeight += entry->implicitHeight();
         }
@@ -292,7 +292,11 @@ static void awaitTopicMenuLayout(QQuickWindow *window,QQuickItem *action,const Q
         return popup && popup->window()==window && QRectF(popup->mapToScene(QPointF{}),popup->size()).contains(QRectF(action->mapToScene(QPointF{}),action->size()));
     };
     // Menu.opened precedes ListView's first content-height layout. A visible
-    // 36px row can temporarily extend outside its padding-only 10px popup.
+    // 36px row can temporarily extend outside the not-yet-laid-out popup. Since #97
+    // the menu's expected full row also includes the static first Notifications
+    // block (issue #442: reference keeps it in the opened menu, see
+    // docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md), so its implicit height is
+    // part of the settled content height.
     QTRY_VERIFY2(ready(),"The real menu must contain the complete source row before mouse input");
 }
 
@@ -8111,8 +8115,16 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *stream=item(window->contentItem(),"stream-"+streamId); QVERIFY(stream);
         const auto point=stream->mapToScene(QPointF(20,stream->height()/2));
         QVERIFY(QMetaObject::invokeMethod(window,"openStreamMenu",Q_ARG(QVariant,QVariant(streamId)),Q_ARG(QVariant,QVariant::fromValue(static_cast<QObject *>(stream))),Q_ARG(QVariant,QVariant(point))));
-        QCOMPARE(menu->property("height").toReal(),qreal(10));
-        QCOMPARE(list->property("contentHeight").toReal(),qreal(0));
+        // Issue #442 menu anatomy after #97: the Notifications block (streamNotificationItem)
+        // is the reference's static first menu entry (sidebar-workspace-context-menu.ui.tsx
+        // menuItems[0] = notificationPickerItem), so it materializes with the opened menu,
+        // and as a plain navigation-inert Item it reports its full 58 px implicit height on
+        // the first frame. The pinned pre-layout state therefore reads padding (5+5) plus
+        // the settled block (14 px heading + 4 px spacing + 32 px switch + 8 px padding)
+        // instead of the pre-#97 padding-only 10/0; the source rows still are not in the
+        // content height yet.
+        QCOMPARE(menu->property("height").toReal(),qreal(68));
+        QCOMPARE(list->property("contentHeight").toReal(),qreal(58));
         QCOMPARE(action->height(),qreal(36));
         // No artificial delay: guard must observe actual complete source layout
         // before the very same real-window input used by the interaction helper.
@@ -8122,7 +8134,10 @@ mv -Tf "$root/.current-new" "$root/current"
         qInfo()<<"Controlled menu height at real press"<<heightAtPress<<clickPoint;
         QTest::mouseClick(window,Qt::LeftButton,{},clickPoint.toPoint());
         QTRY_VERIFY(visibleItem("topicNameInput"));
-        QCOMPARE(heightAtPress,qreal(118));
+        // Full layout: 5+5 padding + 58 px Notifications block (4+4 padding, 14 px
+        // heading, 4 px spacing, 32 px switch) + 3 visible source rows (rename,
+        // new topic, archive) at 36 px each.
+        QCOMPARE(heightAtPress,qreal(176));
         QCOMPARE(mutations,0);window->close();
     }
 
@@ -11337,10 +11352,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Menu);
         QTRY_VERIFY(visibleItem("streamNewTopicAction"));
         QCOMPARE(controller.selectedStream(), QString());
-        // The hidden read action must be skipped: Rename then New topic.
+        // Model order: inert Notifications block 0, hidden read action 1, Rename 2,
+        // New topic 3 (issue #442: the block occupies a model slot but is not a
+        // MenuItem, so the arrow keys step Rename -> New topic without stopping).
         QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Down);
-        QCOMPARE(window->findChild<QObject *>("streamContextMenu")->property("currentIndex").toInt(), 2);
+        QCOMPARE(window->findChild<QObject *>("streamContextMenu")->property("currentIndex").toInt(), 3);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(visibleItem("topicFormClose"));
         QVERIFY(visibleItem("topicFormClose")->hasActiveFocus());
