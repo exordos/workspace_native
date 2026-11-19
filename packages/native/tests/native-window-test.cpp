@@ -44,6 +44,7 @@
 #include <QFontMetricsF>
 #include <QJsonDocument>
 #include <QMimeDatabase>
+#include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QOperatingSystemVersion>
@@ -33191,6 +33192,82 @@ private slots:
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 2);
         QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+    }
+
+    // Issue #438 review (finding 4633233517): a selection edge skipped while
+    // the header is off screen must be recovered the moment the header becomes
+    // visible: the member page loads then and the caption is not left absent
+    // forever. Before the fix the visibility setter was fully silent and the
+    // skipped selection was never revisited, so showing the header over an
+    // already-selected channel kept the caption missing for the whole session.
+    void chatHeaderCountersAppearWhenHeaderShowsAfterHiddenSelection()
+    {
+        WindowChatHeaderCountersScene scene;
+        QVERIFY2(scene.controller.selectedStream().isEmpty(),
+            "the chat header counters scene must start without a selection");
+        // Take the header off screen: the QML Binding drives this same setter
+        // with the header item's effective visibility, so writing through it
+        // is the scene's input for "header hidden".
+        scene.controller.setChatHeaderVisible(false);
+        scene.controller.selectStream(streamId);
+        QTRY_VERIFY(!scene.controller.topics().isEmpty());
+        // The hidden selection edge fetched nothing: no projection exists and
+        // there is no caption to render.
+        QTest::qWait(250);
+        QCOMPARE(scene.controller.chatHeaderMemberCount(), 0);
+        QVERIFY(!visibleItem("chatHeaderCounters"));
+        // Putting the header back on screen must read the member page of the
+        // already-selected channel; the caption appears like after any other
+        // visible selection edge.
+        scene.controller.setChatHeaderVisible(true);
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
+            QStringLiteral("2 members, 1 online"), 5000);
+    }
+
+    // Issue #438 review (finding 4633233527): the topic-link fixture hides the
+    // counted member-page read from `unexpected` traffic by path only, so a
+    // stray POST/DELETE to the very same endpoint could never be proven
+    // visible there. The exclusion must be method-scoped: only the counted GET
+    // stays invisible; mutations on the stream-bindings path must always leave
+    // a line in the pinned traffic list.
+    void chatHeaderStreamBindingsExclusionOnlyHidesCountedGet()
+    {
+        WindowTopicLinkFixture fixture("known");
+        fixture.record = true;
+        const auto endpoint = fixture.server.origin().resolved(
+            QUrl("/api/workspace/v1/messenger/stream_bindings/"));
+        QNetworkAccessManager nm;
+        auto drive = [&nm](QNetworkReply *reply) {
+            QSignalSpy finished(reply, &QNetworkReply::finished);
+            QVERIFY(finished.isValid());
+            reply->deleteLater();
+            QVERIFY(finished.wait(5000));
+        };
+        drive(nm.get(QNetworkRequest(QUrl(endpoint.toString()
+            + QStringLiteral("?stream_uuid=") + streamId))));
+        drive(nm.post(QNetworkRequest(endpoint),
+            QJsonDocument(QJsonObject{}).toJson(QJsonDocument::Compact)));
+        drive(nm.sendCustomRequest(QNetworkRequest(endpoint), QByteArrayLiteral("DELETE")));
+        // The GET is the counted member-page read and stays invisible.
+        QCOMPARE(fixture.routeBindingGets, 1);
+        const QStringList expectedStreams{streamId};
+        QCOMPARE(fixture.routeBindingStreams, expectedStreams);
+        // The POST and the DELETE are accidental mutations: each must be
+        // counted and must show up in the unexpected list.
+        QCOMPARE(fixture.mutations, 2);
+        const QStringList lines = fixture.unexpected;
+        auto mentionsBindings = [&lines](const QString &method) {
+            return std::any_of(lines.cbegin(), lines.cend(), [&method](const QString &line) {
+                return line.startsWith(method + QLatin1Char(' '))
+                    && line.contains(QLatin1String("/stream_bindings/"));
+            });
+        };
+        QVERIFY2(mentionsBindings(QStringLiteral("POST")),
+            qPrintable(lines.join(QStringLiteral("; "))));
+        QVERIFY2(mentionsBindings(QStringLiteral("DELETE")),
+            qPrintable(lines.join(QStringLiteral("; "))));
+        QVERIFY2(!mentionsBindings(QStringLiteral("GET")),
+            qPrintable(lines.join(QStringLiteral("; "))));
     }
 };
 

@@ -31771,38 +31771,58 @@ private slots:
         QTest::qWait(250);
         QCOMPARE(bindingRequests, 0);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
-        // Mounting the header is not a selection edge either.
+        // Issue #438 review (finding 4633233517): showing the header with an
+        // already-selected channel recovers the skipped selection edge - the
+        // member page is read exactly once and the caption lands. Before the
+        // fix this stayed silent and the caption was absent forever.
+        held = QJsonArray{binding("61000000-0000-4000-8000-00000000000c", userId, streamId),
+            binding("61000000-0000-4000-8000-00000000000d", channelMemberB, streamId)};
+        f.controller.setChatHeaderVisible(true);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 2, 5000);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        QCOMPARE(bindingRequests, 1);
+        // A visibility blink never re-reads: the projection belongs to the
+        // selected stream, not to the surface coming and going (#434 budget).
+        f.controller.setChatHeaderVisible(false);
         f.controller.setChatHeaderVisible(true);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 0);
+        QCOMPARE(bindingRequests, 1);
         // A selection edge on the visible header loads exactly one page; the
         // page belongs to the stream that was selected, so bob (idle) is in
         // the member half but not the online half.
-        held = QJsonArray{binding("61000000-0000-4000-8000-00000000000c", userId, streamId),
-            binding("61000000-0000-4000-8000-00000000000d", channelMemberB, streamId)};
         f.controller.selectStream(otherStream);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
-        QCOMPARE(bindingRequests, 1);
+        QCOMPARE(bindingRequests, 2);
         f.controller.selectStream(streamId);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
         QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Re-activating the same stream (a topic switch) is not an edge and
         // never re-reads the page (#434 budget).
         f.controller.selectStream(streamId);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Direct chats clear the projection without a request.
         f.controller.selectStream(directStreamUuid);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        // The hidden half again: a selection made off screen fetches nothing,
+        // and the next visibility edge reads exactly that page once.
+        f.controller.setChatHeaderVisible(false);
+        f.controller.selectStream(otherStream);
+        QTest::qWait(250);
+        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        f.controller.setChatHeaderVisible(true);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 1, 5000);
+        QCOMPARE(bindingRequests, 4);
         // A page that completes after its selection was replaced stays
         // silent: the late streamId snapshot must not move the counts of the
         // conversation that is actually selected now.
         f.controller.selectStream(streamId);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
-        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(bindingRequests, 5);
         holdNext = true;
         f.controller.selectStream(otherStream);
         QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
