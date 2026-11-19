@@ -30197,7 +30197,7 @@ private slots:
     // exordy review PRRT_kwDOVmpjls65Qz-z: with MemFree missing from the
     // fixture (total/available intact) the process card and usage bar stay,
     // but the system free-memory card must not render the fabricated "0 KiB"
-    // reading — the card gates on the MemFree parse result.
+    // reading: the card gates on the MemFree parse result.
     void diagnosticsMemoryPanelHidesFreeCardWhenMemFreeMissing()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
