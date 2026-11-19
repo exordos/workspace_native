@@ -3296,11 +3296,23 @@ ApplicationWindow {
             : systemType === "personal" ? "profile.svg"
             : systemType === "channels" ? "channels.svg"
             : isSelected ? "folder_open.svg" : "folder.svg"
+        // Issue #85 review (cid 4623255478): the strip MouseArea is not the
+        // only activation path. The chip is a keyboard-operable control:
+        // Enter/Space and the accessible Press action select through the
+        // same path a plain click drives (see folderRailStripPointer).
+        function select() {
+            root.controller.closeDrafts()
+            root.controller.selectFolder(folderChip.folderKey)
+        }
+        activeFocusOnTab: true
+        Keys.onReturnPressed: (event) => { folderChip.select(); event.accepted = true }
+        Keys.onSpacePressed: (event) => { folderChip.select(); event.accepted = true }
         objectName: "folder-" + folderKey
         width: chipContent.implicitWidth + 20
         height: 32
         Accessible.role: Accessible.Button
         Accessible.name: String(folder.title || "")
+        Accessible.onPressAction: folderChip.select()
         Rectangle {
             anchors.fill: parent
             radius: 8
