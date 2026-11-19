@@ -31341,6 +31341,137 @@ private slots:
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         QCOMPARE(f.controller.chatHeaderOnlineCount(), 0);
     }
+
+    // Issue #89 round 2 (PR #432 review): a binding change on the selected
+    // stream must move the header caption counts; the selection/auth
+    // triggers alone left both counts on the pre-change member set.
+    void chatHeaderCountersFollowSelectedStreamBindingEvents()
+    {
+        Fixture f;
+        const QString otherStream = QStringLiteral("8e0d0000-0000-4000-8000-000000000009");
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberA, "alice", "active"),
+            userRow(channelMemberB, "bob", "idle")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user, const QString &stream) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        f.streams = [&otherStream](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"role", "owner"}},
+                QJsonObject{{"uuid", otherStream}, {"project_id", projectId},
+                    {"name", "Solo channel"}, {"encryption", false}}}};
+        };
+        QJsonArray bound{binding("61000000-0000-4000-8000-000000000001", userId, streamId),
+            binding("61000000-0000-4000-8000-000000000002", channelMemberB, streamId)};
+        f.bindings = [&bound, &binding, &otherStream](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == otherStream)
+                return Response{QJsonArray{binding("61000000-0000-4000-8000-000000000009", userId, otherStream)}};
+            return Response{bound};
+        };
+        QVERIFY(f.start({}, 2));
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        // Adding a member live (stream_bindings.created for the selected
+        // stream) moves both halves: alice joins and she is active.
+        bound.append(binding("61000000-0000-4000-8000-000000000003", channelMemberA, streamId));
+        auto createdPayload = QJsonObject{{"uuid", streamId}, {"items", QJsonArray{bound.last().toObject()}}};
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_bindings.created", createdPayload)));
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 3);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 2);
+        // Removing a member (stream_binding.deleted) moves them back.
+        bound.removeLast();
+        auto removedPayload = QJsonObject{{"uuid", "61000000-0000-4000-8000-000000000003"},
+            {"stream_uuid", streamId}, {"user_uuid", channelMemberA}};
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_binding.deleted", removedPayload)));
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        // A binding change on another stream never moves these counts.
+        auto otherPayload = QJsonObject{{"uuid", "61000000-0000-4000-8000-000000000009"},
+            {"stream_uuid", otherStream}, {"user_uuid", channelMemberB}};
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_binding.deleted", otherPayload)));
+        QTest::qWait(250);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+    }
+
+    // Issue #89 round 2: the channel info drawer's own member mutations are
+    // binding changes on the selected stream too; the header caption must
+    // not keep counting the pre-mutation set afterwards.
+    void chatHeaderCountersFollowChannelInfoMemberMutations()
+    {
+        Fixture f;
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberA, "alice", "active"),
+            userRow(channelMemberB, "bob", "idle")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        f.streams = [](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"role", "owner"}}}};
+        };
+        QJsonArray bound{binding("61000000-0000-4000-8000-000000000001", userId),
+            binding("61000000-0000-4000-8000-000000000002", channelMemberB)};
+        f.bindings = [&bound](const Request &) { return Response{bound}; };
+        const auto fallback = f.server.handler;
+        f.server.handler = [&bound, &binding, &fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "DELETE" && path.startsWith("/api/workspace/v1/messenger/stream_bindings/")) {
+                const auto uuid = path.section('/', -1);
+                for (int index = 0; index < bound.size(); ++index)
+                    if (bound[index].toObject().value("uuid").toString() == uuid) { bound.removeAt(index); break; }
+                return Response{QJsonObject{}, 204};
+            }
+            if (request.method == "POST" && path.endsWith("/actions/add_users/invoke")) {
+                QJsonArray created;
+                const auto members = request.body.value("member").toArray();
+                for (const auto &value : members) {
+                    const auto row = binding("61000000-0000-4000-8000-000000000003", value.toString());
+                    created.append(row);
+                    bound.append(row);
+                }
+                return Response{created, 201};
+            }
+            return fallback(request);
+        };
+        QVERIFY(f.start({}, 1));
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        // Open the drawer's member list, then mutate through it.
+        f.controller.refreshChannelInfo();
+        QTRY_VERIFY(!f.controller.channelInfoLoading());
+        QCOMPARE(f.controller.channelInfoMemberCount(), 2);
+        // The owner adds alice: 3 members, alice is active.
+        f.controller.addChannelInfoMembers(QStringList{channelMemberA});
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 3);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 2);
+        // And removes bob's binding: 2 members, both now active.
+        f.controller.removeChannelInfoMember("61000000-0000-4000-8000-000000000002");
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 2);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
