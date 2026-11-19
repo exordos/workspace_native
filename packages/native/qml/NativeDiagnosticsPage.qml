@@ -781,9 +781,38 @@ FocusScope {
                                 color: page.colors["text-primary"]
                                 bottomPadding: 4 // mb-1
                             }
+                            // exordy review PRRT_kwDOVmpjls65Qz-2: the five
+                            // columns need a 408 px floor (96+64+96+96+56) that
+                            // the in-column Row overflowed, and wide layouts
+                            // gained ~96 px of unreachable overflow from the
+                            // free-space CPU column. The table now lives in a
+                            // horizontal Flickable: contentWidth is sized to
+                            // the table (never below the 420 px minimum that
+                            // mirrors the reference min-w-[420px]), clip keeps
+                            // it inside the panel, and the flexible CPU column
+                            // is sized against the table width.
+                            Flickable {
+                                id: tableScroller
+                                objectName: "diagnosticsMemoryTableScroller"
+                                width: memorySectionColumn.width
+                                height: memoryTableColumn.height
+                                // Flickable's default implicit size is 250x250;
+                                // the enclosing Column sizes the card from
+                                // implicitHeight, so the scroller must report
+                                // its real table height or the panel inflates.
+                                implicitHeight: memoryTableColumn.height
+                                contentWidth: Math.max(420, memorySectionColumn.width)
+                                contentHeight: memoryTableColumn.height
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+                            Column {
+                                id: memoryTableColumn
+                                width: tableScroller.contentWidth
+                                spacing: 0
                             Row {
                                 objectName: "diagnosticsMemoryTableHeader"
-                                width: memorySectionColumn.width
+                                width: memoryTableColumn.width
                                 Text { objectName: "diagnosticsMemoryTableHeader-type";
                                     text: qsTr("Type"); width: 96
                                     leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
@@ -806,13 +835,13 @@ FocusScope {
                                     color: page.colors["text-primary"] }
                                 Text { objectName: "diagnosticsMemoryTableHeader-cpu";
                                     text: qsTr("CPU")
-                                    width: Math.max(56, memorySectionColumn.width - 256)
+                                    width: Math.max(56, memoryTableColumn.width - 352)
                                     leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
                                     font.pixelSize: 11; font.weight: Font.Medium
                                     color: page.colors["text-primary"] }
                             }
                             Rectangle { // border-b border-border-subtle header rule
-                                width: memorySectionColumn.width
+                                width: memoryTableColumn.width
                                 height: 1
                                 color: page.colors["border-subtle"]
                             }
@@ -822,10 +851,10 @@ FocusScope {
                                     required property var modelData
                                     required property int index
                                     objectName: "diagnosticsMemoryProcessRow-" + index
-                                    width: memorySectionColumn.width
+                                    width: memoryTableColumn.width
                                     spacing: 0
                                     Row {
-                                        width: memorySectionColumn.width
+                                        width: memoryTableColumn.width
                                         Text {
                                             objectName: "diagnosticsMemoryProcessCell" + index + "-type"
                                             text: String(modelData.type)
@@ -861,20 +890,22 @@ FocusScope {
                                         Text {
                                             objectName: "diagnosticsMemoryProcessCell" + index + "-cpu"
                                             text: page.formatMemoryCpuPercent(modelData.cpuPercent)
-                                            width: Math.max(56, memorySectionColumn.width - 256)
+                                            width: Math.max(56, memoryTableColumn.width - 352)
                                             leftPadding: 4; rightPadding: 4; topPadding: 4; bottomPadding: 4
                                             font.pixelSize: 11; font.family: "monospace"
                                             color: page.colors["text-muted"]
                                         }
                                     }
                                     Rectangle { // border-border-subtle/60 row rule
-                                        width: memorySectionColumn.width
+                                        width: memoryTableColumn.width
                                         height: 1
                                         color: page.colors["border-subtle"]
                                         opacity: 0.6
                                     }
                                 }
                             }
+                            } // memoryTableColumn
+                            } // tableScroller
                         }
                     }
                 }

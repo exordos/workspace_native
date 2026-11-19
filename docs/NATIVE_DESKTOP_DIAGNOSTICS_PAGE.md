@@ -583,7 +583,11 @@ case, which now pins the memory provider to a fixed fixture root.
   primary, optional detail 11px muted (logs-page-memory.ui.tsx:218-224).
   Rendered cards: "Total app memory" (`totalWorkingSetKb`, gated on
   `processMetricsAvailable`) and "System free memory" (`freeKb`, detail
-  "<total> total", gated on `systemMemoryAvailable`).
+  "<total> total"). Review fix (exordy round 1 on #416): the free-memory
+  card gates on `systemMemoryFreeAvailable` (the MemFree line parsed
+  successfully) so a missing or malformed MemFree never renders a
+  fabricated 0 reading; the "<total> total" detail additionally needs
+  `systemMemoryAvailable`.
 - Progress bar: track `diagnosticsMemoryBarTrack` 6px tall, radius 3, on `bg`
   (h-1.5 rounded-full bg-bg); fill `diagnosticsMemoryBarFill` anchored left,
   `accent`, width = track width * percent / 100; label row "Memory usage" +
@@ -593,7 +597,13 @@ case, which now pins the memory provider to a fixed fixture root.
   per process, minimum width 420 (min-w-[420px]), cells 11px monospace with
   4px horizontal / 4px vertical padding, 1px bottom border border-subtle
   (logs-page-memory.ui.tsx:160-197). CPU cell uses one decimal + percent, em
-  dash when null (logs-page-memory.ui.tsx:210-214).
+  dash when null (logs-page-memory.ui.tsx:210-214). Review fix (exordy
+  round 1 on #416): the table lives in the horizontal Flickable
+  `diagnosticsMemoryTableScroller` (clip, `contentWidth = max(420, panel
+  column width)`, AsNeeded horizontal ScrollBar) mirroring the reference
+  `overflow-x-auto` scroller, so narrow panels scroll instead of clipping
+  and wide panels gain no overflow; the flexible CPU column is sized
+  `table width - 352` with a 56 px minimum.
 - Unavailable: `diagnosticsMemoryUnavailableText` renders "Memory metrics are
   not available in this build." (the native reading of
   `settings.diagnosticsMemoryUnavailable`; the reference string names the
