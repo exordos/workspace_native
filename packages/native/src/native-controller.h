@@ -1802,6 +1802,12 @@ private:
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
     quint64 m_chatHeaderMembersTicket = 0;
+    // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
+    // membership event that lands while a member page load is in flight is
+    // recorded here and replayed against the completed page, so the older
+    // snapshot can never overwrite it. Reset with every refresh/load end.
+    bool m_chatHeaderMembersLoading = false;
+    QList<QPair<QString, QString>> m_chatHeaderMembersPendingEvents;
     // ---- Issue #134 user profile drawer state ----
     void refreshOwnProfileProjection(const QString &user, quint64 ticket,
         const QVariantMap &savedProfile);

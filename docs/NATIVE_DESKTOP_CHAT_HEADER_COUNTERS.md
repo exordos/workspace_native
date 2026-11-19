@@ -69,6 +69,14 @@ loader contract (`refreshChannelInfo` / `loadChannelInfoPage`):
   never moves membership or online, so it never notifies at all. The same
   change-gate applies to a completed page load that re-serves the identical
   member set.
+- Round 3 (PR #432 review finding 4628746243): a membership event that lands
+  while a member page load is in flight is additionally remembered in a
+  per-load pending event log; the final page replays those deltas onto its
+  (possibly older) snapshot before the change-gate, so completion never
+  drops an event that the in-place update already applied. The log is reset
+  at every refresh start and at every load end; the replay is idempotent
+  when the snapshot already reflects the event, so the round-2 properties
+  (no extra fetch, no re-notify on an unchanged set) are unchanged.
 
 ### QML (`packages/native/qml/Main.qml`)
 
@@ -106,7 +114,11 @@ extraction and fails on any unreviewed source.
 - Controller (`native-controller-test.cpp`): stream with 2 members / 1
   active -> counts 2/1; single-member stream -> 1/1; `user.updated` status
   change flips the online half; direct stream keeps both counters at 0;
-  stale counts never survive a selection change.
+  stale counts never survive a selection change. Binding events on the
+  selected stream move the counts in place; role-only events neither fetch
+  nor re-notify; an event that lands while a member page load is in flight
+  is reconciled against the completed page (deferred-response race,
+  finding 4628746243).
 - Window (`native-window-test.cpp`, native-native-window group): channel
   with 2 members / 1 online renders "2 members, 1 online"; the en singular
   branch renders "1 member, 1 online"; a presence event updates the

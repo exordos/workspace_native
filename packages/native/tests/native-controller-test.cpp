@@ -31537,6 +31537,93 @@ private slots:
         QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
         QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
     }
+
+    // Issue #89 round 3 (PR #432 review finding 4628746243): a realtime
+    // binding event that arrives while a member page load is in flight must
+    // survive the older page result. The held (deferred) page snapshot is
+    // the exact race the in-place event update used to lose: completion
+    // replaced the member set with the pre-event response.
+    void chatHeaderCountersReconcileBindingEventsDuringPageLoad()
+    {
+        Fixture f;
+        int bindingRequests = 0;
+        bool holdNext = false;
+        std::function<void()> release;
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberA, "alice", "active"),
+            userRow(channelMemberB, "bob", "idle")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        f.streams = [](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"role", "owner"}}}};
+        };
+        QJsonArray bound{binding("61000000-0000-4000-8000-000000000001", userId),
+            binding("61000000-0000-4000-8000-000000000002", channelMemberB)};
+        f.bindings = [&bound, &bindingRequests, &holdNext, &release](const Request &) {
+            ++bindingRequests;
+            // The Response copies the member set at request time: once held,
+            // it is a stale snapshot no matter what the server state becomes.
+            Response response{bound};
+            if (holdNext) {
+                holdNext = false;
+                response.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            }
+            return response;
+        };
+        QVERIFY(f.start({}, 1));
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        const auto baselineRequests = bindingRequests;
+        // Phase 1: alice's creation event lands while a page snapshot that
+        // predates it is still in flight.
+        holdNext = true;
+        f.controller.refreshChatHeaderMembers();
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
+        bound.append(binding("61000000-0000-4000-8000-000000000003", channelMemberA));
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_bindings.created",
+            QJsonObject{{"uuid", streamId}, {"items", QJsonArray{bound.last().toObject()}}}, 301)));
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 3); // in-place event update
+        QSignalSpy changes(&f.controller, &NativeController::stateChanged); QVERIFY(changes.isValid());
+        release(); // the older snapshot arrives after the event
+        QTest::qWait(250);
+        // The completion must reconcile with the event, never resurrect the
+        // pre-event member set (finding 4628746243).
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 3);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 2);
+        // The reconciled set equals what was already displayed: no re-notify
+        // and no extra stream_bindings GET (round 2 properties hold).
+        QCOMPARE(changes.count(), 0);
+        QCOMPARE(bindingRequests, baselineRequests + 1);
+        // Phase 2: bob's deletion event lands while a newer snapshot that
+        // still lists him is in flight.
+        holdNext = true;
+        f.controller.refreshChatHeaderMembers();
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
+        bound.removeAt(1); // the server dropped bob after the snapshot
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("stream_binding.deleted",
+            QJsonObject{{"uuid", "61000000-0000-4000-8000-000000000002"},
+                {"stream_uuid", streamId}, {"user_uuid", channelMemberB}}, 302)));
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2); // in-place event update
+        QSignalSpy moreChanges(&f.controller, &NativeController::stateChanged); QVERIFY(moreChanges.isValid());
+        release(); // the snapshot that still has bob arrives after the delete
+        QTest::qWait(250);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 2);
+        QCOMPARE(moreChanges.count(), 0);
+        QCOMPARE(bindingRequests, baselineRequests + 2);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
