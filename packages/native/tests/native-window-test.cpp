@@ -30377,6 +30377,75 @@ private slots:
         QVERIFY2(itemInsideWindow(window, toggle), "the toggle left the viewport after expanding");
     }
 
+    // exordy review on #421 (medium): touchpads report scrolling as wheel
+    // events whose motion rides in pixelDelta with angleDelta (0, 0). The
+    // page body is a bare Flickable, which ignores such events, so the
+    // advanced snapshot toggle stayed unreachable by the touchpad gesture.
+    // This case proves the pure user path - deliberately with NO programmatic
+    // scrollItemIntoView helper: repeated pixel-delta-only gestures over the
+    // body must (a) advance contentY, (b) bring the whole toggle inside the
+    // 900 px viewport (top >= 0, bottom <= window height), and (c) let an
+    // in-viewport click expand the advanced snapshot block.
+    void diagnosticsAdvancedToggleScrollsOnPixelDeltaWheel()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Pixel-delta wheel teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        auto *body=visibleItem("diagnosticsContent"); QVERIFY(body);
+        auto *toggle=visibleItem("diagnosticsAdvancedToggle"); QVERIFY(toggle);
+        QCOMPARE(page->property("advancedExpanded").toBool(), false);
+        QVERIFY2(body->property("contentHeight").toReal()>body->height(),
+                 qPrintable(QStringLiteral("content %1 body %2: page must overflow the fixture")
+                            .arg(body->property("contentHeight").toReal()).arg(body->height())));
+        const qreal beforeTopY=toggle->mapToScene(QPointF(0, 0)).y();
+        QVERIFY2(beforeTopY>=window->height(), qPrintable(QStringLiteral("toggle expected below the "
+                 "900 px fold, mapped at y=%1").arg(beforeTopY)));
+        QCOMPARE(body->property("contentY").toReal(), 0.0);
+        // Trackpad-style gesture: the motion rides in pixelDelta and the
+        // angleDelta stays (0, 0), exactly what XCB delivers for two-finger
+        // scrolls (Qt::MouseEventSynthesizedBySystem). Negative delta means
+        // scroll down, the same sign convention the angle path already uses.
+        const QPointF wheelPoint=body->mapToScene(QPointF(body->width()/2.0, body->height()/2.0));
+        const auto pixelSwipe=[window](const QPointF &scenePos, int pixels){
+            QWheelEvent event(scenePos, window->mapToGlobal(scenePos.toPoint()), QPoint(0, pixels),
+                QPoint(0, 0), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false,
+                Qt::MouseEventSynthesizedBySystem);
+            QCoreApplication::sendEvent(window, &event);
+            QTest::qWait(20);
+        };
+        // (a) One pixel-delta gesture must already scroll the body.
+        pixelSwipe(wheelPoint, -240);
+        QTRY_VERIFY_WITH_TIMEOUT(body->property("contentY").toReal()>0.0, 4000);
+        // (b) Keep gesturing until the whole toggle box maps inside the
+        // viewport: top edge >= 0 and bottom edge <= window height.
+        bool reachedViewport=false;
+        for(int i=0;i<40 && !reachedViewport;++i){
+            const QPointF top=toggle->mapToScene(QPointF(0, 0));
+            if(top.y()>=0.0 && top.y()+toggle->height()<=window->height()){reachedViewport=true;break;}
+            pixelSwipe(wheelPoint, -240);
+        }
+        QVERIFY2(reachedViewport, qPrintable(QStringLiteral("pixel-delta wheel never brought the "
+                 "toggle into the viewport (top y=%1 contentY=%2)")
+                 .arg(toggle->mapToScene(QPointF(0, 0)).y()).arg(body->property("contentY").toReal())));
+        // (c) The in-viewport click opens the block - no helper involved.
+        QVERIFY2(itemInsideWindow(window, toggle), "toggle not fully inside the viewport before click");
+        click(window, toggle);
+        QCOMPARE(page->property("advancedExpanded").toBool(), true);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
+    }
+
     // Issue #52 (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel"):
     // the panel renders reference-formatted value cards, a progress bar whose
     // fill width tracks used/limit, and the single-process table row. Data
