@@ -142,6 +142,17 @@ public:
     Q_INVOKABLE bool isDisplayCaptureRequestAllowed(bool isMainFrame,
         const QString &requestingUrl) const;
 
+    // #87 round 2 (findings 1/2): the frame-trust decision point the shipped
+    // embed surface actually consults. Qt 6.10.2's QWebEnginePermission
+    // exposes only origin and permissionType (qwebenginepermission.h:30-33,
+    // 70-71) - no frame object, no main-frame flag, no frame tree - so the
+    // requesting frame can never be verified as the live meeting child frame
+    // the reference gate (workspace_ui main.ts:996-1020) requires. Until a
+    // trustworthy frame identity exists the policy is fail closed: an
+    // unverified identity denies even when the origin matches the live frame.
+    // See docs/NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md.
+    Q_INVOKABLE bool isDisplayCaptureRequestTrustworthy(const QString &requestingUrl) const;
+
     // Window-side sync for the fullscreen transition: when the hosting window
     // leaves (or enters) fullscreen outside the shell, the controller state
     // follows (review finding 4).

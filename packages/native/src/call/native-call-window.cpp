@@ -324,6 +324,12 @@ bool JitsiCallWindowController::isDisplayCaptureRequestAllowed(bool isMainFrame,
     return isAllowedDisplayCapture(isMainFrame, QUrl(requestingUrl), frames);
 }
 
+bool JitsiCallWindowController::isDisplayCaptureRequestTrustworthy(
+    const QString &requestingUrl) const
+{
+    return isDisplayCaptureRequestAllowed(false, requestingUrl);
+}
+
 void JitsiCallWindowController::syncFullscreen(bool fullscreen)
 {
     // The fullscreen control only exists while expanded; the flag follows the

@@ -1406,17 +1406,21 @@ private slots:
         QVERIFY(src.contains(QStringLiteral("permission.deny()")));
     }
 
-    // #87: display capture must not stay a blanket deny and must not become a
-    // blanket grant either - the shipped view routes the desktop-capture
-    // permission type through the controller's live-frame gate.
+    // #87 round 2 (findings 1/2): Qt 6.10.2's QWebEnginePermission carries no
+    // frame identity, so the shipped view must route desktop capture through
+    // the controller's frame-trust gate and must never fabricate a frame flag
+    // to make the modeled child-frame check pass. The gate fails closed when
+    // the requesting frame cannot be verified as the live meeting child frame.
     void shippedEmbedViewRoutesDisplayCaptureThroughTheGate()
     {
         const auto src = readEmbedSource(QStringLiteral("NativeCallWebEngineView.qml"));
         QVERIFY2(!src.isEmpty(), "the shipped embed view source must be locatable");
         QVERIFY2(src.contains(QStringLiteral("permissionDesktopVideoCapture")),
             "the desktop capture permission type must be handled explicitly (#87)");
-        QVERIFY2(src.contains(QStringLiteral("isDisplayCaptureRequestAllowed")),
-            "desktop capture must be gated by the controller live-frame policy (#87)");
+        QVERIFY2(src.contains(QStringLiteral("isDisplayCaptureRequestTrustworthy")),
+            "desktop capture must be gated by the controller frame-trust policy (#87 round 2)");
+        QVERIFY2(!src.contains(QStringLiteral("isDisplayCaptureRequestAllowed(false")),
+            "the view may not hardcode isMainFrame=false to satisfy the gate (#87 findings 1/2)");
     }
 
     void shippedCallEventGlueSpeaksOnlyTheExternalApiContract()

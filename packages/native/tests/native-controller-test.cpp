@@ -25,6 +25,7 @@
 #include "call/native-call-window.h"
 #include "call/display-capture-policy.h"
 #include "call/screen-share-source-picker.h"
+#include <QDBusArgument>
 #include <QDBusObjectPath>
 #include <QDBusVariant>
 #include <QTimer>
@@ -1730,6 +1731,7 @@ public:
     quint32 responseCode = 0; // 0 succeeded, 1 cancelled (portal semantics)
     QString requestPath = QStringLiteral("/org/freedesktop/portal/desktop/request/87/87");
     int pictureUriCalls = 0;
+    int responseDelayMs = 250;
     PortalRequestStub *requestObject = nullptr;
 };
 
@@ -1738,6 +1740,7 @@ class PortalRequestStub final : public QObject
     Q_OBJECT
 public:
     using QObject::QObject;
+    QString path; // path the test registered this object at (#87 round 2)
 };
 
 class PortalRequestAdaptor final : public QDBusAbstractAdaptor
@@ -1755,8 +1758,8 @@ class PortalScreenshotAdaptor final : public QDBusAbstractAdaptor
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Screenshot")
 public:
-    explicit PortalScreenshotAdaptor(PortalScreenshotStub *stub)
-        : QDBusAbstractAdaptor(stub), m_stub(stub) {}
+    PortalScreenshotAdaptor(PortalScreenshotStub *stub, QObject *registered)
+        : QDBusAbstractAdaptor(registered), m_stub(stub) {}
 
 public slots:
     QDBusObjectPath PictureUri(const QString &parentWindow, const QVariantMap &options);
@@ -1775,7 +1778,8 @@ QDBusObjectPath PortalScreenshotAdaptor::PictureUri(const QString &parentWindow,
     // The portal answers after the request object path is already in the
     // client's hands; a short delay keeps the emission ordered after the
     // client returns from the blocking call and subscribes.
-    QTimer::singleShot(250, request, [request, adaptor, stub = m_stub] {
+    const int delayMs = m_stub->responseDelayMs;
+    QTimer::singleShot(delayMs, request, [request, adaptor, stub = m_stub] {
         const QVariantMap results {
             {QStringLiteral("PictureUri"), QVariant::fromValue(QDBusVariant(stub->pictureUri))}
         };
@@ -1783,6 +1787,150 @@ QDBusObjectPath PortalScreenshotAdaptor::PictureUri(const QString &parentWindow,
     });
     return QDBusObjectPath(m_stub->requestPath);
 }
+
+// #87 round 2 (finding 4): stand-in for org.freedesktop.portal.ScreenCast,
+// the portal's LIVE source-selection contract (the still-image Screenshot
+// interface above is what the finding rejects). Exchange per the portal
+// interface docs: CreateSession(a{sv}) answers a Request object path whose
+// Response carries "session_target"; SelectSources(s, o, a{sv}) lets the
+// user pick screen/window sources (the types option selects screens and
+// windows); PickStreams(s, o, a{sv}) Response carries "streams", an array
+// of stream-reference object paths - the live references a capture pipeline
+// consumes via OpenPipeWireRemote - plus a "name" member. Every step hands
+// back its own Request object and answers after responseDelayMs, like the
+// real portal does.
+class PortalScreenCastStub final : public QObject
+{
+    Q_OBJECT
+public:
+    using QObject::QObject;
+    int createSessionCalls = 0;
+    int selectSourcesCalls = 0;
+    int pickStreamsCalls = 0;
+    int responseDelayMs = 120;
+    quint32 responseCode = 0; // portal semantics: 1 is the user cancelling
+    QString sessionPath = QStringLiteral("/org/freedesktop/portal/desktop/session/87/session");
+    QStringList streamPaths {
+        QStringLiteral("/org/freedesktop/portal/desktop/session/87/stream_1") };
+    QString streamName = QStringLiteral("Monitor 1");
+    // Each step gets its own Request object from the pool the test registered.
+    QList<PortalRequestStub *> requestPool;
+    int requestCursor = 0;
+    PortalRequestStub *takeRequest()
+    {
+        PortalRequestStub *request = requestPool.at(requestCursor % requestPool.size());
+        ++requestCursor;
+        return request;
+    }
+};
+
+QDBusArgument portalStreamArray(const QStringList &paths)
+{
+    QDBusArgument argument;
+    argument.beginArray(QMetaType::fromType<QDBusObjectPath>());
+    for (const auto &path : paths)
+        argument << QDBusObjectPath(path);
+    argument.endArray();
+    return argument;
+}
+
+class PortalScreenCastAdaptor final : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.ScreenCast")
+public:
+    PortalScreenCastAdaptor(PortalScreenCastStub *stub, QObject *registered)
+        : QDBusAbstractAdaptor(registered), m_stub(stub) {}
+
+public slots:
+    QDBusObjectPath CreateSession(const QVariantMap &options);
+    QDBusObjectPath SelectSources(const QString &parentWindow,
+        const QDBusObjectPath &session, const QVariantMap &options);
+    QDBusObjectPath PickStreams(const QString &parentWindow,
+        const QDBusObjectPath &session, const QVariantMap &options);
+
+private:
+    QDBusObjectPath answerWith(const QVariantMap &results);
+    PortalScreenCastStub *m_stub;
+};
+
+QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results)
+{
+    auto *request = m_stub->takeRequest();
+    auto *adaptor = request->findChild<PortalRequestAdaptor *>();
+    const int delayMs = m_stub->responseDelayMs;
+    const quint32 code = m_stub->responseCode;
+    QTimer::singleShot(delayMs, request, [request, adaptor, code, results] {
+        adaptor->Response(code, results);
+    });
+    return QDBusObjectPath(request->path);
+}
+
+QDBusObjectPath PortalScreenCastAdaptor::CreateSession(const QVariantMap &options)
+{
+    Q_UNUSED(options)
+    ++m_stub->createSessionCalls;
+    const QVariantMap results {
+        {QStringLiteral("session_target"),
+            QVariant::fromValue(QDBusVariant(m_stub->sessionPath))}
+    };
+    return answerWith(results);
+}
+
+QDBusObjectPath PortalScreenCastAdaptor::SelectSources(const QString &parentWindow,
+    const QDBusObjectPath &session, const QVariantMap &options)
+{
+    Q_UNUSED(parentWindow)
+    Q_UNUSED(session)
+    Q_UNUSED(options)
+    ++m_stub->selectSourcesCalls;
+    return answerWith({});
+}
+
+QDBusObjectPath PortalScreenCastAdaptor::PickStreams(const QString &parentWindow,
+    const QDBusObjectPath &session, const QVariantMap &options)
+{
+    Q_UNUSED(parentWindow)
+    Q_UNUSED(session)
+    Q_UNUSED(options)
+    ++m_stub->pickStreamsCalls;
+    QVariant streamsValue;
+    streamsValue.setValue(portalStreamArray(m_stub->streamPaths));
+    const QVariantMap results {
+        {QStringLiteral("streams"), QVariant::fromValue(QDBusVariant(streamsValue))},
+        {QStringLiteral("name"), QVariant::fromValue(QDBusVariant(m_stub->streamName))}
+    };
+    return answerWith(results);
+}
+
+// Registers the per-step Request pool the ScreenCast stub hands out.
+class PortalRequestPool {
+public:
+    bool registerOn(QDBusConnection &bus, const QString &base, int count,
+        PortalScreenCastStub &stub)
+    {
+        for (int i = 0; i < count; ++i) {
+            auto *request = new PortalRequestStub;
+            request->path = base + QString::number(i);
+            new PortalRequestAdaptor(request);
+            if (!bus.registerObject(request->path, request)) {
+                unregisterFrom(bus);
+                return false;
+            }
+            requests.append(request);
+            stub.requestPool.append(request);
+        }
+        return true;
+    }
+    void unregisterFrom(QDBusConnection &bus)
+    {
+        for (auto *request : requests)
+            bus.unregisterObject(request->path);
+        qDeleteAll(requests);
+        requests.clear();
+    }
+    QList<PortalRequestStub *> requests;
+};
 
 class NativeControllerTest final : public QObject {
     Q_OBJECT
@@ -26292,24 +26440,36 @@ private slots:
         QCOMPARE(failed.at(0).at(0).toString(), QStringLiteral("bridge rejected the pick"));
     }
 
-    void shareSourcePickerDrivesThePortalScreenshotContract()
+    // #87 round 2 (finding 4): the default portal transport must drive the
+    // LIVE source-selection contract (org.freedesktop.portal.ScreenCast
+    // CreateSession -> SelectSources -> PickStreams) and publish the picked
+    // stream reference, never a still PictureUri screenshot file. Before the
+    // fix the shipped transport calls Screenshot.PictureUri instead, so every
+    // ScreenCast counter and stream assertion below fails.
+    void shareSourcePickerDrivesThePortalScreenCastContract()
     {
         auto bus = QDBusConnection::sessionBus();
         if (!bus.isConnected())
             QSKIP("the session bus is unavailable");
-        PortalScreenshotStub stub;
-        PortalRequestStub request;
-        auto *requestAdaptor = new PortalRequestAdaptor(&request);
-        Q_UNUSED(requestAdaptor)
-        new PortalScreenshotAdaptor(&stub);
-        stub.requestObject = &request;
-        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &stub));
-        QVERIFY(bus.registerObject(stub.requestPath, &request));
+        PortalScreenCastStub cast;
+        PortalScreenshotStub shot; // must stay untouched: PictureUri is the wrong contract
+        PortalRequestStub shotRequest;
+        new PortalRequestAdaptor(&shotRequest);
+        QObject portal; // one object owns both portal interfaces at the portal path
+        new PortalScreenshotAdaptor(&shot, &portal);
+        shot.requestObject = &shotRequest;
+        new PortalScreenCastAdaptor(&cast, &portal);
+        PortalRequestPool pool;
+        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &portal));
+        QVERIFY(bus.registerObject(shotRequest.path = shot.requestPath, &shotRequest));
+        QVERIFY(pool.registerOn(bus,
+            QStringLiteral("/org/freedesktop/portal/desktop/request/87/step"), 12, cast));
         if (!bus.registerService(QStringLiteral("org.freedesktop.portal.Desktop")))
             QSKIP("a real portal service owns org.freedesktop.portal.Desktop");
         auto cleanup = qScopeGuard([&] {
             bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
-            bus.unregisterObject(stub.requestPath);
+            bus.unregisterObject(shot.requestPath);
+            pool.unregisterFrom(bus);
             bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
         });
         workspace::ScreenShareSourcePicker picker; // default probe and default transport
@@ -26318,38 +26478,109 @@ private slots:
         picker.requestSource();
         QTRY_VERIFY_WITH_TIMEOUT(selected.count() == 1 || failed.count() == 1, 8000);
         QCOMPARE(failed.count(), 0);
-        QCOMPARE(stub.pictureUriCalls, 1);
+        // The live contract ran end to end, and the still-image API was never used.
+        QCOMPARE(cast.createSessionCalls, 1);
+        QCOMPARE(cast.selectSourcesCalls, 1);
+        QCOMPARE(cast.pickStreamsCalls, 1);
+        QCOMPARE(shot.pictureUriCalls, 0);
         const auto source = selected.at(0).at(0).toMap();
-        QCOMPARE(source.value(QStringLiteral("uri")).toString(), stub.pictureUri);
+        QCOMPARE(source.value(QStringLiteral("id")).toString(), QStringLiteral("portal-stream"));
+        QCOMPARE(source.value(QStringLiteral("uri")).toString(), cast.streamPaths.first());
+        QCOMPARE(source.value(QStringLiteral("name")).toString(), cast.streamName);
         QVERIFY(source.value(QStringLiteral("fromPortal")).toBool());
+        QVERIFY(source.value(QStringLiteral("live")).toBool());
 
         // The portal cancel code must surface as a translated failure, not a
         // hang and not a fallback source.
-        stub.responseCode = 1;
+        cast.responseCode = 1;
         QSignalSpy failedAgain(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
         picker.requestSource();
         QTRY_VERIFY_WITH_TIMEOUT(failedAgain.count() == 1, 8000);
         QCOMPARE(selected.count(), 1); // only the earlier real pick; the cancel adds no source
-        QCOMPARE(stub.pictureUriCalls, 2);
+        QCOMPARE(cast.createSessionCalls, 2);
         QVERIFY(!failedAgain.at(0).at(0).toString().isEmpty());
     }
 
-    void shareSourcePickerParsesThePortalPictureUriResultForm()
+    // #87 round 2 (finding 3): a completed exchange's timeout timer and
+    // Request subscription must be cancelled at completion, so a stale timer
+    // or a late Response can never fail or fake a later exchange. The picker
+    // timeout (330 ms) is armed per exchange while the stub answers the
+    // first exchange (200 ms) before it and the second one (400 ms) after
+    // it: before the fix the first exchange's singleShot fires inside the
+    // second exchange and emits a bogus timeout failure for it.
+    void shareSourcePickerCancelsTheCompletedExchangeTimerAndSubscription()
     {
-        QString error;
-        const QVariantMap wrapped {
-            {QStringLiteral("PictureUri"), QVariant::fromValue(QDBusVariant(
-                QStringLiteral("file:///tmp/wrapped.png")))}
-        };
-        QCOMPARE(workspace::ScreenShareSourcePicker::pictureUriFromResult(wrapped, error),
-            QStringLiteral("file:///tmp/wrapped.png"));
-        QVERIFY(error.isEmpty());
-        const QVariantMap plain {{QStringLiteral("PictureUri"), QStringLiteral("file:///tmp/plain.png")}};
-        QCOMPARE(workspace::ScreenShareSourcePicker::pictureUriFromResult(plain, error),
-            QStringLiteral("file:///tmp/plain.png"));
-        const QVariantMap none;
-        QVERIFY(workspace::ScreenShareSourcePicker::pictureUriFromResult(none, error).isEmpty());
-        QVERIFY(!error.isEmpty());
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected())
+            QSKIP("the session bus is unavailable");
+        PortalScreenshotStub shot;
+        shot.responseDelayMs = 200;
+        PortalRequestStub shotRequest;
+        new PortalRequestAdaptor(&shotRequest);
+        QObject portal; // one object owns both portal interfaces at the portal path
+        new PortalScreenshotAdaptor(&shot, &portal);
+        shot.requestObject = &shotRequest;
+        PortalScreenCastStub cast;
+        cast.responseDelayMs = 60;
+        new PortalScreenCastAdaptor(&cast, &portal);
+        PortalRequestPool pool;
+        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &portal));
+        QVERIFY(bus.registerObject(shotRequest.path = shot.requestPath, &shotRequest));
+        QVERIFY(pool.registerOn(bus,
+            QStringLiteral("/org/freedesktop/portal/desktop/request/87/timer"), 12, cast));
+        if (!bus.registerService(QStringLiteral("org.freedesktop.portal.Desktop")))
+            QSKIP("a real portal service owns org.freedesktop.portal.Desktop");
+        auto cleanup = qScopeGuard([&] {
+            bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
+            bus.unregisterObject(shot.requestPath);
+            pool.unregisterFrom(bus);
+            bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
+        });
+        workspace::ScreenShareSourcePicker picker; // default probe and default transport
+        picker.setPortalTimeoutMs(330);
+        QSignalSpy selected(&picker, &workspace::ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        QTRY_VERIFY_WITH_TIMEOUT(selected.count() == 1 || failed.count() == 1, 8000);
+        QCOMPARE(failed.count(), 0); // the first exchange completes cleanly
+        picker.requestSource();      // and hands straight over to a second one
+        QTRY_VERIFY_WITH_TIMEOUT(selected.count() == 2 || failed.count() == 1, 8000);
+        // Only the second exchange's own portal reply may decide its outcome.
+        QCOMPARE(failed.count(), 0);
+        QCOMPARE(selected.count(), 2);
+    }
+
+    // #87 round 2 (findings 1/2): the shipped embed surface decides display
+    // capture through the controller's frame-trust gate. Qt 6.10.2 delivers
+    // the request as a QWebEnginePermission exposing only origin and
+    // permissionType (qwebenginepermission.h:30-33, 70-71) - no frame object,
+    // no main-frame flag, no frame tree - so the requesting frame can never
+    // be verified as the live meeting child frame the reference gate demands
+    // (workspace_ui main.ts:996-1020 denies unless that is established).
+    // Reproduction of findings 1/2: with the shipped wiring (the view
+    // asserting isMainFrame=false) the very meeting origin passes the modeled
+    // child-frame check even though a main-frame request is indistinguishable
+    // from it, so this must fail closed.
+    void callWindowDisplayCaptureGateFailsClosedWithoutFrameIdentity()
+    {
+        workspace::JitsiCallWindowController shell;
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/workspace-87-room"));
+        call.insert(QStringLiteral("meetUrl"), QStringLiteral("https://meet.example.com"));
+        shell.open(call);
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Ready));
+        // A matching origin is NOT verifiable frame identity: the meeting
+        // document is this view's main frame, so a grant would be exactly the
+        // main-frame grant the finding condemns.
+        QVERIFY(!shell.isDisplayCaptureRequestTrustworthy(
+            QStringLiteral("https://meet.example.com/workspace-87-room")));
+        QVERIFY(!shell.isDisplayCaptureRequestTrustworthy(
+            QStringLiteral("https://evil.example/room")));
+        shell.close();
+        QVERIFY(!shell.isDisplayCaptureRequestTrustworthy(
+            QStringLiteral("https://meet.example.com/workspace-87-room")));
     }
 
     // ---- Issue #214 polls foundation ----
