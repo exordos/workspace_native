@@ -499,6 +499,7 @@ public:
     std::function<Response(const Request &)> streams;
     std::function<Response(const Request &)> reactions;
     std::function<Response(const Request &)> serverSettings;
+    std::function<Response(const Request &)> folders;
     bool extraTopic = false;
     bool encrypted = false;
     bool aggregateMessages = false;
@@ -529,6 +530,8 @@ public:
                     {"name", "Native channel"}, {"encryption", encrypted}}}};
             if (path.endsWith("/users/"))
                 return users ? users(request) : Response{QJsonArray{}};
+            if (path.endsWith("/folders/"))
+                return folders ? folders(request) : Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) {
                 if (topics)
                     return topics(request);
@@ -22272,6 +22275,102 @@ private slots:
         QVERIFY2(row.value("previewLocked").toBool(), qPrintable(row.value("previewText").toString()));
         QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
             qPrintable(row.value("previewText").toString()));
+    }
+
+    // docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md (issue #96): streams() rows carry the
+    // measured reference row state. Direct status facts come from the partner user DTO
+    // through the resolveWorkspaceStatusEmojiDisplay port (legacy emoji names map to their
+    // symbol, shortcode-like strings are dropped, blank text trims away); the displayed
+    // counter follows resolveWorkspaceDisplayedUnread (active first, gray passive only);
+    // unread-mention index membership surfaces on the row; and a folder item's pinned_at
+    // marks the row pinned inside that folder's scope only.
+    void sidebarRowsProjectStatusMentionPassiveUnreadAndPin()
+    {
+        Fixture test;
+        const auto direct = QStringLiteral("9d9d9d9d-9d9d-49d9-89d9-9d9d9d9d9d9d");
+        const auto shortcode = QStringLiteral("9c9c9c9c-9c9c-49c9-89c9-9c9c9c9c9c9c");
+        const auto workFolder = QStringLiteral("7e7e7e7e-7e7e-47e7-87e7-7e7e7e7e7e7e");
+        test.users = [](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", userId}, {"username", "self"}},
+                QJsonObject{{"uuid", channelMemberA}, {"username", "alice"},
+                    {"status_emoji", "palm_tree"}, {"status_text", "  Out of office until Friday  "}},
+                QJsonObject{{"uuid", channelMemberB}, {"username", "bob"},
+                    {"status_emoji", "working_from_home"}, {"status_text", "Deep work"}}}};
+        };
+        const auto streamDto = [](const QString &uuid, const QString &name, int unread, int active, int passive) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", unread}, {"active_unread_count", active},
+                {"passive_unread_count", passive}, {"last_message_uuid", QJsonValue::Null},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.method != "GET") return Response{QJsonObject{{"error", "method"}}, 405};
+            QJsonArray rows{streamDto(streamId, "Native channel", 5, 5, 0)};
+            auto directRow = streamDto(direct, "Alice Adams", 2, 0, 2);
+            directRow["private"] = true; directRow["direct_user_uuid"] = channelMemberA;
+            auto shortRow = streamDto(shortcode, "Bob", 0, 0, 0);
+            shortRow["private"] = true; shortRow["direct_user_uuid"] = channelMemberB;
+            rows.append(directRow); rows.append(shortRow);
+            return Response{rows};
+        };
+        // The unread-mention index walk (mentioned=true&read=false) finds one unread
+        // mention in the channel; ordinary history pages stay empty.
+        test.aggregateMessages = true;
+        test.messages = [](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("mentioned") == QLatin1String("true"))
+                return Response{QJsonArray{mentionMessage(1)}};
+            return Response{QJsonArray{}};
+        };
+        const auto folderItem = [&](const QString &uuid, const QString &stream, const QJsonValue &pinnedAt) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"folder_uuid", workFolder},
+                {"user_uuid", userId}, {"stream_uuid", stream}, {"chat_type", "channel"},
+                {"pinned_at", pinnedAt}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"created_at", "2026-01-02T10:00:00Z"},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        test.folders = [&](const Request &) {
+            const QJsonObject work{
+                {"uuid", workFolder}, {"project_id", projectId}, {"title", "Work"},
+                {"unread_count", 0}, {"system_type", "custom"},
+                {"folder_items", QJsonArray{
+                    folderItem("70000000-0000-4000-8000-00000000000a", streamId,
+                        QStringLiteral("2026-01-05T10:00:00Z")),
+                    folderItem("70000000-0000-4000-8000-00000000000b", direct,
+                        QJsonValue::Null)}},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+            return Response{QJsonArray{work}};
+        };
+        QVERIFY(test.start({}, 3));
+        const auto rowOf = [&test](const QString &uuid) {
+            for (const auto &value : test.controller.sidebarStreams())
+                if (value.toMap().value("id").toString() == uuid) return value.toMap();
+            return QVariantMap{}; };
+        const auto channel = rowOf(streamId);
+        QVERIFY2(!channel.isEmpty(), "channel row missing from the sidebar projection");
+        QCOMPARE(channel.value("displayedUnread").toInt(), 5);
+        QVERIFY(!channel.value("unreadPassive").toBool());
+        // The unread-mention index walks with the project bootstrap (async).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
+        QVERIFY(!channel.value("pinned").toBool());
+        QCOMPARE(channel.value("statusEmoji").toString(), QString{});
+        QCOMPARE(channel.value("statusText").toString(), QString{});
+        const auto alice = rowOf(direct);
+        QVERIFY2(!alice.isEmpty(), "direct row missing from the sidebar projection");
+        QCOMPARE(alice.value("statusEmoji").toString(), QString::fromUtf8("\xF0\x9F\x8C\xB4"));
+        QCOMPARE(alice.value("statusText").toString(), QStringLiteral("Out of office until Friday"));
+        QCOMPARE(alice.value("displayedUnread").toInt(), 2);
+        QVERIFY2(alice.value("unreadPassive").toBool(), "passive-only unread must be flagged");
+        QVERIFY(!alice.value("hasMention").toBool());
+        QVERIFY(!alice.value("pinned").toBool());
+        QCOMPARE(rowOf(shortcode).value("statusEmoji").toString(), QString{});
+        QCOMPARE(rowOf(shortcode).value("statusText").toString(), QStringLiteral("Deep work"));
+        // The folder scope reflects its items' pinned_at for that folder only.
+        test.controller.selectFolder(workFolder);
+        const auto scoped = test.controller.sidebarStreams();
+        QCOMPARE(scoped.size(), 2);
+        QVERIFY2(rowOf(streamId).value("pinned").toBool(), "pinned_at folder item must mark the row pinned");
+        QVERIFY(!rowOf(direct).value("pinned").toBool());
     }
 
     // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2: a row whose last message the client

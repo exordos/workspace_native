@@ -6843,6 +6843,9 @@ void NativeController::loadMentionIndex()
         m_mentionIndexWalking = false;
         m_mentionIndexReady = true;
         emit stateChanged();
+        // Issue #96: the walk is the sidebar row badge source (mention membership),
+        // so the projections must re-bind when it lands, like any row-derived state.
+        emit streamsChanged();
     });
 }
 
@@ -11264,7 +11267,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 mentionLiveUpsert(*message);
         } else if (message->mentioned)
             mentionChanged = mentionIndexRemove(message->uuid);
-        if (mentionChanged) emit stateChanged();
+        // Issue #96: the mention index feeds the sidebar row badge, so the rows re-bind with it.
+        if (mentionChanged) { emit stateChanged(); emit streamsChanged(); }
         const bool selected = inConversation(*message);
         // Background arrivals become notification candidates exactly where
         // the reference background projection would have recorded them.
@@ -11542,8 +11546,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             emit conversationMarkedRead(stream->uuid, {});
             if (!positionGuard || positionGeneration != m_api->generation()) return true;
             // Reading a stream drops its mention index entries
-            // (activity-realtime-applier.lib.ts:97-103).
-            if (mentionIndexClearStream(stream->uuid)) emit stateChanged();
+            // (activity-realtime-applier.lib.ts:97-103); the row badge follows.
+            if (mentionIndexClearStream(stream->uuid)) { emit stateChanged(); emit streamsChanged(); }
             staleCache(NativeCache::Kind::Streams);
             staleCache(NativeCache::Kind::Topics, stream->uuid);
             staleCache(NativeCache::Kind::History, stream->uuid);
@@ -12589,6 +12593,10 @@ void NativeController::persistStreams()
                  {}, nullptr, {}, true);
 }
 
+// Forward declaration for the direct-row status emoji display port (issue #96);
+// the definition lives next to the other row projection helpers below.
+static QString sidebarStatusEmojiDisplay(const QString &raw);
+
 QVariantList NativeController::streams() const
 {
     const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
@@ -12627,6 +12635,33 @@ QVariantList NativeController::streams() const
             {"activityMicros", activity.value(stream.uuid)},
             {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
         row.insert(rowPreviewFields(stream.lastMessage));
+        // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the row state measured
+        // on the reference sidebar rows. The displayed counter is the
+        // resolveWorkspaceDisplayedUnread projection (messenger-notification-mode.lib.ts:
+        // 49-57): active unreads first, a gray passive-only variant otherwise. The
+        // mention flag is membership of the stream in the unread-mention index
+        // (messenger-sidebar.lib.ts:389). Direct status facts come from the partner user
+        // entity (sidebar-workspace.ui.tsx:430-433), trimmed, with the emoji filtered
+        // through the display port. pinned defaults false; the folder scope stamps it.
+        const bool unreadPassive = stream.activeUnread <= 0 && stream.passiveUnread > 0;
+        row["displayedUnread"] = stream.activeUnread > 0 ? stream.activeUnread
+            : unreadPassive ? stream.passiveUnread : 0;
+        row["unreadPassive"] = unreadPassive;
+        bool hasMention = false;
+        for (auto it = m_unreadMentions.constBegin(); it != m_unreadMentions.constEnd(); ++it)
+            if (it->stream == stream.uuid) { hasMention = true; break; }
+        row["hasMention"] = hasMention;
+        if (direct) {
+            const auto peer = m_names.constFind(stream.directUser);
+            row["statusEmoji"] = peer == m_names.constEnd()
+                ? QString{} : sidebarStatusEmojiDisplay(peer->statusEmoji);
+            row["statusText"] = peer == m_names.constEnd()
+                ? QString{} : peer->statusText.trimmed();
+        } else {
+            row["statusEmoji"] = QString{};
+            row["statusText"] = QString{};
+        }
+        row["pinned"] = false;
         // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md): same
         // resolveAvatarBackgroundColor derivation as the drafts surface below
         // in draftPage(); direct rows never carry a stream color.
@@ -12745,6 +12780,12 @@ void NativeController::loadFolders()
                     ? entry.value("streamUuid") : entry.value("stream_uuid")).toString();
                 if (!stream.isEmpty() && !row.streamIds.contains(stream))
                     row.streamIds.append(stream);
+                // Issue #96: adaptMessengerFolderItem maps `dto.pinned_at ?? null`;
+                // a non-null timestamp pins the chat inside this folder's view.
+                const auto pinnedAt = entry.contains("pinnedAt")
+                    ? entry.value("pinnedAt") : entry.value("pinned_at");
+                if (!stream.isEmpty() && pinnedAt.isString() && !pinnedAt.toString().isEmpty())
+                    row.pinnedStreams.insert(stream);
             }
             serverRows.append(row);
         }
@@ -13262,6 +13303,7 @@ QVariantList NativeController::sidebarStreams() const
     }
     auto scoped = all;
     const auto effective = selectedFolder();
+    QSet<QString> pinnedStreams;
     for (const auto &row : m_folders) {
         if (row.uuid != effective) continue;
         // All and synthesized slots carry no server membership: no filter.
@@ -13270,7 +13312,17 @@ QVariantList NativeController::sidebarStreams() const
             for (const auto &value : all)
                 if (row.streamIds.contains(value.toMap().value("id").toString())) scoped.append(value);
         }
+        // Issue #96: a server folder's items stamp the rows pinned inside this view
+        // only (sidebar-chat-row-meta is fed the active folder's pinned_at).
+        if (!row.synthesized) pinnedStreams = row.pinnedStreams;
         break;
+    }
+    if (!pinnedStreams.isEmpty()) {
+        for (auto &value : scoped) {
+            auto row = value.toMap();
+            if (pinnedStreams.contains(row.value("id").toString())) row["pinned"] = true;
+            value = row;
+        }
     }
     if (m_sidebarSearchQuery.isEmpty()) return scoped;
     const auto matches = [this](const QString &text) { return text.toLower().contains(m_sidebarSearchQuery); };
@@ -14588,6 +14640,12 @@ void NativeController::reloadSnapshot()
     // snapshot part: a missing /folders/ answer degrades to system slots
     // instead of gating the conversation projection.
     loadFolders();
+    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the reference sidebar knows
+    // unread personal mentions from the messenger index at bootstrap; natively the index
+    // walked only when the mentions surface opened, leaving row badges empty until then.
+    // One guarded walk rides the same bootstrap; a failed answer degrades to no badges.
+    if (!m_mentionIndexReady && !m_mentionIndexWalking)
+        loadMentionIndex();
     notifyTrustChanged();
     const auto chatAccess = m_chatAccessRevision;
     const auto chatOwner = ownerKey();
@@ -16760,6 +16818,28 @@ qint64 NativeController::rowActivityMicros(const QString &lastMessage, qint64 up
         for (const auto &message : m_messages)
             if (message.uuid == lastMessage) return message.createdMicros;
     return updatedMicros;
+}
+
+// Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): a port of
+// workspace_ui 61dacef entities/user/user-selectors.lib.ts:63-76
+// resolveWorkspaceStatusEmojiDisplay. A legacy emoji name maps to its symbol, a
+// shortcode-looking leftover never renders, and blank input hides the emoji.
+static QString sidebarStatusEmojiDisplay(const QString &raw)
+{
+    static const QHash<QString, QString> legacy{
+        {QStringLiteral("speech_balloon"), QString::fromUtf8("\xF0\x9F\x92\xAC")},
+        {QStringLiteral("house"), QString::fromUtf8("\xF0\x9F\x8F\xA0")},
+        {QStringLiteral("palm_tree"), QString::fromUtf8("\xF0\x9F\x8C\xB4")},
+        {QStringLiteral("plate_with_cutlery"), QString::fromUtf8("\xF0\x9F\x8D\xBD\xEF\xB8\x8F")},
+        {QStringLiteral("helmet_with_white_cross"), QString::fromUtf8("\xE2\x9B\x91\xEF\xB8\x8F")},
+        {QStringLiteral("spiral_calendar_pad"), QString::fromUtf8("\xF0\x9F\x97\x93\xEF\xB8\x8F")}};
+    const auto emoji = raw.trimmed();
+    if (emoji.isEmpty()) return {};
+    const auto mapped = legacy.constFind(emoji);
+    if (mapped != legacy.constEnd()) return *mapped;
+    static const QRegularExpression shortcodeLike(QStringLiteral("^[a-z0-9_+-]+$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return shortcodeLike.match(emoji).hasMatch() ? QString{} : emoji;
 }
 
 int NativeController::streamGroupRank(const Stream &stream) const

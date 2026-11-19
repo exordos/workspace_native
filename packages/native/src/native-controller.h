@@ -1735,6 +1735,9 @@ private:
         std::optional<quint32> color;
         int unread = 0;
         QStringList streamIds;
+        // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): stream ids whose
+        // folder item carries a non-null pinned_at (adaptMessengerFolderItem).
+        QSet<QString> pinnedStreams;
         bool synthesized = false;
     };
     QVector<FolderRow> m_folders;

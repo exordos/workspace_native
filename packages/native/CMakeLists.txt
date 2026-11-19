@@ -153,7 +153,9 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     stylus images files border_color links business_center handshake account_circle group
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
-    grid)
+    grid
+    # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
+    pin)
 set(native_icon_files)
 foreach(icon IN LISTS native_icons)
     list(APPEND native_icon_files "../web/src/shared/assets/icons/${icon}.svg")
