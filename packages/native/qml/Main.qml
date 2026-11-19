@@ -3158,8 +3158,8 @@ ApplicationWindow {
         id: folderCellComponent
         Item {
             id: folderCell
-            required property int modelData
-            readonly property var folder: root.controller.folders[modelData] ?? ({})
+            required property var modelData
+            readonly property var folder: folderCell.modelData ?? ({})
             readonly property string systemType: String(folder.systemType || "created")
             readonly property bool isCustom: systemType === "created"
             readonly property bool isSelected: String(root.controller.selectedFolder) === String(folder.id)
@@ -3270,6 +3270,106 @@ ApplicationWindow {
         }
     }
 
+    // Issue #85: horizontal rail chip, measured from
+    // folder-rail-folder-items.ui.tsx:226-240: h-8 rounded-lg px-2.5 text-xs
+    // gap-1.5, icon 18, label max-w-[112px] truncate, badge at
+    // -right-1 -top-2.5. The chip is purely visual: the strip-level MouseArea
+    // owns clicks and drag exactly like the React rail owns gestures through
+    // its capture-phase handlers, so a drag can start on a chip while a
+    // non-drag press still selects it.
+    component FolderRailChip: Item {
+        id: folderChip
+        required property var modelData
+        readonly property var folder: folderChip.modelData ?? ({})
+        readonly property string folderKey: String(folder.key ?? "")
+        readonly property string systemType: String(folder.systemType || "created")
+        readonly property bool isCustom: systemType === "created"
+        readonly property bool isSelected: String(root.controller.selectedFolder) === String(folder.id)
+        readonly property bool hovered: folderChip.folderKey.length > 0
+            && folderRailHorizontal.hoverKey === folderChip.folderKey
+        readonly property bool interactive: hovered || isSelected
+        readonly property color folderColor: Qt.rgba(
+            (((folder.color || 0) >> 16) & 0xff) / 255,
+            (((folder.color || 0) >> 8) & 0xff) / 255,
+            ((folder.color || 0) & 0xff) / 255, 1.0)
+        readonly property string iconAsset: systemType === "all" ? "folders.svg"
+            : systemType === "personal" ? "profile.svg"
+            : systemType === "channels" ? "channels.svg"
+            : isSelected ? "folder_open.svg" : "folder.svg"
+        objectName: "folder-" + folderKey
+        width: chipContent.implicitWidth + 20
+        height: 32
+        Accessible.role: Accessible.Button
+        Accessible.name: String(folder.title || "")
+        Rectangle {
+            anchors.fill: parent
+            radius: 8
+            visible: folderChip.hovered && !folderChip.isSelected
+            // Hover surface only; selection carries on icon/label color
+            // (getFolderItemVisualState has no selected fill in either mode).
+            color: folderChip.isCustom
+                ? Qt.rgba(folderChip.folderColor.r, folderChip.folderColor.g, folderChip.folderColor.b, 0.10)
+                : root.colors["sidebar-item-hover"]
+            border.width: 1
+            border.color: folderChip.isCustom
+                ? Qt.rgba(folderChip.folderColor.r, folderChip.folderColor.g, folderChip.folderColor.b, 0.22)
+                : root.colors["border-subtle"]
+        }
+        Row {
+            id: chipContent
+            x: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            Image {
+                width: 18
+                height: 18
+                source: "qrc:/workspace/icons/" + folderChip.iconAsset
+                sourceSize.width: 18
+                sourceSize.height: 18
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    // This Qt kit's Effects plugin exposes colorization
+                    // without the colorizationEnabled gate.
+                    colorization: 1.0
+                    colorizationColor: folderChip.isCustom ? folderChip.folderColor
+                        : folderChip.interactive ? root.colors["text-primary"] : root.colors["text-muted"]
+                }
+            }
+            Text {
+                objectName: "folderChipLabel-" + folderChip.folderKey
+                text: String(folderChip.folder.title || "")
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                width: Math.min(112, implicitWidth)
+                font.pixelSize: 12
+                // Row leaves the cross axis to the children; center the
+                // 16 px line box against the 18 px icon.
+                y: Math.round((18 - height) / 2)
+                color: folderChip.isCustom && folderChip.interactive ? folderChip.folderColor
+                    : folderChip.interactive ? root.colors["text-primary"] : root.colors["text-muted"]
+            }
+        }
+        Rectangle {
+            visible: Number(folderChip.folder.unreadCount || 0) > 0
+            x: parent.width - width + 4
+            y: -6
+            z: 2
+            width: Math.max(16, folderChipBadgeText.implicitWidth + 6)
+            height: 16
+            radius: 8
+            color: root.colors["badge-bg"]
+            Text {
+                id: folderChipBadgeText
+                objectName: "folderBadge-" + folderChip.folderKey
+                anchors.centerIn: parent
+                text: root.countText(Number(folderChip.folder.unreadCount || 0))
+                textFormat: Text.PlainText
+                color: root.colors["badge-text"]
+                font.pixelSize: 10
+            }
+        }
+    }
+
     Connections {
         target: root.controller
         // Reference handleSelectWorkspaceFolder: picking a different folder
@@ -3341,6 +3441,23 @@ ApplicationWindow {
     // non-empty name and, in edit mode, on an actual change.
     readonly property var folderColorPresets: [0xff2563eb, 0xff4f46e5, 0xff0d9488, 0xff059669,
         0xfff59e0b, 0xffdc2626, 0xff6b7280, 0xff334155]
+    // Issue #85 (docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md): the persisted
+    // rail display options. The layout flag drives which rail view renders;
+    // the visibility flag filters the system slots from a display-only
+    // projection (selection and sidebar scoping stay on controller state, so
+    // the All-chats fallback rule from #83 keeps holding).
+    readonly property bool folderRailHorizontalMode: root.preferences.folderRailLayout === "horizontal"
+    readonly property var folderRailRows: {
+        const rows = []
+        for (const row of root.controller.folders) {
+            const systemType = String(row.systemType || "created")
+            if (!root.preferences.showSystemFolders
+                && (systemType === "personal" || systemType === "channels"))
+                continue
+            rows.push(row)
+        }
+        return rows
+    }
     property string folderMenuTargetKey: ""
     property string folderFormMode: "create"
     property string folderFormTargetId: ""
@@ -3725,10 +3842,11 @@ ApplicationWindow {
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
         }
-        // folder-rail-context-menu.lib.ts port: rename and delete, both
-        // disabled for system folders; the layout and system-folder
-        // visibility toggles are not ported (no native rail-layout or
-        // visibility settings exist yet).
+        // folder-rail-context-menu.lib.ts port: rename and delete (both
+        // disabled for system folders) plus the two always-enabled display
+        // toggles of issue #85; each label states the action its click
+        // performs, so the horizontal layout menu offers "Display vertically"
+        // and vice versa (buildFolderContextMenuItems).
         MessageMenuAction {
             objectName: "folderMenuRename"
             implicitWidth: 238
@@ -3736,6 +3854,22 @@ ApplicationWindow {
             asset: "border_color.svg"
             enabled: root.folderMenuCanEdit
             onTriggered: root.openFolderRename()
+        }
+        MessageMenuAction {
+            objectName: "folderMenuToggleLayout"
+            implicitWidth: 238
+            text: root.folderRailHorizontalMode ? qsTr("Display vertically") : qsTr("Display horizontally")
+            asset: "folders.svg"
+            onTriggered: root.preferences.folderRailLayout =
+                root.folderRailHorizontalMode ? "vertical" : "horizontal"
+        }
+        MessageMenuAction {
+            objectName: "folderMenuToggleSystemFolders"
+            implicitWidth: 238
+            text: root.preferences.showSystemFolders
+                ? qsTr("Hide system folders") : qsTr("Show system folders")
+            asset: "folder.svg"
+            onTriggered: root.preferences.showSystemFolders = !root.preferences.showSystemFolders
         }
         MessageMenuAction {
             objectName: "folderMenuDelete"
@@ -3762,23 +3896,30 @@ ApplicationWindow {
         Item {
             id: folderRail
             objectName: "folderRail"
-            Layout.preferredWidth: 72
+            // Issue #85: in horizontal mode the rail remounts inside the
+            // sidebar (sidebar-shell.ui.tsx activityPanelBottomSlot), so the
+            // 72 px column collapses completely.
+            visible: !root.folderRailHorizontalMode
+            Layout.preferredWidth: root.folderRailHorizontalMode ? 0 : 72
             Layout.fillHeight: true
             // Issue #83: real folders (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md).
             // Measured from workspace_ui 61dacef7 folder-rail-vertical-view.ui.tsx:
             // 72px rail, py-2, gap 2px; the All slot pins above the scrollable
             // group; the add-folder button is the last scroll item. The
-            // overflow quick-list is a documented follow-up.
-            readonly property var allFolder: root.controller.folders.length > 0
-                && String(root.controller.folders[0].key) === "all"
-                ? root.controller.folders[0] : null
+            // overflow quick-list is a documented follow-up. Issue #85: the
+            // group iterates the system-folder-filtered projection.
+            readonly property var allFolder: root.folderRailRows.length > 0
+                && String(root.folderRailRows[0].key) === "all"
+                ? root.folderRailRows[0] : null
+            readonly property var scrollRows:
+                root.folderRailRows.slice(folderRail.allFolder ? 1 : 0)
             Column {
                 anchors.fill: parent
                 anchors.topMargin: 8
                 anchors.bottomMargin: 8
                 spacing: 2
                 Repeater {
-                    model: folderRail.allFolder ? [0] : []
+                    model: folderRail.allFolder ? [folderRail.allFolder] : []
                     delegate: folderCellComponent
                 }
                 ListView {
@@ -3787,9 +3928,8 @@ ApplicationWindow {
                     height: Math.max(0, parent.height - (folderRail.allFolder ? 74 : 0))
                     spacing: 2
                     clip: true
-                    // Live C++ list: positional model, delegates read by index.
-                    model: Array.from({ length: Math.max(0, root.controller.folders.length - (folderRail.allFolder ? 1 : 0)) },
-                        (_, index) => (folderRail.allFolder ? 1 : 0) + index)
+                    // Filtered projection: delegates read their row directly.
+                    model: folderRail.scrollRows
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                     footer: Item {
                         width: folderScroll.width
@@ -4151,6 +4291,151 @@ ApplicationWindow {
             // bg-elevated/60, solid border); loading card px-3 py-6 gap-3,
             // error/empty card px-3 py-5 gap-2 with 18 px icons, 14 px medium
             // titles and max-w-[220px] 12 px muted second lines.
+            // Issue #85 (docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md): the
+            // horizontal rail (sidebar-shell.ui.tsx activityPanelBottomSlot)
+            // mounts below the activity panel and above the chat list: the
+            // 44 px strip (h-11: px-2 py-1, gap-1, 32 px chips, horizontally
+            // scrollable) followed by the reference divider block (my-2:
+            // 8 px + 1 px border-subtle line + 8 px). Everything below
+            // (state cards, stream rows) shifts by folderRailInset.
+            readonly property real folderRailInset: folderRailHorizontal.visible ? 61 : 0
+            Item {
+                id: folderRailHorizontal
+                objectName: "folderRailHorizontal"
+                x: 0
+                width: parent.width
+                height: 44
+                visible: root.folderRailHorizontalMode
+                y: (root.normalizedSidebarQuery.length ? 60 : 104)
+                    + (root.normalizedSidebarQuery.length ? 0 : sidebarActivityPanel.expandedDelta)
+                // The strip-level pointer owns drag and clicks like the React
+                // rail's capture-phase handlers: left button only, a 3 px
+                // movement threshold gates the scroll, one click after a drag
+                // is suppressed, and the add-folder button (which grabs its
+                // own press) neither starts a drag nor gets suppressed.
+                property real dragStartX: 0
+                property real dragStartContentX: 0
+                property bool dragging: false
+                property string pressedKey: ""
+                readonly property string hoverKey: folderRailStripPointer.containsMouse
+                    ? chipKeyAt(folderRailStripPointer.mouseX, folderRailStripPointer.mouseY) : ""
+                function chipKeyAt(x, y) {
+                    // This Qt kit's QQuickItem::childAt is depth-one, so
+                    // descend manually to the deepest item under the point.
+                    let item = folderRailStrip.contentItem
+                    let px = x + folderRailStrip.contentX
+                    let py = y
+                    for (let guard = 0; guard < 32; ++guard) {
+                        const nxt = item.childAt(px, py)
+                        if (!nxt || nxt === item)
+                            break
+                        const local = nxt.mapFromItem(item, px, py)
+                        px = local.x
+                        py = local.y
+                        item = nxt
+                    }
+                    while (item && !String(item.objectName).startsWith("folder-"))
+                        item = item.parent
+                    return item ? String(item.objectName).substring(7) : ""
+                }
+                MouseArea {
+                    id: folderRailStripPointer
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    hoverEnabled: true
+                    cursorShape: folderRailHorizontal.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    onPressed: (mouse) => {
+                        if (mouse.button === Qt.RightButton) {
+                            const key = folderRailHorizontal.chipKeyAt(mouse.x, mouse.y)
+                            if (key.length)
+                                root.openFolderMenu(key, mapToItem(root.contentItem, mouse.x, mouse.y))
+                            return;
+                        }
+                        folderRailHorizontal.pressedKey = folderRailHorizontal.chipKeyAt(mouse.x, mouse.y)
+                        folderRailHorizontal.dragging = false
+                        folderRailHorizontal.dragStartX = mouse.x
+                        folderRailHorizontal.dragStartContentX = folderRailStrip.contentX
+                    }
+                    onPositionChanged: (mouse) => {
+                        // Hover motion (including the synthetic move Qt
+                        // delivers ahead of a button press) must not touch the
+                        // drag bookkeeping; only a held left button drags.
+                        if (!folderRailStripPointer.containsMouse || !folderRailStripPointer.pressed)
+                            return
+                        const deltaX = mouse.x - folderRailHorizontal.dragStartX
+                        if (!folderRailHorizontal.dragging && Math.abs(deltaX) >= 3)
+                            folderRailHorizontal.dragging = true
+                        if (!folderRailHorizontal.dragging) return
+                        folderRailStrip.contentX = Math.max(0, Math.min(
+                            Math.max(0, folderRailStrip.contentWidth - folderRailStrip.width),
+                            folderRailHorizontal.dragStartContentX - deltaX))
+                    }
+                    onReleased: {
+                        // A gesture that crossed the 3 px threshold consumes
+                        // the click that ended it (exactly one suppressed
+                        // click); a plain press selects the pressed chip,
+                        // drafts-closing included like the vertical cell.
+                        if (!folderRailHorizontal.dragging && folderRailHorizontal.pressedKey.length) {
+                            root.controller.closeDrafts()
+                            root.controller.selectFolder(folderRailHorizontal.pressedKey)
+                        }
+                        folderRailHorizontal.dragging = false
+                        folderRailHorizontal.pressedKey = ""
+                    }
+                    onCanceled: {
+                        folderRailHorizontal.dragging = false
+                        folderRailHorizontal.pressedKey = ""
+                    }
+                    onWheel: (wheel) => {
+                        const deltaX = wheel.angleDelta.x
+                        if (!deltaX) return
+                        folderRailStrip.contentX = Math.max(0, Math.min(
+                            Math.max(0, folderRailStrip.contentWidth - folderRailStrip.width),
+                            folderRailStrip.contentX - deltaX))
+                        wheel.accepted = true
+                    }
+                }
+                Flickable {
+                    id: folderRailStrip
+                    objectName: "folderRailStrip"
+                    anchors.fill: parent
+                    interactive: false
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    contentWidth: Math.max(width, folderRailRow.width + 16)
+                    contentHeight: height
+                    Row {
+                        id: folderRailRow
+                        x: 8
+                        y: (folderRailStrip.height - height) / 2
+                        spacing: 4
+                        Repeater {
+                            model: root.folderRailRows
+                            delegate: FolderRailChip {}
+                        }
+                        NativeIconButton {
+                            objectName: "folderAddButton"
+                            colors: root.colors
+                            width: 32
+                            height: 32
+                            cornerRadius: 8
+                            asset: "add.svg"
+                            glyphSize: 24
+                            help: qsTr("Add folder")
+                            onClicked: root.controller.requestAddFolder()
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                objectName: "folderRailDivider"
+                x: 0
+                width: parent.width
+                height: 1
+                color: root.colors["border-subtle"]
+                visible: folderRailHorizontal.visible
+                y: folderRailHorizontal.y + folderRailHorizontal.height + 8
+            }
             readonly property real sidebarLoadingInset: sidebarLoadingCard.visible ? sidebarLoadingCard.height + 32 : 0
             readonly property real sidebarErrorInset: sidebarErrorCard.visible ? sidebarErrorCard.height + 32 : 0
             readonly property real sidebarEmptyInset: sidebarEmptyCard.visible ? sidebarEmptyCard.height + 32 : 0
@@ -4160,7 +4445,7 @@ ApplicationWindow {
                 objectName: "sidebarStateBlock"
                 x: 0
                 width: parent.width
-                y: root.normalizedSidebarQuery.length ? 60 : 104
+                y: (root.normalizedSidebarQuery.length ? 60 : 104) + sidebar.folderRailInset
                 height: Math.max(sidebarLoadingCard.visible ? sidebarLoadingCard.y + sidebarLoadingCard.height + 16 : 0,
                     sidebarErrorCard.visible ? sidebarErrorCard.y + sidebarErrorCard.height + 16 : 0,
                     sidebarEmptyCard.visible ? sidebarEmptyCard.y + sidebarEmptyCard.height + 16 : 0,
@@ -4504,6 +4789,7 @@ ApplicationWindow {
                 anchors.topMargin: (root.normalizedSidebarQuery.length ? 60 : 104)
                     + sidebar.sidebarLoadingInset + sidebar.sidebarErrorInset
                     + sidebar.sidebarEmptyInset + sidebar.sidebarPartialInset
+                    + sidebar.folderRailInset
                     + sidebarActivityPanel.expandedDelta
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
