@@ -2134,6 +2134,8 @@ private:
     FeedState m_feed;
     void loadFeedPage(bool append);
     void interruptFeedRequest();
+    // Issue #423: settle a folder mutation retired by a generation bump.
+    void interruptFolderMutation();
     void resetFeed();
     QVariantList feedRows() const;
     QString feedRowTime(const QDateTime &created) const;
