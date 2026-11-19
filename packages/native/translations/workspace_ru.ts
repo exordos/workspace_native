@@ -535,6 +535,30 @@
             <source>Choose a conversation</source>
             <translation>Выберите беседу</translation>
         </message>
+        <message numerus="yes">
+            <source>%n member</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n members</source>
+            <translation>
+                <numerusform>%n участник</numerusform>
+                <numerusform>%n участника</numerusform>
+                <numerusform>%n участников</numerusform>
+            </translation>
+        </message>
+        <message numerus="yes">
+            <source>%n online</source>
+            <translation>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+                <numerusform>%n в сети</numerusform>
+            </translation>
+        </message>
         <message>
             <source>Conversation information is not implemented yet</source>
             <translation>Информация о беседе ещё не реализована</translation>
