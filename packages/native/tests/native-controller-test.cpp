@@ -572,6 +572,7 @@ public:
     std::function<Response(const Request &)> files;
     std::function<Response(const Request &)> counters;
     std::function<Response(const Request &)> streams;
+    std::function<Response(const Request &)> bindings;
     std::function<Response(const Request &)> reactions;
     std::function<Response(const Request &)> serverSettings;
     std::function<Response(const Request &)> folders;
@@ -607,6 +608,8 @@ public:
                 return users ? users(request) : Response{QJsonArray{}};
             if (path.endsWith("/folders/"))
                 return folders ? folders(request) : Response{QJsonArray{}};
+            if (path.endsWith("/stream_bindings/") && bindings)
+                return bindings(request);
             if (path.endsWith("/stream_topics/")) {
                 if (topics)
                     return topics(request);
@@ -31272,6 +31275,71 @@ private slots:
         QVERIFY(meta.indexOfMethod("callStarted(QString,int)") >= 0);
         QVERIFY(meta.indexOfMethod("callParticipantsUpdated(int)") >= 0);
         QVERIFY(meta.indexOfMethod("callEnded()") >= 0);
+    }
+
+    // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the header
+    // projection counts bound members and reports those whose directory
+    // status is active as online (messenger-chat-header.lib.ts:94-130).
+    void chatHeaderCountersProjectMembersOnlineAndPresence()
+    {
+        Fixture f;
+        const QString otherStream = QStringLiteral("8e0d0000-0000-4000-8000-000000000009");
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberA, "alice", "active"),
+            userRow(channelMemberB, "bob", "idle")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user, const QString &stream) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        f.streams = [&otherStream](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", otherStream}, {"project_id", projectId},
+                    {"name", "Solo channel"}, {"encryption", false}}}};
+        };
+        f.bindings = [&binding, &otherStream](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (stream == otherStream)
+                return Response{QJsonArray{binding("61000000-0000-4000-8000-000000000009", userId, otherStream)}};
+            return Response{QJsonArray{binding("61000000-0000-4000-8000-000000000001", userId, streamId),
+                binding("61000000-0000-4000-8000-000000000002", channelMemberB, streamId)}};
+        };
+        QVERIFY(f.start({}, 2));
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 0);
+        f.controller.refreshChatHeaderMembers();
+        // 2 members, 1 online: the viewer is active, bob is idle; bob's
+        // idle status is never online (selectOnlineUserCount).
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        // A presence projection change moves the online half.
+        auto flip = directory[2].toObject();
+        flip["status"] = "active";
+        flip["updated_at"] = "2026-01-02T10:01:00Z";
+        QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("user.updated", flip, 200)));
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 2);
+        // Selection changes never leak stale counts: the singular stream
+        // reads 0 first, then its own 1/1.
+        f.controller.selectStream(otherStream);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 0);
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
+        QTRY_COMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        // An empty selection clears the projection again.
+        f.controller.selectStream(QString{});
+        f.controller.refreshChatHeaderMembers();
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 0);
     }
 };
 

@@ -104,6 +104,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList channelInfoMembers READ channelInfoMembers NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoMemberCount READ channelInfoMemberCount NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoOnlineCount READ channelInfoOnlineCount NOTIFY stateChanged)
+    // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the member +
+    // online projection behind the chat header caption. Selection-scoped:
+    // both reads report 0 unless the loaded bindings belong to the current
+    // authentication and the selected (non-direct) stream.
+    Q_PROPERTY(int chatHeaderMemberCount READ chatHeaderMemberCount NOTIFY stateChanged)
+    Q_PROPERTY(int chatHeaderOnlineCount READ chatHeaderOnlineCount NOTIFY stateChanged)
     Q_PROPERTY(bool channelInfoIsOwner READ channelInfoIsOwner NOTIFY stateChanged)
     Q_PROPERTY(bool channelInfoLoading READ channelInfoLoading NOTIFY stateChanged)
     Q_PROPERTY(QString channelInfoNotificationMode READ channelInfoNotificationMode NOTIFY stateChanged)
@@ -365,6 +371,9 @@ public:
     QVariantList channelInfoMembers() const;
     int channelInfoMemberCount() const { return channelInfoStream().isEmpty() ? 0 : int(m_channelInfoMembers.size()); }
     int channelInfoOnlineCount() const;
+    // Issue #89: chat header caption counts (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md).
+    int chatHeaderMemberCount() const;
+    int chatHeaderOnlineCount() const;
     bool channelInfoIsOwner() const;
     bool channelInfoLoading() const { return m_channelInfoLoading; }
     QString channelInfoNotificationMode() const;
@@ -687,6 +696,10 @@ public:
     // channelCreateStageResolved.
     Q_INVOKABLE void discardChannelCreateStage(const QString &attempt, bool confirmed);
     Q_INVOKABLE void refreshChannelInfo();
+    // Issue #89: (re)loads the binding members of the currently selected
+    // non-direct stream for the header caption; other selections clear the
+    // projection instead.
+    Q_INVOKABLE void refreshChatHeaderMembers();
     Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
     Q_INVOKABLE void addChannelInfoMembers(const QStringList &userUuids);
@@ -1776,6 +1789,18 @@ private:
     quint64 m_channelInfoAddToken = 0;
     QString m_channelInfoAddError;
     int m_channelInfoAddSettled = 0;
+    // ---- Issue #89 chat header member projection ----
+    // docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md. The member uuids belong
+    // to m_chatHeaderMembersStream; reads with a different selection report
+    // 0, so stale counts can never leak across conversations and late
+    // pages are dropped by the load ticket (same discipline as #132).
+    bool chatHeaderMembersContext(const QString &owner, quint64 ticket, const QString &stream) const;
+    void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
+                                   QStringList accepted, QSet<QString> seenUsers);
+    QString m_chatHeaderMembersStream;
+    QString m_chatHeaderMembersOwner;
+    QStringList m_chatHeaderMemberUuids;
+    quint64 m_chatHeaderMembersTicket = 0;
     // ---- Issue #134 user profile drawer state ----
     void refreshOwnProfileProjection(const QString &user, quint64 ticket,
         const QVariantMap &savedProfile);

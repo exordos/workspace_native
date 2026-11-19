@@ -4204,6 +4204,91 @@ void NativeController::resetChannelInfoAddState()
     emit stateChanged();
 }
 
+// ---- Issue #89 chat header member projection (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md) ----
+
+bool NativeController::chatHeaderMembersContext(const QString &owner, quint64 ticket, const QString &stream) const
+{
+    return authenticated() && !stream.isEmpty() && m_stream == stream
+        && ticket == m_chatHeaderMembersTicket && ownerKey() == owner;
+}
+
+int NativeController::chatHeaderMemberCount() const
+{
+    if (!authenticated() || m_stream.isEmpty() || m_chatHeaderMembersStream != m_stream
+        || m_chatHeaderMembersOwner != ownerKey()) return 0;
+    return m_chatHeaderMemberUuids.size();
+}
+
+int NativeController::chatHeaderOnlineCount() const
+{
+    if (!authenticated() || m_stream.isEmpty() || m_chatHeaderMembersStream != m_stream
+        || m_chatHeaderMembersOwner != ownerKey()) return 0;
+    // messenger-chat-header.lib.ts:130 counts member users whose status is
+    // active (selectOnlineUserCount); unknown status is never online.
+    return std::count_if(m_chatHeaderMemberUuids.cbegin(), m_chatHeaderMemberUuids.cend(),
+        [this](const QString &user) { return m_names.value(user).status == "active"; });
+}
+
+void NativeController::refreshChatHeaderMembers()
+{
+    const auto stream = m_stream;
+    const auto *row = channelInfoStreamRow();
+    const auto owner = ownerKey();
+    // Direct chats and empty selections never count: the reference
+    // selectWorkspaceChatHeaderView returns the directPrivate view without
+    // any counts.
+    const auto ticket = ++m_chatHeaderMembersTicket;
+    if (!authenticated() || stream.isEmpty() || !row || row->privateStream) {
+        m_chatHeaderMembersStream.clear();
+        m_chatHeaderMembersOwner.clear();
+        if (!m_chatHeaderMemberUuids.isEmpty()) {
+            m_chatHeaderMemberUuids.clear();
+            emit stateChanged();
+        }
+        return;
+    }
+    if (m_chatHeaderMembersStream != stream || m_chatHeaderMembersOwner != owner) {
+        m_chatHeaderMembersStream = stream;
+        m_chatHeaderMembersOwner = owner;
+        // Stale numbers must never leak across conversations.
+        if (!m_chatHeaderMemberUuids.isEmpty()) {
+            m_chatHeaderMemberUuids.clear();
+            emit stateChanged();
+        }
+    }
+    loadChatHeaderMembersPage(QString{}, ticket, stream, {}, {});
+}
+
+void NativeController::loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
+                                                 QStringList accepted, QSet<QString> seenUsers)
+{
+    const auto owner = ownerKey();
+    if (!chatHeaderMembersContext(owner, ticket, stream)) return;
+    QUrlQuery query;
+    query.addQueryItem("stream_uuid", stream);
+    if (!marker.isEmpty()) query.addQueryItem("page_marker", marker);
+    request("GET", messenger + "/stream_bindings/", {}, query,
+        [this, owner, ticket, stream, accepted, seenUsers](const ApiResult &result) mutable {
+        if (!chatHeaderMembersContext(owner, ticket, stream)) return;
+        if (!result.ok() || !result.data.isArray()) {
+            // A rejected page keeps the previous member set untouched; the
+            // next selection refreshes again (same rule as #132).
+            return;
+        }
+        const auto rows = result.data.toArray();
+        // Same binding page contract as the channel info member pages.
+        if (!creationBindings(rows, m_session->project(), stream, &seenUsers)) return;
+        for (const auto &value : rows)
+            accepted.append(value.toObject().value("user_uuid").toString().toLower());
+        if (!result.nextMarker.isEmpty()) {
+            loadChatHeaderMembersPage(QString::fromUtf8(result.nextMarker), ticket, stream, accepted, seenUsers);
+            return;
+        }
+        m_chatHeaderMemberUuids = accepted;
+        emit stateChanged();
+    });
+}
+
 // ---- Issue #134 user profile drawer content ----
 // docs/NATIVE_DESKTOP_USER_PROFILE.md. All async projections are guarded by
 // the owner key, the API generation, the verified session user and a
@@ -11956,8 +12041,13 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         auto name = (payload.value("first_name").toString() + " "
                      + payload.value("last_name").toString()).trimmed();
+        // Issue #89: the chat header caption's online half reads the raw
+        // directory status (selectOnlineUserCount), so a changed status must
+        // re-notify the stateChanged consumers that gate the caption.
+        const auto previousStatus = m_names.value(id).status;
         m_names.insert(id, makeUserPresentation(name.isEmpty() ? username : name, payload, true,
             m_channelDirectoryOwner == owner ? m_names.value(id) : UserPresentation{}));
+        if (previousStatus != m_names.value(id).status) emit stateChanged();
         if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar
             || userPresence(id) != previousPresence)) emit streamsChanged();
         if (!current()) return true;
