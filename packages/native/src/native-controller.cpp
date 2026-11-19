@@ -4327,19 +4327,27 @@ void NativeController::setChatHeaderVisible(bool visible)
     // counts as "not on screen"; it is folded in by ensureChatHeaderMembers
     // at decision time, which keeps the QML value expression free of
     // controller reads (any controller property read would loop: every
-    // controller property notifies through stateChanged). Making the header
-    // on-screen is not a selection edge either: the member page must never
-    // load because a surface appeared or disappeared (the #434-pinned
-    // budgets mount windows on already-selected streams).
+    // controller property notifies through stateChanged).
     //
-    // The write must stay silent: the QML value expression reads the header
-    // item's effective visible, which depends on workspace.visible - itself
-    // bound to controller.authenticated through the shared stateChanged
-    // NOTIFY - so emitting here is a QML binding loop. No QML consumer
-    // renders chatHeaderVisible; caption re-renders follow the stateChanged
-    // emissions of the projection itself.
+    // The write itself must stay silent: the QML value expression reads the
+    // header item's effective visible, which depends on workspace.visible -
+    // itself bound to controller.authenticated through the shared
+    // stateChanged NOTIFY - so emitting here is a QML binding loop. No QML
+    // consumer renders chatHeaderVisible; caption re-renders follow the
+    // stateChanged emissions of the projection itself.
+    //
+    // Issue #438 review (finding 4633233517): a selection edge skipped while
+    // the header was off screen would never come back - the caption stayed
+    // absent forever. The rising visibility edge is that skipped edge's
+    // deferred half, so it re-checks the projection (a deduplicated no-op
+    // whenever the selected stream already owns its page, which keeps the
+    // #434-pinned budgets and surface blinks silent). The re-check is
+    // deferred so this setter never emits stateChanged synchronously into
+    // the visibility binding that drives it.
     if (m_chatHeaderVisible == visible) return;
     m_chatHeaderVisible = visible;
+    if (visible)
+        QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
 }
 
 void NativeController::ensureChatHeaderMembers()
@@ -4349,7 +4357,10 @@ void NativeController::ensureChatHeaderMembers()
     // (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md). The projection follows
     // the selected stream itself: clearing is unconditional, while a member
     // page may only load for a selection edge that (a) has a chat header
-    // actually on screen and (b) has no projection of its own yet. The #432
+    // actually on screen and (b) has no projection of its own yet - and for
+    // the deferred arrival of such an edge: a selection skipped while hidden
+    // or behind favorites is re-checked by setChatHeaderVisible and
+    // leaveFavorites, where (b) is the dedup key. The #432
     // trigger missed both: its QML handlers named onSelectedStreamChanged/
     // onAuthenticatedChanged resolved to the properties' NOTIFY -
     // stateChanged - so every stateChanged re-issued the GET, over-fetching
@@ -7441,6 +7452,13 @@ void NativeController::leaveFavorites()
     m_favoritesVisible = false;
     m_favoritesStatus.clear();
     m_favoritesError.clear();
+    // Issue #438 review (finding 4633233517): closing favorites re-exposes
+    // the selected channel's header without any selection edge, so it is the
+    // deferred half of a selection edge that favorites had blocked. Deferred
+    // and deduplicated exactly like the visibility edge in
+    // setChatHeaderVisible: an ordinary activation that leaves favorites on
+    // its own edge already requests the page before this re-check runs.
+    QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
 }
 
 void NativeController::runFavoritesFlow()
