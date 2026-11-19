@@ -863,6 +863,15 @@ public:
     QString scenario, href;
     int lookupGets = 0, detailGets = 0, routeTopicGets = 0;
     int routeHistoryGets = 0, aggregateGets = 0, mutations = 0;
+    // Issue #438: opening the canonical destination moves the visible chat
+    // header, and the reference chat header reads the opened conversation's
+    // member page (chat-header-channel fetches participants of the open
+    // chat). The routed stream_bindings GET is therefore expected traffic -
+    // counted and pinned per scenario below instead of landing in
+    // `unexpected`. Anything repeated beyond the pinned count still shows
+    // there, because every recorded request is appended in order.
+    int routeBindingGets = 0;
+    QStringList routeBindingStreams;
     bool record = false;
     QStringList unexpected;
     QVector<QUrl> historyTargets;
@@ -912,7 +921,15 @@ public:
                 row["stream_uuid"] = stream;
                 return {QJsonArray{row}};
             }
-            if (record) {
+            if (record && request.method == "GET"
+                && path == "/api/workspace/v1/messenger/stream_bindings/") {
+                // Issue #438: the routed conversation's member page read
+                // (see the field comment above).
+                ++routeBindingGets;
+                routeBindingStreams.append(
+                    QUrlQuery(request.target).queryItemValue("stream_uuid"));
+            }
+            if (record && !path.endsWith("/stream_bindings/")) {
                 // A link must not reload global catalogs or the user directory.
                 unexpected.append(QString::fromUtf8(request.method) + " " + request.target.toString());
             }
@@ -7690,6 +7707,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(fixture.lookupGets, 1); QCOMPARE(fixture.detailGets, 0);
         QCOMPARE(fixture.routeTopicGets, 1); QCOMPARE(fixture.routeHistoryGets, 1);
         QCOMPARE(fixture.aggregateGets, 0); QCOMPARE(fixture.mutations, 0);
+        // Issue #438: opening the owned canonical destination (first row)
+        // genuinely moves the visible header to the Destination channel, and
+        // that stream's member page is read exactly once; the newer sidebar
+        // click stays on the already-loaded stream and must not read again.
+        QCOMPARE(fixture.routeBindingGets, chooseNewer ? 0 : 1);
+        QCOMPARE(fixture.routeBindingStreams,
+            chooseNewer ? QStringList{} : QStringList{linkDestinationId});
         QVERIFY2(fixture.unexpected.isEmpty(), qPrintable(fixture.unexpected.join(QStringLiteral("; "))));
         QCOMPARE(fixture.historyTargets.size(), 1);
         const QUrlQuery history(fixture.historyTargets.first());
@@ -7772,6 +7796,14 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(controller.error().isEmpty());
         }
         QCOMPARE(fixture.aggregateGets, 0); QCOMPARE(fixture.mutations, 0);
+        // Issue #438: only cross-canonical actually moves the visible header
+        // to a different channel (the destination), and exactly that one
+        // member page read is the reference behavior for the opened chat.
+        // Every other scenario stays on the already-loaded stream and must
+        // not repeat a member read while the link flow runs.
+        QCOMPARE(fixture.routeBindingGets, scenario == "cross-canonical" ? 1 : 0);
+        QCOMPARE(fixture.routeBindingStreams,
+            scenario == "cross-canonical" ? QStringList{linkDestinationId} : QStringList{});
         QVERIFY2(fixture.unexpected.isEmpty(), qPrintable(fixture.unexpected.join('\n')));
         for (const auto &target : fixture.historyTargets) {
             const auto query = QUrlQuery(target);
@@ -9899,7 +9931,11 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_COMPARE(controller.messages().size(), 7);
             QTRY_COMPARE(controller.topics().size(), 3);
         }
+        // Issue #438: settle the initial selection's member page read (only
+        // the source scenes select a stream) before baselining the budget.
+        QTRY_VERIFY_WITH_TIMEOUT(api.findChildren<QNetworkReply *>().isEmpty(), 2000);
         const auto initialHistory = fixture.historyGets;
+        const auto initialBindings = fixture.bindingGets;
         auto *content = window->contentItem();
         openChannelNewChat(window);
         QTRY_VERIFY(visibleItem("channelNameInput"));
@@ -10008,7 +10044,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(fixture.catalogGets - initialCatalogs, 1);
         QCOMPARE(fixture.usersGets, initialUsers);
         QCOMPARE(fixture.memberPosts, scenario == "empty" ? 0 : 1);
-        QCOMPARE(fixture.bindingGets, 0);
+        // Issue #438: the created channel becomes the selected conversation
+        // under the visible header, so the header reads its member page
+        // exactly once - the reference chat-header behavior for an opened
+        // channel. Beyond that single read the creation flow stays silent.
+        QCOMPARE(fixture.bindingGets - initialBindings, 1);
         QCOMPARE(fixture.streamBody, QJsonObject({{"uuid", id}, {"name", "Native planning"},
             {"description", "Ordinary channel reference"}, {"source_name", "native"},
             {"invite_only", true}, {"announce", true}, {"encryption", false},

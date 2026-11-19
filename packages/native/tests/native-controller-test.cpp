@@ -31712,6 +31712,111 @@ private slots:
         QVERIFY(streamRow(archiveId).value("fullyMuted").toBool());
         QCOMPARE(streamRow(streamId).value("notificationMode").toString(), QStringLiteral("muted"));
     }
+
+    // Issue #438: the automatic member-page fetch follows the #434 scoping
+    // discipline - only a selection edge whose chat header is actually on
+    // screen may load member pages; mounting the header is not a selection
+    // edge, the same owner+stream never refetches on its own, direct chats
+    // never fetch, and a page that completes after its selection was
+    // replaced stays silent (the completion guard that keeps a late page
+    // from resurrecting counts of a conversation the user already left).
+    void chatHeaderCountersFetchFollowsVisibleSelectionEdges()
+    {
+        Fixture f;
+        int bindingRequests = 0;
+        bool holdNext = false;
+        std::function<void()> release;
+        const QString otherStream = QStringLiteral("8e0d0d00-0000-4000-8000-00000000000a");
+        const QString directStreamUuid = QStringLiteral("8e0d0d00-0000-4000-8000-00000000000b");
+        auto userRow = [](const QString &id, const QString &username, const QString &status) {
+            return QJsonObject{{"uuid", id}, {"username", username}, {"first_name", username},
+                {"email", username + "@example.invalid"}, {"status", status},
+                {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        QJsonArray directory{userRow(userId, "cassi", "active"),
+            userRow(channelMemberB, "bob", "idle"), userRow(channelMemberA, "alice", "active")};
+        f.users = [&directory](const Request &) { return Response{directory}; };
+        auto binding = [](const QString &id, const QString &user, const QString &stream) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"user_uuid", user}, {"who_uuid", userId}, {"role", "member"},
+                {"notification_mode", "all_messages"},
+                {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        };
+        f.streams = [&otherStream, &directStreamUuid](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"role", "owner"}},
+                QJsonObject{{"uuid", otherStream}, {"project_id", projectId},
+                    {"name", "Solo channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", directStreamUuid}, {"project_id", projectId},
+                    {"name", "Direct"}, {"private", true}, {"encryption", false}}}};
+        };
+        QJsonArray held; // the response snapshots `held` at request time
+        f.bindings = [&held, &binding, &bindingRequests, &holdNext, &release, &otherStream](const Request &request) {
+            ++bindingRequests;
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            Response response{stream == otherStream
+                ? QJsonArray{binding("61000000-0000-4000-8000-00000000000b", channelMemberA, otherStream)}
+                : held};
+            if (holdNext) {
+                holdNext = false;
+                response.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            }
+            return response;
+        };
+        QVERIFY(f.start({}, 3));
+        // Headless selection never fetches: without an on-screen header the
+        // projection must not produce member traffic at all.
+        f.controller.selectStream(streamId);
+        QTest::qWait(250);
+        QCOMPARE(bindingRequests, 0);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        // Mounting the header is not a selection edge either.
+        f.controller.setChatHeaderVisible(true);
+        QTest::qWait(250);
+        QCOMPARE(bindingRequests, 0);
+        // A selection edge on the visible header loads exactly one page; the
+        // page belongs to the stream that was selected, so bob (idle) is in
+        // the member half but not the online half.
+        held = QJsonArray{binding("61000000-0000-4000-8000-00000000000c", userId, streamId),
+            binding("61000000-0000-4000-8000-00000000000d", channelMemberB, streamId)};
+        f.controller.selectStream(otherStream);
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
+        QCOMPARE(bindingRequests, 1);
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        QCOMPARE(bindingRequests, 2);
+        // Re-activating the same stream (a topic switch) is not an edge and
+        // never re-reads the page (#434 budget).
+        f.controller.selectStream(streamId);
+        QTest::qWait(250);
+        QCOMPARE(bindingRequests, 2);
+        // Direct chats clear the projection without a request.
+        f.controller.selectStream(directStreamUuid);
+        QTest::qWait(250);
+        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        // A page that completes after its selection was replaced stays
+        // silent: the late streamId snapshot must not move the counts of the
+        // conversation that is actually selected now.
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(bindingRequests, 3);
+        holdNext = true;
+        f.controller.selectStream(otherStream);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
+        f.controller.selectStream(directStreamUuid); // leaves the loading stream
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        release(); // the superseded page arrives after the selection moved on
+        QTest::qWait(250);
+        // The late page was fenced by the load ticket: no member set moved,
+        // the direct selection keeps both counters at zero. (The transport's
+        // own busy bookkeeping may still re-notify stateChanged; the pinned
+        // contract is that the projection itself stays untouched.)
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 0);
+    }
 };
 
 QTEST_MAIN(NativeControllerTest)
