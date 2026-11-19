@@ -21,6 +21,9 @@ public:
                            std::function<bool()> trayAvailable = {});
     ~NativeDesktop() override;
     void setUnreadCount(qint64 count);
+    // Active-call tooltip (issue #86): empty room restores the bare app-name
+    // tooltip; participants < 0 renders no participant count.
+    void setCallState(const QString &room, int participants);
     void refreshLabels();
     void requestQuit();
 
@@ -45,6 +48,8 @@ private:
     QAction *m_quit = nullptr;
     QAction *m_updates = nullptr;
     qint64 m_unread = 0;
+    QString m_callRoom;
+    int m_callParticipants = -1;
     bool m_quitting = false;
 };
 

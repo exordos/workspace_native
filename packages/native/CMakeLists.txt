@@ -52,6 +52,7 @@ add_library(workspace-native-core STATIC
     src/realtime-client.cpp src/realtime-client.h
     src/native-realtime-cursor-store.cpp src/native-realtime-cursor-store.h
     src/power-watcher.cpp src/power-watcher.h
+    src/native-call-awareness.cpp src/native-call-awareness.h
     src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
@@ -328,6 +329,11 @@ if(BUILD_TESTING)
                 WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
         endif()
         if(test STREQUAL "native-controller")
+            # Issue #86: the call-awareness controller cases drive the real
+            # tray (NativeDesktop) over a private bus, so this group also
+            # links the widgets tray library (QTEST_MAIN picks QApplication
+            # once Qt6::Widgets is linked).
+            target_link_libraries(${test}-test PRIVATE Qt6::Widgets workspace-native-desktop)
             # R9 (review finding 4576938732): source-contract guard — the
             # unresolved create-stage inventory and its check/discard entry
             # points must stay wired into the shipped Main.qml UI.
