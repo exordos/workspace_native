@@ -5585,18 +5585,27 @@ ApplicationWindow {
             Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
             spacing: 0
             Rectangle {
+                id: chatHeaderRoot
                 objectName: "conversationHeader"
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
                 color: root.colors["bg-elevated"]
-                Connections {
-                    // Issue #89: the member/online caption follows the current
-                    // selection; the controller itself clears the projection
-                    // for direct chats and empty selections.
+                Binding {
+                    // Issue #438 (issue #89 scoping fix): the controller may
+                    // fetch the header member page only for the conversation
+                    // whose header is actually on screen - the same discipline
+                    // #434 applied to the binding-event NOTIFY. The earlier
+                    // Connections handlers named onSelectedStreamChanged/
+                    // onAuthenticatedChanged, but both properties use
+                    // stateChanged as their NOTIFY, so every stateChanged
+                    // re-fired the fetch (the #438 traffic storms and abort).
+                    // Only the item's own visibility feeds in: controller
+                    // state (favorites included) is folded in by the setter,
+                    // so the value expression can never loop on stateChanged.
                     target: root.controller
-                    function onSelectedStreamChanged() { root.controller.refreshChatHeaderMembers() }
-                    function onAuthenticatedChanged() { root.controller.refreshChatHeaderMembers() }
+                    property: "chatHeaderVisible"
+                    value: chatHeaderRoot.visible
                 }
                 // Favorites presentation (issue #70): ChatFavoritesHeader shows only
                 // the h1 title - text-base font-semibold text-text-primary

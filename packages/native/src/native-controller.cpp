@@ -4320,6 +4320,52 @@ void NativeController::refreshChatHeaderMembers()
     loadChatHeaderMembersPage(QString{}, ticket, stream, {}, {});
 }
 
+void NativeController::setChatHeaderVisible(bool visible)
+{
+    // Issue #438: store the header item's raw on-screen state. The favorites
+    // surface (#70) replaces the header contents, so favorites open also
+    // counts as "not on screen"; it is folded in by ensureChatHeaderMembers
+    // at decision time, which keeps the QML value expression free of
+    // controller reads (any controller property read would loop: every
+    // controller property notifies through stateChanged). Making the header
+    // on-screen is not a selection edge either: the member page must never
+    // load because a surface appeared or disappeared (the #434-pinned
+    // budgets mount windows on already-selected streams).
+    //
+    // The write must stay silent: the QML value expression reads the header
+    // item's effective visible, which depends on workspace.visible - itself
+    // bound to controller.authenticated through the shared stateChanged
+    // NOTIFY - so emitting here is a QML binding loop. No QML consumer
+    // renders chatHeaderVisible; caption re-renders follow the stateChanged
+    // emissions of the projection itself.
+    if (m_chatHeaderVisible == visible) return;
+    m_chatHeaderVisible = visible;
+}
+
+void NativeController::ensureChatHeaderMembers()
+{
+    // Issue #438: the automatic fetch trigger for the #89 projection, scoped
+    // with the same discipline #434 applied to the binding-event NOTIFY
+    // (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md). The projection follows
+    // the selected stream itself: clearing is unconditional, while a member
+    // page may only load for a selection edge that (a) has a chat header
+    // actually on screen and (b) has no projection of its own yet. The #432
+    // trigger missed both: its QML handlers named onSelectedStreamChanged/
+    // onAuthenticatedChanged resolved to the properties' NOTIFY -
+    // stateChanged - so every stateChanged re-issued the GET, over-fetching
+    // into the exact-traffic fixtures and racing teardown (the abort).
+    const auto *row = channelInfoStreamRow();
+    if (!authenticated() || m_stream.isEmpty() || !row || row->privateStream) {
+        refreshChatHeaderMembers(); // clears the stale projection; never fetches
+        return;
+    }
+    // Favorites replaces the header contents (#70): no member page for a
+    // selection made behind the favorites surface.
+    if (!m_chatHeaderVisible || m_favoritesVisible) return;
+    if (m_chatHeaderMembersStream == m_stream && m_chatHeaderMembersOwner == ownerKey()) return;
+    refreshChatHeaderMembers();
+}
+
 void NativeController::loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                                  QStringList accepted, QSet<QString> seenUsers)
 {
@@ -9219,6 +9265,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // Issue #161: the Workspace meet host lives only as long as the session
     // does (reference per-owner store, cleared on logout).
     connect(m_session, &Session::authenticated, this, [this] { fetchCallMeetHost(); });
+    // Issue #438: a login that lands while a conversation is already selected
+    // re-projects the on-screen header's counts (startup/restore ordering);
+    // ordinary selection edges go through activateStream instead. An empty or
+    // direct selection here only clears the projection - never a request.
+    connect(m_session, &Session::authenticated, this, [this] { ensureChatHeaderMembers(); });
     // Issue #244 review 4576750798: a login that happens with an already-open
     // vault re-checks durable rotation announcements (login-only restarts).
     connect(m_session, &Session::authenticated, this, [this] { maybeResolveRotationStages(); });
@@ -15059,6 +15110,9 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
                                       const QString &directPublishingAttempt,
                                       const Topic *initialTopic, quint64 openingTicket)
 {
+    // Issue #438: the member projection must follow only the real selection
+    // edges of this activation (see ensureChatHeaderMembers).
+    const auto previousHeaderStream = m_stream;
     if (!id.isEmpty() && std::none_of(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; }))
         return;
@@ -15139,6 +15193,9 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     if (current()) {
         syncCallBridge();
         attemptPendingCallHandoff();
+        // Issue #438: commit point of the selection edge; a re-activation of
+        // the same stream (topic switch) is not an edge and fetches nothing.
+        if (m_stream != previousHeaderStream) ensureChatHeaderMembers();
     }
 }
 
