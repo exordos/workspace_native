@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
+#include <QTimer>
 
 namespace workspace {
 namespace {
@@ -15,8 +16,13 @@ const QString PmInhibitPath = QStringLiteral("/org/freedesktop/PowerManagement/I
 const QString PmInhibitInterface = QStringLiteral("org.freedesktop.PowerManagement.Inhibit");
 const QString InhibitReason = QStringLiteral("Workspace call in progress");
 // Keep the UI thread off the bus entirely: every inhibit round-trip is async
-// with a bounded timeout (the PowerWatcher precedent, issue #78).
+// with a bounded wait (the PowerWatcher precedent, issue #78).
 const int InhibitCallTimeoutMs = 2000;
+// No D-Bus-level timeout may drop the reply before we can see the cookie it
+// grants (issue #86 review): a granted inhibitor without a known cookie can
+// never be released, so the call itself only waits InhibitCallTimeoutMs and
+// the watcher stays armed far longer to catch and release a late grant.
+const int InhibitReplyGraceMs = 24 * 60 * 60 * 1000; // one day, in ms
 constexpr int MaxRoomLength = 128;
 
 struct InhibitTarget
@@ -125,51 +131,77 @@ void CallAwareness::callEnded()
 void CallAwareness::acquireInhibit()
 {
     // Exactly once per call (the reference blocker id guard): a held cookie
-    // or an in-flight request is never duplicated.
-    if (m_cookie || m_inhibitPending || !m_bus.isConnected())
+    // or an in-flight request of this generation is never duplicated. A
+    // request still in flight from an earlier, already ended call does not
+    // block this one - its reply counts as stale and releases itself (issue
+    // #86 review, finding 1).
+    if (m_cookie || m_inhibitPendingGeneration == m_inhibitGeneration || !m_bus.isConnected())
         return;
-    m_inhibitPending = true;
     requestInhibit(m_inhibitGeneration, ServiceKind::ScreenSaver);
 }
 
 void CallAwareness::requestInhibit(int generation, ServiceKind kind)
 {
+    m_inhibitPendingGeneration = generation;
+    m_inhibitPendingKind = kind;
     const auto target = inhibitTarget(kind);
     auto call = QDBusMessage::createMethodCall(target.service, target.path, target.interface,
         QStringLiteral("Inhibit"));
     call << QCoreApplication::applicationName() << InhibitReason;
     // Async on purpose (PowerWatcher precedent): a blocking call would stall
-    // the UI thread behind an unresponsive bus daemon.
-    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, InhibitCallTimeoutMs), this);
+    // the UI thread behind an unresponsive bus daemon. The round-trip is not
+    // cut short by a D-Bus timeout: a grant whose reply was discarded could
+    // never be released without its cookie (issue #86 review, findings 2/3),
+    // so the watcher waits out the whole grace period and the bounded call
+    // deadline is driven by the timer below instead.
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, InhibitReplyGraceMs), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
         [this, generation, kind](QDBusPendingCallWatcher *pending) {
         pending->deleteLater();
         const auto cookie = pending->isError() ? 0u : cookieFromReply(pending->reply());
-        if (generation != m_inhibitGeneration) {
-            // The call ended (or the guard moved) while this reply was in
-            // flight; anything we just learned about gets released at once.
+        const bool awaited = m_inhibitPendingGeneration == generation
+            && m_inhibitPendingKind == kind;
+        if (!awaited) {
+            // The call ended, or this reply landed after the deadline dropped
+            // the request as late. Anything it just granted is released at
+            // once, so an inhibitor can never outlive the request that asked
+            // for it - and the pending marker of a newer request stays put.
             if (cookie)
                 sendUninhibit(kind, cookie);
             return;
         }
+        m_inhibitPendingGeneration = -1;
+        m_inhibitPendingKind = ServiceKind::None;
         if (!cookie) {
             // The freedesktop chain: modern ScreenSaver first, legacy
-            // PowerManagement.Inhibit as the fallback.
+            // PowerManagement.Inhibit as the fallback. A transport error (the
+            // usual cause here) is answered at once, so no deadline is spent.
             if (kind == ServiceKind::ScreenSaver) {
                 requestInhibit(generation, ServiceKind::PowerManagement);
                 return;
             }
-            m_inhibitPending = false; // neither service answered: sleep stays allowed
-            return;
+            return; // neither service answered: sleep stays allowed
         }
         if (!callActive()) {
-            sendUninhibit(kind, cookie); // the call ended after the generation check
-            m_inhibitPending = false;
+            sendUninhibit(kind, cookie); // the call ended after the guard check
             return;
         }
         m_cookie = cookie;
         m_inhibitService = kind;
-        m_inhibitPending = false;
+    });
+    // The bounded wait the UI never pays for: at the deadline the request
+    // stops being awaited - ScreenSaver falls through to the legacy service,
+    // PowerManagement gives up - while the watcher above stays armed to catch
+    // and release a grant that still arrives late.
+    QTimer::singleShot(InhibitCallTimeoutMs, this, [this, generation, kind] {
+        if (m_inhibitPendingGeneration != generation || m_inhibitPendingKind != kind)
+            return; // the reply already landed, or the guard moved on
+        m_inhibitPendingGeneration = -1;
+        m_inhibitPendingKind = ServiceKind::None;
+        if (generation != m_inhibitGeneration)
+            return; // the call ended meanwhile: nothing left to fall back for
+        if (kind == ServiceKind::ScreenSaver)
+            requestInhibit(generation, ServiceKind::PowerManagement);
     });
 }
 
