@@ -4544,9 +4544,12 @@ bool NativeController::profileContext(const QString &user, quint64 ticket, quint
         && m_api->generation() == m_profileApiGeneration && creationOwnerKey() == m_profileOwner;
 }
 
-void NativeController::copyToClipboard(const QString &text) const
+bool NativeController::copyToClipboard(const QString &text) const
 {
-    QGuiApplication::clipboard()->setText(text);
+    auto *clipboard = QGuiApplication::clipboard();
+    if (!clipboard) return false;
+    clipboard->setText(text);
+    return true;
 }
 
 void NativeController::captureProfileContext()
