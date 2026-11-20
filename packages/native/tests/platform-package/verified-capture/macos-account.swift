@@ -100,39 +100,49 @@ case "choose-file":
     }
     try press("Attach files")
     _ = try control("Cancel", kAXButtonRole as String)
-    print("Application owns the foreground before selecting:", NSWorkspace.shared.frontmostApplication?.processIdentifier == pid)
-    let board = NSPasteboard.general
-    board.clearContents()
-    board.setString(origin, forType: .string)
-    func dialogKey(_ key: CGKeyCode, _ modifiers: CGEventFlags = []) {
-        for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)!
-            event.flags = modifiers
-            event.post(tap: .cghidEventTap)
+    let name = URL(fileURLWithPath: origin).lastPathComponent
+    let stem = URL(fileURLWithPath: origin).deletingPathExtension().lastPathComponent
+    func target(_ item: AXUIElement, _ depth: Int = 0) -> AXUIElement? {
+        guard depth < 24 else { return nil }
+        let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXFilenameAttribute]
+            .compactMap { attr(item, $0 as CFString) as? String }
+        if labels.contains(where: { $0 == name || $0 == stem || $0.hasPrefix(name + ",") }) { return item }
+        for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] {
+            if let found = target(child, depth + 1) { return found }
         }
+        return nil
     }
-    dialogKey(5, [.maskCommand, .maskShift])
-    let goTo = Date().addingTimeInterval(6)
-    var field: AXUIElement?
+    for down in [true, false] {
+        let desktop = CGEvent(keyboardEventSource: nil, virtualKey: 2, keyDown: down)!
+        desktop.flags = [.maskCommand, .maskShift]
+        desktop.post(tap: .cghidEventTap)
+    }
+    let timeout = Date().addingTimeInterval(12)
+    var selected: AXUIElement?
     repeat {
-        if let elem = attr(root, kAXFocusedUIElementAttribute as CFString), CFGetTypeID(elem) == AXUIElementGetTypeID() {
-            let focus = elem as! AXUIElement
-            if attr(focus, kAXRoleAttribute as CFString) as? String == kAXTextFieldRole as String { field = focus; break }
-        }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-    } while Date() < goTo
-    guard let location = field else { throw fail("The AppKit Go to Folder location field did not appear.") }
-    print("Focused native file panel element:", attr(location, kAXSubroleAttribute as CFString) ?? "unspecified" as CFString)
-    dialogKey(0, .maskCommand)
-    dialogKey(9, .maskCommand)
-    // The OS normalizes the location text (e.g. /var to /private/var).
-    // The fixture checks the actual filename and file bytes received after selection.
-    let waitUntil = Date().addingTimeInterval(0.5)
-    RunLoop.current.run(until: waitUntil)
-    dialogKey(36)
-    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-    dialogKey(36)
-    print("Confirmed the native AppKit file selection.")
+        selected = target(root)
+        if selected != nil { break }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+    } while Date() < timeout
+    guard let entry = selected else { throw fail("The AppKit chooser did not show the synthetic desktop file.") }
+    guard let pos = attr(entry, kAXPositionAttribute as CFString), CFGetTypeID(pos) == AXValueGetTypeID(),
+          let size = attr(entry, kAXSizeAttribute as CFString), CFGetTypeID(size) == AXValueGetTypeID() else {
+        throw fail("The file entry did not expose its position.")
+    }
+    var originPoint = CGPoint.zero
+    var extent = CGSize.zero
+    guard AXValueGetValue(pos as! AXValue, .cgPoint, &originPoint),
+          AXValueGetValue(size as! AXValue, .cgSize, &extent), extent.width > 0 && extent.height > 0 else {
+        throw fail("The file entry did not expose visible bounds.")
+    }
+    let center = CGPoint(x: originPoint.x + extent.width / 2, y: originPoint.y + extent.height / 2)
+    for eventType: CGEventType in [.leftMouseDown, .leftMouseUp] {
+        let event = CGEvent(mouseEventSource: nil, mouseType: eventType, mouseCursorPosition: center, mouseButton: .left)!
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        event.post(tap: .cghidEventTap)
+    }
+    try press("Open")
+    print("Selected the synthetic Desktop file and pressed Open in its native panel.")
 case "join-call":
     try press("General Chat: Cassi hosted channel")
     try press("Join call")

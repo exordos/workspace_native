@@ -1,6 +1,7 @@
 """Sign in to a loopback TLS fixture with the normal Windows/macOS preview executable."""
 from email import policy
 from email.parser import BytesParser
+import atexit
 import base64
 import argparse
 import contextlib
@@ -308,6 +309,11 @@ def scenario(executable, check_updater, check_capture):
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)
                                 if os.environ.get("CASSI_HOSTED_CHOOSER"):
                                     fixture.selected_file = folder / "selected package fixture.txt"
+                                    if sys.platform == "darwin":
+                                        desktop = Path.home() / "Desktop"
+                                        with tempfile.NamedTemporaryFile(dir=desktop, prefix="Cassi package selection ", suffix=".txt", delete=False) as sample:
+                                            fixture.selected_file = Path(sample.name)
+                                        atexit.register(fixture.selected_file.unlink, missing_ok=True)
                                     fixture.selected_file.write_text("Selected in an actual OS dialog " + uuid.uuid4().hex)
                                     drive(app.pid, "choose-file", str(fixture.selected_file))
                                     wait_for(lambda: fixture.uploaded, "The selected file did not reach the organization")
