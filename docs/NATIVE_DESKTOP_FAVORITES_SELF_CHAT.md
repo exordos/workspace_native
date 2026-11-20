@@ -168,3 +168,7 @@ Before ready_for_review, per the lane contract: login on :33 via
 absent from the ordinary stream list, then the health/send latency gates. If
 the live server rejects direct-self creation the PR reports `blocked` with the
 exact server error instead of a fake pass.
+
+## Topic loading and navigation
+
+Favorites opens the default topic only while the user is viewing Personal notes. A late topic response can populate the catalog after the user leaves. If loading the existing self-chat fails, the page offers Retry and requests its topics again.

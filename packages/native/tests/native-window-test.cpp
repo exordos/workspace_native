@@ -16170,15 +16170,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(controller.draft(), caption); QVERIFY(controller.error().isEmpty());
         QTRY_VERIFY(visibleItem(window->contentItem(), "uploadCard-1"));
         QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
-        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&size=230>)\n" + caption;
+        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&w=96&h=64&size=230>)\n" + caption;
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
         QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), caption);
         QVERIFY(controller.canSend());
         QTRY_VERIFY(visibleItem(window->contentItem(), "sendButton")
             && visibleItem(window->contentItem(), "sendButton")->isEnabled());
         click(window, visibleItem(window->contentItem(), "sendButton"));
-        QTRY_COMPARE(messagePosts, 1); QTRY_COMPARE(canonicalGets, 1); QVERIFY(postContractOkay);
+        QTRY_COMPARE(messagePosts, 1);
         QCOMPARE(postedRequest.value("payload").toObject().value("content").toString(), uploadedDraft);
+        QVERIFY(postContractOkay);
+        QTRY_COMPARE(canonicalGets, 1);
         QCOMPARE(canonical.value("payload").toObject().value("content").toString(), uploadedDraft);
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(controller.draft().isEmpty());
         const auto canonicalLoaded = [&] {
@@ -32400,6 +32402,104 @@ private slots:
         QVERIFY(controller.selectedStream() == streamId);
     }
 
+    void favoritesTopicCompletionFollowsCurrentPage_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"calendar", "reopened", "http-failure", "transport-failure", "malformed"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void favoritesTopicCompletionFollowsCurrentPage()
+    {
+        QFETCH(QString, scenario);
+        WindowFavoritesFixture fixture;
+        fixture.catalogIncludesSelf = true;
+        fixture.sourceScene = true;
+        int topicRequests = 0;
+        bool recovered = false;
+        std::function<void()> release;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto reply = fallback(request);
+            if (!request.target.path().endsWith("/stream_topics/")
+                || QUrlQuery(request.target).queryItemValue("stream_uuid") != windowFavoritesStream)
+                return reply;
+            if (++topicRequests == 1) {
+                if (scenario == "http-failure" || scenario == "reopened") reply.status = 500;
+                if (scenario == "transport-failure") reply.abortConnection = true;
+                if (scenario == "malformed") reply.data = QJsonArray{QJsonObject{}};
+                reply.headers.insert("X-Favorites-Test", "held");
+                reply.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            } else if (scenario == "transport-failure" && !recovered) {
+                // Qt may transparently retry a GET after the first connection closes.
+                reply.abortConnection = true;
+            }
+            return reply;
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-favorites");
+        QVERIFY(chip);
+        click(window, chip);
+        QTRY_VERIFY(release);
+        QCOMPARE(controller.favoritesStatus(), "loading");
+        if (scenario == "calendar" || scenario == "reopened") {
+            auto *calendar = view("sectionCalendarButton");
+            QVERIFY(calendar);
+            click(window, calendar);
+            QTRY_COMPARE(controller.section(), "calendar");
+            QVERIFY(!controller.favoritesVisible());
+            if (scenario == "reopened") {
+                click(window, view("sectionChatButton"));
+                QTRY_VERIFY(view("activity-favorites"));
+                click(window, view("activity-favorites"));
+                QTRY_COMPARE(controller.favoritesStatus(), "ready");
+            }
+            auto *network = api.findChild<QNetworkAccessManager *>();
+            QVERIFY(network);
+            bool completed = false;
+            auto connection = connect(network, &QNetworkAccessManager::finished, this, [&](QNetworkReply *reply) {
+                if (reply->rawHeader("X-Favorites-Test") == "held") completed = true;
+            });
+            auto disconnectFinished = qScopeGuard([&] { disconnect(connection); });
+            release();
+            QTRY_VERIFY(completed);
+            if (scenario == "calendar") {
+                QCOMPARE(controller.section(), "calendar");
+                QVERIFY(!controller.favoritesVisible());
+                QVERIFY(controller.selectedTopic() != windowFavoritesTopic);
+            } else {
+                QCOMPARE(controller.favoritesStatus(), "ready");
+                QCOMPARE(controller.selectedTopic(), windowFavoritesTopic);
+            }
+        } else {
+            release();
+            QTRY_VERIFY_WITH_TIMEOUT(view("favoritesRetryButton"), 2500);
+            QVERIFY(!view("favoritesLoading"));
+            QCOMPARE(controller.favoritesStatus(), "error");
+            recovered = true;
+            auto *retry = view("favoritesRetryButton");
+            click(window, retry);
+            QTRY_COMPARE(controller.selectedTopic(), windowFavoritesTopic);
+            QCOMPARE(controller.favoritesStatus(), "ready");
+            QTRY_VERIFY(view("favoritesConversationHeader"));
+        }
+        QCOMPARE(fixture.selfPosts, 0);
+    }
+
     // A failed ensure renders the bordered error card with Retry
     // (chat-page.ui.tsx:56-65); Retry re-dispatches the create and recovers.
     void favoritesEnsureFailureShowsErrorCardAndRetry()
@@ -33191,6 +33291,94 @@ private slots:
 
     // folder-rail-context-menu.lib.ts gating: rename and delete are disabled
     // for the system slots and enabled for created folders.
+    void folderRenameAfterCatalogReload_data()
+    {
+        QTest::addColumn<bool>("removed");
+        QTest::newRow("reordered") << false;
+        QTest::newRow("removed") << true;
+    }
+
+    void folderRenameAfterCatalogReload()
+    {
+        QFETCH(bool, removed);
+        QTemporaryDir directory;
+        const QString alpha = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString beta = QStringLiteral("8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c8c");
+        const QJsonObject all{{"uuid", "00000000-0000-0000-0000-000000000000"}, {"system_type", "all"}};
+        const QJsonObject a{{"uuid", alpha}, {"system_type", "created"}, {"title", "Alpha"},
+            {"background_color_value", 0x2563eb}, {"folder_items", QJsonArray{QJsonObject{{"stream_uuid", streamId}}}}};
+        const QJsonObject b{{"uuid", beta}, {"system_type", "created"}, {"title", "Beta"}, {"background_color_value", 0x4f46e5}};
+        QJsonArray page{all, a, b};
+        int folderGets = 0;
+        std::function<void()> finishRename;
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messenger/folders/")) {
+                ++folderGets;
+                return {page};
+            }
+            if (request.method == "PUT" && path.endsWith("/messenger/folders/" + alpha)) {
+                auto result = a;
+                result["title"] = request.body.value("title");
+                result["background_color_value"] = request.body.value("background_color_value");
+                Response response{result};
+                response.defer = [&](auto send) { finishRename = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window)) QTest::qFail("Folder rename window did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
+        QTRY_VERIFY(visibleItem("folder-" + alpha));
+        clickCurrentItem(window, "folder-" + alpha);
+        QTRY_COMPARE(controller.selectedFolder(), alpha);
+        auto *cell = visibleItem("folder-" + alpha); QVERIFY(cell);
+        const auto point = cell->mapToScene(QPointF(cell->width() / 2, cell->height() / 2)).toPoint();
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, point);
+        QTRY_VERIFY(visibleItem("folderMenuRename"));
+        clickCurrentItem(window, "folderMenuRename");
+        QTRY_VERIFY(visibleItem("folderNameField"));
+        QVERIFY(visibleItem("folderNameField")->setProperty("text", "Renamed Alpha"));
+        clickCurrentItem(window, "folderSwatch-2");
+        clickCurrentItem(window, "folderFormSubmit");
+        QTRY_VERIFY(bool(finishRename));
+
+        page = removed ? QJsonArray{all, b} : QJsonArray{all, b, a};
+        controller.reloadSnapshot();
+        QTRY_COMPARE(controller.folders().at(3).toMap().value("id").toString(), beta);
+        const int getsBeforeReply = folderGets;
+        finishRename();
+        QTRY_VERIFY(!controller.folderMutation().value("pending").toBool());
+        const auto survivor = controller.folders().at(3).toMap();
+        QCOMPARE(survivor.value("title").toString(), QStringLiteral("Beta"));
+        QCOMPARE(survivor.value("color").toUInt(), 0x4f46e5u);
+        if (removed) {
+            QTRY_COMPARE(folderGets, getsBeforeReply + 1);
+            QTRY_COMPARE(controller.folders().size(), 4);
+            QTRY_VERIFY(!visibleItem("folder-" + alpha));
+            QCOMPARE(controller.selectedFolder(), all.value("uuid").toString());
+        } else {
+            const auto target = controller.folders().at(4).toMap();
+            QCOMPARE(target.value("id").toString(), alpha);
+            QCOMPARE(target.value("title").toString(), QStringLiteral("Renamed Alpha"));
+            QCOMPARE(target.value("color").toUInt(), 0x0d9488u);
+            QCOMPARE(target.value("streamIds").toStringList(), QStringList{streamId});
+            QCOMPARE(controller.selectedFolder(), alpha);
+            QTRY_VERIFY(visibleItem("stream-" + streamId));
+            QCOMPARE(folderGets, getsBeforeReply);
+        }
+    }
+
     void folderRailContextMenuKeepsSystemFoldersReadOnly()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());

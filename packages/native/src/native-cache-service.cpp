@@ -54,6 +54,7 @@ struct Input {
     qint64 limit = NativeCache::DefaultDiskLimitBytes;
     quint64 epoch = 0;
     bool retainOnly = false;
+    NativeCache::Removal removal = NativeCache::Removal::Omission;
 };
 struct Result {
     bool okay = false, cancelled = false;
@@ -145,8 +146,16 @@ class CacheWorker final : public QObject
                     if (input.op == Op::Read)
                         result.okay = target->markHistoryRead(target->lease(), input.key.stream,
                                                               input.key.topic, input.ids);
-                    if (input.op == Op::OmitBody)
-                        result.okay = target->removeMessageBodyAndHistory(target->lease(), QString::fromUtf8(input.key.marker));
+                    if (input.op == Op::OmitBody) {
+                        const auto id = QString::fromUtf8(input.key.marker);
+                        result.okay = target->removeMessageBodyAndHistory(target->lease(), id, input.removal);
+                        // Retrying the captured owner's full-page erasure also removes
+                        // older indexed copies at previous placements. It survives sign-out.
+                        if (!result.okay && input.removal == NativeCache::Removal::Deletion && !cancelled()) {
+                            if (target->available() || target->open(input.identity.server, input.identity.project, input.identity.user))
+                                result.okay = target->removeMessageBodyAndHistory(target->lease(), id);
+                        }
+                    }
                     result.error = target->error();
                     result.usage = target->diskUsageBytes();
                 } else if (cleanup)
@@ -683,10 +692,28 @@ bool NativeCacheService::putMessageBody(const Lease &lease, const QJsonObject &c
 bool NativeCacheService::removeMessageBodyAndHistory(const Lease &lease, const QString &uuid,
                                                      QObject *receiver, Completion done)
 {
+    return eraseMessageCopies(lease, uuid, {}, {}, NativeCache::Removal::Omission, receiver, std::move(done));
+}
+
+bool NativeCacheService::removeDeletedMessage(const Lease &lease, const QString &stream, const QString &topic,
+                                               const QString &uuid, QObject *receiver, Completion done)
+{
+    return eraseMessageCopies(lease, uuid, stream, topic, NativeCache::Removal::Deletion, receiver, std::move(done));
+}
+
+bool NativeCacheService::eraseMessageCopies(const Lease &lease, const QString &uuid, const QString &stream,
+                                            const QString &topic, NativeCache::Removal reason,
+                                            QObject *receiver, Completion done)
+{
     auto job = d->make(Op::OmitBody, receiver, std::move(done));
-    job.input.key = {Kind::MessageBody, {}, {}, uuid.toLower().toUtf8()};
+    job.input.removal = reason;
+    job.input.key = {Kind::MessageBody, stream, topic, uuid.toLower().toUtf8()};
     job.required = true;
-    if (!d->accepts(lease) || !isUuid(uuid)) { d->notify(std::move(job), false); return false; }
+    if (!d->accepts(lease) || !isUuid(uuid) ||
+        (reason == NativeCache::Removal::Deletion && (!isUuid(stream) || !isUuid(topic)))) {
+        d->notify(std::move(job), false);
+        return false;
+    }
     // As with Forget, at most64 captured-owner erasures reserve only bounded
     // identity metadata beyond the ordinary control/raw-JSON budget. A full
     // optional/control queue must not drop an accepted authoritative omission.
@@ -705,8 +732,10 @@ bool NativeCacheService::removeMessageBodyAndHistory(const Lease &lease, const Q
     const QPointer<NativeCacheService> guard(this);
     for (auto it = d->queue.begin(); it != d->queue.end();) {
         const auto &input = it->input;
+        const bool replacesDeletedRoute = reason == NativeCache::Removal::Deletion && input.op == Op::Put
+            && input.key.kind == Kind::History && NativeCache::matchesScope(input.key, Kind::History, stream, topic);
         const bool affected = input.identity.owner == job.input.identity.owner &&
-            ((input.op == Op::GetBody && input.key.marker == job.input.key.marker) ||
+            (replacesDeletedRoute || (input.op == Op::GetBody && input.key.marker == job.input.key.marker) ||
              ((input.op == Op::Put || input.op == Op::Project) && input.ids.contains(id)));
         if (affected) {
             auto old = std::move(*it); it = d->queue.erase(it); d->notify(std::move(old), false);

@@ -438,7 +438,10 @@ void RealtimeClient::dispatch()
         return;
     if (!m_events.isEmpty()) {
         m_pending = m_events.dequeue();
-        emit eventReceived(m_pending);
+        // A synchronous consumer may acknowledge and clear m_pending before the next
+        // subscriber sees this signal. Keep this delivery stable for all subscribers.
+        const auto envelope = m_pending;
+        emit eventReceived(envelope);
         return;
     }
     if (!m_nextMarker.isEmpty()) {

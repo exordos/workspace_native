@@ -1699,6 +1699,50 @@ private slots:
         fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(history, 3);
     }
 
+    void deletedPeerMessageLeavesTheOtherRowsWhenReopeningOffline()
+    {
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture;
+        fixture.extraTopic = true;
+        fixture.controller.useCache(&cache);
+        auto first = historyMessage(1);
+        auto removed = historyMessage(2);
+        auto last = historyMessage(3);
+        removed["author_uuid"] = secondTopicId;
+        removed["is_own"] = false;
+        const auto deletedId = removed.value("uuid").toString();
+        bool offline = false;
+        int offlineRequests = 0;
+        fixture.messages = [&](const Request &request) {
+            if (offline) {
+                ++offlineRequests;
+                return Response{QJsonObject{}, 503};
+            }
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{message("Second topic", returnedId, secondTopicId)}};
+            return Response{QJsonArray{last, removed, first}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.messages().size(), 3);
+        QVERIFY(flushCache(cache));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", {
+            {"uuid", deletedId}, {"stream_uuid", streamId}, {"topic_uuid", topicId},
+            {"author_uuid", secondTopicId}})));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(flushCache(cache));
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!modelMessage(fixture.controller, returnedId).isEmpty());
+        offline = true;
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(offlineRequests > 0 && !fixture.controller.busy());
+        QCOMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(!modelMessage(fixture.controller, first.value("uuid").toString()).isEmpty());
+        QVERIFY(!modelMessage(fixture.controller, last.value("uuid").toString()).isEmpty());
+        QVERIFY(modelMessage(fixture.controller, deletedId).isEmpty());
+        QVERIFY(!fixture.controller.messageHistoryReady());
+    }
+
     void warmCacheNavigationAvoidsRedundantRestRequests()
     {
         QTemporaryDir directory; NativeCacheService cache(directory.path(), {}, true);
