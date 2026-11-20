@@ -2,6 +2,8 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+setbuf(stdout, nil)
+
 func fail(_ message: String) -> NSError {
     NSError(domain: "WorkspacePackageSmoke", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
 }
@@ -39,12 +41,21 @@ defer {
 }
 let pid = app.processIdentifier
 guard waitFor(90, { !app.isRunning || windowBounds(pid) != nil }), app.isRunning,
-      let size = windowBounds(pid), let running = NSRunningApplication(processIdentifier: pid) else {
+      let size = windowBounds(pid) else {
     throw fail("The package did not present its window.")
 }
 print("Observed packaged macOS process \(pid) with a visible window \(Int(size["Width"]!)) × \(Int(size["Height"]!)).")
-guard running.hide(), waitFor(5, { windowBounds(pid) == nil }) else {
-    throw fail("The primary process did not hide its window.")
+let a11y = AXUIElementCreateApplication(pid)
+print("Hosted desktop accessibility=\(AXIsProcessTrusted()) key events=\(CGPreflightPostEventAccess())")
+guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else {
+    throw fail("The test runner lacks Accessibility or PostEvent permission for window and clipboard input.")
+}
+var rawWindows: CFTypeRef?
+guard AXUIElementCopyAttributeValue(a11y, kAXWindowsAttribute as CFString, &rawWindows) == .success,
+      let windows = rawWindows as? [AXUIElement], let primary = windows.first,
+      AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success,
+      waitFor(5, { windowBounds(pid) == nil }) else {
+    throw fail("The primary window did not minimize.")
 }
 let secondary = Process()
 secondary.executableURL = executable
@@ -56,9 +67,6 @@ guard waitFor(15, { !secondary.isRunning }), secondary.terminationStatus == 0,
 }
 print("A second launch restored the original hidden application.")
 
-guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else {
-    throw fail("The test runner lacks Accessibility or PostEvent permission for system clipboard input.")
-}
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, name, &value) == .success ? value : nil
@@ -81,7 +89,6 @@ func command(_ key: CGKeyCode, _ pid: pid_t) {
         event.postToPid(pid)
     }
 }
-let a11y = AXUIElementCreateApplication(pid)
 var field: AXUIElement?
 guard waitFor(15, { field = addressField(a11y); return field != nil }),
       let field, AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
