@@ -502,6 +502,8 @@ if(BUILD_TESTING)
         uiEncryptedSourceLockedPaint
         uiEncryptedReadableFooterHasOneAvailabilityNotice
         uiEncryptedSourceHeaderAvatarUsesDefaultThemeCircle
+        uiEncryptedSourceHeaderAvatarUsesStreamColor
+        uiEncryptedSourceProtectedChatTooltip
         uiEncryptedSourceSidebarAvatarUsesLockFallback
         uiEncryptedComposerSendsActualSourceCipher
         uiNewChatEncryptedCanonicalDirectUsesActualSourceGrantReadAndSend
