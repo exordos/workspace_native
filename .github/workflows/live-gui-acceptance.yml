@@ -73,6 +73,21 @@ jobs:
           compression-level: 0
           retention-days: 1
 
+      - name: Record a package failure
+        if: failure()
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$output"
+          echo '{"status":"BLOCKED","blocked":["linux-package"]}' > "$output/report.json"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: live-wayland-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+          if-no-files-found: error
+          retention-days: 14
+
   live-wayland:
     needs: package-linux
     runs-on: ubuntu-24.04
@@ -90,7 +105,7 @@ jobs:
           sed -Ei 's#https?://([^ ]*\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirror.yandex.ru/ubuntu/#g' /etc/apt/sources.list.d/ubuntu.sources
           apt-get update
           apt-get install --no-install-recommends -y \
-            ca-certificates git gcc libc6-dev pkg-config python3 python3-gi python3-pil python3-requests \
+            ca-certificates git gcc libc6-dev pkg-config python3 python3-gi python3-pil python3-requests python3-yaml \
             gir1.2-atspi-2.0 at-spi2-core sway wtype wf-recorder libwayland-dev libwayland-bin \
             dbus-daemon gnome-keyring xkb-data fonts-dejavu-core fonts-noto-color-emoji ffmpeg \
             libegl1 libgl1-mesa-dri libxkbcommon-x11-0

@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
+import yaml
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -115,6 +117,23 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(self.invoke("release"), 0)
         self.assertEqual(self.invoke("release"), 0)
         self.assertEqual(self.secrets, {"LIVE_LEASE_18_3": {}})
+
+
+class WorkflowTest(unittest.TestCase):
+    def test_failed_packaging_writes_and_publishes_its_own_blocked_result(self):
+        workflow = SCRIPTS.parents[2] / ".github/workflows/live-gui-acceptance.yml"
+        job = yaml.safe_load(workflow.read_text())["jobs"]["package-linux"]
+        failure_steps = [step for step in job["steps"] if step.get("if") == "failure()"]
+        commands = [step["run"] for step in failure_steps if "run" in step]
+        artifacts = [step["with"] for step in failure_steps if "actions/upload-artifact@" in step.get("uses", "")]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(artifacts), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, RUNNER_TEMP=directory, GITHUB_RUN_ID="71", GITHUB_RUN_ATTEMPT="1")
+            subprocess.run(["bash", "-euc", commands[0]], env=env, check=True)
+            path = artifacts[0]["path"].replace("${{ runner.temp }}", directory)
+            path = path.replace("${{ github.run_id }}", "71").replace("${{ github.run_attempt }}", "1")
+            self.assertEqual(json.loads(Path(path).read_text()), {"status": "BLOCKED", "blocked": ["linux-package"]})
 
 
 class HostedTest(unittest.TestCase):
