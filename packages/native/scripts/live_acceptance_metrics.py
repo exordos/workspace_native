@@ -181,6 +181,79 @@ def measure_pending_history(window):
     }
 
 
+def wheel_responses(window):
+    """One observed viewport move and one changed capture can each credit at most one wheel."""
+    sample, picture = {}, {}
+    awaiting_move = awaiting_capture = None
+    latencies = []
+    for event in window:
+        kind = event["event"]
+        if kind == "wheel" and (event["angle"] or event["pixel"]):
+            if (
+                awaiting_move is None
+                and "offset" in sample
+                and "intent" in sample
+                and picture
+            ):
+                # Several deliveries may be coalesced into one native movement. Use the
+                # first timestamp; the others remain explicitly unattributed.
+                awaiting_move = (
+                    event["ms"],
+                    sample["offset"],
+                    sample["intent"],
+                    picture["signature"],
+                )
+        elif kind == "sample":
+            sample = event
+            if (
+                awaiting_move
+                and sample.get("offset", awaiting_move[1]) != awaiting_move[1]
+                and sample.get("intent", awaiting_move[2]) > awaiting_move[2]
+            ):
+                if awaiting_capture is None:
+                    awaiting_capture = awaiting_move
+                awaiting_move = None
+        elif kind == "picture":
+            picture = event
+            if awaiting_capture and event["signature"] != awaiting_capture[3]:
+                latencies.append(event["ms"] - awaiting_capture[0])
+                awaiting_capture = None
+    return latencies
+
+
+def history_is_restored(events, restored, target):
+    """A matched head-page reply must precede a ready sample of that same target."""
+    requested = set()
+    completed = None
+    for event in events:
+        kind = event["event"]
+        if event.get("view") != target:
+            continue
+        if (
+            event.get("category") == "history"
+            and not event.get("older")
+            and "index" in event
+        ):
+            if kind == "request":
+                requested.add(event["index"])
+            elif (
+                kind == "response"
+                and event["ms"] >= restored
+                and event["index"] in requested
+                and 200 <= event.get("status", 0) < 300
+            ):
+                completed = event["ms"]
+        if (
+            kind == "sample"
+            and completed is not None
+            and event["ms"] > completed
+            and event.get("ready")
+            and event.get("count", 0) > 0
+        ):
+            return True
+    return False
+
+
 def evaluate(events, limits):
     """Missing observations block acceptance. An observed defect always wins."""
     events = sorted(events, key=lambda e: e["ms"])
@@ -263,23 +336,10 @@ def evaluate(events, limits):
                     blocked.add("touchpad-start-or-stop-unobserved")
             metrics["wheel_deltas"] = [e["pixel"] or e["angle"] for e in received]
             metrics["wheel_phases"] = [e["phase"] for e in received]
-            visible = []
-            for mark in received:
-                previous = next(
-                    (e for e in reversed(pictures) if e["ms"] < mark["ms"]), None
-                )
-                if previous is not None:
-                    later = next(
-                        (
-                            e
-                            for e in pictures
-                            if e["ms"] >= mark["ms"]
-                            and e["signature"] != previous["signature"]
-                        ),
-                        None,
-                    )
-                    if later:
-                        visible.append(later["ms"] - mark["ms"])
+            visible = wheel_responses(window)
+            metrics["unmatched_wheels"] = len(received) - len(visible)
+            if metrics["unmatched_wheels"]:
+                blocked.add("wheel-responses-unattributed")
             metrics["wheel_responses"] = len(visible)
             metrics["wheel_to_changed_capture_p50_ms"] = percentile(visible, 0.5)
             metrics["wheel_to_changed_capture_p95_ms"] = percentile(visible, 0.95)
@@ -458,7 +518,7 @@ def evaluate(events, limits):
                 e["event"] == "tunnel-restored" and not e["reachable"] for e in window
             ):
                 blocked.add("backend-unreachable-after-cut")
-            if any(e["event"] == "reconnect-unverified" for e in window):
+            if not enabled or not history_is_restored(window, enabled["ms"], "a"):
                 blocked.add("reconnect-unverified")
         if kind == "warm-delayed":
             metrics.update(measure_pending_history(window))

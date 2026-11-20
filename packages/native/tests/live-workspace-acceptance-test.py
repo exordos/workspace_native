@@ -45,6 +45,7 @@ def trace(kind="loaded-scroll"):
         {
             "event": "sample",
             "ms": 1,
+            "offset": 100,
             "intent": 2,
             "count": 22,
             "anchor": 8,
@@ -56,6 +57,7 @@ def trace(kind="loaded-scroll"):
         {
             "event": "sample",
             "ms": 18,
+            "offset": 70,
             "intent": 3,
             "count": 22,
             "anchor": 8,
@@ -73,6 +75,51 @@ class Controls(unittest.TestCase):
         self.assertEqual(result["failures"], [])
         self.assertNotIn("no-pane-wheel", result["blocked"])
         self.assertEqual(result["phases"][0]["wheel_to_changed_capture_p95_ms"], 10)
+
+    def test_a_single_viewport_change_cannot_credit_two_delivered_wheels(self):
+        rows = trace()
+        rows.insert(
+            4, {"event": "wheel", "ms": 12, "angle": 120, "pixel": 0, "phase": 2}
+        )
+        result = evaluate(rows, LIMITS)
+        self.assertEqual(result["phases"][0]["wheel_responses"], 1)
+        self.assertEqual(result["phases"][0]["unmatched_wheels"], 1)
+        self.assertIn("wheel-responses-unattributed", result["blocked"])
+        rows[6]["offset"] = 100
+        self.assertEqual(evaluate(rows, LIMITS)["phases"][0]["wheel_responses"], 0)
+
+    def test_reconnect_needs_a_restored_target_reply_then_a_ready_target_sample(self):
+        rows = [
+            {"event": "action", "ms": 1, "id": 1, "kind": "reconnect"},
+            {"event": "offline-observation", "ms": 2},
+            {
+                "event": "request",
+                "ms": 3,
+                "category": "history",
+                "view": "a",
+                "index": 7,
+            },
+            {"event": "network-enabled", "ms": 4},
+            {"event": "sample", "ms": 5, "ready": True, "view": "a", "count": 2},
+            {
+                "event": "response",
+                "ms": 6,
+                "status": 200,
+                "category": "events",
+                "view": "other",
+                "index": 8,
+            },
+            {"event": "end", "ms": 10, "id": 1},
+        ]
+        self.assertIn("reconnect-unverified", evaluate(rows, None)["blocked"])
+        rows[5].update(category="history", view="a", index=7)
+        self.assertIn("reconnect-unverified", evaluate(rows, None)["blocked"])
+        rows.insert(
+            -1, {"event": "sample", "ms": 9, "ready": True, "view": "a", "count": 2}
+        )
+        self.assertNotIn("reconnect-unverified", evaluate(rows, None)["blocked"])
+        rows[5]["ms"] = 3
+        self.assertIn("reconnect-unverified", evaluate(rows, None)["blocked"])
 
     def test_missing_pane_input_blocks_even_when_pixels_change(self):
         report = evaluate([e for e in trace() if e["event"] != "wheel"], LIMITS)

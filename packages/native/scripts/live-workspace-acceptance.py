@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 from live_acceptance_metrics import (
     evaluate,
+    history_is_restored,
     sanitize_native_event,
     write_frame_sequence,
 )
@@ -866,6 +867,7 @@ class Desktop:
                     time.sleep(0.08)
                 time.sleep(0.2)
         with self.action("reconnect"):
+            reconnect_start = clock()
             with network.disturb("disconnect"):
                 self.topic("a", wait_for_content=False)
                 self.record("offline-observation")
@@ -875,11 +877,13 @@ class Desktop:
             self.record("tunnel-restored", reachable=network.restored_tls())
 
             def online():
-                return self.latest("sample").get("ready") and any(
-                    e["event"] == "response"
-                    and e["ms"] >= restored
-                    and 200 <= e.get("status", 0) < 300
-                    for e in list(self.events)
+                return history_is_restored(
+                    sorted(
+                        (e for e in list(self.events) if e["ms"] >= reconnect_start),
+                        key=lambda e: e["ms"],
+                    ),
+                    restored,
+                    "a",
                 )
 
             try:
