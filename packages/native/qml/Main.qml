@@ -1029,7 +1029,7 @@ ApplicationWindow {
             root.controller.checkChannelCreation();
         else if ((action === "add" || action === "retry") && root.controller.canRetryChannelMembers)
             root.controller.retryChannelMembers();
-        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && root.controller.channelMembersVerified && channelNameInput.text.trim().length) {
+        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified) && channelNameInput.text.trim().length) {
             channelViewAttempt = "";
             root.controller.createChannel(channelNameInput.text, channelDescriptionInput.text, channelInviteOnly.checked, channelAnnounce.checked, channelSelectedMembers, root.channelEncryptionChecked);
         }
@@ -13092,7 +13092,8 @@ component NativeMentionChip: Item {
                     Text {
                         objectName: "channelProfileLoading"
                         width: parent.width
-                        visible: !root.controller.channelMembersVerified && root.channelPrimaryAction === "create"
+                        visible: root.channelPrimaryAction === "create" && !root.controller.channelMembersVerified
+                            && (!root.controller.canCreateChannel || root.channelSelectedMembers.length > 0)
                         text: qsTr("Profile is still loading. Try again in a moment.")
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
@@ -13523,7 +13524,7 @@ component NativeMentionChip: Item {
                         id: channelPrimary
                         objectName: root.channelPrimaryAction === "check" ? "channelCheckButton" : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? "channelRetryMembersButton" : "channelCreateButton"
                         visible: chatTabs.currentIndex === 1 && root.channelPrimaryAction !== "none"
-                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && root.controller.channelMembersVerified && channelNameInput.text.trim().length > 0)
+                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified) && channelNameInput.text.trim().length > 0)
                         text: root.channelPrimaryAction === "check" ? qsTr("Check status") : root.channelPrimaryAction === "add" ? qsTr("Add members") : root.channelPrimaryAction === "retry" ? qsTr("Retry members") : qsTr("Create")
                         height: 32
                         width: contentItem.implicitWidth + 24

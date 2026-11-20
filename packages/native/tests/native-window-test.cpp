@@ -10193,8 +10193,10 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto fallback = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) {
             auto response = fallback(request);
-            if (request.target.path().endsWith("/users/") && !release)
+            if (request.target.path().endsWith("/users/") && !release) {
+                if (!uncertain) response = {QJsonObject{}, 503};
                 response.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            }
             return response;
         };
         QTemporaryDir directory;
@@ -10228,7 +10230,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(submit);
         QVERIFY(!submit->isEnabled());
         release();
-        QTRY_VERIFY(controller.channelMembersVerified() && controller.canCreateChannel());
+        QTRY_VERIFY(controller.canCreateChannel());
+        QCOMPARE(controller.channelMembersVerified(), uncertain);
         QTRY_VERIFY(!visibleItem("channelProfileLoading"));
         // Initial bootstrap can retire the form's original authorization context.
         // Reopen the ordinary verified form to exercise its submitted error.
