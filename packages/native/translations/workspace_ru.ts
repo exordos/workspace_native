@@ -1357,7 +1357,9 @@
             <source>not in channel</source>
             <translation>не в канале</translation>
         </message>
-            <message>
+            <message><source>Partner info</source><translation>Информация о собеседнике</translation></message>
+        <message><source>Channel info</source><translation>Информация о канале</translation></message>
+        <message>
             <source>Information</source>
             <translation>Информация</translation>
         </message>
@@ -1481,8 +1483,6 @@
         <source>Are you sure you want to delete &quot;%1&quot;?</source>
         <translation>Вы уверены, что хотите удалить «%1»?</translation>
     </message>
-        <message><source>Partner info</source><translation>Информация о собеседнике</translation></message>
-        <message><source>Channel info</source><translation>Информация о канале</translation></message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
