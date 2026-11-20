@@ -1637,48 +1637,59 @@ ApplicationWindow {
         }
     }
 
-    Rectangle {
+    component LoginFieldLabel: Text {
+        color: root.colors["text-primary"]
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        textFormat: Text.PlainText
+        Layout.fillWidth: true
+    }
+
+    Item {
         id: loginCard
         visible: !root.controller.authenticated
-        width: Math.min(root.width - 48, 460)
-        height: Math.min(root.height - 48, loginContent.implicitHeight + 48)
+        width: Math.min(root.width - 32, 448)
+        height: Math.min(root.height - 32, loginContent.implicitHeight)
         anchors.centerIn: parent
-        color: root.colors["bg-elevated"]
-        radius: 12
-        border.color: root.colors["border-subtle"]
 
         ScrollView {
+            id: loginScroll
             anchors.fill: parent
-            anchors.margins: 24
             contentWidth: availableWidth
             clip: true
             ColumnLayout {
                 id: loginContent
-                width: loginCard.width - 48
-                spacing: 14
-                Text {
-                    objectName: "loginTitle"
-                    text: qsTr("Connect to server")
-                    textFormat: Text.PlainText
-                    color: root.colors["text-primary"]
-                    font.pixelSize: 28
-                    font.weight: Font.DemiBold
+                width: loginScroll.availableWidth
+                spacing: 24
+                ColumnLayout {
                     Layout.fillWidth: true
-                }
-                Text {
-                    objectName: "loginDescription"
-                    text: root.controller.loginStep === "organization"
-                            ? qsTr("Enter your organization address first.")
-                            : root.controller.loginStep === "otp"
-                                ? qsTr("Enter the six-digit code from your authenticator app.")
-                                : root.controller.loginStep === "project"
-                                    ? qsTr("Choose the project you want to open.")
-                                    : qsTr("Choose a sign-in method or enter your email/login and password.")
-                    textFormat: Text.PlainText
-                    color: root.colors["text-secondary"]
-                    font.pixelSize: 14
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
+                    spacing: 4
+                    Text {
+                        objectName: "loginTitle"
+                        text: root.controller.savedAccounts.length ? qsTr("Add server") : qsTr("Connect to server")
+                        textFormat: Text.PlainText
+                        color: root.colors["text-primary"]
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        objectName: "loginDescription"
+                        text: root.controller.loginStep === "organization"
+                                ? qsTr("Enter your organization address first.")
+                                : root.controller.loginStep === "otp"
+                                    ? qsTr("Enter the six-digit code from your authenticator app.")
+                                    : root.controller.loginStep === "project"
+                                        ? qsTr("Choose the project you want to open.")
+                                        : qsTr("Choose a sign-in method or enter your email/login and password.")
+                        textFormat: Text.PlainText
+                        color: root.colors["text-muted"]
+                        font.pixelSize: 14
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
                 }
                 ColumnLayout {
                     visible: root.controller.projects.length === 0 && root.controller.savedAccounts.length > 0
@@ -1771,26 +1782,87 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         id: organizationForm
-                        spacing: 12
+                        spacing: 16
                         readonly property var suggestionEntries: root.controller.organizationHistory()
-                        NativeField {
-                            id: serverInput
-                            objectName: "serverInput"
-                            colors: root.colors
+                        readonly property var matchingEntries: suggestionEntries.filter(
+                            value => value.toLocaleLowerCase().includes(serverInput.text.toLocaleLowerCase()))
+                        property bool showHistory: false
+                        property int activeSuggestion: -1
+
+                        function chooseOrigin(value) {
+                            root.controller.organizationInputChanged(value);
+                            serverInput.forceActiveFocus();
+                            showHistory = false;
+                            activeSuggestion = -1;
+                        }
+
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            enabled: !root.controller.busy && !root.controller.organizationLoading
-                            text: root.controller.organizationRealm
-                            onTextChanged: root.controller.organizationInputChanged(text)
-                            placeholderText: qsTr("Server address")
-                            inputMethodHints: Qt.ImhUrlCharactersOnly
-                            Accessible.name: qsTr("Server address")
-                            onAccepted: root.controller.discoverOrganization(text.trim())
-                            onActiveFocusChanged: {
-                                // Reference handleRealmBlur: leaving a valid
-                                // address starts discovery without advancing.
-                                if (!activeFocus && text.trim().length > 0
-                                    && root.controller.isOrganizationUrlValid(text.trim()))
-                                    root.controller.discoverOrganization(text.trim())
+                            spacing: 6
+                            LoginFieldLabel { text: qsTr("Server address") }
+                            NativeField {
+                                id: serverInput
+                                objectName: "serverInput"
+                                colors: root.colors
+                                Layout.fillWidth: true
+                                implicitHeight: 40
+                                rightPadding: 40
+                                enabled: !root.controller.busy && !root.controller.organizationLoading
+                                text: root.controller.organizationRealm
+                                onTextChanged: {
+                                    if (text !== root.controller.organizationRealm)
+                                        root.controller.organizationInputChanged(text)
+                                }
+                                onTextEdited: {
+                                    organizationForm.activeSuggestion = -1;
+                                    organizationForm.showHistory = true;
+                                }
+                                placeholderText: qsTr("https://chat.example.com")
+                                inputMethodHints: Qt.ImhUrlCharactersOnly
+                                Accessible.name: qsTr("Server address")
+                                Keys.onPressed: event => {
+                                    if (inputMethodComposing) return;
+                                    const count = organizationForm.matchingEntries.length;
+                                    if ((event.key === Qt.Key_Down || event.key === Qt.Key_Up) && count) {
+                                        const current = organizationForm.showHistory ? organizationForm.activeSuggestion : -1;
+                                        organizationForm.activeSuggestion = current < 0
+                                            ? (event.key === Qt.Key_Down ? 0 : count - 1)
+                                            : Math.max(0, Math.min(count - 1, current + (event.key === Qt.Key_Down ? 1 : -1)));
+                                        organizationForm.showHistory = true;
+                                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                            && organizationHistoryPopup.visible && organizationForm.activeSuggestion >= 0) {
+                                        organizationForm.chooseOrigin(organizationForm.matchingEntries[organizationForm.activeSuggestion]);
+                                    } else if (event.key === Qt.Key_Escape && organizationHistoryPopup.visible) {
+                                        organizationForm.showHistory = false;
+                                    } else {
+                                        return;
+                                    }
+                                    event.accepted = true;
+                                }
+                                onAccepted: root.controller.continueFromOrganization(text.trim())
+                                onActiveFocusChanged: {
+                                    organizationForm.showHistory = activeFocus;
+                                    organizationForm.activeSuggestion = -1;
+                                    if (!activeFocus && root.controller.isOrganizationUrlValid(text.trim()))
+                                        root.controller.discoverOrganization(text.trim());
+                                }
+                                NativeIconButton {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.rightMargin: 6
+                                    width: 24
+                                    height: 24
+                                    colors: root.colors
+                                    asset: "chevron-down.svg"
+                                    glyphSize: 16
+                                    help: qsTr("Show options")
+                                    focusPolicy: Qt.NoFocus
+                                    onClicked: {
+                                        const wasOpen = organizationHistoryPopup.visible;
+                                        serverInput.forceActiveFocus();
+                                        organizationForm.showHistory = !wasOpen;
+                                    }
+                                }
                             }
                         }
                         Popup {
@@ -1801,23 +1873,22 @@ ApplicationWindow {
                             width: serverInput.width
                             x: 0
                             y: serverInput.height + 4
-                            closePolicy: Popup.CloseOnEscape
-                            visible: serverInput.activeFocus && serverInput.text.length === 0
-                                && organizationForm.suggestionEntries.length > 0
+                            closePolicy: Popup.NoAutoClose
+                            visible: serverInput.activeFocus && organizationForm.showHistory
+                                && organizationForm.matchingEntries.length > 0
                             contentItem: ColumnLayout {
                                 spacing: 2
                                 Repeater {
-                                    model: organizationForm.suggestionEntries
+                                    model: organizationForm.matchingEntries
                                     delegate: ItemDelegate {
                                         required property var modelData
                                         required property int index
                                         objectName: "organizationHistoryOption-" + index
                                         Layout.fillWidth: true
                                         text: modelData
-                                        onClicked: {
-                                            serverInput.text = modelData
-                                            organizationHistoryPopup.close()
-                                        }
+                                        highlighted: index === organizationForm.activeSuggestion
+                                        focusPolicy: Qt.NoFocus
+                                        onClicked: organizationForm.chooseOrigin(modelData)
                                     }
                                 }
                             }
@@ -1826,16 +1897,59 @@ ApplicationWindow {
                             objectName: "defaultOrganizationLoader"
                             visible: active
                             active: root.controller.defaultOrganizationUrl.length > 0
-                                && root.controller.organizationRealm.trim().length === 0
                             Layout.fillWidth: true
-                            sourceComponent: NativeButton {
-                                objectName: "defaultOrganizationBlock"
-                                colors: root.colors
-                                Layout.fillWidth: true
-                                text: root.controller.defaultOrganizationName
-                                enabled: !root.controller.busy
-                                Accessible.name: qsTr("Add server")
-                                onClicked: root.controller.selectDefaultOrganization()
+                            sourceComponent: Rectangle {
+                                implicitHeight: shortcutContents.implicitHeight + 24
+                                color: root.colors["bg-elevated"]
+                                radius: 8
+                                border.color: root.colors["border-subtle"]
+                                ColumnLayout {
+                                    id: shortcutContents
+                                    x: 16
+                                    y: 12
+                                    width: parent.width - 32
+                                    spacing: 8
+                                    Text {
+                                        text: qsTr("Or connect to our public service.")
+                                        color: root.colors["text-muted"]
+                                        font.pixelSize: 14
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                    NativeButton {
+                                        id: defaultOrganizationButton
+                                        objectName: "defaultOrganizationBlock"
+                                        colors: root.colors
+                                        Layout.fillWidth: true
+                                        text: root.controller.defaultOrganizationName
+                                        enabled: !root.controller.busy
+                                        Accessible.name: text
+                                        contentItem: RowLayout {
+                                            spacing: 8
+                                            Item { Layout.fillWidth: true }
+                                            Image {
+                                                objectName: "defaultOrganizationLogo"
+                                                source: "qrc:/workspace/brand/organization-fallback.svg"
+                                                Layout.preferredWidth: 18
+                                                Layout.preferredHeight: 18
+                                                fillMode: Image.PreserveAspectFit
+                                                Accessible.ignored: true
+                                            }
+                                            Text {
+                                                text: defaultOrganizationButton.text
+                                                textFormat: Text.PlainText
+                                                color: root.colors["text-primary"]
+                                                font.pixelSize: 14
+                                                font.weight: Font.Medium
+                                                elide: Text.ElideRight
+                                                Layout.maximumWidth: Math.max(0, defaultOrganizationButton.availableWidth - 26)
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+                                        onClicked: root.controller.selectDefaultOrganization()
+                                    }
+                                }
                             }
                         }
                         NativeButton {
@@ -1843,7 +1957,7 @@ ApplicationWindow {
                             colors: root.colors
                             primary: true
                             Layout.fillWidth: true
-                            text: qsTr("Continue")
+                            text: root.controller.organizationLoading ? qsTr("Loading organization settings…") : qsTr("Next")
                             // Pressing Continue while a blur-triggered check is
                             // in flight merges with it instead of waiting.
                             enabled: !root.controller.busy
@@ -1922,26 +2036,36 @@ ApplicationWindow {
                             enabled: !root.controller.busy
                             onClicked: root.controller.backToOrganization()
                         }
-                        NativeField {
-                            id: userInput
-                            objectName: "userInput"
-                            colors: root.colors
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            enabled: !root.controller.busy
-                            placeholderText: qsTr("Username or email")
-                            Component.onCompleted: text = root.controller.loginUsername
-                            Accessible.name: qsTr("Username or email")
+                            spacing: 6
+                            LoginFieldLabel { text: qsTr("Email or login") }
+                            NativeField {
+                                id: userInput
+                                objectName: "userInput"
+                                colors: root.colors
+                                Layout.fillWidth: true
+                                enabled: !root.controller.busy
+                                placeholderText: qsTr("email@example.com or login")
+                                Component.onCompleted: text = root.controller.loginUsername
+                                Accessible.name: qsTr("Email or login")
+                            }
                         }
-                        NativeField {
-                            id: passwordInput
-                            objectName: "passwordInput"
-                            colors: root.colors
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            enabled: !root.controller.busy
-                            placeholderText: qsTr("Password")
-                            echoMode: TextInput.Password
-                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                            Accessible.name: qsTr("Password")
+                            spacing: 6
+                            LoginFieldLabel { text: qsTr("Password") }
+                            NativeField {
+                                id: passwordInput
+                                objectName: "passwordInput"
+                                colors: root.colors
+                                Layout.fillWidth: true
+                                enabled: !root.controller.busy
+                                placeholderText: "••••••••"
+                                echoMode: TextInput.Password
+                                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                Accessible.name: qsTr("Password")
+                            }
                         }
                         NativeButton {
                             id: signInButton
@@ -1949,7 +2073,7 @@ ApplicationWindow {
                             colors: root.colors
                             primary: true
                             Layout.fillWidth: true
-                            text: root.controller.busy ? qsTr("Signing in…") : qsTr("Sign in")
+                            text: root.controller.busy ? qsTr("Logging in…") : qsTr("Next")
                             enabled: !root.controller.busy && root.controller.organizationRealm.trim().length > 0
                                 && userInput.text.trim().length > 0 && passwordInput.text.length > 0
                             onClicked: {

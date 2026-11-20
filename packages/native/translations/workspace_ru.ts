@@ -65,6 +65,18 @@
         <!-- Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream
              menu Notifications section, measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
              packages/web/src/i18n/locales/ru.json (channel.* keys). -->
+        <message>
+            <source>Show options</source>
+            <translation>Показать варианты</translation>
+        </message>
+        <message>
+            <source>email@example.com or login</source>
+            <translation>email@example.com или логин</translation>
+        </message>
+        <message>
+            <source>Email or login</source>
+            <translation>Email или логин</translation>
+        </message>
         <message><source>Notifications</source><translation>Уведомления</translation></message>
         <message><source>Mentions only</source><translation>Только при упоминаниях</translation></message>
         <message><source>Muted</source><translation>Без уведомлений</translation></message>

@@ -16717,6 +16717,94 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void loginWizardReferenceSurfaces_data()
+    {
+        QTest::addColumn<QString>("surface");
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("organization-en") << QString("organization") << QString("en");
+        QTest::newRow("organization-ru") << QString("organization") << QString("ru");
+        QTest::newRow("history") << QString("history") << QString("en");
+        QTest::newRow("public-shortcut") << QString("shortcut") << QString("en");
+        QTest::newRow("credentials") << QString("credentials") << QString("en");
+    }
+
+    void loginWizardReferenceSurfaces()
+    {
+        QFETCH(QString, surface);
+        QFETCH(QString, locale);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("settings.ini"));
+        preferences.setLocale(locale);
+        preferences.recordOrganizationOrigin("https://one.example");
+        preferences.recordOrganizationOrigin("https://two.example");
+        MockServer server;
+        server.handler = [](const Request &request) {
+            if (request.target.path().endsWith("/server_settings"))
+                return Response{QJsonObject{{"realm_name", "Review realm"}}};
+            return sessionResponse(request);
+        };
+        const QByteArray oldUrl = qgetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", "https://public.example");
+        const auto restore = qScopeGuard([&] {
+            if (oldUrl.isNull()) qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+            else qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", oldUrl);
+        });
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        auto *field = item(content, "serverInput");
+        QVERIFY(field);
+        if (surface == "organization") {
+            auto *title = item(content, "loginTitle");
+            QCOMPARE(title->property("font").value<QFont>().pixelSize(), 20);
+            QCOMPARE(title->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
+            QCOMPARE(field->width(), qreal(448));
+            QVERIFY(hasVisibleText(content, locale == "en" ? QString("Server address") : QString("Адрес сервера")));
+            QCOMPARE(field->property("placeholderText").toString(), QString("https://chat.example.com"));
+            QCOMPARE(item(content, "organizationNextButton")->property("text").toString(),
+                     locale == "en" ? QString("Next") : QString("Далее"));
+        } else if (surface == "history") {
+            click(window, field);
+            QTest::keyClick(window, Qt::Key_O);
+            QTest::keyClick(window, Qt::Key_N);
+            QTest::keyClick(window, Qt::Key_E);
+            QTRY_VERIFY(visibleItem(content, "organizationHistoryOption-0"));
+            QCOMPARE(item(content, "organizationHistoryOption-0")->property("text").toString(),
+                     QString("https://one.example"));
+            QVERIFY(!visibleItem(content, "organizationHistoryOption-1"));
+            QTest::keyClick(window, Qt::Key_Down);
+            QTest::keyClick(window, Qt::Key_Return);
+            QCOMPARE(field->property("text").toString(), QString("https://one.example"));
+            QVERIFY(server.requests.isEmpty());
+        } else if (surface == "shortcut") {
+            field->setProperty("text", "different");
+            QVERIFY(visibleItem(content, "defaultOrganizationBlock"));
+            QVERIFY(hasVisibleText(content, "Or connect to our public service."));
+            auto *logo = visibleItem(content, "defaultOrganizationLogo");
+            QVERIFY(logo);
+            QCOMPARE(logo->size(), QSizeF(18, 18));
+            click(window, item(content, "defaultOrganizationBlock"));
+            QTRY_COMPARE(field->property("text").toString(), QString("https://public.example"));
+        } else {
+            field->setProperty("text", server.origin().toString());
+            click(window, item(content, "organizationNextButton"));
+            QTRY_VERIFY(visibleItem(content, "userInput"));
+            QVERIFY(hasVisibleText(content, "Email or login"));
+            QCOMPARE(item(content, "userInput")->property("placeholderText").toString(),
+                     QString("email@example.com or login"));
+            QVERIFY(hasVisibleText(content, "Password"));
+            QCOMPARE(item(content, "signInButton")->property("text").toString(), QString("Next"));
+        }
+        window->close();
+    }
+
     void loginCardMountsOrganizationStepOnly()
     {
         QTemporaryDir preferencesDirectory;
