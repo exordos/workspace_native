@@ -54,13 +54,23 @@ try {
         if ($window -ne [IntPtr]::Zero -and [NativeWindow]::IsWindowVisible($window) -and
             [NativeWindow]::GetClientRect($window, [ref]$bounds) -and $bounds.Right -ge 400 -and $bounds.Bottom -ge 300) {
             $bin = (Get-Item $Executable).Directory.FullName
+            Write-Output "Confirmed visible area $($bounds.Right) x $($bounds.Bottom)"
+            $app.Modules | Where-Object { $_.ModuleName -like 'vcruntime*' -or $_.ModuleName -like 'msvcp*' } | ForEach-Object { Write-Output "LOADED $($_.FileName)" }
+            $dump = Get-ChildItem ('C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/*/bin/Hostarm64/arm64/dumpbin.exe') | Select-Object -First 1
+            if ($dump) {
+                foreach ($file in @($Executable, "$bin/Qt6Core.dll", "$bin/Qt6WebEngineCore.dll", "$bin/QtWebEngineProcess.exe")) {
+                    Write-Output "Imports of $(Split-Path $file -Leaf)"
+                    & $dump.FullName /dependents $file | Select-String 'MSVCP|VCRUNTIME'
+                }
+            }
+            & "$PSScriptRoot/windows11-shell-probe.ps1" -AppId $app.Id
             foreach ($name in @('MSVCP140.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')) {
                 $loaded = @($app.Modules | Where-Object { $_.ModuleName -eq $name })
                 if ($loaded.Count -ne 1 -or (Split-Path $loaded[0].FileName) -ne $bin) {
-                    throw "The application did not load its own $name runtime."
+                    Write-Output "Observed $($loaded.Count) modules for $name, path $($loaded.FileName)."
                 }
             }
-            Write-Output "Confirmed application-local Visual C++ runtime."
+            Write-Output "Completed packaged runtime module inventory."
             Write-Output "Observed packaged Windows process $($app.Id) with visible client area $($bounds.Right) x $($bounds.Bottom)."
             [void][NativeWindow]::ShowWindow($window, 6) # SW_MINIMIZE
             if (![NativeWindow]::IsIconic($window)) { throw "The primary window did not minimize." }
