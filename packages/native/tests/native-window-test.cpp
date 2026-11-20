@@ -31193,7 +31193,10 @@ private slots:
         QVERIFY(view("sidebarActivityList"));
         for (const auto *id : {"inbox", "favorites", "starred", "mentions", "drafts"})
             QVERIFY(view(QString("activityRow-%1").arg(id)));
-        // Reference card geometry: 46 px rows (30 px chip + p-2), 30 px chips.
+        // The first frame after expansion includes the RowLayout's 30 px chip geometry.
+        QSignalSpy expandedFrame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!expandedFrame.isEmpty());
         QCOMPARE(view("activityRow-starred")->height(), qreal(46));
         auto *chip = view("activityChip-inbox"); QVERIFY(chip);
         QCOMPARE(chip->width(), qreal(30)); QCOMPARE(chip->height(), qreal(30));
