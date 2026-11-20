@@ -28982,6 +28982,23 @@ private slots:
     // exordy fix-round-1 regression cases (PR #289 review findings).
     // ------------------------------------------------------------------
 
+    void persistentQtDiagnosticsOmitPrivateMessageAndCategoryValues()
+    {
+        QTemporaryDir root;
+        NativeLogging logs(root.path());
+        QVERIFY(root.isValid());
+        workspace::installNativeLogHandler(logs);
+        const auto removeHandler = qScopeGuard([] { workspace::removeNativeLogHandler(); });
+        QMessageLogger(nullptr, 0, nullptr, "qt.network.private-category").warning(
+            "synthetic-body account@example.invalid /home/synthetic-user/file https://example.invalid/?private-value");
+        qInfo("Default topic missing for existing direct stream before call");
+        const auto text = readDiagnosticsLog(logs.filePath());
+        QVERIFY(text.contains(QStringLiteral("warning: Network diagnostic\n")));
+        QVERIFY(text.contains(QStringLiteral("info: Default topic missing for existing direct stream before call\n")));
+        for (const auto *value : {"synthetic", "example.invalid", "/home/", "private-"})
+            QVERIFY(!text.contains(QString::fromLatin1(value)));
+    }
+
     // Finding 1 (thread 4575150367): a stderr write failure must not gate
     // persistence — the line still has to reach the diagnostics file.
     // Descriptor surgery on fd 2 is POSIX-only (round-2 finding 4575693897),
@@ -29010,7 +29027,7 @@ private slots:
         fflush(stderr);
         clearerr(stderr);
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: stderr unavailable probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")),
                  qPrintable(text));
     }
 #endif // Q_OS_UNIX
@@ -29232,7 +29249,7 @@ private slots:
             nativeTestClearErr();
 
             std::thread worker([&]() {
-                qWarning().noquote() << QStringLiteral("worker in-flight line ")
+                QMessageLogger(nullptr, 0, nullptr, "qt.network").warning().noquote() << QStringLiteral("worker in-flight line ")
                                         + QString(32000, QLatin1Char('W'));
                 workerReturned.store(true);
             });
@@ -29270,10 +29287,10 @@ private slots:
         QVERIFY(releaserDrained >= 32000);
         const QString text = readDiagnosticsLog(
             root.path() + QStringLiteral("/workspace_logs/workspace.log"));
-        QVERIFY2(text.contains(QStringLiteral("warning: filler ")), qPrintable(text.left(120)));
-        QVERIFY2(text.contains(QStringLiteral("worker in-flight line")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")), qPrintable(text.left(120)));
+        QVERIFY2(text.contains(QStringLiteral("warning: Network diagnostic\n")),
                  "drained in-flight lines must reach the file");
-        QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
+        QVERIFY(!text.contains(QStringLiteral("info: Qt diagnostic\n")));
     }
 #endif // Q_OS_UNIX
 

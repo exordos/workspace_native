@@ -67,16 +67,14 @@ never abort the app, they return `false`/empty.
 - Thread safety: Qt logging runs on whatever thread emits the message, so the
   directory-create + rotate + append sequence is serialized under a mutex
   (deviation: Node is single-threaded and needs none).
-- `installNativeLogHandler(NativeLogging &)` — the Qt logging hook. It calls
-  `qInstallMessageHandler`; the handler renders each `qDebug/qInfo/qWarning/
-  qCritical` line as `<level>: <message>` (level names `debug|info|warning|
-  critical|fatal`), keeps the existing console behavior by writing the
-  formatted line to stderr (Qt's default handler destination), and then feeds
-  the same line through `appendLogLine` (deviation note: `qInstallMessageHandler`
-  replaces Qt's default handler, so console output is reproduced explicitly
-  rather than chained, because the previous handler pointer may be the private
-  default). The console reproduction is best-effort: a failed stderr write
-  never gates the diagnostics file append (fix round 1, thread 4575150367).
+- `installNativeLogHandler(NativeLogging &)` installs Qt's process-wide
+  message handler. The developer console receives the formatted Qt message.
+  The rotating file records its timestamp, severity and a fixed diagnostic
+  class for network, QML, platform or other Qt messages. Two reviewed
+  application messages retain their static wording for a missing direct-chat
+  topic or a failed restart. The disk writer discards arbitrary message text,
+  including file paths, URLs and identifiers. A failed console write still
+  allows the file append to complete.
   Handler and install/remove synchronize on one process-wide recursive
   `QReadWriteLock`: the handler holds the read side while it consults the sink,
   and `removeNativeLogHandler()` restores the default handler first, then
@@ -116,8 +114,8 @@ never abort the app, they return `false`/empty.
 ## Wiring and scope
 
 - `src/main.cpp` constructs a `NativeLogging` before first use and installs
-  the message handler, so ordinary `qInfo`/`qWarning` traffic lands in
-  `workspace.log` with no call-site changes.
+  the message handler. Ordinary `qInfo`/`qWarning` traffic produces a classified
+  event in `workspace.log` with its original severity.
 - No UI and no `tr()` strings: pages #49/#50/#51/#52 consume these providers
   later; this issue is provider-only (client-side files + local process stats,
   no network/sync/UI behavior).
