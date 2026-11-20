@@ -519,6 +519,7 @@ if(BUILD_TESTING)
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiSecretFragmentTracksRequestAndVaultRemoval
         uiSecretRequestVerifiesTheReferencedStream
+        uiSecretArchivedFragmentUsesItsAccessibleKey
         uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
         uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
         uiEncryptedOsRetryDoesNotSendAKeyRequest

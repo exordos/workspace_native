@@ -9888,8 +9888,42 @@ private slots:
         QCOMPARE(submitted.value("payload").toObject().value("key_uuid").toString(), sourceKey);
         auto pending = f.vault.pendingRequests(f.vault.lease(), {sourceId,sourceKey});
         QCOMPARE(pending.values.size(), 1);
+        const auto &bound = pending.values.first();
+        QVERIFY(!bound.messageId.isEmpty());
+        auto grant = NativeChatCrypto::encryptGroupKeyGrant(key.bytes, bound.publicKey,
+            {sourceId, sourceKey, bound.messageId, IssuerDevice, f.vault.device().id});
+        QVERIFY(grant);
+        auto response = message({}, QUuid::createUuid().toString(QUuid::WithoutBraces), sourceTopic);
+        response["stream_uuid"] = sourceId; response["author_uuid"] = Issuer; response["is_own"] = false;
+        response["payload"] = QJsonObject{{"kind","key_grant"},{"key_uuid",sourceKey},{"request_message_uuid",bound.messageId},
+            {"sender_device_id",IssuerDevice},{"recipient_device_id",f.vault.device().id},
+            {"content",QString::fromLatin1(grant.bytes.toBase64())}};
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(response)));
+        QTRY_COMPARE(controls().first().toMap().value("action").toString(), QString("show"));
+        QCOMPARE(f.controller.selectedStream(), streamId);
         for (auto &entry : pending.values) entry.clearSecrets();
         QVERIFY(f.vault.pendingRequests(f.vault.lease(), {streamId,sourceKey}).values.isEmpty());
+    }
+
+    void uiSecretArchivedFragmentUsesItsAccessibleKey()
+    {
+        Fixture f;
+        f.stream = fullEncryptedStream(true);
+        auto key = NativeChatCrypto::createGroupKey();
+        QVERIFY(key);
+        const auto wipe = qScopeGuard([&] { key.bytes.fill(0); });
+        const auto envelope = NativeChatCrypto::encryptMessage(key.bytes, "Archived fragment", {streamId, returnedId});
+        QVERIFY(envelope);
+        const auto urn = QStringLiteral("urn:secret:v1:%1:%2:%3").arg(streamId, returnedId,
+            QString::fromLatin1(envelope.bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
+        f.cipher = message("Read [item](" + urn + ")");
+        QVERIFY(f.start(true));
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId,returnedId}, key.bytes, 0), NativeChatKeyVault::Failure::None);
+        const auto controls = f.controller.renderSecretMessage(messageId, {}, {}).value("secretControls").toList();
+        QCOMPARE(controls.size(), 1);
+        const auto token = controls.first().toMap().value("token").toString();
+        QVERIFY(f.controller.renderSecretMessage(messageId, {}, {token}).value("html").toString().contains("Archived fragment"));
+        QCOMPARE(f.posts, 0);
     }
 
     void uiSecretFragmentTracksRequestAndVaultRemoval_data()

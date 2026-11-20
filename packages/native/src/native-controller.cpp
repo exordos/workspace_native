@@ -1698,10 +1698,16 @@ void NativeController::updateChatPendingState(const QString &key, bool known, bo
 
 bool NativeController::receiveChatControl(const Message &message)
 {
-    if (!currentStream() || !currentStream()->encrypted
-        || !message.crypto || message.stream != m_stream || message.project != m_session->project()
+    const bool foreign = message.stream != m_stream;
+    if (!currentStream() || (!foreign && !currentStream()->encrypted)
+        || !message.crypto || message.project != m_session->project()
         || (message.kind != "key_request" && message.kind != "key_grant" && message.kind != "key_reject")
         || !chatVaultMatches()) return true;
+    // Other conversations can deliver a reply to a request for a forwarded
+    // fragment. Only inspect grants/rejections addressed to this device. The
+    // durable request and source authority are checked before any vault change.
+    if (foreign && (message.kind == "key_request" || message.crypto->recipientDevice != m_chatKeys->device().id
+        || (m_chatAccessKnown && !m_chatReadableStreams.contains(message.stream)))) return true;
     const QPointer<NativeController> lifetimeGuard(this);
     checkChatLifetime();
     if (!lifetimeGuard) return true;
@@ -1710,14 +1716,16 @@ bool NativeController::receiveChatControl(const Message &message)
         // Catch-up events are already acknowledged by RealtimeClient, while
         // writes/authority remain blocked until its live watermark. Keep only
         // bounded typed data; no binding or key receipt is admitted here.
-        if (m_syncBlocked && m_catalogVerified && !m_snapshotActive && chatReadAllowed()) {
+        if (!foreign && m_syncBlocked && m_catalogVerified && !m_snapshotActive && chatReadAllowed()) {
             observeChatRequest(message);
             retainChatControl(message);
         }
         return true;
     }
-    observeChatRequest(message);
-    observeChatKeyOutcome(message);
+    if (!foreign) {
+        observeChatRequest(message);
+        observeChatKeyOutcome(message);
+    }
     const auto &payload = *message.crypto;
     if (message.kind == "key_request" && !m_chatRequestFactsLimited && !m_chatIssueKeys.contains(payload.keyUuid)) {
         // The same bounded availability cache is shared with announcements.
@@ -1738,7 +1746,7 @@ bool NativeController::receiveChatControl(const Message &message)
     }
     auto known = m_chatKeys->pendingRequests(m_chatVaultLease, {message.stream, payload.keyUuid});
     const auto scrub = qScopeGuard([&] { for (auto &item : known.values) item.clearSecrets(); });
-    updateChatPendingState(payload.keyUuid, known.failure == NativeChatKeyVault::Failure::None, !known.values.isEmpty());
+    if (!foreign) updateChatPendingState(payload.keyUuid, known.failure == NativeChatKeyVault::Failure::None, !known.values.isEmpty());
     if (known.failure != NativeChatKeyVault::Failure::None) return true;
     if (message.kind == "key_request") {
         QVector<qsizetype> bound, candidates;
@@ -1778,13 +1786,22 @@ bool NativeController::receiveChatControl(const Message &message)
     const auto responseKey = message.uuid;
     if (m_chatResponses.size() >= 32 && !m_chatResponses.contains(responseKey)) return false;
     m_chatResponses.insert(responseKey, message);
-    ensureChatAuthority([this, responseKey, epoch, selection](bool okay, const QString &) {
-        if (!okay || !chatContext(epoch, selection) || !m_chatResponses.contains(responseKey)) return;
+    const auto accessRevision = m_chatAccessRevision;
+    const auto verified = [this, responseKey, epoch, selection, foreign, accessRevision](const ChatAuthority &authority, const QString &error) {
+        if (!chatContext(epoch, selection) || !m_chatResponses.contains(responseKey)) return;
+        if (!error.isEmpty() || !authority.ready || (foreign && accessRevision != m_chatAccessRevision)) {
+            if (foreign) m_chatResponses.remove(responseKey);
+            return;
+        }
         const QPointer<NativeController> wake(this);
         const auto resume = qScopeGuard([wake] { if (wake) wake->scheduleChatControls(); });
         const auto message = m_chatResponses.value(responseKey); const auto &payload = *message.crypto;
-        const auto role = m_chatAuthority.roles.value(message.author);
-        if ((message.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator")
+        if (message.stream != authority.stream || (foreign && !authority.topics.contains(message.topic))) {
+            m_chatResponses.remove(responseKey);
+            return;
+        }
+        const auto role = authority.roles.value(message.author);
+        if ((message.author != authority.issuerOwner && role != "owner" && role != "administrator")
             || payload.recipientDevice != m_chatKeys->device().id) { m_chatResponses.remove(responseKey); return; }
         const NativeChatKeyVault::Address address{message.stream, payload.keyUuid};
         auto requests = m_chatKeys->pendingRequests(m_chatVaultLease, address);
@@ -1813,7 +1830,7 @@ bool NativeController::receiveChatControl(const Message &message)
             wipeChatBytes(group);
             if (!guard) return;
             if (!chatContext(epoch, selection)) return;
-            if (done == NativeChatKeyVault::Failure::None) {
+            if (!foreign && done == NativeChatKeyVault::Failure::None) {
                 // Completion may synchronously remove the availability entry
                 // through a Grant material signal. Reacquire only afterwards.
                 auto remaining = m_chatKeys->pendingRequests(m_chatVaultLease, address);
@@ -1833,7 +1850,12 @@ bool NativeController::receiveChatControl(const Message &message)
             }
             return;
         }
-    });
+    };
+    if (foreign) {
+        fetchChatAuthority(message.stream, epoch, selection, verified);
+    } else {
+        ensureChatAuthority([this, verified](bool, const QString &error) { verified(m_chatAuthority, error); });
+    }
     return true;
 }
 
@@ -11809,7 +11831,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 if (!current()) return true;
                 observeChatRequest(*message);
                 observeChatKeyOutcome(*message);
-                if (message->stream == m_stream) receiveChatControl(*message);
+                receiveChatControl(*message);
                 if (!current()) return true;
             }
             NativeCache::ProjectionFields fields = NativeCache::Projection::Insert
@@ -14561,7 +14583,7 @@ QVariantMap NativeController::presentMessageSecrets(const QString &messageId, co
             || (m_chatAccessKnown && !m_chatReadableStreams.contains(ref->streamUuid))) return {};
         const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
             [&](const Stream &row) { return row.uuid == ref->streamUuid; });
-        if (stream == m_streams.cend() || stream->archived || !stream->security
+        if (stream == m_streams.cend() || !stream->security
             || stream->security->viewer != m_session->user()
             || (stream->security->source != QLatin1String("native") && !stream->encrypted)) return {};
         const NativeChatKeyVault::Address address{stream->uuid, ref->keyUuid};
