@@ -11807,7 +11807,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         const auto stream = payload.value("stream_uuid").toString();
         const auto topic = payload.value("topic_uuid").toString();
-        if (m_cache && m_cache->removeMessageBodyAndHistory(m_cacheLease, id, this, {}, NativeCache::Removal::Deletion)) {
+        if (m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id)) {
             staleCache(NativeCache::Kind::History, stream, topic);
             invalidateCache(NativeCache::Kind::Streams);
             invalidateCache(NativeCache::Kind::Topics, stream);
