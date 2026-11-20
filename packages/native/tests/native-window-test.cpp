@@ -15192,6 +15192,14 @@ mv -Tf "$root/.current-new" "$root/current"
                 QCOMPARE(inserted.size(), 1);
                 QCOMPARE(inserted.first().at(1).toInt(), 0);
                 QCOMPARE(inserted.first().at(2).toInt(), 49);
+                const auto pagedAnchor = firstVisible().first;
+                QVERIFY(!pagedAnchor.isEmpty());
+                for (const auto &prefix : {"call-card-", "poll-card-", "keyRequestService-",
+                                          "keyServiceResponse-", "keyAnnouncementService-",
+                                          "message-quote-", "serviceGroupHeader-"}) {
+                    const auto control = QString::fromLatin1(prefix) + pagedAnchor;
+                    QVERIFY2(!item(list, control), qPrintable("Plain history instantiated " + control));
+                }
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }
@@ -19541,9 +19549,8 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *quote = item(window->contentItem(), "message-quote-" + returnedId);
         QTRY_VERIFY(quote && quote->isVisible());
         QTRY_VERIFY(!quote->property("quoteHtml").toString().isEmpty());
-        auto *bubble = quote->parentItem()->parentItem();
-        auto *row = bubble->parentItem();
-        QVERIFY(row->metaObject()->indexOfMethod("settleGeometry()") >= 0);
+        auto *row = item(window->contentItem(), "serviceViewRow-" + returnedId);
+        QVERIFY(row);
         // The restoration helper promises measured geometry synchronously.
         // Change the quote's available width in this turn, then compare its
         // published height with its actual visible children before any event
@@ -28567,6 +28574,30 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY2(qAbs(second - first) <= 1.0, qPrintable(QStringLiteral(
             "notch distances drifted (%1 vs %2) instead of staying "
             "cadence-independent").arg(first).arg(second)));
+        if (target == QLatin1String("messageList")) {
+            const auto beforeBurst = list->property("contentY").toReal();
+            QSignalSpy moved(list, SIGNAL(contentYChanged()));
+            for (const int angle : {notchAngle, notchAngle, -notchAngle}) {
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, angle),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+            }
+            QCOMPARE(moved.size(), 0);
+            QVERIFY(settle());
+            QVERIFY(qAbs(list->property("contentY").toReal() - beforeBurst - first) <= 1.0);
+            // Start real list inertia, then reverse a wheel notch in the same turn.
+            QVERIFY(QMetaObject::invokeMethod(list, "flick", Q_ARG(qreal, 0), Q_ARG(qreal, 900)));
+            QVERIFY(list->property("flicking").toBool());
+            const auto flickStart = list->property("contentY").toReal();
+            for (const int angle : {notchAngle, -notchAngle}) {
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, angle),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+            }
+            QVERIFY(settle());
+            QVERIFY2(qAbs(list->property("contentY").toReal() - flickStart) <= 1.0,
+                     "A balanced wheel reversal must stop previously active inertia");
+        }
         QVERIFY(qAbs(other->property("contentY").toReal() - otherStart) <= 0.01);
     }
 
