@@ -2735,6 +2735,15 @@ component NativeMentionChip: Item {
         }
     }
 
+    NativeCachedMessageSearch {
+        id: cachedMessageSearch
+        controller: root.controller
+        colors: root.colors
+        onClosed: {
+            if (openedResult && messageList.visible) messageList.forceActiveFocus()
+            else if (cachedSearchButton.visible) cachedSearchButton.forceActiveFocus()
+        }
+    }
     Rectangle {
         id: topBar
         Keys.onEscapePressed: event => root.handleChatEscape(event)
@@ -2838,6 +2847,16 @@ component NativeMentionChip: Item {
                 colors: root.colors
                 width: implicitWidth; height: implicitHeight
                 anchors.verticalCenter: parent.verticalCenter
+            }
+            NativeIconButton {
+                id: cachedSearchButton
+                objectName: "cachedMessageSearchButton"
+                colors: root.colors
+                width: 36; height: 36; glyphSize: 18
+                anchors.verticalCenter: parent.verticalCenter
+                asset: "search.svg"
+                help: qsTr("Search cached messages")
+                onClicked: cachedMessageSearch.open()
             }
             NativeIconButton {
                 id: updateIndicator
