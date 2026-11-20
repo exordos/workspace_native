@@ -656,6 +656,7 @@ public:
     Q_INVOKABLE void appendSessionLog(const QString &level, const QString &scope,
         const QString &message, const QVariantMap &data = QVariantMap());
     Q_INVOKABLE QVariantList diagnosticsSessionLogEntries() const;
+    Q_INVOKABLE QVariantMap diagnosticsSupportMeasurements() const;
     Q_INVOKABLE QVariantList diagnosticsSessionLogsFiltered(const QString &levelFilter,
         const QString &sourceFilter, const QString &scopeFilter,
         const QString &runtimeFilter, const QString &searchQuery) const;
@@ -980,6 +981,7 @@ signals:
     // log viewer modal re-reads its rows on this signal (reference
     // subscribeLogHistory).
     void sessionLogChanged();
+    void supportScopeChanged();
     void stateChanged();
     void secretKeysChanged();
     void mentionMembershipChanged();
@@ -2371,6 +2373,7 @@ private:
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
     int m_realtimeReconnectAttempts = 0;
+    qsizetype m_supportLatencyCount = 0;
     QList<QPair<QString, qint64>> m_apiLatencySamples; // bounded to 200, insertion order
     bool m_pingInFlight = false;
     bool m_bootstrapError = false;

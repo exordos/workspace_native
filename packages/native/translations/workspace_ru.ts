@@ -74,6 +74,7 @@
     <context>
         <name>Main</name>
         <message><source>Folder list</source><translation>Список папок</translation></message>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
             <source>Nothing to preview yet</source>
@@ -4968,7 +4969,24 @@
         <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
     </context>
     <context>
+        <name>NativeSupportReport</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
+        <message><source>Describe what you expected, what happened, when it happened and how to reproduce it. This description is kept separate from the diagnostic file.</source><translation>Опишите, что вы ожидали, что и когда произошло и как это воспроизвести. Описание сохраняется отдельно от файла диагностики.</translation></message>
+        <message><source>Problem description</source><translation>Описание проблемы</translation></message>
+        <message><source>Copy description</source><translation>Скопировать описание</translation></message>
+        <message><source>Include session counts and response times</source><translation>Включить счётчики событий и время ответа за сессию</translation></message>
+        <message><source>Preparing report…</source><translation>Подготовка отчёта…</translation></message>
+        <message><source>Prepare report</source><translation>Подготовить отчёт</translation></message>
+        <message><source>Diagnostic file preview</source><translation>Предпросмотр файла диагностики</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Save report</source><translation>Сохранить отчёт</translation></message>
+        <message><source>JSON files (*.json)</source><translation>Файлы JSON (*.json)</translation></message>
+        <message><source>Report saved</source><translation>Отчёт сохранён</translation></message>
+        <message><source>Could not save the report</source><translation>Не удалось сохранить отчёт</translation></message>
+    </context>
+    <context>
         <name>NativeDiagnosticsPage</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
         <message><source>Memory</source><translation>Память</translation></message>

@@ -7101,6 +7101,16 @@ void NativeController::appendSessionLog(const QString &level, const QString &sco
     m_sessionLog.append(level, scope, message, data);
 }
 
+QVariantMap NativeController::diagnosticsSupportMeasurements() const
+{
+    QList<qint64> durations;
+    for (qsizetype i = m_apiLatencySamples.size() - m_supportLatencyCount; i < m_apiLatencySamples.size(); ++i)
+        durations.append(m_apiLatencySamples.at(i).second);
+    const auto latency = diagnostics::summarizeLatency(durations);
+    return {{"levels", m_sessionLog.supportEventCounts()}, {"requests", latency.sampleCount},
+            {"medianMs", latency.medianMs}, {"p95Ms", latency.p95Ms}};
+}
+
 QVariantList NativeController::diagnosticsSessionLogEntries() const
 {
     QVariantList out;
@@ -7179,6 +7189,7 @@ void NativeController::pingServer()
 void NativeController::recordApiLatency(const QString &label, qint64 elapsedMs)
 {
     m_apiLatencySamples.append(qMakePair(label, elapsedMs));
+    m_supportLatencyCount = qMin<qsizetype>(200, m_supportLatencyCount + 1);
     while (m_apiLatencySamples.size() > 200)
         m_apiLatencySamples.removeFirst();
 }
@@ -9577,12 +9588,19 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_topicMetadataInFlight.clear();
         ++m_sessionGeneration;
         m_sessionGenerationOwner.clear();
+        m_sessionLog.beginSupportScope();
+        m_supportLatencyCount = 0;
+        emit supportScopeChanged();
     });
     connect(m_session, &Session::authenticated, this, [this] {
         const auto owner = creationOwnerKey();
-        if (owner != m_sessionGenerationOwner)
+        if (owner != m_sessionGenerationOwner) {
             ++m_sessionGeneration;
-        m_sessionGenerationOwner = owner;
+            m_sessionGenerationOwner = owner;
+            m_sessionLog.beginSupportScope();
+            m_supportLatencyCount = 0;
+            emit supportScopeChanged();
+        }
     });
     connect(m_authGuard, &NativeAuthGuard::activeChanged,
             this, &NativeController::authGuardActiveChanged);

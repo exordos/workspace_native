@@ -35904,6 +35904,66 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void supportReportBeforeLoginAndFromDiagnostics_data()
+    {
+        QTest::addColumn<bool>("authenticated");
+        QTest::newRow("sign-in") << false;
+        QTest::newRow("diagnostics") << true;
+    }
+
+    void supportReportBeforeLoginAndFromDiagnostics()
+    {
+        QFETCH(bool, authenticated);
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("report.ini"));
+        WindowOwnStatusFixture fixture;
+        for (int i = 0; i < 24; ++i)
+            controller.appendSessionLog("error", "app", "Synthetic pre-login failure");
+        if (authenticated) QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (authenticated) {
+            click(window, visibleItem("accountMenuButton"));
+            QTRY_VERIFY(visibleItem("diagnosticsAction"));
+            click(window, visibleItem("diagnosticsAction"));
+        }
+        const auto entry = authenticated ? "diagnosticsSupportAction" : "loginSupportAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(window, visibleItem(entry));
+        QTRY_VERIFY(visibleItem("supportPrepare"));
+        auto *save = visibleItem("supportSave");
+        QVERIFY(save && !save->isEnabled());
+        auto *description = visibleItem("supportDescription");
+        QVERIFY(description);
+        description->setProperty("text", QStringLiteral("private-test-description"));
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        auto *preview = visibleItem("supportPreview");
+        QVERIFY(preview);
+        const auto bytes = preview->property("text").toString().toUtf8();
+        QVERIFY(!bytes.contains("private-test-description"));
+        QVERIFY(QJsonDocument::fromJson(bytes).object()["eventCounts"].isNull());
+        click(window, visibleItem("supportIncludeCounts"));
+        QTRY_VERIFY(!save->isEnabled());
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        const auto counts = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object()["eventCounts"].toObject();
+        QVERIFY(counts.contains("error"));
+        if (authenticated) QVERIFY(counts["error"].toInt() < 24);
+        else QCOMPARE(counts["error"].toInt(), 24);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("supportPrepare"));
+    }
+
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
         QAccessible::setActive(true);

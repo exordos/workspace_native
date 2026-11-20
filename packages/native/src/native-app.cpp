@@ -1,4 +1,6 @@
 #include "native-app.h"
+#include "support/support-report.h"
+#include <QGuiApplication>
 #include "native-updater.h"
 #include "native-controller.h"
 #include "native-markdown.h"
@@ -184,6 +186,10 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     });
     engine.rootContext()->setContextProperty("nativeCallsNavigationEnabled", bool(WORKSPACE_NATIVE_CALLS_NAV));
     engine.rootContext()->setContextProperty("nativeController", controller);
+    auto *support = new SupportReport(&engine);
+    QObject::connect(controller, &NativeController::supportScopeChanged, support, &SupportReport::cancel);
+    engine.rootContext()->setContextProperty("nativeSupportReport", support);
+    engine.rootContext()->setContextProperty("nativeDisplayPlatform", QGuiApplication::platformName());
     engine.rootContext()->setContextProperty("nativeMarkdown", new NativeMarkdown(&engine));
     engine.rootContext()->setContextProperty("nativePreferences", preferences);
     if (avatars) engine.addImageProvider("avatars", avatars->createImageProvider());

@@ -1915,6 +1915,31 @@ component NativeMentionChip: Item {
         }
     }
 
+    Loader {
+        id: supportPopup
+        active: false
+        onLoaded: item.open()
+        sourceComponent: NativeSupportReport {
+            parent: root.contentItem
+            service: nativeSupportReport
+            displayPlatform: nativeDisplayPlatform
+            controller: root.controller
+            preferences: root.preferences
+            colors: root.colors
+            onClosed: Qt.callLater(() => { if (supportPopup.item && !supportPopup.item.visible) supportPopup.active = false; })
+        }
+    }
+    NativeButton {
+        objectName: "loginSupportAction"
+        colors: root.colors
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: !root.controller.authenticated
+        text: qsTr("Report a problem")
+        onClicked: supportPopup.active = true
+    }
+
     component LoginBackAction: NativeButton {
         id: backAction
         colors: root.colors
@@ -12410,6 +12435,7 @@ component NativeMentionChip: Item {
         // navigation resets the section back to the conversation, matching the
         // reference route behaviour.
         NativeDiagnosticsPage {
+            onSupportRequested: supportPopup.active = true
             controller: root.controller
             colors: root.colors
             visible: root.controller.section === "diagnostics"
