@@ -50,9 +50,11 @@ pulse existed.
 
 One overlay + one animation inside the message bubble in `Main.qml`:
 
-- `MessageContentRow.readRequestPending: !own && !Boolean(modelData.read)` -
-  mirrors `effectiveReadRequestPending` (inbound, not yet marked read). The
-  delegate entry map already carries `read` (`native-controller.cpp:14285`).
+- The controller exposes the active and queued `read_up_to` boundary UUIDs.
+  The list walks its canonical history in reverse. Each boundary covers its
+  row and earlier rows in the same topic, preserving microsecond and UUID
+  order. Inbound unread bubbles pulse only while covered. Newer rows and
+  other topics stay idle until a request covers them.
 - Inside `id: bubble`, a `Rectangle` (`objectName: message-read-pulse-<uuid>`)
   `anchors.fill: parent`, `z: -1` (Qt Quick keeps negative-z children above
   the parent's own fill but below sibling content - the same stacking as
@@ -85,16 +87,15 @@ One overlay + one animation inside the message bubble in `Main.qml`:
   pulse is gated on `root.active` (scope of this issue).
 - No new visible text, so no new translation entries (`workspace_ru.ts`
   untouched).
-- No new C++ `Q_PROPERTY`/NOTIFY: `Window.active` and
-  `preferences.prefersReducedMotion` already notify on real state changes, so
-  the binding-count budgets stay intact (regression-checked in
-  `native-native-e2ee-read`).
+- `readRequestBoundariesChanged` updates the list when a boundary is
+  submitted, extended, confirmed, rejected or cancelled. Window activity
+  and reduced motion use their own existing property notifications.
 
 ## Acceptance (native-window-test)
 
 `readRequestPulseStates` (light + dark, motion + reduced motion):
 
-1. An inbound not-yet-read bubble shows the overlay and its
+1. A covered inbound unread bubble shows the overlay and its
    `message-read-pulse-anim-<id>` animation is `running` while the window is
    active; already-read inbound bubbles show nothing; the overlay colour is
    the palette `accent` token in both modes.
@@ -109,3 +110,7 @@ Animation state is asserted through the `running` property by `objectName`
 (deterministic), never by sampling opacity over wall-clock time. The mock
 server's `Response.defer` gate holds the `read_up_to` delivery so the unread
 window is deterministic.
+
+The partial aggregate request case holds an actual read response, checks a
+newer unread row and an older row from another topic, then extends the
+same-topic boundary and confirms both requests.

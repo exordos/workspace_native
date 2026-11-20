@@ -17904,8 +17904,17 @@ void NativeController::refreshQuoteOriginDecryptions()
     }
 }
 
+QStringList NativeController::readRequestBoundaryIds() const
+{
+    QStringList ids;
+    if (m_readBoundary) ids.append(m_readBoundary->uuid);
+    for (const auto &queued : m_queuedReadBoundaries) ids.append(queued.uuid);
+    return ids;
+}
+
 void NativeController::resetReadState()
 {
+    const bool hadBoundaries = m_readBoundary.has_value() || !m_queuedReadBoundaries.isEmpty();
     m_reactionRefreshes.clear();
     m_reactionRevisions.clear();
     m_ownReactions.clear();
@@ -17922,6 +17931,7 @@ void NativeController::resetReadState()
     m_readLoadedIds.clear();
     m_confirmedReadIds.clear();
     m_readPostRetries = m_readConfirmAttempts = 0;
+    if (hadBoundaries) emit readRequestBoundariesChanged();
 }
 
 static bool throughBoundary(const Message &message, const Message &boundary)
@@ -17984,11 +17994,13 @@ void NativeController::enqueueReadBoundary(const QString &id, bool allowReadAnch
         if (anchor->topic == m_readBoundary->topic && throughBoundary(*anchor, *m_readBoundary)) return;
         const auto queued = m_queuedReadBoundaries.constFind(anchor->topic);
         if (queued != m_queuedReadBoundaries.cend()) {
-            if (!throughBoundary(*anchor, queued.value())) m_queuedReadBoundaries[anchor->topic] = *anchor;
-        } else if (m_queuedReadBoundaries.size() < 256) {
+            if (throughBoundary(*anchor, queued.value())) return;
+        } else {
+            if (m_queuedReadBoundaries.size() >= 256) return;
             m_readTopics.enqueue(anchor->topic);
-            m_queuedReadBoundaries.insert(anchor->topic, *anchor);
         }
+        m_queuedReadBoundaries.insert(anchor->topic, *anchor);
+        emit readRequestBoundariesChanged();
         return;
     }
     m_readBoundary = *anchor;
@@ -18000,6 +18012,7 @@ void NativeController::enqueueReadBoundary(const QString &id, bool allowReadAnch
     m_readPostRetries = m_readConfirmAttempts = 0;
     ++m_readTicket;
     sendReadRequest(false);
+    emit readRequestBoundariesChanged();
 }
 
 void NativeController::sendReadRequest(bool confirmation)
@@ -18092,6 +18105,8 @@ void NativeController::finishReadRequest(bool success)
     m_readBoundary.reset();
     const auto selection = m_selection;
     const QPointer<NativeController> guard(this);
+    emit readRequestBoundariesChanged();
+    if (!guard || selection != m_selection) return;
     emit stateChanged();
     if (!guard || selection != m_selection) return;
     while (!m_readTopics.isEmpty() && !m_readPending) {
