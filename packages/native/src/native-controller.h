@@ -823,6 +823,7 @@ public:
     // like chat-page-workspace.ui.tsx:2747-2751 at workspace_ui 230e02b8.
     Q_INVOKABLE bool beginReply(const QString &id, const QString &selectedText = {});
     Q_INVOKABLE bool addReplyTab(const QString &id, const QString &selectedText = {});
+    Q_INVOKABLE bool replyToSelection(const QStringList &ids);
     Q_INVOKABLE bool selectReplyTab(const QString &tabId);
     Q_INVOKABLE void removeReplyTab(const QString &tabId);
     Q_INVOKABLE bool reorderReplyTab(const QString &tabId, int destinationIndex);
@@ -2006,6 +2007,8 @@ private:
     QList<ReplyTab> m_replyTabs;
     QString m_replyActiveTab, m_replyRoute;
     QHash<QString, ParkedReplySession> m_replySessions;
+    const Message *replyTarget(const QString &id) const;
+    bool appendReplyTabs(const QStringList &ids, const QString &selectedText, bool keepRestoredEdit);
     const ReplyTab *activeReplyTab() const;
     QString replyTabAuthor(const ReplyTab &tab) const;
     QString replyTabPlain(const ReplyTab &tab) const;

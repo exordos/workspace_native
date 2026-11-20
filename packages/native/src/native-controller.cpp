@@ -17498,15 +17498,20 @@ void NativeController::pumpRowPreviewHydration()
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
-bool NativeController::beginReply(const QString &id, const QString &selectedText)
+const Message *NativeController::replyTarget(const QString &id) const
 {
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
-    // Same conversation guard as editableMessage (docs/NATIVE_DESKTOP_REPLIES.md);
-    // encrypted streams keep replies out of reach, as the shipped e2ee gate does.
     if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown"
-        || message->stream != m_stream || message->topic != m_topic) {
+        || message->kind != "markdown" || message->stream != m_stream || message->topic != m_topic)
+        return nullptr;
+    return message;
+}
+
+bool NativeController::beginReply(const QString &id, const QString &selectedText)
+{
+    const auto *message = replyTarget(id);
+    if (!message) {
         report(tr("This message can no longer be replied to."));
         return false;
     }
@@ -17543,30 +17548,49 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
 
 bool NativeController::addReplyTab(const QString &id, const QString &selectedText)
 {
-    const auto *stream = currentStream();
-    const auto *message = findMessage(id);
-    if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown"
-        || message->stream != m_stream || message->topic != m_topic) {
-        report(tr("This message can no longer be replied to."));
-        return false;
+    return appendReplyTabs({id}, selectedText, false);
+}
+
+bool NativeController::replyToSelection(const QStringList &ids)
+{
+    return appendReplyTabs(ids, {}, true);
+}
+
+bool NativeController::appendReplyTabs(const QStringList &ids, const QString &selectedText, bool keepRestoredEdit)
+{
+    if (ids.isEmpty()) return false;
+    // Resolve every selected quote before touching an existing edit or reply session.
+    QList<ReplyTab> tabs;
+    for (const auto &id : ids) {
+        const auto *message = replyTarget(id);
+        if (!message) {
+            report(tr("This message can no longer be replied to."));
+            return false;
+        }
+        ReplyTab tab;
+        tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tab.message = id;
+        tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tabs.append(std::move(tab));
     }
-    if (!m_editingMessage.isEmpty()) closeEditSession();
-    // addWorkspaceReplyTab (workspace-reply.lib.ts:59-79) via the page wiring
-    // (chat-page-workspace.ui.tsx:4166-4181): append a fresh blank-answer tab and
-    // activate it; on an empty session the first tab inherits the composer text.
-    if (m_replyTabs.isEmpty()) return beginReply(id, selectedText);
-    ReplyTab tab;
-    tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    tab.message = id;
-    tab.selectedText = normalizedReplySelection(message->content, selectedText);
-    tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-    m_replyTabs.append(tab);
-    m_replyActiveTab = tab.id;
+
+    const QPointer<NativeController> guard(this);
+    const auto selection = m_selection;
+    if (!m_editingMessage.isEmpty() && !(keepRestoredEdit && m_editRestoresReply)) {
+        closeEditSession();
+        if (!guard || m_selection != selection || !authoritativeRoute()) return false;
+        for (const auto &id : ids) if (!replyTarget(id)) return false;
+    }
+    if (m_replyTabs.isEmpty()) tabs.first().answer = draft();
+    const auto active = tabs.last().id;
+    const auto answer = tabs.last().answer;
+    m_replyTabs.append(tabs);
+    m_replyActiveTab = active;
     m_replyRoute = conversationKey();
+    setDraft(answer);
+    if (!guard || m_selection != selection || m_replyActiveTab != active) return false;
     emit replySessionChanged();
-    // The composer mirrors the active tab's (empty) answer from now on.
-    setDraft(QString());
     return true;
 }
 
