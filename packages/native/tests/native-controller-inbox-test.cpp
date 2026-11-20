@@ -1294,7 +1294,7 @@ private slots:
         fixture.aggregateMessages = true;
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(
             QMap<int, QJsonObject>{{1, mentionMessage(1, false)}});
-        fixture.messages = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
+        fixture.mentions = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
         fixture.controller.useDrafts(&drafts);
         QVERIFY(fixture.start());
         QTRY_VERIFY(drafts.ready(streamId, topicId));
