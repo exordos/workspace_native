@@ -17,6 +17,22 @@ namespace workspace {
 
 namespace {
 
+QString notificationBody(const NotificationCandidate &candidate)
+{
+    const auto content = candidate.content.trimmed();
+    if (!candidate.markdown)
+        return content;
+    const bool spoilers = NativeMarkdown::mayContainSpoilers(content);
+    if (!spoilers && !content.contains(QLatin1Char('[')) && !content.contains(QLatin1Char('<')))
+        return content;
+
+    const auto preview = NativeMarkdown().renderPreview(content);
+    // A rejected body has a safe display message and no parsed reference inventory.
+    if (spoilers || preview.value(QStringLiteral("hasSecrets"), true).toBool())
+        return preview.value(QStringLiteral("plain")).toString().trimmed();
+    return content;
+}
+
 const char *kTriggerMetadataUnavailable = "metadata_unavailable";
 const char *kTriggerDm = "dm";
 const char *kTriggerWildcard = "wildcard_mention";
@@ -153,9 +169,7 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
     if (existing != m_messageToTag.cend() && existing.value() != tag)
         return {}; // A message may not move between buckets.
     auto &entry = m_byTag[tag];
-    const auto body = candidate.markdown && NativeMarkdown::mayContainSpoilers(candidate.content)
-        ? NativeMarkdown().renderPreview(candidate.content).value("plain").toString().trimmed()
-        : candidate.content.trimmed();
+    const auto body = notificationBody(candidate);
     entry.messages.insert(candidate.messageUuid, Entry::Row{
         body, candidate.streamUuid, candidate.topicUuid, title,
         candidate.createdMicros});
