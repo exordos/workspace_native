@@ -11216,10 +11216,16 @@ private slots:
         QVERIFY2(maxContentY > 1.0,
             "a member list taller than the viewport must actually scroll");
         scroll->setProperty("contentY", maxContentY);
-        auto *lastCard = scene.require(lastCardName); QVERIFY(lastCard);
+        // A directory update can replace the visible member delegates during the scroll.
+        auto member = chatInfoUserRow(scene.scrollMemberUserUuid(20), "Scroll Member 20 updated", "active");
+        member["kind"] = "user.updated";
+        member["updated_at"] = "2026-01-02T10:01:00.000Z";
+        QVERIFY(scene.f.controller.applyRealtimeEvent({{"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+            {"project_id", projectId}, {"user_uuid", userId}, {"payload", member}}));
         frame.clear();
         scene.window->update();
         QTRY_VERIFY(!frame.isEmpty());
+        auto *lastCard = scene.require(lastCardName); QVERIFY(lastCard);
         const qreal lastCardTop = scroll->mapFromItem(lastCard, QPointF(0.0, 0.0)).y();
         QVERIFY2(lastCardTop >= -1.0, "the last card must not overshoot above the viewport");
         const qreal lastCardBottom =
