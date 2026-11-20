@@ -1725,7 +1725,8 @@ private:
     // generation even when the owner key matches again.
     quint64 m_sessionGeneration = 0;
     QString m_sessionGenerationOwner;
-    QString m_searchOwner, m_searchState;
+    QString m_searchOwner, m_searchState, m_searchQuery;
+    void refreshOpenCachedSearch(bool changeAccepted);
     QVariantList m_searchResults;
     quint64 m_searchTicket = 0;
     QPointer<NativeCacheService> m_cache;
