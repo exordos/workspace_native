@@ -171,6 +171,15 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void clickCallCard(QQuickWindow *window)
+{
+    const auto name = QStringLiteral("call-card-") + messageId;
+    QQuickItem *card = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((card = visibleItem(window->contentItem(), name))
+        && card->width() > 0 && card->height() > 0, 5000);
+    clickReadyItem(window, card);
+}
+
 static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
 {
     const auto image = [&] { return visibleItem(window->contentItem(), "inline-image-" + message); };
@@ -1514,6 +1523,7 @@ public:
     QJsonObject lastSettings;
     std::function<void()> releaseManagement;
     bool secondPollOnPage = false;
+    QJsonArray replies;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
     bool anonymous = false;
@@ -1716,6 +1726,7 @@ public:
                 return {QJsonArray{QJsonObject{{"uuid", userId}, {"username", QStringLiteral("cassi")}}}};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 QJsonArray rows{row()};
+                for (const auto &reply : replies) rows.append(reply);
                 if (secondPollOnPage)
                     rows.append(row(messageUuidTwo, QStringLiteral("Where?")));
                 return {rows};
@@ -3445,6 +3456,9 @@ private slots:
         preferences.setMode(mode);
         preferences.setLocale(locale);
         preferences.setComposerToolbarExpanded(true);
+        auto *hotkeys = preferences.hotkeys();
+        QVERIFY(hotkeys->assign("composer.bold", "Ctrl+Shift+K").isEmpty());
+        QVERIFY(hotkeys->setEnabled(false).isEmpty());
         preferences.setChatClickAction("latestTopic");
         auto *root = window->contentItem();
         click(window, item(root, "accountMenuButton"));
@@ -3465,6 +3479,8 @@ private slots:
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!dialog->property("visible").toBool());
         QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(!hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Ctrl+Shift+K"));
         QVERIFY(cache.stats().entries > 1);
         const int catalog = fixture.catalogGets;
         holdBootstrap = true;
@@ -3477,6 +3493,8 @@ private slots:
         QTRY_COMPARE(cache.stats().entries, 0);
         QCOMPARE(preferences.chatClickAction(), QString("stream"));
         QVERIFY(!preferences.composerToolbarExpanded());
+        QVERIFY(hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Mod+B"));
         QCOMPARE(preferences.mode(), QString("system"));
         QCOMPARE(preferences.organizationHistory(), organizations);
         QCOMPARE(session.loginName(), QString("example-member"));
@@ -11753,8 +11771,24 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
     }
 
+    void sidebarRowsRenderPreviewAndTime_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("previewText");
+        QTest::newRow("markdown") << QString("markdown") << QString("en")
+            << QStringLiteral("A message with missing topic metadata has no invented label.");
+        QTest::newRow("request-en") << QString("key_request") << QString("en") << QString("Key requested");
+        QTest::newRow("grant-ru") << QString("key_grant") << QString("ru") << QStringLiteral("Получен зашифрованный ключ");
+        QTest::newRow("announce-ru") << QString("key_announced") << QString("ru") << QStringLiteral("Объявлен новый ключ");
+        QTest::newRow("reject-en") << QString("key_reject") << QString("en") << QString("Key request rejected");
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
+        QFETCH(QString, kind);
+        QFETCH(QString, locale);
+        QFETCH(QString, previewText);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
         const auto fallback = fixture.server.handler;
@@ -11766,6 +11800,27 @@ mv -Tf "$root/.current-new" "$root/current"
             const auto path = request.target.path();
             auto response = fallback(request);
             if (request.method != "GET") return response;
+            if (kind != "markdown" && path.endsWith("/messages/") && response.data.isArray()) {
+                auto rows = response.data.toArray();
+                for (qsizetype i = 0; i < rows.size(); ++i) {
+                    auto row = rows.at(i).toObject();
+                    if (row.value("uuid").toString() != lastMessage) continue;
+                    QJsonObject payload{{"kind", kind}, {"key_uuid", topicId}};
+                    if (kind == "key_request") {
+                        payload.insert("public_key", "synthetic");
+                        payload.insert("device_id", "device");
+                        payload.insert("device_name", "Desktop");
+                    } else if (kind == "key_grant" || kind == "key_reject") {
+                        payload.insert("request_message_uuid", secondTopicId);
+                        payload.insert("sender_device_id", "sender");
+                        payload.insert("recipient_device_id", "recipient");
+                        if (kind == "key_grant") payload.insert("content", "synthetic");
+                    }
+                    row["payload"] = payload;
+                    rows[i] = row;
+                }
+                response.data = rows;
+            }
             const bool streamRoute = path.endsWith("/streams/")
                 || path.endsWith("/streams/" + streamId)
                 || path.endsWith("/stream_topics/") || path.endsWith("/stream_topics/" + topicId);
@@ -11789,9 +11844,10 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-previews.ini"));
-        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setLocale(locale); preferences.setMode("light");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
+        controller.setPreferences(&preferences);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
         auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
@@ -11808,7 +11864,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.topics().size() >= 3);
         // The source-scene author is the Alice user of the fixture catalog (first_name only).
-        const QString previewText = QStringLiteral("A message with missing topic metadata has no invented label.");
         // The preview exists only after the selected channel's history has been hydrated.
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const auto *row = visibleItem("streamPreviewText-" + streamId);
@@ -11825,7 +11880,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto created = QDateTime::fromString("2026-01-02T10:06:00.000Z",Qt::ISODateWithMs);
         auto *streamTime = visibleItem("streamTime-"+streamId); QVERIFY(streamTime);
         QCOMPARE(streamTime->property("text").toString(),NativeController::formatRowTime(
-            created,QLocale("en"),QDate::currentDate(),QStringLiteral("Yesterday")));
+            created,QLocale(locale),QDate::currentDate(),QStringLiteral("Yesterday")));
         QCOMPARE(streamTime->property("color").value<QColor>(),QColor("#989898"));
         QCOMPARE(visibleItem("stream-"+streamId)->height(),60); // the measured row box is unchanged
         // The default topic row carries the same message; Planning has no last message and
@@ -26163,9 +26218,7 @@ private:
         QTRY_COMPARE(controller.callWindow()->bounds(), QRect(32, 32, 1216, 736));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         // Join from the card: the store opens the shell expanded in a scrim.
-        const auto callCard = QStringLiteral("call-card-") + messageId;
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
-        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
@@ -26622,7 +26675,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(),
             int(JitsiCallWindowController::Loading));
@@ -26680,9 +26733,7 @@ private:
         QVERIFY(viewSource.contains("host.controller.apiLoadSucceeded()"));
         QVERIFY(viewSource.contains("host.controller.apiLoadFailed()"));
 
-        const auto callCard = [window] { return visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId); };
-        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
-        clickReadyItem(window, callCard());
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
 
@@ -26714,8 +26765,7 @@ private:
         qmlCall(QStringLiteral("nativeController.callWindow.close()"), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
-        clickReadyItem(window, callCard());
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
@@ -26756,9 +26806,7 @@ private:
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(
             controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26816,9 +26864,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26867,9 +26913,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26913,9 +26957,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        const auto callCard = QStringLiteral("call-card-") + messageId;
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
-        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
         QVERIFY(button);
@@ -26960,7 +27002,8 @@ private:
         window->setPosition(120, 70);
         QTRY_COMPARE_WITH_TIMEOUT(window->x(), 120, 2000);
         QTRY_COMPARE_WITH_TIMEOUT(window->y(), 70, 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_COMPARE(controller.callWindow()->bounds(), JitsiCallWindowController::expandedBounds(QSize(1100, 700)));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         QQuickWindow *pip = nullptr;
@@ -27000,9 +27043,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         std::function<int(QQuickItem *)> activeEmbedLoaders =
             [&activeEmbedLoaders](QQuickItem *root) -> int {
@@ -27073,9 +27114,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27095,7 +27134,7 @@ private:
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 20000);
@@ -27158,9 +27197,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27239,9 +27276,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27256,7 +27291,7 @@ private:
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 20000);
@@ -29263,6 +29298,55 @@ QTRY_VERIFY(create->property("enabled").toBool());
     static QString pollBubbleName(const QString &prefix, const QString &messageUuid)
     {
         return prefix + "-" + messageUuid;
+    }
+
+    void pollQuoteFrameAndComposerRenderPlainText_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollQuoteFrameAndComposerRenderPlainText()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.fixture.closesAt.clear();
+        const auto id = scene.fixture.messageUuid;
+        const auto quotedId = scene.fixture.messageUuidTwo;
+        const QString selectedId = "8d000000-0000-4000-8000-000000000003";
+        scene.fixture.addedOptions.append({pollBubbleOptionThree, "**Office**"});
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + ")\n\nAnswer", quotedId));
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + "?text=Monday)\n\nAnswer", selectedId));
+        scene.start();
+        const QString expected = "Which day?\n• Monday\n• Tuesday\n• **Office**";
+        auto *content = scene.content();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "quotePlainText-" + quotedId), 2000);
+        auto *plain = visibleItem(content, "quotePlainText-" + quotedId);
+        QCOMPARE(plain->property("text").toString(), expected);
+        QCOMPARE(plain->property("textFormat").toInt(), int(Qt::PlainText));
+        auto *selection = visibleItem(content, "quotePlainText-" + selectedId);
+        QVERIFY(selection);
+        QCOMPARE(selection->property("text").toString(), QString("Monday"));
+        QVERIFY(!visibleItem(content, "quoteBodyHtml-" + quotedId));
+        auto *bubble = visibleItem(content, "message-" + id);
+        QVERIFY(bubble);
+        QTest::mouseMove(scene.window, QPoint(5, 5));
+        bubble->forceActiveFocus(Qt::TabFocusReason);
+        const auto replyButton = [&] { return visibleItem(content, "quickReply-" + id); };
+        QTRY_VERIFY(replyButton());
+        for (int i = 0; i < 20 && replyButton() && !replyButton()->hasActiveFocus(); ++i)
+            QTest::keyClick(scene.window, Qt::Key_Tab);
+        QVERIFY(replyButton() && replyButton()->hasActiveFocus());
+        QTest::keyClick(scene.window, Qt::Key_Space);
+        QTRY_COMPARE(scene.controller.replyMessageId(), id);
+        QCOMPARE(pollItemText(content, "replyExcerptText"), expected.simplified());
+        QVERIFY(scene.controller.replyMediaUrn().isEmpty());
     }
 
     void pollBubbleCardGeometryAndStructure()
@@ -31572,6 +31656,14 @@ private slots:
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         fixture.serverKept = false;
+        std::function<void()> deliverPost;
+        const auto respond = fixture.base.server.handler;
+        fixture.base.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (request.method == "POST" && request.target.path().endsWith("/messages/"))
+                response.defer = [&](std::function<void()> deliver) { deliverPost = std::move(deliver); };
+            return response;
+        };
         QTemporaryDir directory;
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
@@ -31631,6 +31723,13 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        QTRY_VERIFY(static_cast<bool>(deliverPost));
+        QVERIFY(!qml("forwardCloseButton")->property("enabled").toBool());
+        QVERIFY(!qml("forwardCancelButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(dialog->property("opened").toBool());
+        deliverPost();
+
         // The 5xx POST leaves the batch unconfirmed: the alert explains that
         // Check never re-sends and the Check action appears; the dialog stays
         // open with a disabled re-submit - the batch is only settled by the
@@ -31640,6 +31739,24 @@ private slots:
         QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
         QVERIFY(dialog->property("opened").toBool());
         QVERIFY(!qml("forwardConfirmButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCancelButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardErrorAlert")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCloseButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(3, 3));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
         // The server actually kept it: Check confirms through the GET read-back
         // alone - the POST count stays at one - and the modal closes the same
         // way a clean success would, clearing the selection.
@@ -31755,14 +31872,16 @@ private slots:
         QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
     }
 
-    // Review round 1, finding 4 (cid 4586012837): the reference keeps every
-    // server message selectable and rejects the whole batch with a visible
-    // reason when a source cannot build a snapshot (workspace_ui 75bd21f37
-    // workspace-message-list.ui.tsx:503 + workspace-forward-message.lib.ts:78-84).
-    // A mixed markdown+poll selection therefore confirms into an alert, not
-    // into a silently-truncated forward.
-    void forwardModalRejectsMixedBatchWithUnsupportedSources()
+    void forwardModalHandlesMixedPollAndUnsupportedSources_data()
     {
+        QTest::addColumn<bool>("supported");
+        QTest::newRow("text-and-poll") << true;
+        QTest::newRow("text-and-encrypted") << false;
+    }
+
+    void forwardModalHandlesMixedPollAndUnsupportedSources()
+    {
+        QFETCH(bool, supported);
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         const QString pollMessageId = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
@@ -31783,9 +31902,16 @@ private slots:
                 {"voter_count", 0}, {"option_counts", QJsonObject{{optionOne, 0}, {optionTwo, 0}}}}}},
             {"my_votes", QJsonArray{}}};
         const auto inner = fixture.base.server.handler;
-        fixture.base.server.handler = [inner, &fixture, pollNote](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+        fixture.base.server.handler = [inner, &fixture, pollNote, supported](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                if (!supported && QUrlQuery(request.target).hasQueryItem("uuid")) {
+                    auto encrypted = pollNote;
+                    encrypted["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", pollNote["uuid"]}, {"content", "opaque"}};
+                    encrypted.remove("poll_state");
+                    return {QJsonArray{fixture.firstNote, encrypted}};
+                }
                 return {QJsonArray{fixture.firstNote, pollNote}};
+            }
             return inner(request);
         };
         QTemporaryDir directory;
@@ -31850,6 +31976,15 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        if (supported) {
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("opened").toBool(), 5000);
+            QCOMPARE(fixture.posts, 1);
+            const auto body = fixture.postedBody["payload"].toObject()["content"].toString();
+            QVERIFY(body.contains("urn:forward:" + messageId));
+            QVERIFY(body.contains("urn:forward:" + pollMessageId));
+            QVERIFY(body.contains("&format=plain"));
+            return;
+        }
         // The mixed batch is rejected with a visible reason and never posts a
         // silently-truncated snapshot; the dialog stays open for a retry.
         QTRY_VERIFY_WITH_TIMEOUT(qml("forwardErrorAlert")->property("visible").toBool(), 5000);

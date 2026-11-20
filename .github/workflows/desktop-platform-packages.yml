@@ -147,4 +147,10 @@ jobs:
           test -f "$drivers/libqsqlite.dylib"
           test "$(find "$drivers" -name '*.dylib' | wc -l | tr -d ' ')" = 1
           codesign --verify --deep --strict "$destination/workspace-native.app"
-          swift packages/native/tests/platform-package/macos-window.swift "$destination/workspace-native.app/Contents/MacOS/workspace-native"
+          startup="$RUNNER_TEMP/workspace-packaged-startup.log"
+          if ! QT_DEBUG_PLUGINS=1 swift packages/native/tests/platform-package/macos-window.swift \
+              "$destination/workspace-native.app/Contents/MacOS/workspace-native" 2>"$startup"; then
+            tail -50 "$startup"
+            exit 1
+          fi
+          python3 packages/native/tests/platform-package/macos-startup-icons.py "$startup"

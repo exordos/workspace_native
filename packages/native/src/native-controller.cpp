@@ -9829,6 +9829,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_defaultOrganizationName = tr("Exordos Core Public");
     connect(this, &NativeController::stateChanged, this, &NativeController::scheduleChatPreparation);
     connect(this, &NativeController::messagesChanged, this, &NativeController::scheduleChatPreparation);
+    connect(this, &NativeController::messagesChanged, this, &NativeController::refreshEncryptedSidebarPreviews);
     connect(this, &NativeController::stateChanged, this, &NativeController::scheduleChatControls);
     connect(this, &NativeController::messagesChanged, this, &NativeController::scheduleChatControls);
     connect(this, &NativeController::streamsChanged, this, &NativeController::archivedChatsChanged);
@@ -9932,6 +9933,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     });
     connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
         const QPointer<NativeController> lookupGuard(this);
+        interruptForward(sameOwnerRenewal);
+        if (!lookupGuard) return;
         // A same-owner renewal lets the original write finish before another
         // choice can reach the server. Sign-out and account changes retire it.
         if (!sameOwnerRenewal) m_channelInfoNotificationInFlight.clear();
@@ -14632,8 +14635,9 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
     return entries;
 }
 
-QString normalizedReplySelection(const QString &content, const QString &selectedText)
+QString normalizedReplySelection(const Message &message, const QString &selectedText)
 {
+    if (message.poll) return pollTextSnapshot(message);
     // chat-page-workspace.ui.tsx:2747-2751 (workspace_ui 230e02b8): a
     // whitespace-only selection or a body carrying encrypted fragments
     // (revealed text must never leave as a quote line, bubble-presentation
@@ -14645,7 +14649,7 @@ QString normalizedReplySelection(const QString &content, const QString &selected
     selection.replace(QChar(0x2029), QLatin1Char('\n'));
     selection.replace(QChar(0x2028), QLatin1Char('\n'));
     if (selection.trimmed().isEmpty()) return {};
-    if (content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
+    if (message.content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
     return selection;
 }
 } // namespace
@@ -14755,14 +14759,10 @@ QVariantList NativeController::messages() const
         // Match the source desktop's ownership presentation. Keep the raw
         // server flag intact for independent mutation-confirmation checks.
         const bool ownMessage = message.own || message.author == m_session->user();
-        const auto prepared = m_chatPrepared.constFind(message.uuid);
-        const bool preparedCurrent = canReadChat && prepared != m_chatPrepared.cend() && prepared->hash == chatPayloadHash(message);
+        const auto *prepared = canReadChat ? currentChatPresentation(message) : nullptr;
+        const bool preparedCurrent = prepared != nullptr;
         const bool decrypted = preparedCurrent && prepared->state == ChatKeyAvailability::Present;
-        const auto encryptionState = message.kind != "e2ee" ? QString{} : !canReadChat ? QStringLiteral("locked")
-            : !preparedCurrent ? !m_chatRejectedWindow.isEmpty() && m_chatRejectedWindow == m_chatPreparingWindow
-                ? QStringLiteral("unavailable") : QStringLiteral("preparing")
-            : prepared->state == ChatKeyAvailability::Missing ? QStringLiteral("missing")
-            : prepared->state == ChatKeyAvailability::Present ? QStringLiteral("ready") : QStringLiteral("error");
+        const auto encryptionState = message.kind == "e2ee" ? chatPresentationState(canReadChat, prepared) : QString{};
         const auto content = decrypted ? prepared->content : message.kind == "markdown" ? message.content
             : message.kind == "e2ee" ? tr("Encrypted message — key support is under development")
                                     : tr("System message (%1)").arg(message.kind);
@@ -14771,6 +14771,7 @@ QVariantList NativeController::messages() const
         // store fed by GET /messages/?uuid=, mirroring messenger-quote-resolver
         // .hook.ts:17-58 (store hit -> ready, fetch -> loading, miss -> unavailable).
         QString quoteId, quoteLabel, quoteSelection, quoteStatus, quoteAuthorName, quoteContent;
+        bool quoteIsPoll = false;
         auto displayContent = content;
         if (const auto quote = leadingQuoteReference(content)) {
             quoteId = quote->id;
@@ -14779,10 +14780,11 @@ QVariantList NativeController::messages() const
             displayContent = quote->rest;
             const auto fallback = quoteLabel.isEmpty() ? tr("Quote") : quoteLabel;
             const auto *origin = findMessage(quoteId);
-            if (origin && origin->kind == QLatin1String("markdown")) {
+            if (origin && (origin->kind == QLatin1String("markdown") || origin->poll)) {
                 quoteStatus = QStringLiteral("ready");
                 quoteAuthorName = userDisplayName(origin->author, fallback);
-                quoteContent = origin->content;
+                quoteIsPoll = origin->poll.has_value();
+                quoteContent = quoteIsPoll ? pollTextSnapshot(*origin) : origin->content;
             } else if (origin && origin->kind == QLatin1String("e2ee")) {
                 // Issue #222 (docs/NATIVE_DESKTOP_QUOTE_E2EE_STATES.md): an encrypted
                 // origin projects the chat-prepared decryption state, mirroring the
@@ -14828,7 +14830,8 @@ QVariantList NativeController::messages() const
                 } else {
                     quoteStatus = QStringLiteral("ready");
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
-                    quoteContent = record->content;
+                    quoteIsPoll = record->origin && record->origin->poll;
+                    quoteContent = quoteIsPoll ? pollTextSnapshot(*record->origin) : record->content;
                 }
             } else {
                 quoteStatus = QStringLiteral("loading");
@@ -14867,7 +14870,7 @@ QVariantList NativeController::messages() const
             {"authorPresence", avatarsOwned ? m_names.value(message.author).presence : QString{}},
             {"content", content}, {"displayContent", displayContent},
             {"quoteId", quoteId}, {"quoteLabel", quoteLabel}, {"quoteText", quoteSelection},
-            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent},
+            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent}, {"quoteIsPoll", quoteIsPoll},
             {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
@@ -16363,7 +16366,11 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
         return;
     const qreal base = qMax<qreal>(100.0, viewportHeightPx);
     qreal reserve = base;
-    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+    if (m_scrollSampleSelection != m_selection) {
+        m_scrollSampleClock.invalidate();
+        m_scrollSampleSelection = m_selection;
+    }
+    if (m_historyTimingGeneration == m_api->generation() && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
         const auto elapsed = m_scrollSampleClock.elapsed();
         const qreal travel = m_previousTopDistance - distanceFromTopPx;
         // Exclude layout jumps and idle gestures. Ahead of steady input, keep
@@ -16775,8 +16782,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
-        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
-        m_historyTimingSelection = selection;
+        m_historyTimingGeneration = m_api->generation();
         m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
@@ -17980,7 +17986,44 @@ QString NativeController::formatRowTime(const QDateTime &created, const QLocale 
     return message_time::relativeLabel(created, locale, today, yesterdayLabel);
 }
 
-std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message) const
+const NativeController::PreparedChatMessage *NativeController::currentChatPresentation(const Message &message) const
+{
+    const auto found = m_chatPrepared.constFind(message.uuid);
+    return found != m_chatPrepared.cend() && found->hash == chatPayloadHash(message) ? &*found : nullptr;
+}
+
+QString NativeController::chatPresentationState(bool allowed, const PreparedChatMessage *prepared) const
+{
+    if (!allowed) return QStringLiteral("locked");
+    if (!prepared)
+        return !m_chatRejectedWindow.isEmpty() && m_chatRejectedWindow == m_chatPreparingWindow
+            ? QStringLiteral("unavailable") : QStringLiteral("preparing");
+    if (prepared->state == ChatKeyAvailability::Present) return QStringLiteral("ready");
+    return prepared->state == ChatKeyAvailability::Missing ? QStringLiteral("missing") : QStringLiteral("error");
+}
+
+void NativeController::refreshEncryptedSidebarPreviews()
+{
+    if (m_visibleEncryptedPreviewStates.isEmpty()
+        && std::none_of(m_messages.cbegin(), m_messages.cend(), [](const Message &row) { return row.kind == "e2ee"; })) return;
+    QSet<QString> pointers;
+    for (const auto &stream : m_streams) if (!stream.lastMessage.isEmpty()) pointers.insert(stream.lastMessage);
+    for (const auto &topic : m_topics) if (!topic.lastMessage.isEmpty()) pointers.insert(topic.lastMessage);
+    QHash<QString, QString> states;
+    for (const auto &message : m_messages) {
+        if (message.kind == "e2ee" && pointers.contains(message.uuid)) {
+            const bool allowed = message.stream == m_stream && chatReadAllowed();
+            states.insert(message.uuid, chatPresentationState(allowed, allowed ? currentChatPresentation(message) : nullptr));
+        }
+    }
+    if (states == m_visibleEncryptedPreviewStates) return;
+    m_visibleEncryptedPreviewStates = std::move(states);
+    const QPointer<NativeController> guard(this);
+    emit streamsChanged();
+    if (guard) emit topicsChanged();
+}
+
+std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message, bool active) const
 {
     // workspace_ui 61dacef messenger-topic-list.lib.ts:156-188 and
     // sidebar-workspace-message-preview.ui.tsx: the sender is common.you for own messages
@@ -17992,19 +18035,25 @@ std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const
     // language change reaches the row; the cache only stores the author identity.
     preview.own = message.own;
     preview.author = message.author;
+    preview.kind = message.kind;
     QString body;
-    if (message.kind == QLatin1String("markdown")) {
+    if (message.kind == "markdown") {
         body = message.content;
-    } else {
-        // A non-markdown payload previews as the decrypted body only when this very payload
-        // has a key; otherwise the reference renders e2ee.lockedTitle and nothing else.
-        const auto prepared = m_chatPrepared.constFind(message.uuid);
-        if (prepared == m_chatPrepared.constEnd() || prepared->state != ChatKeyAvailability::Present
-            || prepared->hash != chatPayloadHash(message)) {
-            preview.locked = true;
-            return preview;
-        }
+    } else if (message.kind == "poll" && message.poll && message.pollState) {
+        preview.text = summarizeRowPreview(pollTextSnapshot(message));
+        return preview;
+    } else if (message.kind == "e2ee") {
+        // A disk or off-screen memo only carries metadata. Plaintext is derived
+        // again from the exact active message and the current viewer's vault.
+        const bool allowed = active && message.stream == m_stream && chatReadAllowed();
+        const auto *prepared = allowed ? currentChatPresentation(message) : nullptr;
+        preview.state = chatPresentationState(allowed, prepared);
+        if (preview.state != "ready") return preview;
         body = prepared->content;
+    } else {
+        if (message.kind != "key_request" && message.kind != "key_grant"
+            && message.kind != "key_announced" && message.kind != "key_reject") preview.state = QStringLiteral("locked");
+        return preview;
     }
     NativeMarkdown renderer;
     preview.text = summarizeRowPreview(renderer.renderPreview(body).value("plain").toString());
@@ -18017,7 +18066,7 @@ std::optional<NativeController::RowPreview> NativeController::rowPreview(const Q
     // empty preview line, exactly like the reference for a message it has not hydrated.
     if (uuid.isEmpty()) return std::nullopt;
     for (const auto &message : m_messages)
-        if (message.uuid == uuid) return rowPreviewOf(message);
+        if (message.uuid == uuid) return rowPreviewOf(message, true);
     const auto cached = m_rowPreviews.constFind(uuid);
     if (cached != m_rowPreviews.constEnd()) return *cached;
     // The body may still exist on disk: record the miss and let the bounded pump resolve it
@@ -18079,13 +18128,14 @@ QVariantMap NativeController::rowPreviewFields(const QString &lastMessage) const
     const auto preview = rowPreview(lastMessage);
     // An unresolved pointer (or a remembered negative lookup, whose created stays invalid)
     // keeps the reference empty preview line; a locked row is valid without any text.
-    if (!preview || (!preview->locked && !preview->created.isValid()))
+    if (!preview || !preview->created.isValid())
         return QVariantMap{{"previewSender", QString{}}, {"previewText", QString{}},
-            {"previewLocked", false}, {"rowTime", QString{}}, {"previewTopic", QString{}}};
+            {"previewLocked", false}, {"previewState", QString{}}, {"previewKind", QString{}}, {"rowTime", QString{}}, {"previewTopic", QString{}}};
     const auto sender = preview->own ? tr("You") : userDisplayName(preview->author);
     const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
     return QVariantMap{{"previewSender", sender}, {"previewText", preview->text},
-        {"previewLocked", preview->locked},
+        {"previewLocked", preview->state == "locked" || preview->state == "missing" || preview->state == "unavailable"},
+        {"previewState", preview->state}, {"previewKind", preview->kind},
         {"previewTopic", preview->topic},
         {"rowTime", formatRowTime(preview->created, locale, QDate::currentDate(),
             tr("Yesterday"))}};
@@ -18233,7 +18283,8 @@ const Message *NativeController::replyTarget(const QString &id) const
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
     if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown" || message->stream != m_stream || message->topic != m_topic)
+        || (message->kind != "markdown" && !message->poll)
+        || message->stream != m_stream || message->topic != m_topic)
         return nullptr;
     return message;
 }
@@ -18245,6 +18296,8 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         report(tr("This message can no longer be replied to."));
         return false;
     }
+    const auto selection = normalizedReplySelection(*message, selectedText);
+    if (message->poll && selection.trimmed().isEmpty()) return false;
     if (!m_editingMessage.isEmpty()) closeEditSession();
     // replyToWorkspaceReply (workspace-reply.lib.ts:26-57): an empty session gets a
     // first tab that inherits the composer text; otherwise only the active tab's
@@ -18253,7 +18306,7 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         ReplyTab tab;
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = selection;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = draft();
         m_replyTabs.append(tab);
@@ -18264,7 +18317,6 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
     }
     for (auto &tab : m_replyTabs) {
         if (tab.id != m_replyActiveTab) continue;
-        const auto selection = normalizedReplySelection(message->content, selectedText);
         if (tab.message != id || tab.selectedText != selection) {
             tab.message = id;
             tab.selectedText = selection;
@@ -18301,7 +18353,8 @@ bool NativeController::appendReplyTabs(const QStringList &ids, const QString &se
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = normalizedReplySelection(*message, selectedText);
+        if (message->poll && tab.selectedText.trimmed().isEmpty()) return false;
         tabs.append(std::move(tab));
     }
 
@@ -18475,9 +18528,13 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
     // the resolved cache content counts as "in memory" here.
     if (id.isEmpty()) return std::nullopt;
     const QString *content = nullptr;
-    if (const auto *message = findMessage(id); message) content = &message->content;
-    else if (const auto record = m_quotes.constFind(id);
-             record != m_quotes.cend() && !record->missing) content = &record->content;
+    if (const auto *message = findMessage(id)) {
+        if (message->poll) return pollTextSnapshot(*message).simplified();
+        content = &message->content;
+    } else if (const auto record = m_quotes.constFind(id); record != m_quotes.cend() && !record->missing) {
+        if (record->origin && record->origin->poll) return pollTextSnapshot(*record->origin).simplified();
+        content = &record->content;
+    }
     if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
     return previewCache.renderPreview(*content).value("plain").toString().simplified();
@@ -18684,7 +18741,8 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
             const auto parsed = rows.isEmpty() ? std::optional<Message>{}
                 : parseMessage(rows.first().toObject(), project);
-            if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
+            if (parsed && parsed->uuid == id && (parsed->kind == "markdown" || parsed->poll)) {
+                if (parsed->poll) record.origin = *parsed;
                 record.authorId = parsed->author;
                 record.content = parsed->content;
             } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee" && parsed->crypto) {
@@ -19534,6 +19592,26 @@ bool NativeController::forwardPending() const
     return m_forwardIntent.busy || m_forwardIntent.pending;
 }
 
+void NativeController::interruptForward(bool sameOwnerRenewal)
+{
+    auto &intent = m_forwardIntent;
+    if (!forwardPending()) return;
+
+    intent.generation = m_api->generation();
+    if (sameOwnerRenewal && forwardOwned(intent) && !intent.wire.isEmpty()) {
+        // Once the snapshot has reached the POST, only a read-back is safe.
+        intent.ticket = ++m_nextOutgoing;
+        intent.busy = false;
+        intent.pending = true;
+        m_forwardError = tr("Forwarding was not confirmed. Check does not send it again.");
+    } else {
+        clearForwardIntent();
+        m_forwardError = tr("Forwarding was interrupted by a session change.");
+    }
+    m_error = m_forwardError;
+    emit forwardChanged();
+}
+
 void NativeController::clearForwardIntent()
 {
     m_forwardIntent = ForwardIntent{};
@@ -19602,7 +19680,7 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
 
 void NativeController::fetchForwardSources(quint64 ticket)
 {
-    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) { clearForwardIntent(); return; }
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("project_id"), m_forwardIntent.project);
     for (const auto &uuid : m_forwardIntent.sources)
@@ -19627,11 +19705,11 @@ void NativeController::fetchForwardSources(quint64 ticket)
             // (workspace_ui 75bd21f37 workspace-forward-message.lib.ts:78-84
             // + ui.tsx:449-451). Mirror that instead of silently dropping the
             // unsupported source and posting a truncated snapshot.
-            if (parsed->kind != QLatin1String("markdown")) { unsupported = true; continue; }
+            if (parsed->kind != QLatin1String("markdown") && !parsed->poll) { unsupported = true; continue; }
             found.insert(parsed->uuid, *parsed);
         }
         if (unsupported) {
-            failForward(tr("Only text messages can be forwarded."));
+            failForward(tr("Only text messages and polls can be forwarded."));
             return;
         }
         m_forwardIntent.wire = buildForwardSnapshot(m_forwardIntent.sources, found);
@@ -19680,8 +19758,10 @@ QString NativeController::buildForwardSnapshot(const QStringList &sources,
                 .toString(Qt::ISODateWithMs);
         else
             options.sourceLabel.reset();
+        options.plainSnapshot = message.poll.has_value();
+        const auto snapshot = message.poll ? pollTextSnapshot(message) : message.content;
         const auto block = workspace::buildWorkspaceForwardReference(
-            userDisplayName(message.author, message.author), message.uuid, message.content, options);
+            userDisplayName(message.author, message.author), message.uuid, snapshot, options);
         if (block.isEmpty()) return QString();
         blocks << block;
     }
@@ -19739,10 +19819,11 @@ void NativeController::postForward(quint64 ticket)
 void NativeController::checkForwardStatus()
 {
     if (!m_forwardIntent.pending || m_forwardIntent.busy || !forwardOwned(m_forwardIntent)) return;
+    const auto ticket = m_forwardIntent.ticket;
     m_forwardIntent.busy = true;
     emit forwardChanged();
     emit stateChanged();
-    readForwardStatus(m_forwardIntent.ticket);
+    readForwardStatus(ticket);
 }
 
 void NativeController::readForwardStatus(quint64 ticket)
