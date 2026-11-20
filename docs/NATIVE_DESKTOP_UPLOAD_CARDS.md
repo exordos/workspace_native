@@ -85,7 +85,11 @@ a failed or missing acknowledgement.
 
 When reopening an edited reply, native extracts standalone attachments before
 restoring quote tabs, matching the source composer. It preserves the original
-attachment prefix when the user saves the restored reply again.
+attachment prefix when the user saves the restored reply again. A new upload
+in a reply starting with a standalone quote without a snapshot follows the
+quote, with a blank line before the attachment and before the answer. On
+reopening, that attachment belongs to the quoted tab. The editor presents the
+answer without the separator and restores the separator when saving.
 
 Image and video uploads include their intrinsic pixel width and height in the Markdown URL when the local decoder reports both within 300 ms. Binary files and unreadable media keep the existing URL. The probe uses the uploaded bytes and completes without opening the file again.
 

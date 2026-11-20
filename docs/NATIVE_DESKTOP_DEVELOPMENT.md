@@ -482,6 +482,10 @@ cache-only revision change during a still-current warm lookup falls back to HTTP
 rather than leaving that collection empty. Ordinary usage notifications do not
 restart hydration or create request loops.
 
+If a user opens a cached topic before its channel catalog finishes loading, the
+new selection revalidates that catalog. The saved-data banner clears after the
+current catalog, users and message history have been confirmed.
+
 Controller and real-window regressions exercise warm navigation, delayed opening,
 failed messenger revalidation, worker replacement and two-process restoration.
 Standalone worker and production preferences-binding checks cover their separate
@@ -747,7 +751,7 @@ QtTest function or `function:row` selector unchanged to its area's executable.
 Find a case from an older feature document with
 `git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
 substituting the function name. At migration the Linux `-datatags` inventories
-contained the same 1,645 function/data-row entries across all 24 executables.
+contained the same 1,646 function/data-row entries across all 24 executables.
 
 | Test areas | Coverage |
 | --- | --- |
