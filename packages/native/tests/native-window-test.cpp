@@ -33567,17 +33567,22 @@ private slots:
         QCOMPARE(selectedDay->property("text").toString(), QStringLiteral("13"));
         const int firstColumn = (QDate(2026, 5, 1).dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
         const int storedColumn = (stored.date().dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
-        QCOMPARE(columnOf(firstDay, grid), firstColumn);
-        QCOMPARE(columnOf(selectedDay, grid), storedColumn);
+        // QQuickGrid settles delegate positions asynchronously after open.
+        QTRY_COMPARE(columnOf(firstDay, grid), firstColumn);
+        QTRY_COMPARE(columnOf(selectedDay, grid), storedColumn);
         // The weekday header directly above the day-1 cell names the first of
         // the month's weekday.
         auto *weekdays = visibleItem("messageTimePanelWeekdays"); QVERIFY(weekdays);
-        QString headerAboveFirstDay;
-        for (auto *child : weekdays->childItems())
-            if (!child->property("text").toString().isEmpty()
-                && int(qRound(child->x() / 48.0)) == firstColumn)
-                headerAboveFirstDay = child->property("text").toString();
-        QCOMPARE(headerAboveFirstDay, uiLocale.dayName(QDate(2026, 5, 1).dayOfWeek(), QLocale::NarrowFormat));
+        const QString expectedHeader = uiLocale.dayName(QDate(2026, 5, 1).dayOfWeek(), QLocale::NarrowFormat);
+        auto headerAboveFirstDay = [&]() {
+            QString name;
+            for (auto *child : weekdays->childItems())
+                if (!child->property("text").toString().isEmpty()
+                    && int(qRound(child->x() / 48.0)) == firstColumn)
+                    name = child->property("text").toString();
+            return name;
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(headerAboveFirstDay(), expectedHeader, 5000);
         QTest::keyClick(window, Qt::Key_Escape);
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
         QTRY_VERIFY(!panel->property("visible").toBool());
@@ -33613,15 +33618,18 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         openTimestampPanelViaReference(window, QStringLiteral("urn:time:2026-01-02T10:02:03.456Z"));
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
-        window->resize(window->width(), 320);
-        QTRY_VERIFY(panel->property("height").toReal() <= window->height() + 1.0);
-        // Force the capped state directly: viewport shorter than the panel.
-        panel->setProperty("height", 200.0);
-        QTRY_VERIFY(panel->property("height").toReal() <= 200.0 + 1.0);
+        // Shrink the window below the panel height: the viewport cap (reference
+        // maxHeight calc(100dvh - 16px), :67) kicks in and the content must
+        // stay reachable by scrolling instead of being clipped away.
+        window->setProperty("minimumHeight", 0);
+        window->resize(window->width(), 240);
+        QTRY_VERIFY2(panel->property("height").toReal() <= window->height() - 16 + 1.0,
+            "Panel must cap at the viewport height minus 16 px");
+        QVERIFY(panel->property("height").toReal() < 239.0); // genuinely shorter than its content
         auto *scroll = window->findChild<QObject *>("messageTimePanelScroll");
         QVERIFY2(scroll, "A height-capped timestamp panel must expose a scrollable viewport");
         auto *scrollItem = qobject_cast<QQuickItem *>(scroll); QVERIFY(scrollItem);
-        QVERIFY(scroll->property("contentHeight").toReal() > scroll->property("height").toReal() + 1.0);
+        QTRY_VERIFY(scroll->property("contentHeight").toReal() > scroll->property("height").toReal() + 1.0);
         scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->property("height").toReal());
         auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
         QTRY_VERIFY2(timeText->mapToItem(scrollItem, QPointF(0, 0)).y() + timeText->height() <= scrollItem->height() + 1.0,
