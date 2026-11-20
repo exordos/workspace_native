@@ -1462,6 +1462,30 @@ ApplicationWindow {
         messageTimePanel.open()
     }
 
+    // The history uses translated items. Reading each position makes this
+    // binding follow row layout and the Flickable's moving content item.
+    function messageTimeOffset(item, ancestor) {
+        let x = 0, y = 0
+        for (let node = item; node && node !== ancestor; node = node.parent) {
+            x += node.x
+            y += node.y
+        }
+        return Qt.point(x, y)
+    }
+    readonly property point messageTimeChipInList: messageTimeAnchor
+        ? messageTimeOffset(messageTimeAnchor, messageList) : Qt.point(0, 0)
+    readonly property bool messageTimeChipOffscreen: !!messageTimeAnchor
+        && (messageTimeChipInList.y >= messageList.height || messageTimeChipInList.y + messageTimeAnchor.height <= 0)
+    onMessageTimeChipOffscreenChanged: {
+        if (messageTimeChipOffscreen)
+            Qt.callLater(function() {
+                if (messageTimePanel.visible && root.messageTimeChipOffscreen) {
+                    root.messageTimeAnchor = null
+                    messageTimePanel.close()
+                }
+            })
+    }
+
     // Mirrors computeFloatingPickerPosition (floating-panel-position.lib.ts:1-46):
     // 8 px viewport margin, 8 px anchor gap, centered, prefer above, clamp.
     // The panel binds x/y to this so every open recomputes from the trigger.
@@ -1476,7 +1500,8 @@ ApplicationWindow {
         const anchor = root.messageTimeAnchor
         if (anchor == null)
             return Qt.point(margin, Math.max(margin, root.height - panelHeight - margin))
-        const origin = anchor.mapToItem(messageTimePanel.parent, 0, 0)
+        const listOrigin = messageTimeOffset(messageList, messageTimePanel.parent)
+        const origin = Qt.point(listOrigin.x + messageTimeChipInList.x, listOrigin.y + messageTimeChipInList.y)
         const maxLeft = Math.max(margin, root.width - panelWidth - margin)
         const x = Math.min(Math.max(margin, origin.x + anchor.width / 2 - panelWidth / 2), maxLeft)
         const topAbove = origin.y - panelHeight - gap
@@ -1713,7 +1738,11 @@ component NativeMentionChip: Item {
 
     Item {
         id: loginCard
+        property bool showSavedAccounts: false
+        readonly property bool savedAccountsOnly: showSavedAccounts && root.controller.savedAccounts.length > 0
+            && root.controller.loginStep === "organization"
         visible: !root.controller.authenticated
+        onVisibleChanged: if (!visible) showSavedAccounts = false
         width: Math.min(root.width - 32, 448)
         height: Math.min(root.height - 32, loginContent.implicitHeight)
         anchors.centerIn: parent
@@ -1727,7 +1756,41 @@ component NativeMentionChip: Item {
                 id: loginContent
                 width: loginScroll.availableWidth
                 spacing: 24
+                ToolButton {
+                    id: wizardBack
+                    objectName: root.controller.loginStep === "organization" ? "savedAccountsBackButton"
+                        : root.controller.loginStep === "project" ? "projectBackButton" : "loginBackButton"
+                    visible: !loginCard.savedAccountsOnly && (root.controller.loginStep !== "organization"
+                        || root.controller.savedAccounts.length > 0)
+                    enabled: !root.controller.busy
+                    Layout.alignment: Qt.AlignLeft
+                    padding: 0
+                    spacing: 8
+                    font.pixelSize: 14
+                    text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
+                    contentItem: RowLayout {
+                        spacing: 8
+                        Image {
+                            source: "qrc:/workspace/icons/chevron-right.svg"
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            rotation: 180
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            text: wizardBack.text
+                            color: root.colors["text-muted"]
+                            font.pixelSize: 14
+                        }
+                    }
+                    onClicked: {
+                        const returnToAccounts = root.controller.loginStep === "organization";
+                        root.controller.backToOrganization();
+                        loginCard.showSavedAccounts = returnToAccounts;
+                    }
+                }
                 ColumnLayout {
+                    visible: !loginCard.savedAccountsOnly
                     Layout.fillWidth: true
                     spacing: 4
                     Text {
@@ -1840,10 +1903,18 @@ component NativeMentionChip: Item {
                         }
                     }
                 }
+                NativeButton {
+                    objectName: "savedAccountsAddServer"
+                    visible: loginCard.savedAccountsOnly
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Add server")
+                    onClicked: loginCard.showSavedAccounts = false
+                }
                 Loader {
                     objectName: "organizationFormLoader"
                     visible: active
-                    active: root.controller.projects.length === 0
+                    active: !loginCard.savedAccountsOnly && root.controller.projects.length === 0
                         && root.controller.loginStep === "organization"
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
@@ -2034,7 +2105,7 @@ component NativeMentionChip: Item {
                 }
                 Loader {
                     objectName: "realmPreviewLoader"
-                    visible: active
+                    visible: active && !loginCard.savedAccountsOnly
                     active: root.controller.projects.length === 0
                         && Object.keys(root.controller.organizationSettings).length > 0
                     Layout.fillWidth: true
@@ -2094,14 +2165,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 12
-                        NativeButton {
-                            objectName: "loginBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -2336,14 +2399,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
@@ -2432,14 +2487,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         Rectangle {
                             objectName: "noProjectsBanner"
                             Layout.fillWidth: true
@@ -2489,6 +2536,15 @@ component NativeMentionChip: Item {
                             }
                         }
                     }
+                }
+                NativeButton {
+                    objectName: "projectCredentialsBackButton"
+                    visible: root.controller.loginStep === "project"
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Back")
+                    enabled: !root.controller.busy
+                    onClicked: root.controller.backToCredentials()
                 }
                 Text {
                     objectName: "organizationErrorBanner"
@@ -9456,17 +9512,21 @@ component NativeMentionChip: Item {
                             activeFocusOnTab: true
                             Accessible.role: Accessible.Button
                             Accessible.name: text
+                            function openViewer() {
+                                root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                            }
+                            Accessible.onPressAction: openViewer()
                             MouseArea {
                                 anchors.fill: parent
                                 anchors.margins: -2
                                 acceptedButtons: Qt.LeftButton
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                                onClicked: messageTime.openViewer()
                             }
                             Keys.onPressed: event => {
                                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
                                     event.accepted = true
-                                    root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                                    messageTime.openViewer()
                                 }
                             }
                         }

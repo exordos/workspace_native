@@ -96,7 +96,7 @@ formatted dates inside the panel).
 ## Native design
 
 - Chip: the `messageTime` text becomes an interactive read trigger (pointer
-  click + focusable with `Enter`/`Space`, matching the reference click
+  click, assistive Press action, and focusable with `Enter`/`Space`, matching the reference click
   `:566-572` and keyboard `:490-496` contract). Firing opens the panel with
   the row's `createdAt` and returns focus to the chip on close, mirroring
   `:63-66`.
@@ -109,7 +109,9 @@ formatted dates inside the panel).
     (parity of `calc(100dvh - 16px)` :67);
   - placement mirrors `computeFloatingPickerPosition`: 8 px viewport margin,
     8 px anchor gap, centered on the trigger, prefer above, clamp into the
-    window (`floating-panel-position.lib.ts:1-2,28-45`);
+    window (`floating-panel-position.lib.ts:1-2,28-45`). The panel follows
+    the chip during scrolling and row layout. Scrolling the chip out of the
+    history viewport dismisses the panel;
   - shell palette `bg-elevated` + `border-subtle`, radius 12 (Tailwind
     `rounded-xl`), matching the `AnchoredPopover` class (`:5-6`) and the
     native popup convention (`streamMenu` background, `Main.qml:11033-11036`);
@@ -143,7 +145,9 @@ Design cross-check deltas (recorded for review):
   (`:75`); the minute-exact message shows `HH:mm` only.
 - The panel is read-only (no button/spinbutton descendants), shows the
   selected day cell, and Escape closes it without mutating anything.
-- Keyboard trigger: focusing the chip and pressing `Enter`/`Space` opens the
-  same panel (parity `:490-496`).
+- Keyboard and screen-reader activation open the same panel. Window tests use
+  `Enter`, `Space`, and the Qt accessibility Press action.
+- A real wheel event moves an open panel with its chip, preserving the 8 px
+  gap. Scrolling the chip beyond the visible history closes the panel.
 - `openReference("urn:time:...")` opens the panel with the normalized
   instant instead of the fallback notice.
