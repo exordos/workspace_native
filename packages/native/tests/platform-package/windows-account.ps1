@@ -24,6 +24,11 @@ function Control([string]$Name, $Type) {
     do {
         $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
             Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
+        if ($Mode -eq 'close-call' -and $results.Count -gt 0) {
+            $locations = @($results | ForEach-Object { $_.Current.BoundingRectangle.ToString() } | Select-Object -Unique)
+            Write-Host "Matched close controls $($results.Count), distinct rectangles $($locations.Count)."
+            if ($locations.Count -eq 1) { return $results[0] }
+        }
         if ($results.Count -eq 1) {
             if ($Name -eq 'Password') {
                 $field = $results[0].Current
@@ -37,7 +42,7 @@ function Control([string]$Name, $Type) {
     } while ((Get-Date) -lt $deadline)
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.Condition]::TrueCondition)
-    $allowed = @('Server address','Email or login','Password','Next','Login','Profile','Sign out',
+    $allowed = @('Server address','Email or login','Password','Next','Login','Profile','Sign out','Close call','Join call','Minimize','Fullscreen',
         'Could not load organization settings. Check the server address and try again.')
     foreach ($item in $all) {
         $c = $item.Current
