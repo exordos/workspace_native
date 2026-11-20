@@ -1744,6 +1744,7 @@ class PortalRequestStub final : public QObject
 public:
     using QObject::QObject;
     QString path; // path the test registered this object at (#87 round 2)
+    int closeCalls = 0;
 };
 
 class PortalRequestAdaptor final : public QDBusAbstractAdaptor
@@ -1751,7 +1752,9 @@ class PortalRequestAdaptor final : public QDBusAbstractAdaptor
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
 public:
-    explicit PortalRequestAdaptor(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+    explicit PortalRequestAdaptor(PortalRequestStub *request) : QDBusAbstractAdaptor(request) {}
+public slots:
+    void Close() { ++static_cast<PortalRequestStub *>(parent())->closeCalls; }
 signals:
     void Response(quint32 code, const QVariantMap &results);
 };
@@ -1810,6 +1813,7 @@ class PortalScreenCastStub final : public QObject
     Q_OBJECT
 public:
     using QObject::QObject;
+    std::function<void(const QString &)> sessionCreated;
     int createSessionCalls = 0;
     int selectSourcesCalls = 0;
     int startCalls = 0;
@@ -1856,9 +1860,10 @@ QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results, 
     auto *request = m_stub->takeRequest();
     auto *adaptor = request->findChild<PortalRequestAdaptor *>();
     const int delayMs = m_stub->responseDelayMs;
-    QTimer::singleShot(delayMs, request, [request, adaptor, code, results] {
+    if (delayMs < 0)
         adaptor->Response(code, results);
-    });
+    else
+        QTimer::singleShot(delayMs, request, [adaptor, code, results] { adaptor->Response(code, results); });
     return QDBusObjectPath(request->path);
 }
 
@@ -1868,6 +1873,8 @@ QDBusObjectPath PortalScreenCastAdaptor::CreateSession(const QVariantMap &option
     const QRegularExpression validToken(QStringLiteral("^[a-zA-Z0-9_]+$"));
     m_stub->validTokens = validToken.match(options.value("handle_token").toString()).hasMatch()
         && validToken.match(options.value("session_handle_token").toString()).hasMatch();
+    if (m_stub->sessionCreated)
+        m_stub->sessionCreated(options.value("session_handle_token").toString());
     return answerWith({{"session_handle", m_stub->sessionPath}});
 }
 
@@ -26594,6 +26601,62 @@ private slots:
         QCOMPARE(cast.startCalls, 2);
         QVERIFY(!failed.at(0).at(0).toString().isEmpty());
         QTRY_COMPARE(session.closeCalls, 2);
+    }
+
+    void shareSourcePickerHandlesPortalResponseTiming_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("immediate-alternate-request-path") << QString("immediate");
+        QTest::newRow("timeout-during-create") << QString("timeout");
+        QTest::newRow("release-during-start") << QString("release");
+    }
+
+    void shareSourcePickerHandlesPortalResponseTiming()
+    {
+        QFETCH(QString, scenario);
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected() || !bus.registerService("org.freedesktop.portal.Desktop"))
+            QSKIP("the fixture needs a private session bus");
+        auto unown = qScopeGuard([&] { bus.unregisterService("org.freedesktop.portal.Desktop"); });
+        QObject portal;
+        PortalScreenCastStub cast;
+        new PortalScreenCastAdaptor(&cast, &portal);
+        const QString portalPath = "/org/freedesktop/portal/desktop";
+        QVERIFY(bus.registerObject(portalPath, &portal));
+        PortalRequestPool requests;
+        QVERIFY(requests.registerOn(bus, portalPath + "/request/fixture/alternative", 3, cast));
+        PortalSessionStub session;
+        cast.sessionCreated = [&](const QString &token) {
+            auto sender = bus.baseService().mid(1);
+            cast.sessionPath = portalPath + "/session/" + sender.replace('.', '_') + "/" + token;
+            QVERIFY(bus.registerObject(cast.sessionPath, &session, QDBusConnection::ExportAllSlots));
+        };
+        auto cleanup = qScopeGuard([&] {
+            requests.unregisterFrom(bus);
+            bus.unregisterObject(cast.sessionPath);
+            bus.unregisterObject(portalPath);
+        });
+        cast.responseDelayMs = scenario == "immediate" ? -1 : 120;
+        ScreenShareSourcePicker picker;
+        picker.setPortalTimeoutMs(scenario == "timeout" ? 60 : 1000);
+        QSignalSpy selected(&picker, &ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        if (scenario == "immediate") {
+            QTRY_COMPARE_WITH_TIMEOUT(selected.size(), 1, 1800);
+            QCOMPARE(failed.size(), 0);
+            picker.releaseSource();
+        } else {
+            if (scenario == "release") {
+                QTRY_COMPARE_WITH_TIMEOUT(cast.startCalls, 1, 800);
+                picker.releaseSource();
+            }
+            QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 1800);
+            QTRY_COMPARE(cast.requestPool.at(cast.requestCursor - 1)->closeCalls, 1);
+            QTest::qWait(150);
+            QCOMPARE(selected.size(), 0);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(session.closeCalls, 1, 1000);
     }
 
     void shareSourcePickerRejectsMalformedOrMissingPortalStreams()

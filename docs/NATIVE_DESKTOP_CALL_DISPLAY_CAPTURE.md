@@ -134,7 +134,10 @@ a distinct `handle_token`.
    it with a new selection, or destroys the picker.
 
 Cancelling the chooser reports cancellation and closes the pending session.
-An error or timeout also closes any pending request and session.
+An error, timeout or explicit release also closes any pending request and
+session. The session token gives the picker its expected path before the
+creation response arrives. For portals returning a different Request handle,
+the picker matches any early response with the handle in the method reply.
 [ScreenCast portal interface](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
 
 When no portal is registered on the session bus, the picker falls back

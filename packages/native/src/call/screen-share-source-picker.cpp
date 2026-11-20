@@ -23,18 +23,19 @@ constexpr auto kPortalService = "org.freedesktop.portal.Desktop";
 constexpr auto kPortalPath = "/org/freedesktop/portal/desktop";
 constexpr auto kScreenCastInterface = "org.freedesktop.portal.ScreenCast";
 constexpr auto kRequestInterface = "org.freedesktop.portal.Request";
+constexpr auto kSessionInterface = "org.freedesktop.portal.Session";
 
 QString handleToken()
 {
     return QStringLiteral("workspace_") + QUuid::createUuid().toString(QUuid::Id128);
 }
 
-QString requestPathFor(const QString &token)
+QString portalObjectPath(const QString &kind, const QString &token)
 {
     QString sender = QDBusConnection::sessionBus().baseService();
     sender.remove(0, 1);
     sender.replace('.', '_');
-    return QStringLiteral("/org/freedesktop/portal/desktop/request/%1/%2").arg(sender, token);
+    return QStringLiteral("/org/freedesktop/portal/desktop/%1/%2/%3").arg(kind, sender, token);
 }
 
 void closePortalObject(const QString &path, const char *interface)
@@ -60,8 +61,10 @@ ScreenShareSourcePicker::~ScreenShareSourcePicker()
 
 void ScreenShareSourcePicker::releaseSource()
 {
-    closePortalObject(m_selectedSession, "org.freedesktop.portal.Session");
+    closePortalObject(m_selectedSession, kSessionInterface);
     m_selectedSession.clear();
+    if (m_portalExchangeActive)
+        failCurrentExchange(tr("The screen share source selection was cancelled."));
 }
 
 void ScreenShareSourcePicker::setPortalProbe(PortalProbe probe)
@@ -128,7 +131,8 @@ void ScreenShareSourcePicker::startDefaultPortalExchange()
     m_portalExchangeActive = true;
     const quint64 serial = ++m_exchangeSerial;
     m_portalStep = Step::CreateSession;
-    m_sessionPath.clear();
+    const auto sessionToken = handleToken();
+    m_sessionPath = portalObjectPath(QStringLiteral("session"), sessionToken);
     // One timer per exchange (finding 3): it is owned by this serial and is
     // stopped and destroyed when the exchange completes, so it can never fire
     // against a later exchange the way the previous shared timer did. The
@@ -136,14 +140,14 @@ void ScreenShareSourcePicker::startDefaultPortalExchange()
     // user's pick inside the portal dialog.
     armPortalTimeout(serial);
     callPortalStep(serial, "CreateSession", {QVariantMap{
-        {QStringLiteral("session_handle_token"), handleToken()}}});
+        {QStringLiteral("session_handle_token"), sessionToken}}});
 }
 
 void ScreenShareSourcePicker::callPortalStep(
     quint64 serial, const char *method, const QVariantList &args)
 {
     const QString token = handleToken();
-    const QString expectedPath = requestPathFor(token);
+    const QString expectedPath = portalObjectPath(QStringLiteral("request"), token);
     if (!subscribePortalRequest(expectedPath)) {
         failCurrentExchange(tr("The system screen picker could not be opened."));
         return;
@@ -168,21 +172,23 @@ void ScreenShareSourcePicker::callPortalStep(
             failCurrentExchange(tr("The system screen picker could not be opened."));
             return;
         }
-        if (path != expectedPath) {
-            unsubscribePortalRequest();
-            if (!subscribePortalRequest(path))
-                failCurrentExchange(tr("The system screen picker could not be opened."));
-        }
+        m_requestPath = path;
+        m_waitingForRequestPath = false;
+        const auto early = std::exchange(m_earlyResponses, {});
+        const auto response = early.constFind(path);
+        if (response != early.cend())
+            handlePortalResult(response->first, response->second);
     });
 }
 
 bool ScreenShareSourcePicker::subscribePortalRequest(const QString &path)
 {
-    if (!QDBusConnection::sessionBus().connect(QLatin1String(kPortalService), path,
+    if (!QDBusConnection::sessionBus().connect(QLatin1String(kPortalService), {},
             QLatin1String(kRequestInterface), QStringLiteral("Response"), this,
             SLOT(onPortalResponse(uint,QVariantMap,QDBusMessage))))
         return false;
     m_requestPath = path;
+    m_waitingForRequestPath = true;
     return true;
 }
 
@@ -190,10 +196,12 @@ void ScreenShareSourcePicker::unsubscribePortalRequest()
 {
     if (m_requestPath.isEmpty())
         return;
-    QDBusConnection::sessionBus().disconnect(QLatin1String(kPortalService), m_requestPath,
+    QDBusConnection::sessionBus().disconnect(QLatin1String(kPortalService), {},
         QLatin1String(kRequestInterface), QStringLiteral("Response"), this,
         SLOT(onPortalResponse(uint,QVariantMap,QDBusMessage)));
     m_requestPath.clear();
+    m_waitingForRequestPath = false;
+    m_earlyResponses.clear();
 }
 
 void ScreenShareSourcePicker::armPortalTimeout(quint64 serial)
@@ -212,8 +220,21 @@ void ScreenShareSourcePicker::armPortalTimeout(quint64 serial)
 void ScreenShareSourcePicker::onPortalResponse(uint code, const QVariantMap &results,
     const QDBusMessage &signal)
 {
-    if (!m_portalExchangeActive || signal.path() != m_requestPath)
+    if (!m_portalExchangeActive)
         return;
+    if (signal.path() != m_requestPath) {
+        // Older portals can choose a different Request path. A Response may
+        // precede the method reply; only the path confirmed by that reply wins.
+        if (m_waitingForRequestPath && m_earlyResponses.size() < 32
+            && signal.path().startsWith(QStringLiteral("/org/freedesktop/portal/desktop/request/")))
+            m_earlyResponses.insert(signal.path(), {code, results});
+        return;
+    }
+    handlePortalResult(code, results);
+}
+
+void ScreenShareSourcePicker::handlePortalResult(uint code, const QVariantMap &results)
+{
     unsubscribePortalRequest();
     if (code != 0) {
         failCurrentExchange(code == 1 ? tr("The screen share source selection was cancelled.")
@@ -222,11 +243,12 @@ void ScreenShareSourcePicker::onPortalResponse(uint code, const QVariantMap &res
     }
     switch (m_portalStep) {
     case Step::CreateSession: {
-        m_sessionPath = results.value(QStringLiteral("session_handle")).toString();
-        if (m_sessionPath.isEmpty()) {
+        const auto session = results.value(QStringLiteral("session_handle")).toString();
+        if (session.isEmpty()) {
             failCurrentExchange(tr("The system screen picker could not be opened."));
             return;
         }
+        m_sessionPath = session;
         m_portalStep = Step::SelectSources;
         callPortalStep(m_exchangeSerial, "SelectSources", {QDBusObjectPath(m_sessionPath),
             QVariantMap{{QStringLiteral("types"), 3u}}});
@@ -242,7 +264,7 @@ void ScreenShareSourcePicker::onPortalResponse(uint code, const QVariantMap &res
             failCurrentExchange(tr("The screen share result did not include a selectable stream."));
             return;
         }
-        releaseSource();
+        closePortalObject(m_selectedSession, kSessionInterface);
         m_selectedSession = std::exchange(m_sessionPath, {});
         Source source;
         source.id = QStringLiteral("portal-stream");
@@ -283,7 +305,7 @@ void ScreenShareSourcePicker::finishCurrentExchange()
     }
     closePortalObject(m_requestPath, kRequestInterface);
     unsubscribePortalRequest();
-    closePortalObject(m_sessionPath, "org.freedesktop.portal.Session");
+    closePortalObject(m_sessionPath, kSessionInterface);
     m_sessionPath.clear();
     m_portalStep = Step::CreateSession;
 }

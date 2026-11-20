@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QVariantMap>
 
 #include <functional>
+#include <utility>
 
 class QDBusMessage;
 class QTimer;
@@ -92,6 +94,7 @@ private:
     void callPortalStep(quint64 serial, const char *method, const QVariantList &args);
     bool subscribePortalRequest(const QString &requestPath);
     void unsubscribePortalRequest();
+    void handlePortalResult(uint code, const QVariantMap &results);
     void armPortalTimeout(quint64 serial);
     bool isCurrentExchange(quint64 serial) const;
     void failCurrentExchange(const QString &reason);
@@ -107,6 +110,8 @@ private:
     QString m_sessionPath;
     QTimer *m_portalTimer = nullptr;
     QString m_requestPath;
+    bool m_waitingForRequestPath = false;
+    QHash<QString, std::pair<uint, QVariantMap>> m_earlyResponses;
     QString m_selectedSession;
 };
 
