@@ -435,6 +435,7 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
         return;
     }
     m_transport->show(snap->tag, formatTitle(snap->titleContext, snap->count), snap->body);
+    emit soundRequested();
     if (!m_windowFocused)
         m_transport->requestAttention();
     markProcessed(key);
@@ -448,6 +449,7 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     const auto tag = NotificationAggregateRegistry::fallbackTag(candidate.owner, candidate.messageUuid);
     const auto body = m_genericBody ? m_genericBody() : QString();
     m_transport->show(tag, tr("You have a new message"), body);
+    emit soundRequested();
     m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
     m_liveFallbackTags[candidate.owner].insert(tag);
     m_fallbackOrder.append(qMakePair(candidate.owner, tag));

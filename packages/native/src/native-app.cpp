@@ -22,6 +22,7 @@
 static void initializeNativeResources()
 {
     Q_INIT_RESOURCE(native_icons);
+    Q_INIT_RESOURCE(native_sounds);
     Q_INIT_RESOURCE(native_brand);
 }
 
