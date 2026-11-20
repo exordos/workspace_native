@@ -54,7 +54,9 @@ try {
         if ($window -ne [IntPtr]::Zero -and [NativeWindow]::IsWindowVisible($window) -and
             [NativeWindow]::GetClientRect($window, [ref]$bounds) -and $bounds.Right -ge 400 -and $bounds.Bottom -ge 300) {
             $bin = (Get-Item $Executable).Directory.FullName
-            foreach ($name in @('MSVCP140.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')) {
+            $runtimes = @('MSVCP140.dll', 'VCRUNTIME140.dll')
+            if ($Architecture -eq 'x64') { $runtimes += 'VCRUNTIME140_1.dll' }
+            foreach ($name in $runtimes) {
                 $loaded = @($app.Modules | Where-Object { $_.ModuleName -eq $name })
                 if ($loaded.Count -ne 1 -or (Split-Path $loaded[0].FileName) -ne $bin) {
                     throw "The application did not load its own $name runtime."
