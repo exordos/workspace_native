@@ -1511,6 +1511,54 @@ ApplicationWindow {
             });
     }
 
+// Issue #109 review F3 (cid 4639284120): the chip exposes
+// an accessible name and Enter/Space activation. It is
+// focusable on demand (press or programmatic focus) but
+// keeps activeFocusOnTab false, so the bubble's tab chain
+// and the pinned keyboard focus-order expectations of
+// existing window cases stay unchanged.
+component NativeMentionChip: Item {
+    required property var modelData
+    objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
+    x: modelData.x
+    y: modelData.y
+    width: modelData.w
+    height: modelData.h
+    visible: modelData.w > 0 && modelData.h > 0
+    activeFocusOnTab: false
+    Accessible.role: Accessible.Button
+    Accessible.name: qsTr("Open profile for %1")
+        .arg(String(modelData.label || modelData.urn).replace("urn:user:", ""))
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            event.accepted = true;
+            root.openReference(modelData.urn);
+        }
+    }
+    Keys.onReleased: (event) => {
+        if (event.key === Qt.Key_Space) {
+            event.accepted = true;
+            root.openReference(modelData.urn);
+        }
+    }
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -1
+        visible: parent.activeFocus
+        color: "transparent"
+        radius: 2
+        border.width: 2
+        border.color: root.colors["accent-soft"]
+    }
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton
+        cursorShape: Qt.PointingHandCursor
+        onPressed: parent.forceActiveFocus()
+        onClicked: root.openReference(modelData.urn)
+    }
+}
+
     function openReference(link, imageFailed) {
         const reference = root.markdown.reference(link);
         if (reference.kind === "external") {
@@ -7698,48 +7746,76 @@ ApplicationWindow {
                     // Geometry comes from scanning the body TextEdit's
                     // linkAt map (only bodies that actually carry mentions).
                     // Inline-image bodies keep their per-part link handling.
+                    // Issue #109 reviews F4/F6 (cid 4639284127/4639284139):
+                    // the locator never samples the body area with linkAt.
+                    // Each occurrence is located by its plain label inside
+                    // the item's own laid-out text, and its geometry is read
+                    // from the text layout (positionToRectangle) while
+                    // walking only that label's characters. One rectangle is
+                    // produced per occurrence and line, bounded by the actual
+                    // link bounds. Review F2 (cid 4639284117): inline-image
+                    // bodies locate the mentions of every visible text part.
+                    readonly property var mentionLabels: rendered.mentionLabels || []
+                    readonly property var mentionPairs: messageRow.mentionUrns.map(
+                        (urn, index) => ({ urn: urn, label: String(messageRow.mentionLabels[index] || "") }))
                     property var mentionTargets: locateMentionTargets()
+                    function mentionRectsIn(item, pairs, overlay) {
+                        const out = [];
+                        if (!item || !item.visible || item.width <= 0 || pairs.length === 0)
+                            return out;
+                        const full = String(item.getText(0, item.length));
+                        let cursor = 0;
+                        for (const pair of pairs) {
+                            const label = pair.label;
+                            if (!label.length)
+                                continue;
+                            let found = full.indexOf(label, cursor);
+                            if (found < 0)
+                                found = full.indexOf(label);
+                            if (found < 0)
+                                continue;
+                            cursor = found + label.length;
+                            const end = found + label.length;
+                            let i = found;
+                            while (i < end) {
+                                const top = item.positionToRectangle(i);
+                                let j = i;
+                                while (j + 1 < end && Math.abs(item.positionToRectangle(j + 1).y - top.y) < 0.5)
+                                    ++j;
+                                const next = item.positionToRectangle(Math.min(j + 1, end));
+                                const right = (j + 1 < end && Math.abs(next.y - top.y) < 0.5)
+                                    ? next.x : top.x + Math.max(8, top.width);
+                                const origin = item.mapToItem(overlay, top.x, top.y);
+                                out.push({ urn: pair.urn, label: label,
+                                    x: origin.x, y: origin.y,
+                                    w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
+                                i = j + 1;
+                            }
+                        }
+                        return out;
+                    }
                     function locateMentionTargets() {
-                        if (!messageBody.visible || messageBody.width <= 0 || messageRow.mentionUrns.length === 0)
-                            return [];
-                        const width = messageBody.width, height = messageBody.height;
-                        const runs = [];
-                        let probes = 0;
-                        for (let y = 1; y < height; y += 3) {
-                            let run = null;
-                            for (let x = 1; x < width; x += 3) {
-                                probes += 1;
-                                const href = String(messageBody.linkAt(x, y) || "");
-                                if (href.indexOf("urn:user:") === 0) {
-                                    if (run === null) run = { urn: href, firstX: x, lastX: x, y: y };
-                                    else if (href !== run.urn) { runs.push(run); run = { urn: href, firstX: x, lastX: x, y: y }; }
-                                    else run.lastX = x;
-                                } else if (run !== null) { runs.push(run); run = null; }
-                            }
-                            if (run !== null) runs.push(run);
+                        if (!messageRow.hasInlineImages)
+                            return mentionRectsIn(messageBody, messageRow.mentionPairs, bodyMentionOverlay);
+                        const out = [];
+                        if (!mediaMessageBody.visible || mediaMessageBody.width <= 0
+                            || messageRow.mentionPairs.length === 0)
+                            return out;
+                        let consumed = 0;
+                        for (let i = 0; i < imageRuns.count && consumed < messageRow.mentionPairs.length; ++i) {
+                            const run = imageRuns.itemAt(i);
+                            const part = run ? run.part : null;
+                            if (!part || String(part.kind) !== "text")
+                                continue;
+                            const count = String(part.html || "").split("<a href=\"urn:user:").length - 1;
+                            if (count <= 0)
+                                continue;
+                            const pairs = messageRow.mentionPairs.slice(consumed, consumed + count);
+                            consumed += count;
+                            for (const rect of mentionRectsIn(run.textPart, pairs, mediaMentionOverlay))
+                                out.push(rect);
                         }
-                        const rects = [];
-                        for (let i = 0; i < runs.length; ++i) {
-                            const run = runs[i];
-                            const previous = rects.length ? rects[rects.length - 1] : null;
-                            if (previous !== null && previous.urn === run.urn && run.y - previous.y <= 10
-                                && run.firstX <= previous.lastX + 6 && previous.firstX <= run.lastX + 6) {
-                                previous.firstX = Math.min(previous.firstX, run.firstX);
-                                previous.lastX = Math.max(previous.lastX, run.lastX);
-                                previous.bottom = Math.max(previous.bottom, run.y);
-                            } else {
-                                rects.push({ urn: run.urn, y: run.y, bottom: run.y, firstX: run.firstX, lastX: run.lastX });
-                            }
-                        }
-                        const result = rects.map(rect => ({
-                            urn: rect.urn,
-                            x: Math.max(0, rect.firstX - 2),
-                            y: Math.max(0, rect.y - 5),
-                            w: Math.max(4, Math.min(width, rect.lastX + 2) - Math.max(0, rect.firstX - 2)),
-                            h: rect.bottom - rect.y + 12
-                        }));
-                        messageBody.linkAtProbes = probes;
-                        return result;
+                        return out;
                     }
                     function imagePartHtml(part, index) {
                         const html = root.mentionChipHtml(String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'));
@@ -7793,6 +7869,9 @@ ApplicationWindow {
                         if (messageBody.forceLayout) messageBody.forceLayout();
                         mediaMessageBody.forceLayout();
                         bubbleContent.forceLayout();
+                        // Issue #109 review F4/F6: the locator reads the laid-out
+                        // text, so rebind it after the forced layout passes settle.
+                        messageRow.mentionTargets = Qt.binding(() => locateMentionTargets());
                     }
                     Component.onCompleted: {
                         settleGeometry();
@@ -8722,29 +8801,16 @@ ApplicationWindow {
                                 // Children of the body item keep the bubble
                                 // Column layout untouched.
                                 Item {
-                                    objectName: "message-mentions-" + String(messageRow.modelData.id)
-                                    visible: messageRow.mentionTargets.length > 0
+                                    id: bodyMentionOverlay
+                                    objectName: messageRow.hasInlineImages
+                                        ? "" : "message-mentions-" + String(messageRow.modelData.id)
+                                    visible: !messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
                                     width: 0
                                     height: 0
                                     z: 2
                                     Repeater {
                                         model: messageRow.mentionTargets
-                                        delegate: Item {
-                                            required property var modelData
-                                            objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
-                                            x: modelData.x
-                                            y: modelData.y
-                                            width: modelData.w
-                                            height: modelData.h
-                                            visible: modelData.w > 0 && modelData.h > 0
-                                            Accessible.role: Accessible.Button
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                acceptedButtons: Qt.LeftButton
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.openReference(modelData.urn)
-                                            }
-                                        }
+                                        delegate: NativeMentionChip {}
                                     }
                                 }
                             }
@@ -8775,24 +8841,24 @@ ApplicationWindow {
                                         required property var modelData
                                         required property int index
                                         readonly property var part: modelData
+                                        readonly property Item textPart: textRun
                                         readonly property real imageNaturalWidth: part.kind === "image" ? picture.implicitWidth + 2 : 0
                                         readonly property real imageWrapperHeight: Math.min(180, picture.height + 10)
                                         width: mediaMessageBody.width
                                         height: part.kind === "image" ? imageWrapperHeight + 8 : textRun.contentHeight + textRun.bottomPadding
-                                        Text {
+                                        TextEdit {
                                             id: textRun
                                             visible: imageRun.part.kind === "text"
                                             width: parent.width
                                             height: contentHeight + bottomPadding
                                             text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
-                                            textFormat: Text.RichText
-                                            wrapMode: Text.Wrap
+                                            textFormat: TextEdit.RichText
+                                            readOnly: true
+                                            cursorVisible: false
+                                            wrapMode: TextEdit.Wrap
                                             font.pixelSize: 14
-                                            lineHeightMode: Text.FixedHeight
-                                            lineHeight: 20
                                             bottomPadding: messageRow.inlineMeta && imageRun.index === messageRow.imageParts.length - 1 ? 2 : 0
-                                            color: root.colors["text-primary"]
-                                            linkColor: root.colors.accent
+                                            palette.link: root.colors.accent
                                             onLinkActivated: link => root.openReference(link)
                                             Accessible.ignored: true
                                         }
@@ -8816,6 +8882,21 @@ ApplicationWindow {
                                                 && (!root.controller.messageHistoryReady || messageList.openingApplied)
                                             onOpened: root.openReference(reference, picture.failed)
                                         }
+                                    }
+                                }
+                                Item {
+                                    id: mediaMentionOverlay
+                                    objectName: messageRow.hasInlineImages
+                                        ? "message-mentions-" + String(messageRow.modelData.id) : ""
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    visible: messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    width: 0
+                                    height: 0
+                                    z: 2
+                                    Repeater {
+                                        model: messageRow.mentionTargets
+                                        delegate: NativeMentionChip {}
                                     }
                                 }
                             }

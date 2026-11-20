@@ -1022,8 +1022,8 @@ public:
         server.handler = [this, fallback](const Request &request) -> Response {
             const auto path = request.target.path();
             if (path.endsWith("/messages/") && request.method == "GET") {
-                const auto body = QStringLiteral("Before [Ann](urn:user:%1) mid "
-                    "![shot](urn:image:%2?name=s.png&content_type=image%2Fpng&w=8&h=8) "
+                const auto body = QStringLiteral("Before [Ann](urn:user:%1) mid\n"
+                    "![shot](urn:image:%2?name=s.png&content_type=image%2Fpng&w=8&h=8)\n"
                     "tail [Bob](urn:user:%3)")
                     .arg(annUuid(), messageId, bobUuid());
                 return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
@@ -34279,12 +34279,23 @@ private slots:
         QVERIFY(visibleItem("message-content-" + messageId));
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + ann), 4000);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + bob), 4000);
-        const auto annChips = window->contentItem()->findChildren<QQuickItem*>("message-mention-" + ann);
-        const auto bobChips = window->contentItem()->findChildren<QQuickItem*>("message-mention-" + bob);
-        QCOMPARE(annChips.size(), 1);
-        QCOMPARE(bobChips.size(), 1);
-        QVERIFY2(annChips.first()->width() > 4 && annChips.first()->height() > 4,
-            qPrintable(QStringLiteral("ann chip %1x%2").arg(annChips.first()->width()).arg(annChips.first()->height())));
+        std::function<int(QQuickItem *, const QString &)> countVisibleNamed;
+        countVisibleNamed = [&countVisibleNamed](QQuickItem *root, const QString &name) {
+            int total = 0;
+            if (root->isVisible() && root->objectName() == name)
+                ++total;
+            const auto children = root->childItems();
+            for (auto *child : children)
+                total += countVisibleNamed(child, name);
+            return total;
+        };
+        // Exactly one visible chip per mention occurrence (guards against the
+        // body and media overlays both emitting).
+        QCOMPARE(countVisibleNamed(window->contentItem(), "message-mention-" + ann), 1);
+        QCOMPARE(countVisibleNamed(window->contentItem(), "message-mention-" + bob), 1);
+        auto *annChip = visibleItem("message-mention-" + ann);
+        QVERIFY2(annChip->width() > 4 && annChip->height() > 4,
+            qPrintable(QStringLiteral("ann chip %1x%2").arg(annChip->width()).arg(annChip->height())));
         if (!closeIncubatedTestWindow(engine, window))
             QFAIL("inline-image mention scene teardown");
     }

@@ -402,6 +402,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     // the link title, so the token is consumed here on the md4c output and
     // the ordered urn list is exposed to the view as "mentions".
     QStringList mentionUrns;
+    QStringList mentionLabels;
     {
         // Issue #109 review F1/F5 (cid 4639284110, cid 4639284135): the
         // original anchor regex rejected HTML tags inside labels, so MD4C
@@ -493,6 +494,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
             if (!silent && !label.startsWith(QLatin1Char('@')))
                 label.prepend(QLatin1Char('@'));
             mentionUrns.append(QStringLiteral("urn:user:") + head.captured(1).toLower());
+            mentionLabels.append(label);
             anchors.append({static_cast<int>(hit.capturedStart()), static_cast<int>(closeEnd - hit.capturedStart()), head.captured(1).toLower(), label});
             from = closeEnd;
         }
@@ -604,7 +606,12 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
-                             {"parts", orderedImageParts(document)}, {"mentions", mentionUrns}};
+                             {"parts", orderedImageParts(document)}, {"mentions", mentionUrns},
+                             // Issue #109 reviews F4/F6: the visible plain text of every
+                             // mention occurrence (with the same "@" prefix rules the
+                             // anchor got), in document order, so the view can locate the
+                             // occurrence inside its laid-out text without re-parsing.
+                             {"mentionLabels", mentionLabels}};
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);
