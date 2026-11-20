@@ -21895,7 +21895,11 @@ mv -Tf "$root/.current-new" "$root/current"
         const QRectF bounds(QPointF{}, scene.window->size());
         QTRY_VERIFY(bounds.contains(signOut->mapRectToScene({QPointF{}, signOut->size()})));
         const auto position = signOut->mapToScene(QPointF{});
+        auto *command = visibleItem("refreshButton");
+        QVERIFY(command);
+        const auto before = command->mapToScene(QPointF{}).y();
         scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->height());
+        QTRY_VERIFY(command->mapToScene(QPointF{}).y() < before);
         QCOMPARE(signOut->mapToScene(QPointF{}), position);
         click(scene.window, signOut);
         QTRY_VERIFY(!scene.controller.authenticated());
