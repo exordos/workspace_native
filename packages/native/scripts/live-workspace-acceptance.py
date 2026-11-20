@@ -500,6 +500,13 @@ class Desktop:
 
     def login(self):
         self.fill("serverInput", self.config["origin"])
+        field = self.lookup("serverInput").get_text_iface()
+        self.until(
+            lambda: field is not None
+            and field.get_text(0, -1) == self.config["origin"],
+            "organization-field-mismatch",
+            3,
+        )
         self.click("organizationNextButton")
         try:
             self.lookup("userInput", 2)
@@ -1163,7 +1170,7 @@ def main():
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid, signal.SIGKILL)
                         proc.wait()
-    from live_acceptance_network import NetworkConditions
+    from live_acceptance_network import NetworkConditions, probe_organization_settings
 
     result = {"status": "BLOCKED", "blocked": ["runner-infrastructure"]}
     desktop = None
@@ -1185,6 +1192,10 @@ def main():
         config = fixture(json.load(sys.stdin)) if args.mode != "probe" else {}
         if config:
             context["backend_version"] = config["backend_version"]
+            settings = probe_organization_settings(config["origin"])
+            context["organization_settings"] = settings
+            if settings != "ready":
+                raise Blocked("organization-settings-" + settings)
             context["reference_fingerprint"] = hashlib.sha256(
                 str(config.get("reference", "")).encode()
             ).hexdigest()[:16]

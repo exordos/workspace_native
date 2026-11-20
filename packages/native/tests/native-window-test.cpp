@@ -168,6 +168,13 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
+{
+    const auto image = [&] { return visibleItem(window->contentItem(), "inline-image-" + message); };
+    QTRY_VERIFY(image() && image()->isVisible() && image()->property("loadActive").toBool());
+    clickReadyItem(window, image());
+}
+
 static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
 {
     auto *root = window->contentItem();
@@ -6568,8 +6575,8 @@ mv -Tf "$root/.current-new" "$root/current"
     void feedPageRouteOpensPageAndRendersRows()
     {
         WindowFeedFixture fixture;
-        fixture.rows = {{1, fixture.one(1)}, {2, fixture.one(2)}, {3, fixture.one(3)}};
-        const QString firstId = fixture.one(1).value("uuid").toString();
+        for (int i = 1; i <= 24; ++i) fixture.rows.insert(i, fixture.one(i));
+        const QString sourceId = fixture.one(12).value("uuid").toString();
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("p.ini"));
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
@@ -6581,6 +6588,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(!controller.messages().isEmpty());
+        const auto chatId = controller.messages().first().toMap().value("id").toString();
+        QVERIFY(!chatId.isEmpty() && chatId != sourceId);
+        QVERIFY(QMetaObject::invokeMethod(window, "toggleMessageSelection", Q_ARG(QVariant, chatId)));
+        QCOMPARE(window->property("messageSelectionCount").toInt(), 1);
         // The feed route is the entry surface: the reference keeps the rail
         // entry hidden (sidebar.lib.ts:80-98), so parity means the route only.
         const auto link = QString("ew://open/org/%1/project/%2/feed")
@@ -6589,24 +6601,57 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(controller.feedVisible());
         QVERIFY(view("nativeFeedPage"));
         QVERIFY(hasVisibleText(window->contentItem(), "All messages"));
-        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + firstId)
+        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + sourceId)
             && view("feed-row-" + fixture.one(3).value("uuid").toString()), 5000);
         // Context pill: "${stream name} \u00b7 ${topic name}" with the scene names.
-        auto *context = view("feed-context-" + firstId); QVERIFY(context);
+        auto *context = view("feed-context-" + sourceId); QVERIFY(context);
         QCOMPARE(context->property("text").toString(), QString("Product team \u00b7 Planning"));
-        auto *sender = view("feed-sender-" + firstId); QVERIFY(sender);
+        auto *sender = view("feed-sender-" + sourceId); QVERIFY(sender);
         QCOMPARE(sender->property("text").toString(), QString("Alice"));
-        QVERIFY(view("feed-summary-" + firstId));
+        QVERIFY(view("feed-summary-" + sourceId));
         // Row card geometry: rounded-xl (12 px) with a border (feed-page.ui.tsx:363-370).
-        auto *row = view("feed-row-" + firstId);
+        auto *row = view("feed-row-" + sourceId);
         QCOMPARE(row->property("radius").toInt(), 12);
         auto *rowBorder = qvariant_cast<QObject *>(row->property("border")); QVERIFY(rowBorder);
         QCOMPARE(rowBorder->property("width").toInt(), 1);
-        // The forward button stays gated until issue #7 ships the flow.
-        auto *forward = view("feed-forward-" + firstId); QVERIFY(forward);
-        QVERIFY(!forward->property("enabled").toBool());
+        auto *forward = view("feed-forward-" + sourceId); QVERIFY(forward);
+        auto *dialog = window->findChild<QObject *>("forwardDialog"); QVERIFY(dialog);
+        auto *list = view("feedList"); QVERIFY(list);
+        // The feed positions the initial page after delegates have been measured.
+        // Record the reading position once that startup movement has finished.
+        QTRY_VERIFY(!view("nativeFeedPage")->property("anchorRunning").toBool());
+        QTRY_VERIFY(list->property("contentHeight").toReal() > list->height() * 2);
+        const qreal position = qRound(row->y()) - 24;
+        QVERIFY(position > 0);
+        list->setProperty("contentY", position);
+        QTRY_COMPARE(list->property("contentY").toReal(), position);
+        const auto messagePosts = [&] {
+            return std::count_if(fixture.server.requests.cbegin(), fixture.server.requests.cend(),
+                [](const Request &request) { return request.method == "POST" && request.target.path().endsWith("/messages/"); });
+        };
+        const auto initialPosts = messagePosts();
+        for (const bool keyboard : {false, true}) {
+            if (keyboard) {
+                forward->forceActiveFocus(Qt::TabFocusReason);
+                QVERIFY(forward->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Space);
+            } else {
+                click(window, forward);
+            }
+            QTRY_VERIFY(dialog->property("opened").toBool());
+            QCOMPARE(dialog->property("sourceIds").value<QJSValue>().toVariant().toStringList(),
+                QStringList{sourceId});
+            QVERIFY(controller.feedVisible());
+            QCOMPARE(messagePosts(), initialPosts);
+            click(window, view("forwardCancelButton"));
+            QTRY_VERIFY(!dialog->property("visible").toBool());
+            QVERIFY(controller.feedVisible());
+            QCOMPARE(list->property("contentY").toReal(), position);
+            QCOMPARE(window->property("messageSelectionCount").toInt(), 1);
+            QCOMPARE(messagePosts(), initialPosts);
+        }
         // Open-in-chat reuses the topic navigation path and unmounts the page.
-        click(window, view("feed-open-" + firstId));
+        click(window, view("feed-open-" + sourceId));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.feedVisible()
             && controller.selectedTopic() == secondTopicId, 5000);
         // Reopening and closing via the page chrome works.
@@ -20189,9 +20234,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(content, "topic-" + topicId));
         QTRY_COMPARE(controller.selectedTopic(), topicId);
-        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
         auto *viewer = controller.mediaViewer();
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->count(), 1);
         // The strip and the arrows are rendered only for galleries of more
@@ -20363,7 +20407,8 @@ mv -Tf "$root/.current-new" "$root/current"
         const QByteArray png = avatarProbePng(false);
         const QByteArray mp4 = mediaViewerVideoBytes();
         WindowChannelFixture fixture;
-        QList<std::function<void()>> pendingDownloads;
+        QList<std::function<void()>> pendingDownloads, pendingThirdMetadata;
+        bool failuresReleased = false;
         const auto fallback = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
@@ -20380,7 +20425,8 @@ mv -Tf "$root/.current-new" "$root/current"
                 || path.startsWith("/api/workspace/v1/messenger/files/" + fileC)) {
                 if (path.endsWith("/actions/download")) {
                     Response failure{QJsonObject{}, 500};
-                    failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
+                    if (!failuresReleased)
+                        failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
                     return failure;
                 }
                 const QString file = path.contains(fileC) ? fileC : fileB;
@@ -20388,7 +20434,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 metadata["stream_uuid"] = streamId;
                 metadata["name"] = video ? "clip.mp4" : "shot.png";
                 metadata["content_type"] = video ? "video/mp4" : "image/png";
-                return Response{metadata};
+                Response result{metadata};
+                // Let the third image start downloading after the first failures were delivered.
+                if (file == fileC && !failuresReleased)
+                    result.defer = [&](std::function<void()> send) { pendingThirdMetadata.append(std::move(send)); };
+                return result;
             }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 ++fixture.historyGets;
@@ -20424,7 +20474,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), video ? 2 : 3);
         auto *viewer = controller.mediaViewer();
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QAccessible::setActive(true);
         using Politeness = QAccessible::AnnouncementPoliteness;
@@ -20451,6 +20501,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(accessible->text(QAccessible::Name), loading);
         QTRY_VERIFY(announcements.contains(qMakePair(loading, Politeness::Polite)));
         QTRY_VERIFY(!pendingDownloads.isEmpty());
+        if (!video) QTRY_VERIFY(!pendingThirdMetadata.isEmpty());
+        failuresReleased = true;
         for (const auto &send : std::exchange(pendingDownloads, {}))
             send();
         const QString expected = video
@@ -20463,6 +20515,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(accessible->text(QAccessible::Name), expected);
         QTRY_VERIFY(announcements.contains(qMakePair(expected, Politeness::Assertive)));
         if (!video) {
+            // Deliver third-image metadata only after the selected image has
+            // announced its failure, so its download starts in the later phase.
+            QVERIFY(!pendingThirdMetadata.isEmpty());
+            for (const auto &send : std::exchange(pendingThirdMetadata, {})) send();
             QTRY_COMPARE(viewer->items().last().toMap()["state"].toString(), QStringLiteral("load-error"));
             const auto before = announcements.count(qMakePair(expected, Politeness::Assertive));
             click(window, visibleItem(content, "mediaViewer-next"));
@@ -36744,8 +36800,15 @@ private slots:
     // event and no forceActiveFocus anywhere before the chip gains focus,
     // so the focus chain itself must carry the user to the chip. Enter then
     // activates it and opens the profile drawer.
+    void mentionChipsReachedByTabWithoutPointer_data()
+    {
+        QTest::addColumn<bool>("inTopic");
+        QTest::newRow("aggregate") << false;
+        QTest::newRow("topic") << true;
+    }
     void mentionChipsReachedByTabWithoutPointer()
     {
+        QFETCH(bool, inTopic);
         WindowMentionFixture fixture;
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -36766,6 +36829,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
         controller.setRealtimeMode(true);
         controller.selectStream(streamId);
+        if (inTopic) {
+            QTRY_VERIFY(!controller.topics().isEmpty());
+            controller.selectTopic(topicId);
+        }
         QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
         const QString alice = WindowMentionFixture::aliceUuid();
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
@@ -36790,6 +36857,18 @@ private slots:
         }
         QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip; visited: ") + chain.join(QStringLiteral(" -> "))));
         // Shift+Tab leaves the chip and Tab walks straight back onto it.
+        QCOMPARE(chain.contains("quickReply-" + messageId), inTopic);
+        if (inTopic) {
+            const auto firstMention = focusedName();
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "quick-reactions-" + messageId);
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), firstMention);
+        }
         QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
         QTest::qWait(25);
         QVERIFY2(!chipFocused(), qPrintable(QStringLiteral("Shift+Tab did not move focus off the chip: ") + focusedName()));
