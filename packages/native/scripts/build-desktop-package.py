@@ -40,8 +40,9 @@ install("application", root / "packages/native", stage, "-DBUILD_TESTING=OFF",
         f"-DOPENSSL_ROOT_DIR={openssl}", "-DOPENSSL_USE_STATIC_LIBS=TRUE",
         "-DWORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE=ON",
         f"-DWORKSPACE_NATIVE_PYTHON3={sys.executable}")
-if not windows:
-    run(build / "application/native-platform-shell-test", "-o", "-,txt")
+shell_test = build / "application" / ("Release/native-platform-shell-test.exe" if windows
+                                     else "native-platform-shell-test")
+run(shell_test, "-o", "-,txt")
 artifacts.mkdir(parents=True, exist_ok=True)
 name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
 archive = artifacts / f"{name}.zip"
