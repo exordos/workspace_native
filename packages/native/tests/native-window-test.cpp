@@ -34398,6 +34398,118 @@ private slots:
             QFAIL("keyboard mention chip teardown");
     }
 
+    // Issue #109 round-5 review (thread discussion_r4639284120): keyboard
+    // users cannot reach mention chips without first using a pointer. This
+    // case drives the window with Tab and Shift+Tab ONLY: no QTest mouse
+    // event and no forceActiveFocus anywhere before the chip gains focus,
+    // so the focus chain itself must carry the user to the chip. Enter then
+    // activates it and opens the profile drawer.
+    void mentionChipsReachedByTabWithoutPointer()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f5-tab.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto chipFocused = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName().startsWith(QStringLiteral("message-mention-"));
+        };
+        auto focusedName = [window]() {
+            auto *focus = window->activeFocusItem();
+            if (!focus)
+                return QStringLiteral("<none>");
+            return focus->objectName().isEmpty()
+                ? QString::fromLatin1(focus->metaObject()->className())
+                : focus->objectName();
+        };
+        QVERIFY2(!chipFocused(), "case must start without any pre-focused chip");
+        QStringList chain;
+        for (int i = 0; i < 150 && !chipFocused(); ++i) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::qWait(25);
+            chain << focusedName();
+        }
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip; visited: ") + chain.join(QStringLiteral(" -> "))));
+        // Shift+Tab leaves the chip and Tab walks straight back onto it.
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QTest::qWait(25);
+        QVERIFY2(!chipFocused(), qPrintable(QStringLiteral("Shift+Tab did not move focus off the chip: ") + focusedName()));
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::qWait(25);
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab did not return to the chip: ") + focusedName()));
+        // Enter activates the focused chip and opens the profile drawer.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("tab-reachable mention chip teardown");
+    }
+
+    // Issue #109 round-5 review (thread discussion_r4639284120), Space half:
+    // the reference keyboard path activates the mention from Enter AND Space
+    // (workspace-message-body-interactions.hook.ts:490-496). Reached purely
+    // through the Tab chain, Space must open the profile drawer too.
+    void mentionChipsSpaceActivationFromTabFocus()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f5-space.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto chipFocused = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName().startsWith(QStringLiteral("message-mention-"));
+        };
+        QStringList chain;
+        for (int i = 0; i < 150 && !chipFocused(); ++i) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::qWait(25);
+            chain << QStringLiteral("<tab>");
+        }
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip after %1 stops").arg(chain.size())));
+        // Space activates the focused chip and opens the profile drawer.
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("space-activated mention chip teardown");
+    }
+
     // Issue #109 round-4 review N4 (cid 4641051847): the body carries a
     // plain-text "@Ann" BEFORE the real [Ann](urn:user:...) mention. The
     // chip must sit on the urn-backed anchor, a click on the plain copy
