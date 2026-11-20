@@ -352,6 +352,12 @@ ApplicationWindow {
     function encryptedPreparationState(message) {
         return String(message.encryptionState || "locked");
     }
+    function sidebarPreviewBody(row) {
+        if (row.previewState === "preparing") return qsTr("Decrypting message…");
+        if (row.previewState === "error") return qsTr("Could not decrypt message");
+        if (row.previewLocked) return qsTr("Key required");
+        return encryptionControlLabel(row.previewKind) || String(row.previewText || "");
+    }
     function encryptionControlLabel(kind) {
         switch (kind) {
         case "key_request": return qsTr("Key requested");
@@ -5788,7 +5794,7 @@ component NativeMentionChip: Item {
                     readonly property string nextAction: hiddenUnfinished > 0 ? "more"
                         : hiddenCompleted > 0 ? "completed" : visibleCount > collapsedCount ? "collapse" : ""
                     readonly property int hiddenCount: nextAction === "more" ? hiddenUnfinished : hiddenCompleted
-                    readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
+                    readonly property string previewBody: root.sidebarPreviewBody(modelData)
                     readonly property string previewSenderLabel: {
                         const sender = String(modelData.previewSender || "")
                         return sender.length && previewBody.length ? sender + ": " : ""
@@ -6201,7 +6207,7 @@ component NativeMentionChip: Item {
                         delegate: NativeButton {
                             id: topicButton
                             required property var modelData
-                            readonly property string previewBody: Boolean(modelData.previewLocked) ? qsTr("Key required") : String(modelData.previewText || "")
+                            readonly property string previewBody: root.sidebarPreviewBody(modelData)
                             readonly property string previewSenderLabel: {
                                 const sender = String(modelData.previewSender || "")
                                 return sender.length && previewBody.length ? sender + ": " : ""
@@ -9185,6 +9191,7 @@ component NativeMentionChip: Item {
                                 sourceComponent: NativePollCard {
                                     colors: root.colors
                                     controller: root.controller
+                                    previewStore: pollVoterPreviews
                                     readOnly: !root.pollInteractiveStream
                                     messageUuid: String(messageRow.modelData.id || "")
                                     poll: messageRow.modelData.poll
@@ -14808,6 +14815,7 @@ component NativeMentionChip: Item {
     }
 
     // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollVoterPreviews { id: pollVoterPreviews; controller: root.controller }
     NativePollManagementDialog {
         id: pollManagement
         parent: Overlay.overlay

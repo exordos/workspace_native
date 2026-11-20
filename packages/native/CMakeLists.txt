@@ -197,6 +197,7 @@ qml/NativeUserSearch.qml
 qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
+qml/NativePollVoters.qml qml/NativePollVoterPreviews.qml qml/NativePollVoterAvatar.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/NativePollManagementDialog.qml
@@ -275,6 +276,11 @@ endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
 if(WIN32)
     target_link_libraries(workspace-native PRIVATE shell32)
+endif()
+if(APPLE)
+    # QML loads the SVG image reader at runtime. macdeployqt discovers that
+    # plugin from the app's QtSvg framework dependency.
+    target_link_libraries(workspace-native PRIVATE "$<LINK_LIBRARY:NEEDED_FRAMEWORK,Qt6::Svg>")
 endif()
 qt_add_qml_module(workspace-native
     URI Exordos.Workspace.Native
@@ -585,6 +591,7 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         encryptedConversationPresentsItsFirstPreparedWindow
+        encryptedSidebarPreviewsFollowTheLocalPresentation
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiSecretFragmentTracksRequestAndVaultRemoval
         uiSecretRequestVerifiesTheReferencedStream

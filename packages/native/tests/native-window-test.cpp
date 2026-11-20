@@ -1551,6 +1551,8 @@ public:
     // uuid + text appended to question 1; a replay of the same uuid is
     // idempotent (the reference 200s with the unchanged message).
     QList<QPair<QString, QString>> addedOptions;
+    QJsonObject firstQuestionPreviews, extraOptionCounts;
+    std::function<Response(const Request &)> voters;
 
     QJsonObject payload(const QString &questionText = QStringLiteral("Which day?")) const
     {
@@ -1583,11 +1585,14 @@ public:
     }
     QJsonObject state() const
     {
+        auto firstCounts = extraOptionCounts;
+        firstCounts[pollBubbleOptionOne] = countOne;
+        firstCounts[pollBubbleOptionTwo] = countTwo;
         return {{"revision", revision}, {"is_closed", closed}, {"voter_count", voterCount},
             {"questions", QJsonArray{
                 QJsonObject{{"question_uuid", pollBubbleQuestionOne}, {"voter_count", 3},
-                    {"option_counts", QJsonObject{{pollBubbleOptionOne, countOne},
-                        {pollBubbleOptionTwo, countTwo}}}},
+                    {"option_voter_previews", firstQuestionPreviews},
+                    {"option_counts", firstCounts}},
                 QJsonObject{{"question_uuid", pollBubbleQuestionTwo}, {"voter_count", 3},
                     {"option_counts", QJsonObject{{pollBubbleOptionThree, countThree},
                         {pollBubbleOptionFour, countFour}}}}}},
@@ -1656,6 +1661,7 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (path.endsWith("/poll_voters/") && voters) return voters(request);
             const auto actions = "/api/workspace/v1/messenger/messages/" + messageUuid + "/actions/";
             if (path == actions + "vote/invoke") {
                 const auto body = request.body;
@@ -3456,6 +3462,9 @@ private slots:
         preferences.setMode(mode);
         preferences.setLocale(locale);
         preferences.setComposerToolbarExpanded(true);
+        auto *hotkeys = preferences.hotkeys();
+        QVERIFY(hotkeys->assign("composer.bold", "Ctrl+Shift+K").isEmpty());
+        QVERIFY(hotkeys->setEnabled(false).isEmpty());
         preferences.setChatClickAction("latestTopic");
         auto *root = window->contentItem();
         click(window, item(root, "accountMenuButton"));
@@ -3476,6 +3485,8 @@ private slots:
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!dialog->property("visible").toBool());
         QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(!hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Ctrl+Shift+K"));
         QVERIFY(cache.stats().entries > 1);
         const int catalog = fixture.catalogGets;
         holdBootstrap = true;
@@ -3488,6 +3499,8 @@ private slots:
         QTRY_COMPARE(cache.stats().entries, 0);
         QCOMPARE(preferences.chatClickAction(), QString("stream"));
         QVERIFY(!preferences.composerToolbarExpanded());
+        QVERIFY(hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Mod+B"));
         QCOMPARE(preferences.mode(), QString("system"));
         QCOMPARE(preferences.organizationHistory(), organizations);
         QCOMPARE(session.loginName(), QString("example-member"));
@@ -11764,8 +11777,24 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
     }
 
+    void sidebarRowsRenderPreviewAndTime_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("previewText");
+        QTest::newRow("markdown") << QString("markdown") << QString("en")
+            << QStringLiteral("A message with missing topic metadata has no invented label.");
+        QTest::newRow("request-en") << QString("key_request") << QString("en") << QString("Key requested");
+        QTest::newRow("grant-ru") << QString("key_grant") << QString("ru") << QStringLiteral("Получен зашифрованный ключ");
+        QTest::newRow("announce-ru") << QString("key_announced") << QString("ru") << QStringLiteral("Объявлен новый ключ");
+        QTest::newRow("reject-en") << QString("key_reject") << QString("en") << QString("Key request rejected");
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
+        QFETCH(QString, kind);
+        QFETCH(QString, locale);
+        QFETCH(QString, previewText);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
         const auto fallback = fixture.server.handler;
@@ -11777,6 +11806,27 @@ mv -Tf "$root/.current-new" "$root/current"
             const auto path = request.target.path();
             auto response = fallback(request);
             if (request.method != "GET") return response;
+            if (kind != "markdown" && path.endsWith("/messages/") && response.data.isArray()) {
+                auto rows = response.data.toArray();
+                for (qsizetype i = 0; i < rows.size(); ++i) {
+                    auto row = rows.at(i).toObject();
+                    if (row.value("uuid").toString() != lastMessage) continue;
+                    QJsonObject payload{{"kind", kind}, {"key_uuid", topicId}};
+                    if (kind == "key_request") {
+                        payload.insert("public_key", "synthetic");
+                        payload.insert("device_id", "device");
+                        payload.insert("device_name", "Desktop");
+                    } else if (kind == "key_grant" || kind == "key_reject") {
+                        payload.insert("request_message_uuid", secondTopicId);
+                        payload.insert("sender_device_id", "sender");
+                        payload.insert("recipient_device_id", "recipient");
+                        if (kind == "key_grant") payload.insert("content", "synthetic");
+                    }
+                    row["payload"] = payload;
+                    rows[i] = row;
+                }
+                response.data = rows;
+            }
             const bool streamRoute = path.endsWith("/streams/")
                 || path.endsWith("/streams/" + streamId)
                 || path.endsWith("/stream_topics/") || path.endsWith("/stream_topics/" + topicId);
@@ -11800,9 +11850,10 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-previews.ini"));
-        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setLocale(locale); preferences.setMode("light");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
+        controller.setPreferences(&preferences);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
         auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
@@ -11819,7 +11870,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.topics().size() >= 3);
         // The source-scene author is the Alice user of the fixture catalog (first_name only).
-        const QString previewText = QStringLiteral("A message with missing topic metadata has no invented label.");
         // The preview exists only after the selected channel's history has been hydrated.
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const auto *row = visibleItem("streamPreviewText-" + streamId);
@@ -11836,7 +11886,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto created = QDateTime::fromString("2026-01-02T10:06:00.000Z",Qt::ISODateWithMs);
         auto *streamTime = visibleItem("streamTime-"+streamId); QVERIFY(streamTime);
         QCOMPARE(streamTime->property("text").toString(),NativeController::formatRowTime(
-            created,QLocale("en"),QDate::currentDate(),QStringLiteral("Yesterday")));
+            created,QLocale(locale),QDate::currentDate(),QStringLiteral("Yesterday")));
         QCOMPARE(streamTime->property("color").value<QColor>(),QColor("#989898"));
         QCOMPARE(visibleItem("stream-"+streamId)->height(),60); // the measured row box is unchanged
         // The default topic row carries the same message; Planning has no last message and
@@ -29396,7 +29446,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             ->property("percent").toInt(), 67);
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
-            QStringLiteral("3 participants"));
+            QStringLiteral("3 participants \u00b7 View votes"));
     }
 
     void pollBubbleInlineErrorKeepsCardOpenOnVoteConflict()
@@ -29449,10 +29499,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-option-0-0-" + scene.fixture.messageUuid));
         QCOMPARE(scene.fixture.votePosts, 1);
         // Summary gains the "You voted" tail only in quiz mode (poll.ui
-        // .tsx:193-206): plain polls keep the plain count.
+        // .tsx:193-206): ordinary polls offer their voter overview.
         QCOMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
-            QStringLiteral("3 participants"));
+            QStringLiteral("3 participants \u00b7 View votes"));
     }
 
     void pollBubbleMultipleModeWithoutRevoteAddsButNeverRemoves()
@@ -29495,7 +29545,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-aggregate-0-1-" + scene.fixture.messageUuid));
         QTRY_COMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
-            QStringLiteral("3 participants"));
+            QStringLiteral("3 participants \u00b7 View votes"));
     }
 
     void pollBubbleResultsAlwaysVisibleBeforeVote()
@@ -29865,7 +29915,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-option-1-0-" + scene.fixture.messageUuid));
         QTRY_COMPARE(pollItemText(scene.content(),
             pollBubbleName("poll-summary", scene.fixture.messageUuid)),
-            QStringLiteral("3 participants"));
+            QStringLiteral("3 participants \u00b7 View votes"));
         QCOMPARE(pollItemText(scene.content(),
             "poll-aggregate-1-0-" + scene.fixture.messageUuid),
             QStringLiteral("100% \u00b7 3"));
@@ -30056,6 +30106,230 @@ QTRY_VERIFY(create->property("enabled").toBool());
     // so on a very narrow bubble the aggregate still extended past the card.
     // Every result row's aggregate block must keep its right edge inside the
     // card content width and clear of the option label at every width.
+    void pollVoterPreviewsOpenAndPaginateWithoutDuplicates()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.closesAt.clear();
+        server.resultsVisibility = "always";
+        server.countOne = 3;
+        server.firstQuestionPreviews = {{pollBubbleOptionOne, QJsonArray{userId}}};
+        int fallbackGets = 0, pageGets = 0;
+        server.voters = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            const auto option = query.queryItemValue("option_uuid");
+            if (option == pollBubbleOptionTwo && query.queryItemValue("page_limit") == "5") {
+                ++fallbackGets;
+                return {QJsonArray{QJsonObject{{"uuid", channelPeer}}}};
+            }
+            if (option == pollBubbleOptionOne && query.queryItemValue("page_marker") == userId) {
+                ++pageGets;
+                if (pageGets == 1) return {QJsonObject{}, 503};
+                return {QJsonArray{QJsonObject{{"uuid", userId}}, QJsonObject{{"uuid", channelPeer}}}};
+            }
+            return {QJsonObject{}, 400};
+        };
+        scene.start();
+        auto *content = scene.content();
+        const auto id = server.messageUuid;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "poll-voters-option-" + pollBubbleOptionOne + "-" + id), 2000);
+        QTRY_COMPARE(fallbackGets, 1);
+        QTRY_VERIFY(visibleItem(content, "poll-voter-preview-" + pollBubbleOptionTwo + "-" + channelPeer));
+        scene.click(visibleItem(content, "poll-voters-option-" + pollBubbleOptionOne + "-" + id));
+        QTRY_VERIFY(visibleItem(content, "poll-voter-row-" + userId));
+        QVERIFY(!visibleItem(content, "poll-voters-answer"));
+        auto *more = visibleItem(content, "poll-voters-more"); QVERIFY(more);
+        scene.click(more);
+        QTRY_COMPARE(pageGets, 1);
+        QTRY_VERIFY(visibleItem(content, "poll-voters-error"));
+        QTRY_COMPARE(pollItemText(content, "poll-voters-more"), QString("Retry"));
+        scene.click(visibleItem(content, "poll-voters-more"));
+        QTRY_COMPARE(pageGets, 2);
+        QTRY_VERIFY(visibleItem(content, "poll-voter-row-" + channelPeer));
+        QCOMPARE(visibleItem(content, "poll-voters-list")->property("count").toInt(), 2);
+        QVERIFY(!visibleItem(content, "poll-voters-more"));
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem(content, "poll-voter-row-" + userId));
+        auto *overview = visibleItem(content, "poll-voters-summary-" + id);
+        QVERIFY(overview); scene.click(overview);
+        QTRY_VERIFY(visibleItem(content, "poll-voters-answer"));
+    }
+
+    void pollVoterCountOpensAfterAnUnavailablePreview()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.closesAt.clear(); server.closed = true; server.resultsVisibility = "always";
+        int attempts = 0, pages = 0;
+        server.voters = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("page_limit") == "5") { ++attempts; return {QJsonArray{}, 503}; }
+            ++pages; return {QJsonArray{QJsonObject{{"uuid", userId}}}};
+        };
+        scene.start();
+        QTRY_VERIFY(attempts >= 1);
+        QVERIFY(!visibleItem(scene.content(), "poll-voters-summary-" + server.messageUuid));
+        auto *count = visibleItem(scene.content(), "poll-voters-option-" + pollBubbleOptionOne + "-" + server.messageUuid);
+        QVERIFY(count);
+        scene.click(count);
+        QTRY_COMPARE(pages, 1);
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-voter-row-" + userId));
+    }
+
+    void pollVoterPreviewBudgetSurvivesEviction()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.resultsVisibility = "always"; server.closesAt.clear();
+        int requests = 0;
+        server.voters = [&](const Request &) -> Response { ++requests; return {QJsonArray{}}; };
+        scene.start();
+        QTRY_COMPARE(requests, 2);
+        auto *store = scene.window->findChild<QObject *>("poll-voter-preview-store"); QVERIFY(store);
+        auto *engine = qmlEngine(store); QVERIFY(engine);
+        const auto records = store->property("polls").value<QJSValue>();
+        const QString stamp = records.property(server.messageUuid).property("revision").toString();
+        QVERIFY(!stamp.isEmpty());
+        QVariantList jobs;
+        for (const auto &option : {pollBubbleOptionOne, pollBubbleOptionTwo})
+            jobs << QVariantMap{{"questionId",pollBubbleQuestionOne},{"optionId",option}};
+        const auto ensure = [&](const QString &id, const QString &version, const QVariantList &work) {
+            auto object = engine->newQObject(store);
+            const auto result = object.property("ensure").callWithInstance(object,
+                {id, version, engine->toScriptValue(work), QJSValue(double(server.revision))});
+            QVERIFY2(!result.isError(),qPrintable(result.toString()));
+        };
+        for (int i = 0; i < 51; ++i) ensure(QStringLiteral("cached-poll-%1").arg(i), QString::number(i), {});
+        QVERIFY(store->property("polls").value<QJSValue>().property(server.messageUuid).isUndefined());
+        ensure(server.messageUuid, stamp, jobs);
+        QTest::qWait(150);
+        QCOMPARE(requests, 2);
+    }
+
+    void pollVoterQueuesStopWhenResultsBecomeAnonymous()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.resultsVisibility = "always"; server.closesAt.clear();
+        for (int i = 0; i < 4; ++i) {
+            const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            server.addedOptions.append({id,QString::number(i)});
+            server.extraOptionCounts[id] = 1;
+        }
+        QVector<std::function<void()>> replies;
+        server.voters = [&](const Request &) -> Response {
+            Response held{QJsonArray{QJsonObject{{"uuid", userId}}}};
+            held.defer = [&](std::function<void()> deliver) { replies.append(std::move(deliver)); };
+            return held;
+        };
+        scene.start();
+        QTRY_COMPARE(replies.size(), 3);
+        server.anonymous = true; ++server.revision;
+        auto updated = server.row(); updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        QTRY_VERIFY(pollItemText(scene.content(), "poll-subtitle-" + server.messageUuid).contains("Anonymous"));
+        for (int i = 0; i < 3; ++i) replies.at(i)();
+        QTest::qWait(150);
+        QCOMPARE(replies.size(), 3);
+        QVERIFY(!visibleItem(scene.content(), "poll-voter-preview-" + pollBubbleOptionOne + "-" + userId));
+    }
+
+    void pollVoterFallbackBudgetAndConcurrency()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.closesAt.clear(); server.resultsVisibility = "always";
+        for (int i = 0; i < 5; ++i) {
+            const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            server.addedOptions.append({id, "Extra " + QString::number(i)});
+            server.extraOptionCounts.insert(id, 3);
+        }
+        QVector<std::function<void()>> replies;
+        QSet<QString> requested;
+        server.voters = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("page_limit") != "5") return {QJsonObject{}, 400};
+            requested.insert(query.queryItemValue("option_uuid"));
+            Response held{QJsonArray{}, 503};
+            held.defer = [&](std::function<void()> deliver) { replies.append(std::move(deliver)); };
+            return held;
+        };
+        scene.start();
+        QTRY_COMPARE(replies.size(), 3);
+        replies.at(0)();
+        QTRY_COMPARE(replies.size(), 4);
+        replies.at(1)();
+        QTRY_COMPARE(replies.size(), 5);
+        for (int i = 2; i < replies.size(); ++i) replies.at(i)();
+        QTest::qWait(100);
+        QCOMPARE(requested.size(), 5);
+        QVERIFY(!visibleItem(scene.content(), "poll-voters-error"));
+        QVERIFY(visibleItem(scene.content(), "poll-voters-summary-" + server.messageUuid));
+    }
+
+    void pollVoterOverviewSwitchRetiresHeldFirstPage()
+    {
+        PollBubbleScene scene;
+        scene.preferences.setLocale("ru"); scene.preferences.setMode("light");
+        auto &server = scene.fixture;
+        server.closesAt.clear(); server.resultsVisibility = "always"; server.countTwo = 0;
+        std::function<void()> release;
+        int foregroundGets = 0;
+        server.voters = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("page_limit") == "5") return {QJsonArray{}, 503};
+            ++foregroundGets;
+            Response held{QJsonArray{QJsonObject{{"uuid", userId}}}};
+            held.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            return held;
+        };
+        scene.start();
+        const auto id = server.messageUuid;
+        auto *summary = visibleItem(scene.content(), "poll-voters-summary-" + id); QVERIFY(summary);
+        scene.click(summary);
+        QTRY_VERIFY(bool(release));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-voters-status"));
+        QCOMPARE(foregroundGets, 1);
+        auto *answers = visibleItem(scene.content(), "poll-voters-answer"); QVERIFY(answers);
+        scene.click(answers);
+        QTest::keyClick(scene.window, Qt::Key_Down);
+        QTest::keyClick(scene.window, Qt::Key_Return);
+        QTRY_COMPARE(answers->property("currentIndex").toInt(), 1);
+        QTRY_COMPARE(pollItemText(scene.content(), "poll-voters-status"), QString::fromUtf8("Пока никто не проголосовал"));
+        release();
+        QTest::qWait(100);
+        QCOMPARE(visibleItem(scene.content(), "poll-voters-list")
+            ? visibleItem(scene.content(), "poll-voters-list")->property("count").toInt() : 0, 0);
+        QCOMPARE(foregroundGets, 1);
+    }
+
+    void pollVotersNeverLoadForHiddenOrAnonymousResults_data()
+    {
+        QTest::addColumn<bool>("anonymous");
+        QTest::addColumn<bool>("readOnly");
+        QTest::newRow("after-vote") << false << false;
+        QTest::newRow("anonymous") << true << false;
+        QTest::newRow("read-only") << false << true;
+    }
+
+    void pollVotersNeverLoadForHiddenOrAnonymousResults()
+    {
+        QFETCH(bool, anonymous); QFETCH(bool, readOnly);
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.closesAt.clear(); server.anonymous = anonymous;
+        if (readOnly) server.streamEncrypted = true;
+        if (anonymous || readOnly) server.resultsVisibility = "always";
+        server.firstQuestionPreviews = {{pollBubbleOptionOne, QJsonArray{userId}}};
+        int requests = 0;
+        server.voters = [&](const Request &) -> Response { ++requests; return {QJsonArray{}}; };
+        scene.start();
+        QCOMPARE(requests, 0);
+        QVERIFY(!visibleItem(scene.content(), "poll-voters-option-" + pollBubbleOptionOne + "-" + server.messageUuid));
+        QVERIFY(!visibleItem(scene.content(), "poll-voters-summary-" + server.messageUuid));
+    }
+
     void pollBubbleNarrowCardKeepsContentInside()
     {
         PollBubbleScene scene;
@@ -30063,11 +30337,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.start();
         auto *card = pollVisibleItem(scene.content(),
             pollBubbleName("poll-card", scene.fixture.messageUuid));
-        QVERIFY(card);
+        QVERIFY(card && card->parentItem());
+        // The Loader owns the size of its live card.
+        const QPointer<QQuickItem> cardHost = card->parentItem();
         // Sweep from just under the reference 336 px column down to a
         // pathological bubble width.
         for (const qreal width : {320.0, 280.0, 240.0, 200.0, 160.0, 120.0, 96.0}) {
-            card->setWidth(width);
+            QVERIFY(cardHost);
+            cardHost->setWidth(width);
             QTest::qWait(120); // positioners re-polish on the next frame
             auto *sizedCard = pollVisibleItem(scene.content(),
                 pollBubbleName("poll-card", scene.fixture.messageUuid));

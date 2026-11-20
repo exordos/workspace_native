@@ -24,5 +24,8 @@ recording field. Save applies an allowed chord, Escape cancels recording, and
 Disable or Reset changes the selected row. The help overlay lists the currently
 assigned and fixed shortcuts. Both dialogs use the shared theme and translations.
 
+Confirming Clear cache in the account menu enables shortcuts and restores their
+default bindings immediately. Canceling keeps the current bindings and switch.
+
 Reference: workspace_ui hotkeys.lib.ts, hotkeys.tsx, settings.model.ts and the
 shortcut settings and help views at 61dacef.

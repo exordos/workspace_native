@@ -899,7 +899,9 @@ public:
     Q_INVOKABLE void addPollOption(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, const QString &optionText);
     Q_INVOKABLE void loadPollVoters(const QString &messageUuid, const QString &questionUuid,
-        const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0);
+        const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0,
+        const QString &requestTag = {});
+    Q_INVOKABLE void cancelPollVoterRequest(const QString &requestTag);
     // Issue #216: locale rendering of poll deadline/closed dates
     // (workspace-message-poll.ui.tsx:47-49 in the reference).
     Q_INVOKABLE QString formatPollDate(const QString &isoDateTime) const;
@@ -1048,7 +1050,7 @@ signals:
     // Empty detail confirms success; interrupted is an uncertain send.
     void pollCreationFinished(QString operation, QString detail);
     void pollVotersLoaded(QString messageUuid, QString questionUuid, QString optionUuid,
-        QVariantList voters, QString nextMarker, QString error);
+        QVariantList voters, QString nextMarker, QString error, QString requestTag);
     void snapshotReloaded();
     void snapshotFailed();
     void resynchronizeRequested();
@@ -1142,6 +1144,8 @@ private:
     void processChatControls(quint64 epoch, quint64 selection, quint64 work);
     void scheduleChatPreparation();
     void prepareChatSlice(quint64 epoch, quint64 selection, quint64 preparation, qsizetype offset);
+    const PreparedChatMessage *currentChatPresentation(const Message &message) const;
+    QString chatPresentationState(bool allowed, const PreparedChatMessage *prepared) const;
     PreparedChatMessage decryptChatMessageRow(const Message &message);
     QSet<QString> m_chatDecryptRetries;
     ChatAuthority m_chatAuthority;
@@ -1956,7 +1960,8 @@ private:
         QString text;
         QString author;
         bool own = false;
-        bool locked = false;
+        QString state = QStringLiteral("ready");
+        QString kind;
         QDateTime created;
         // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the topic the previewed
         // message lives in - the reference stream.preview?.route input for the
@@ -1964,7 +1969,8 @@ private:
         QString topic;
     };
     std::optional<RowPreview> rowPreview(const QString &uuid) const;
-    std::optional<RowPreview> rowPreviewOf(const Message &message) const;
+    std::optional<RowPreview> rowPreviewOf(const Message &message, bool active = false) const;
+    void refreshEncryptedSidebarPreviews();
     void storeRowPreview(const QString &uuid, const std::optional<RowPreview> &preview) const;
     void scheduleRowPreviewHydration() const;
     void pumpRowPreviewHydration();
@@ -1985,6 +1991,7 @@ private:
     // paths and the sign-out reset mutate these fields, always on the GUI thread.
     static constexpr int rowPreviewCacheLimit = 512;
     static constexpr int rowPreviewHydrationBatch = 8;
+    QHash<QString, QString> m_visibleEncryptedPreviewStates;
     mutable QHash<QString, RowPreview> m_rowPreviews;
     mutable QQueue<QString> m_rowPreviewOrder;
     mutable QSet<QString> m_rowPreviewPending;
@@ -2095,6 +2102,7 @@ private:
     // parked memos come from exactly the same data the banner renders from.
     std::optional<QString> replyPlainFor(const QString &id) const;
     void primeReplyTabMemos(QList<ReplyTab> &tabs) const;
+    QHash<QString, ApiClient::RequestId> m_pollVoterRequests;
     struct QuoteRecord {
         QString authorId, content;
         bool missing = false, decrypt = false;
