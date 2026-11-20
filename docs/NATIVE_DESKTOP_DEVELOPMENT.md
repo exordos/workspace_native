@@ -821,7 +821,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- 
   ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure
 ```
 
-The quick configuration schedules all 24 controller suites independently. It
+Pull requests build and run the 24 controller suites and the other headless groups on two independent runners. The quick-linux check reports their combined result. The local command above runs both sets together. It
 distributes the encrypted-read suite across processes using its current QtTest
 function/data inventory. Its extra headless group runs
 the two 100 ms encrypted-read responsiveness checks with exclusive CTest access.

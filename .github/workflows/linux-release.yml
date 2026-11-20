@@ -233,8 +233,19 @@ jobs:
             --notes-file "build/release-notes-${GITHUB_REF_NAME}.md" \
             dist/linux/*.tar.gz dist/linux/SHA256SUMS
 
-  quick-linux:
+  headless-tests:
+    name: Headless ${{ matrix.suite }} tests
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: controller
+            include_label: '^controller$'
+            exclude_label: '^gui$'
+          - suite: other
+            include_label: '^headless$'
+            exclude_label: '^(gui|controller)$'
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     permissions:
@@ -250,25 +261,37 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: linux-headless-ccache-v1-${{ github.sha }}
-          restore-keys: linux-headless-ccache-v1-
+          key: linux-headless-${{ matrix.suite }}-ccache-v1-${{ github.sha }}
+          restore-keys: linux-headless-${{ matrix.suite }}-ccache-v1-
       - name: Build the headless test executables
         shell: bash
         run: |
           set -euo pipefail
           cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON \
             -DWORKSPACE_NATIVE_QUICK_GATE=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/headless --target native-headless-tests --parallel "$(nproc)"
+          cmake --build build/headless --target native-headless-${{ matrix.suite }}-tests --parallel "$(nproc)"
           ccache --show-stats
       - name: Save compiled test objects
         if: steps.headless-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: linux-headless-ccache-v1-${{ github.sha }}
+          key: linux-headless-${{ matrix.suite }}-ccache-v1-${{ github.sha }}
       - name: Run all headless groups
         env:
           QT_QPA_PLATFORM: offscreen
         run: >-
           env -u DISPLAY -u WAYLAND_DISPLAY dbus-run-session --
-          ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure --no-tests=error
+          ctest --test-dir build/headless -L '${{ matrix.include_label }}' -LE '${{ matrix.exclude_label }}'
+          --parallel 12 --output-on-failure --no-tests=error
+
+  quick-linux:
+    needs: headless-tests
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Check both headless test results
+        env:
+          RESULT: ${{ needs.headless-tests.result }}
+        run: test "$RESULT" = success
