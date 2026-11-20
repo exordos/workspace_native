@@ -47,19 +47,18 @@ Popup {
         const now = Date.now()
         let timestamp = ""
         if (!closing) {
-            const date = new Date(dateField.text + "T" + timeField.text)
-            if ((originalDeadline.length && Date.parse(originalDeadline) <= now)
-                || (withDeadline && (isNaN(date.getTime()) || date.getTime() <= now
-                    || Qt.formatDate(date, "yyyy-MM-dd") !== dateField.text
-                    || Qt.formatTime(date, "HH:mm") !== timeField.text))) {
+            const original = new Date(originalDeadline)
+            const unchanged = originalDeadline.length && Qt.formatDate(original, "yyyy-MM-dd") === dateField.text
+                && Qt.formatTime(original, "HH:mm") === timeField.text
+            const deadline = unchanged ? original : new Date(dateField.text + "T" + timeField.text)
+            if ((originalDeadline.length && original.getTime() <= now)
+                || (withDeadline && (isNaN(deadline.getTime()) || deadline.getTime() <= now
+                    || Qt.formatDate(deadline, "yyyy-MM-dd") !== dateField.text
+                    || Qt.formatTime(deadline, "HH:mm") !== timeField.text))) {
                 invalidDate = true
                 return
             }
-            if (withDeadline) {
-                const original = new Date(originalDeadline)
-                timestamp = originalDeadline.length && Qt.formatDate(original, "yyyy-MM-dd") === dateField.text
-                    && Qt.formatTime(original, "HH:mm") === timeField.text ? original.toISOString() : date.toISOString()
-            }
+            if (withDeadline) timestamp = deadline.toISOString()
         }
         if (!controller.canManagePoll(messageId)) { failed = true; return }
         failed = false

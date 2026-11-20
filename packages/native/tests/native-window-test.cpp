@@ -28218,6 +28218,38 @@ QTRY_VERIFY(create->property("enabled").toBool());
         }
     }
 
+    void pollManagementAcceptsAnUnchangedDeadlineLaterThisMinute()
+    {
+        PollBubbleScene scene;
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true;
+        fixture.closesAt.clear();
+        scene.start();
+        // Set the fixture after the window is ready and allow enough time for
+        // an actual click before the final instant of the current minute.
+        QTRY_VERIFY_WITH_TIMEOUT(QTime::currentTime().second() < 45, 20000);
+        auto deadline = QDateTime::currentDateTimeUtc();
+        deadline.setTime(QTime(deadline.time().hour(), deadline.time().minute(), 59, 938));
+        fixture.closesAt = deadline.toString(Qt::ISODateWithMs);
+        ++fixture.revision;
+        auto updated = fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(fixture.settingsPosts == 1 || visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 1);
+        QCOMPARE(fixture.lastSettings.value("closes_at").toString(), deadline.toString(Qt::ISODateWithMs));
+    }
+
     void pollManagementClosesWhenItsSourceIsDeleted()
     {
         PollBubbleScene scene;
