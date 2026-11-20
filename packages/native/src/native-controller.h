@@ -890,6 +890,7 @@ public:
         const QString &closesAt = QString(), const QString &operation = QString());
     Q_INVOKABLE void votePollOption(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, bool selected);
+    Q_INVOKABLE bool canManagePoll(const QString &messageUuid) const;
     Q_INVOKABLE void closePoll(const QString &messageUuid);
     Q_INVOKABLE void updatePollSettings(const QString &messageUuid, const QString &closesAt,
         bool allowAddingOptions);

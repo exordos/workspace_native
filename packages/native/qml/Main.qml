@@ -832,6 +832,23 @@ ApplicationWindow {
         const message = currentMessage(menuMessageId);
         return Boolean(message && message.kind === "markdown" && !selectedStreamEncrypted);
     }
+    function manageMenuPoll(closing) {
+        const message = currentMessage(menuMessageId)
+        messageMenu.close()
+        pollManagement.showFor(message, closing)
+    }
+    property int pollMenuClock: 0
+    readonly property bool menuPollManageable: {
+        pollMenuClock
+        const message = currentMessage(menuMessageId)
+        return Boolean(message && message.kind === "poll" && root.controller.canManagePoll(menuMessageId))
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: messageMenu.visible && root.menuPollManageable
+        onTriggered: root.pollMenuClock++
+    }
     readonly property bool menuMessageReadable: {
         const message = currentMessage(menuMessageId);
         return root.menuMessageOrdinaryReadable || Boolean(message && message.kind === "e2ee" && message.decrypted);
@@ -14712,6 +14729,13 @@ component NativeMentionChip: Item {
     }
 
     // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollManagementDialog {
+        id: pollManagement
+        parent: Overlay.overlay
+        colors: root.colors
+        controller: root.controller
+    }
+
     NativePollDialog {
         id: pollCreateDialog
         parent: Overlay.overlay
@@ -15130,6 +15154,20 @@ component NativeMentionChip: Item {
         }
         MessageMenuSeparator {
             visible: root.menuMessageOwn && root.menuMessageOrdinaryReadable
+        }
+        MessageMenuAction {
+            objectName: "pollSettingsAction"
+            visible: root.menuPollManageable
+            text: qsTr("Poll settings")
+            asset: "settings.svg"
+            onTriggered: root.manageMenuPoll(false)
+        }
+        MessageMenuAction {
+            objectName: "pollCloseAction"
+            visible: root.menuPollManageable
+            text: qsTr("Close poll")
+            asset: "block.svg"
+            onTriggered: root.manageMenuPoll(true)
         }
         MessageMenuAction {
             objectName: "editMessageAction"

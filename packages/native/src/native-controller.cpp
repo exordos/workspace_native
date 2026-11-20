@@ -20231,14 +20231,57 @@ void NativeController::votePollOption(const QString &messageUuid, const QString 
             {QStringLiteral("option_uuid"), optionUuid}, {QStringLiteral("selected"), selected}});
 }
 
+bool NativeController::canManagePoll(const QString &id) const
+{
+    const auto *message = findMessage(id);
+    const auto *stream = currentStream();
+    if (!authenticated() || !authoritativeRoute() || !supportsMessengerPolls(stream) || !message
+        || !message->poll || !message->pollState || message->pollState->isClosed
+        || message->project != m_session->project() || message->stream != m_stream
+        || (!m_topic.isEmpty() && message->topic != m_topic) || message->author != m_session->user())
+        return false;
+    const auto &poll = *message->poll;
+    const auto deadline = QDateTime::fromString(poll.closesAt, Qt::ISODateWithMs);
+    if (deadline.isValid() && deadline <= QDateTime::currentDateTimeUtc()) return false;
+
+    // The bridge owns management of native Zulip poll widgets. Other polls
+    // carried by a Zulip stream use the Workspace management endpoints.
+    if (!stream->security || stream->security->source != QLatin1String("zulip")) return true;
+    if (poll.questions.size() != 1 || !poll.multipleAnswers || poll.isAnonymous || !poll.allowRevote
+        || poll.resultsVisibility != QLatin1String("always") || !poll.allowAddingOptions
+        || !poll.closesAt.isEmpty() || !poll.closedAt.isEmpty()) return true;
+    const auto &question = poll.questions.first();
+    if (!question.correctOptionUuids.isEmpty()) return true;
+    const auto literalLine = [](const QString &value) {
+        const auto space = [](QChar c) { return c.isSpace() || (c.unicode() >= 28 && c.unicode() <= 31); };
+        return (value.isEmpty() || (!space(value.front()) && !space(value.back())))
+            && !value.contains('\r') && !value.contains('\n') && !value.contains(QLatin1String("@*"));
+    };
+    if (!literalLine(question.text)) return true;
+    QSet<QString> labels;
+    for (const auto &option : question.options) {
+        if (labels.contains(option.text) || !literalLine(option.text)) return true;
+        labels.insert(option.text);
+    }
+    return false;
+}
+
 void NativeController::closePoll(const QString &messageUuid)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("close_poll"), QStringLiteral("not-available"), {});
+        return;
+    }
     invokePollAction(messageUuid, QStringLiteral("close_poll"), QJsonObject{});
 }
 
 void NativeController::updatePollSettings(const QString &messageUuid, const QString &closesAt,
     bool allowAddingOptions)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("update_settings"), QStringLiteral("not-available"), {});
+        return;
+    }
     // Full-config save: both fields are always present (closes_at null clears).
     QJsonObject settings{{QStringLiteral("allow_adding_options"), allowAddingOptions}};
     settings.insert(QStringLiteral("closes_at"),
