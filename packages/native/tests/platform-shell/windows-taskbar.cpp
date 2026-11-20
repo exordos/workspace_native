@@ -57,6 +57,22 @@ bool explorerHasTrayIcon()
     return false;
 }
 
+QImage paintedWindow(HWND window)
+{
+    auto *screen = QGuiApplication::primaryScreen();
+    RECT rect{};
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (!screen || !window || !IsWindowVisible(window) || !GetWindowRect(window, &rect)
+        || !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor))
+        return {};
+    // Explorer composes child surfaces separately. Read the visible desktop
+    // rectangle, including the pixels its children actually painted.
+    return screen->grabWindow(0).toImage().copy(
+        rect.left - monitor.rcMonitor.left, rect.top - monitor.rcMonitor.top,
+        rect.right - rect.left, rect.bottom - rect.top);
+}
+
 QImage taskbarPixels()
 {
     const auto taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
@@ -140,6 +156,55 @@ private slots:
         }(), 10000);
     }
 
+    void explorerPaintsTheNormalAndUnreadNotificationIcon()
+    {
+        QWindow window;
+        window.resize(640, 400);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        workspace::NativeDesktop desktop(&window);
+        QTRY_VERIFY(explorerHasTrayIcon());
+
+        const auto taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+        const auto area = FindWindowExW(taskbar, nullptr, L"TrayNotifyWnd", nullptr);
+        QVERIFY(area && IsWindowVisible(area));
+        const auto button = FindWindowExW(area, nullptr, L"Button", nullptr);
+        HWND overflow = nullptr;
+        if (button && IsWindowVisible(button)) {
+            SendMessageW(button, BM_CLICK, 0, 0);
+            QTRY_VERIFY((overflow = FindWindowW(L"NotifyIconOverflowWindow", nullptr))
+                        && IsWindowVisible(overflow));
+        }
+        const auto close = qScopeGuard([&] {
+            if (overflow && IsWindowVisible(overflow)) SendMessageW(button, BM_CLICK, 0, 0);
+        });
+
+        // Join only Explorer's notification areas. The separate unread
+        // overlay on the app button must never satisfy this comparison.
+        const auto pixels = [&] {
+            const QImage visible = paintedWindow(area);
+            const QImage hidden = paintedWindow(overflow);
+            QImage result(visible.width() + hidden.width(), qMax(visible.height(), hidden.height()), QImage::Format_RGB32);
+            result.fill(Qt::black);
+            QPainter painter(&result);
+            painter.drawImage(0, 0, visible);
+            if (!hidden.isNull()) painter.drawImage(visible.width(), 0, hidden);
+            painter.end();
+            return result;
+        };
+        const auto normal = pixels();
+        QVERIFY(!normal.isNull());
+        desktop.setUnreadCount(7);
+        QVector<QPoint> dots;
+        QTRY_VERIFY_WITH_TIMEOUT(!(dots = changedPixels(normal, pixels(), orange)).isEmpty(), 10000);
+        desktop.setUnreadCount(0);
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            const auto cleared = pixels();
+            return cleared.size() == normal.size() && std::none_of(dots.cbegin(), dots.cend(),
+                [&](const QPoint &p) { return orange(cleared.pixel(p)); });
+        }(), 10000);
+    }
+
     void unreadOverlayReachesTheExplorerTaskbar_data()
     {
         QTest::addColumn<bool>("russian");
@@ -172,8 +237,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!(before = taskbarPixels()).isNull(), 10000);
         translator.lastDescription.clear();
         desktop.setUnreadCount(7);
-        if (russian)
+        if (russian) {
             QCOMPARE(translator.lastDescription, QStringLiteral("Непрочитанные сообщения"));
+            qInfo().noquote() << "Unread accessibility label:" << translator.lastDescription;
+        }
         QVERIFY(tray->icon().pixmap(32, 32).toImage() != normal);
         QVector<QPoint> dots;
         QTRY_VERIFY_WITH_TIMEOUT(!(dots = changedPixels(before, taskbarPixels(), orange)).isEmpty(), 10000);
