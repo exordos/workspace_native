@@ -27232,8 +27232,16 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(capsule->property("expanded").toBool());
         const auto outside = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
         QTest::mouseMove(window, outside.toPoint());
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
         QTest::wheelEvent(window, outside, QPoint(0, 120));
         QTRY_VERIFY(list->property("contentY").toReal() < outerBefore);
+        // contentY changes as soon as the outer list accepts the wheel. Its
+        // newly visible delegates can still be incubating until presentation.
+        const auto *incubation = scene.engine.incubationController();
+        QVERIFY(incubation);
+        QTRY_VERIFY_WITH_TIMEOUT(!painted.isEmpty() && incubation->incubatingObjectCount() == 0, 2000);
+        QVERIFY(closeIncubatedTestWindow(scene.engine, window));
+        scene.window = nullptr; // Already closed and checked above.
     }
 
     // Issue #142: the wheel distance must match the measured reference notch.
