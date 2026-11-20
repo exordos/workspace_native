@@ -3843,6 +3843,24 @@ QVariantList NativeController::channelMemberChoices() const
     return result;
 }
 
+QVariantList NativeController::chatPickerChoices() const
+{
+    QVariantList result;
+    if (m_channelDirectoryOwner != creationOwnerKey() || !authenticated()) return result;
+    for (auto it = m_channelChoices.cbegin(); it != m_channelChoices.cend(); ++it) {
+        auto choice = it.value();
+        const auto presentation = m_names.constFind(it.key());
+        if (presentation != m_names.cend()) {
+            if (presentation->status == "active" || presentation->status == "idle")
+                choice.insert("presence", presentation->status);
+            if (!presentation->statusText.isEmpty())
+                choice.insert("statusText", presentation->statusText);
+        }
+        result.append(choice);
+    }
+    return result;
+}
+
 bool NativeController::channelMembersVerified() const
 {
     return authenticated() && m_usersVerified && m_channelDirectoryValid
@@ -3865,6 +3883,13 @@ QString NativeController::channelCreationPhase() const
 bool NativeController::channelCreationBusy() const { const auto *intent = channelCreation(); return intent && intent->busy; }
 bool NativeController::channelCreationUncertain() const { return channelCreationPhase() == "uncertain"; }
 QString NativeController::channelCreationError() const { const auto *intent = channelCreation(); return intent ? intent->error : QString{}; }
+bool NativeController::channelCreateRequestFailed() const
+{
+    const auto *intent = channelCreation();
+    return intent && !intent->encrypted && intent->dispatched && !intent->verifiedRequest
+        && (intent->phase == QLatin1String("failed") || intent->phase == QLatin1String("uncertain"));
+}
+
 QVariantMap NativeController::channelCreationForm() const
 {
     const auto *intent = channelCreation();

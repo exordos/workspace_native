@@ -458,6 +458,45 @@ ApplicationWindow {
             Accessible.ignored: true
         }
     }
+
+    component ChatPickerRowBody: Row {
+        id: picker
+        required property var user
+        required property string prefix
+        readonly property string secondary: user.statusText || user.email || ""
+        spacing: 8
+        PresenceBadge {
+            objectName: picker.prefix + "-presence-" + picker.user.id
+            presence: picker.user.presence || "offline"
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Column {
+            width: Math.max(0, picker.width - 20)
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+                objectName: picker.prefix + "-name-" + picker.user.id
+                width: parent.width
+                height: 20
+                text: picker.user.displayName
+                textFormat: Text.PlainText
+                color: root.colors["text-primary"]
+                font.pixelSize: 14
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: picker.prefix + "-email-" + picker.user.id
+                width: parent.width
+                height: 15.6875
+                visible: picker.secondary.length > 0
+                text: picker.secondary
+                textFormat: Text.PlainText
+                color: root.colors["text-secondary"]
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+        }
+    }
     component InlineKeyRequestAction: NativeButton {
         id: serviceAction
         colors: root.colors
@@ -834,7 +873,7 @@ ApplicationWindow {
         // directory on every startup state notification (issue #157).
         if (!createChatDialog.visible || chatTabs.currentIndex !== 0) return [];
         const query = chatUserQuery.trim().toLowerCase();
-        return root.controller.directChatChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
+        return root.controller.chatPickerChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
     }
     function setChatQuery(query) {
         chatUserQuery = query;
@@ -892,7 +931,7 @@ ApplicationWindow {
     readonly property var channelVisibleMembers: {
         if (!createChatDialog.visible || chatTabs.currentIndex !== 1) return [];
         const query = chatUserQuery.trim().toLowerCase();
-        return root.controller.channelMemberChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => {
+        return root.controller.chatPickerChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => {
             const selected = Number(root.channelSelectedMembers.indexOf(b.id) >= 0) - Number(root.channelSelectedMembers.indexOf(a.id) >= 0);
             return selected || String(a.displayName).localeCompare(String(b.displayName));
         });
@@ -990,7 +1029,7 @@ ApplicationWindow {
             root.controller.checkChannelCreation();
         else if ((action === "add" || action === "retry") && root.controller.canRetryChannelMembers)
             root.controller.retryChannelMembers();
-        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && channelNameInput.text.trim().length) {
+        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && root.controller.channelMembersVerified && channelNameInput.text.trim().length) {
             channelViewAttempt = "";
             root.controller.createChannel(channelNameInput.text, channelDescriptionInput.text, channelInviteOnly.checked, channelAnnounce.checked, channelSelectedMembers, root.channelEncryptionChecked);
         }
@@ -12760,7 +12799,7 @@ component NativeMentionChip: Item {
                                 required property int index
                                 objectName: "direct-user-" + modelData.id
                                 width: directUserList.width
-                                height: modelData.email.length > 0 ? 51.6875 : 36
+                                height: contentItem.secondary.length > 0 ? 51.6875 : 36
                                 padding: 0
                                 topPadding: 8
                                 bottomPadding: 8
@@ -12771,32 +12810,12 @@ component NativeMentionChip: Item {
                                     const phase = root.controller.directChatPhase;
                                     return verified && !root.chatMutationBusy && root.controller.canStartDirectChatWith(modelData.id);
                                 }
-                                Accessible.name: String(modelData.displayName) + (modelData.email ? ", " + modelData.email : "")
+                                Accessible.name: String(modelData.displayName) + (contentItem.secondary ? ", " + contentItem.secondary : "")
                                 onClicked: root.startDirectPeer(modelData.id)
                                 onActiveFocusChanged: if (activeFocus) directUserList.positionViewAtIndex(index, ListView.Contain)
-                                contentItem: Column {
-                                    Text {
-                                        objectName: "direct-name-" + directUser.modelData.id
-                                        width: parent.width
-                                        height: 20
-                                        text: directUser.modelData.displayName
-                                        textFormat: Text.PlainText
-                                        color: root.colors["text-primary"]
-                                        font.pixelSize: 14
-                                        font.weight: Font.Medium
-                                        elide: Text.ElideRight
-                                    }
-                                    Text {
-                                        objectName: "direct-email-" + directUser.modelData.id
-                                        width: parent.width
-                                        height: 15.6875
-                                        visible: directUser.modelData.email.length > 0
-                                        text: directUser.modelData.email
-                                        textFormat: Text.PlainText
-                                        color: root.colors["text-secondary"]
-                                        font.pixelSize: 11
-                                        elide: Text.ElideRight
-                                    }
+                                contentItem: ChatPickerRowBody {
+                                    user: directUser.modelData
+                                    prefix: "direct"
                                 }
                                 background: Rectangle {
                                     color: directUser.hovered ? root.colors["sidebar-item-hover"] : "transparent"
@@ -12988,7 +13007,7 @@ component NativeMentionChip: Item {
                                     required property int index
                                     objectName: "channel-member-" + modelData.id
                                     width: channelMemberList.width
-                                    height: (modelData.email ? 35.6875 : 20) + 16
+                                    height: contentItem.secondary.length > 0 ? 51.6875 : 36
                                     padding: 0
                                     topPadding: 8
                                     bottomPadding: 8
@@ -12996,7 +13015,7 @@ component NativeMentionChip: Item {
                                     rightPadding: 12
                                     enabled: !root.channelFormFrozen && root.controller.channelMembersVerified
                                     checked: root.channelSelectedMembers.indexOf(modelData.id) >= 0
-                                    Accessible.name: String(modelData.displayName) + (modelData.email ? ", " + modelData.email : "")
+                                    Accessible.name: String(modelData.displayName) + (contentItem.secondary ? ", " + contentItem.secondary : "")
                                     onClicked: root.toggleChannelMember(modelData.id)
                                     onActiveFocusChanged: {
                                         if (activeFocus) {
@@ -13014,29 +13033,9 @@ component NativeMentionChip: Item {
                                         border.color: member.visualFocus ? root.colors.accent : member.checked ? "#0075ff" : "#767676"
                                         ChannelCheckMark { visible: member.checked }
                                     }
-                                    contentItem: Column {
-                                        Text {
-                                            objectName: "channel-name-" + member.modelData.id
-                                            width: parent.width
-                                            height: 20
-                                            text: member.modelData.displayName
-                                            textFormat: Text.PlainText
-                                            color: root.colors["text-primary"]
-                                            font.pixelSize: 14
-                                            font.weight: Font.Medium
-                                            elide: Text.ElideRight
-                                        }
-                                        Text {
-                                            objectName: "channel-email-" + member.modelData.id
-                                            width: parent.width
-                                            height: 15.6875
-                                            visible: member.modelData.email.length > 0
-                                            text: member.modelData.email
-                                            textFormat: Text.PlainText
-                                            color: root.colors["text-secondary"]
-                                            font.pixelSize: 11
-                                            elide: Text.ElideRight
-                                        }
+                                    contentItem: ChatPickerRowBody {
+                                        user: member.modelData
+                                        prefix: "channel"
                                     }
                                     background: Rectangle { color: member.hovered ? root.colors["sidebar-item-hover"] : "transparent" }
                                 }
@@ -13070,7 +13069,8 @@ component NativeMentionChip: Item {
                         objectName: "channelCreationError"
                         width: parent.width
                         visible: root.channelSubmitted && root.controller.channelCreationError.length > 0
-                        text: visible ? root.controller.channelCreationError : ""
+                        text: visible ? (root.controller.channelCreateRequestFailed
+                            ? qsTr("Could not create chat. Try again.") : root.controller.channelCreationError) : ""
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: root.colors.danger
@@ -13078,6 +13078,26 @@ component NativeMentionChip: Item {
                         lineHeightMode: Text.FixedHeight
                         lineHeight: 20
                         Accessible.role: Accessible.AlertMessage
+                    }
+                    Text {
+                        objectName: "channelCreationRecoveryDetail"
+                        width: parent.width
+                        visible: root.channelSubmitted && root.controller.channelCreateRequestFailed && root.channelPhase === "uncertain"
+                        text: visible ? root.controller.channelCreationError : ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: root.colors["text-secondary"]
+                        font.pixelSize: 14
+                    }
+                    Text {
+                        objectName: "channelProfileLoading"
+                        width: parent.width
+                        visible: !root.controller.channelMembersVerified && root.channelPrimaryAction === "create"
+                        text: qsTr("Profile is still loading. Try again in a moment.")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: root.colors["text-muted"]
+                        font.pixelSize: 12
                     }
                     // Issue #234 (review finding 4576938732, R9): when an
                     // encrypted create is rejected because the durable create
@@ -13503,7 +13523,7 @@ component NativeMentionChip: Item {
                         id: channelPrimary
                         objectName: root.channelPrimaryAction === "check" ? "channelCheckButton" : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? "channelRetryMembersButton" : "channelCreateButton"
                         visible: chatTabs.currentIndex === 1 && root.channelPrimaryAction !== "none"
-                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && channelNameInput.text.trim().length > 0 && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified))
+                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && root.controller.channelMembersVerified && channelNameInput.text.trim().length > 0)
                         text: root.channelPrimaryAction === "check" ? qsTr("Check status") : root.channelPrimaryAction === "add" ? qsTr("Add members") : root.channelPrimaryAction === "retry" ? qsTr("Retry members") : qsTr("Create")
                         height: 32
                         width: contentItem.implicitWidth + 24

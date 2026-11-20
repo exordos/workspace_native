@@ -10116,6 +10116,150 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void chatPickerUsesPresenceAndStatusOnBothTabs_data()
+    {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("english-light") << false;
+        QTest::newRow("russian-dark") << true;
+    }
+
+    void chatPickerUsesPresenceAndStatusOnBothTabs()
+    {
+        QFETCH(bool, dark);
+        WindowChannelFixture fixture;
+        auto alice = fixture.users[1].toObject();
+        alice["status"] = "active";
+        alice["status_text"] = "In a meeting";
+        alice["status_emoji"] = "coffee";
+        fixture.users[1] = alice;
+        fixture.users.append(QJsonObject{{"uuid",returnedId},{"username","bob"},{"email","bob@example.invalid"},{"status","idle"}});
+        fixture.users.append(QJsonObject{{"uuid",channelDefault},{"username","charlie"},{"status","do_not_disturb"}});
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        preferences.setLocale(dark ? "ru" : "en");
+        preferences.setMode(dark ? "dark" : "light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto cleanup = qScopeGuard([&engine, guard=QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        click(window, item(window->contentItem(), "createChatButton"));
+        QTRY_VERIFY(visibleItem("direct-user-" + channelPeer));
+        for (const QString &tab : {QString("direct"), QString("channel")}) {
+            if (tab == "channel") click(window, visibleItem("createChatTab-1"));
+            for (const QString &id : {channelPeer, returnedId, channelDefault}) {
+                QTRY_VERIFY_WITH_TIMEOUT(visibleItem(tab + "-presence-" + id), 1800);
+                auto *badge = visibleItem(tab + "-presence-" + id);
+                auto *fill = item(badge, "presence-fill");
+                QVERIFY(fill);
+                QCOMPARE(fill->width(), 8);
+                const auto status = id == channelPeer ? "active" : id == returnedId ? "idle" : "offline";
+                QCOMPARE(badge->property("presence").toString(), QString::fromLatin1(status));
+                const QColor expected(id == channelPeer ? "#26c038" : id == returnedId ? "#ff8900"
+                    : dark ? "#707070" : "#989898");
+                QCOMPARE(fill->property("color").value<QColor>(), expected);
+                auto *secondary = visibleItem(tab + "-email-" + id);
+                if (id == channelDefault) { QVERIFY(!secondary); continue; }
+                QVERIFY(secondary);
+                QCOMPARE(secondary->property("text").toString(), id==channelPeer ? "In a meeting" : "bob@example.invalid");
+                QCOMPARE(secondary->property("font").value<QFont>().pixelSize(), 11);
+            }
+        }
+    }
+
+    void channelFormExplainsLoadingAndCreateFailure_data()
+    {
+        QTest::addColumn<bool>("uncertain");
+        QTest::newRow("english-rejected") << false;
+        QTest::newRow("russian-unconfirmed") << true;
+    }
+
+    void channelFormExplainsLoadingAndCreateFailure()
+    {
+        QFETCH(bool, uncertain);
+        WindowChannelFixture fixture;
+        fixture.postStatus = uncertain ? 500 : 403;
+        std::function<void()> release;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = fallback(request);
+            if (request.target.path().endsWith("/users/") && !release)
+                response.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            return response;
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        preferences.setLocale(uncertain ? "ru" : "en");
+        preferences.setMode(uncertain ? "dark" : "light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto cleanup = qScopeGuard([&engine, guard=QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(release && controller.streams().size() == 1);
+        openChannelNewChat(window);
+        visibleItem("channelNameInput")->setProperty("text", "Fixture channel");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("channelProfileLoading"), 1800);
+        auto *reason = visibleItem("channelProfileLoading");
+        QCOMPARE(reason->property("text").toString(), uncertain
+            ? QStringLiteral("Профиль ещё загружается. Попробуйте через пару секунд.")
+            : QStringLiteral("Profile is still loading. Try again in a moment."));
+        QCOMPARE(reason->property("font").value<QFont>().pixelSize(), 12);
+        auto *submit = visibleItem("channelCreateButton");
+        QVERIFY(submit);
+        QVERIFY(!submit->isEnabled());
+        release();
+        QTRY_VERIFY(controller.channelMembersVerified() && controller.canCreateChannel());
+        QTRY_VERIFY(!visibleItem("channelProfileLoading"));
+        // Initial bootstrap can retire the form's original authorization context.
+        // Reopen the ordinary verified form to exercise its submitted error.
+        if (!visibleItem("channelNameInput")) openChannelNewChat(window);
+        auto *verifiedName = visibleItem("channelNameInput");
+        QVERIFY(verifiedName);
+        verifiedName->setProperty("text", "Fixture channel");
+        QTRY_VERIFY(visibleItem("channelCreateButton") && visibleItem("channelCreateButton")->isEnabled());
+        click(window, visibleItem("channelCreateButton"));
+        QTRY_COMPARE(controller.channelCreationPhase(), uncertain ? "uncertain" : "failed");
+        auto *alert = visibleItem("channelCreationError");
+        QVERIFY(alert);
+        QCOMPARE(alert->property("text").toString(), uncertain
+            ? QStringLiteral("Не удалось создать чат. Попробуйте ещё раз.")
+            : QStringLiteral("Could not create chat. Try again."));
+        QCOMPARE(alert->property("font").value<QFont>().pixelSize(), 14);
+        const auto accessible = QAccessible::queryAccessibleInterface(alert);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::AlertMessage);
+        if (uncertain) {
+            QTRY_VERIFY(visibleItem("channelCreationRecoveryDetail"));
+            click(window, visibleItem("channelCheckButton"));
+        } else {
+            fixture.postStatus = 201;
+            click(window, visibleItem("channelCreateButton"));
+        }
+        QTRY_COMPARE(controller.channelCreationPhase(), "ready");
+        QTRY_VERIFY(!visibleItem("channelCreationError"));
+        QCOMPARE(fixture.posts, uncertain ? 1 : 2);
+    }
+
     void globalChannelCreationUsesVerifiedHttp_data()
     {
         QTest::addColumn<QString>("scenario");

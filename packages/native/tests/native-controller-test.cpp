@@ -8210,6 +8210,7 @@ private slots:
         QTRY_VERIFY(!controller.channelCreationBusy()); const auto id = test.created.value("uuid").toString();
         QCOMPARE(test.posts, 1); QCOMPARE(test.memberPosts, 0); QCOMPARE(test.gets, 0); QCOMPARE(done.size(), 0);
         QCOMPARE(controller.channelCreationForm().value("confirmedStreamId").toString(), QString{});
+        QVERIFY(controller.channelCreateRequestFailed());
         QCOMPARE(controller.canCreateChannel(), definite); QCOMPARE(controller.canCheckChannelCreation(), !definite);
         if (definite) {
             QCOMPARE(controller.channelCreationPhase(), "failed"); test.postStatus = 201;

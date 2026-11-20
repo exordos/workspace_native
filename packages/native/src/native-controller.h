@@ -86,6 +86,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap directPeer READ directPeer NOTIFY stateChanged)
     Q_PROPERTY(bool canCreateChannel READ canCreateChannel NOTIFY stateChanged)
     Q_PROPERTY(QVariantList channelMemberChoices READ channelMemberChoices NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList chatPickerChoices READ chatPickerChoices NOTIFY stateChanged)
     Q_PROPERTY(bool channelMembersVerified READ channelMembersVerified NOTIFY stateChanged)
     // Ownership/API/route/cache/trust lifetime only. Ordinary row counters and
     // directory display updates do not change this key or discard a form.
@@ -94,6 +95,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool channelCreationBusy READ channelCreationBusy NOTIFY stateChanged)
     Q_PROPERTY(bool channelCreationUncertain READ channelCreationUncertain NOTIFY stateChanged)
     Q_PROPERTY(QString channelCreationError READ channelCreationError NOTIFY stateChanged)
+    Q_PROPERTY(bool channelCreateRequestFailed READ channelCreateRequestFailed NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap channelCreationForm READ channelCreationForm NOTIFY stateChanged)
     Q_PROPERTY(bool canCheckChannelCreation READ canCheckChannelCreation NOTIFY stateChanged)
     Q_PROPERTY(bool canRetryChannelMembers READ canRetryChannelMembers NOTIFY stateChanged)
@@ -362,12 +364,14 @@ public:
     QVariantMap directPeer() const;
     bool canCreateChannel() const;
     QVariantList channelMemberChoices() const;
+    QVariantList chatPickerChoices() const;
     bool channelMembersVerified() const;
     QString channelCreationContextKey() const;
     QString channelCreationPhase() const;
     bool channelCreationBusy() const;
     bool channelCreationUncertain() const;
     QString channelCreationError() const;
+    bool channelCreateRequestFailed() const;
     QVariantMap channelCreationForm() const;
     bool canCheckChannelCreation() const;
     bool canRetryChannelMembers() const;

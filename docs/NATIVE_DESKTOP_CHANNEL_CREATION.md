@@ -20,7 +20,9 @@ description use ECMAScript-compatible trim and Unicode code point bounds of
 1–255 and 0–10000. The two flags are independent. Selected UUIDs are normalized,
 deduplicated, and exclude the current user. Nonempty selections require the
 current verified directory; an empty selection does not wait for that directory.
-The directory exposes only `id`, `displayName`, `username`, and `email`.
+The verified picker adds availability and a plain status line to the displayed name. Both tabs use the same row, with email as the fallback when the status is empty.
+
+The Channel tab explains when the creator profile is still loading. An ordinary create that receives an unsuccessful response displays a localized alert. When the server may already have accepted the request, Check status reconciles the recorded stream UUID.
 
 The source ordinary path is in
 `packages/web/src/features/create-chat/create-chat-dialog.hook.ts` and
