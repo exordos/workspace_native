@@ -9416,7 +9416,14 @@ private slots:
         QCOMPARE(confirmations, 1); QCOMPARE(history, 1);
         QVERIFY(flushCache(cache));
         const auto saved = cacheEntry(cache, cache.lease(), {NativeCache::Kind::History, streamId, topicId, {}});
-        if (scenario.endsWith("delete")) QVERIFY(!saved);
+        if (scenario == "send-delete") {
+            QVERIFY(id != messageId);
+            QVERIFY(saved && !saved->fresh);
+            QCOMPARE(saved->rows.size(), 1);
+            const auto original = saved->rows.first().toObject();
+            QCOMPARE(original.value("uuid").toString(), messageId);
+            QCOMPARE(original.value("payload").toObject().value("content").toString(), QStringLiteral("Payload A"));
+        } else if (scenario.endsWith("delete")) QVERIFY(!saved);
         else {
             QVERIFY(saved && !saved->fresh);
             const auto raw = saved->rows.first().toObject();
