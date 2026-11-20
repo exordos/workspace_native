@@ -31,7 +31,10 @@ behaviour locked by `activity-page.test.tsx` (lines 370, 406, 489, 556, 590, 633
   Next cursor arrives in the `X-Pagination-Marker` response header.
 - Unread index (`fetchUnreadMentions`, activity-mentions.api.ts:102-134):
   same endpoint with `mentioned=true&read=false&page_limit=100`, walking every
-  page to the end; the index is the set of returned message uuids.
+  page to the end. Workspace bootstrap starts this walk independently of the
+  Mentions page. The sidebar shows each channel’s badge and the aggregate
+  count when the walk finishes. Read, delete and arrival events received
+  during the walk are applied to the completed index in arrival order.
 - All/Unread are separate collections: switching filters resets to a fresh
   first page and the cursor of one filter never feeds the other
   (activity-page.ui.tsx:178-247, collectionKey = `mentions:<filter>`).
