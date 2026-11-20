@@ -26232,7 +26232,19 @@ private:
         // (Main.qml: item.controller = root.controller.callWindow); the
         // controller itself is never poked from C++ here.
         QTemporaryDir directory; QVERIFY(directory.isValid());
-        WindowCallFixture fixture; fixture.meetConfigured = true;
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        const auto serve = fixture.server.handler;
+        fixture.server.handler = [serve](const Request &request) {
+            auto reply = serve(request);
+            if (request.method == "GET" && request.target.path() == "/workspace-call-room") {
+                // This case delivers the load callbacks from QML. Keep the
+                // actual page pending until the view closes or retries it.
+                reply.defer = [](auto) {};
+            }
+            return reply;
+        };
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
@@ -26245,7 +26257,7 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
-        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.meetHost(), fixture.server.origin().toString(), 2000);
 
         // The production view file is the caller: the very qrc source the
         // embed Loader instantiates must invoke both lifecycle slots through
@@ -26256,7 +26268,9 @@ private:
         QVERIFY(viewSource.contains("host.controller.apiLoadSucceeded()"));
         QVERIFY(viewSource.contains("host.controller.apiLoadFailed()"));
 
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = [window] { return visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId); };
+        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
+        clickReadyItem(window, callCard());
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
 
@@ -26288,7 +26302,8 @@ private:
         qmlCall(QStringLiteral("nativeController.callWindow.close()"), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
+        clickReadyItem(window, callCard());
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
