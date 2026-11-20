@@ -16172,15 +16172,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(controller.draft(), caption); QVERIFY(controller.error().isEmpty());
         QTRY_VERIFY(visibleItem(window->contentItem(), "uploadCard-1"));
         QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
-        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&size=230>)\n" + caption;
+        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&w=96&h=64&size=230>)\n" + caption;
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
         QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), caption);
         QVERIFY(controller.canSend());
         QTRY_VERIFY(visibleItem(window->contentItem(), "sendButton")
             && visibleItem(window->contentItem(), "sendButton")->isEnabled());
         click(window, visibleItem(window->contentItem(), "sendButton"));
-        QTRY_COMPARE(messagePosts, 1); QTRY_COMPARE(canonicalGets, 1); QVERIFY(postContractOkay);
+        QTRY_COMPARE(messagePosts, 1);
         QCOMPARE(postedRequest.value("payload").toObject().value("content").toString(), uploadedDraft);
+        QVERIFY(postContractOkay);
+        QTRY_COMPARE(canonicalGets, 1);
         QCOMPARE(canonical.value("payload").toObject().value("content").toString(), uploadedDraft);
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(controller.draft().isEmpty());
         const auto canonicalLoaded = [&] {
