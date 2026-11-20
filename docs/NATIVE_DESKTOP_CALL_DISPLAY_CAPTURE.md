@@ -117,23 +117,28 @@ portal LIVE source-selection contract
 `org.freedesktop.portal.ScreenCast` on the session bus (service
 `org.freedesktop.portal.Desktop`, object `/org/freedesktop/portal/desktop`),
 the platform analogue of the Electron source picker wired at `main.ts:367`.
-Round 2 (finding 4) replaced the first round's
-`Screenshot.PictureUri` transport, which returned a still PNG path, not a
-streamable source. The shipped exchange, per the portal interface docs:
+The picker uses three asynchronous methods. Each returns a Request object
+and the picker subscribes to its `Response` before sending the call, using
+a distinct `handle_token`.
 
-1. `CreateSession(a{sv})` answers a Request object path whose `Response`
-   carries `session_target` (the session object path);
-2. `SelectSources(s parent_window, o session, a{sv})` with the `types`
-   option mask `screens|windows` (`0x1|0x2`) - this is the source-selection
-   contract proper, the select-screens/select-windows selection (the old
-   `multiple_screens`/`multiple_windows` booleans are the deprecated spelling
-   of the same contract);
-3. `PickStreams(s parent_window, o session, a{sv})` whose `Response` carries
-   `streams` - an array of stream-reference object paths. Those references
-   are the live sources: a capture pipeline resolves one to a PipeWire node
-   through `ScreenCast.OpenPipeWireRemote`, which is why the published
-   source is marked `live: true` and carries the stream reference as its
-   uri. A portal cancel (Response code 1) surfaces as a translated failure.
+1. `CreateSession(a{sv})` supplies a unique `session_handle_token`. Its
+   successful response returns the session object path in the string-valued
+   `session_handle`.
+2. `SelectSources(o session, a{sv})` requests one monitor or window with
+   `types=3`.
+3. `Start(o session, s parent_window, a{sv})` opens the desktop chooser.
+   On success, `streams` has D-Bus type `a(ua{sv})`. The picker publishes
+   the selected PipeWire `nodeId`, its `properties`, and the `sessionHandle`
+   needed to obtain the PipeWire file descriptor with `OpenPipeWireRemote`.
+   It keeps the session open until the caller releases the source, replaces
+   it with a new selection, or destroys the picker.
+
+Cancelling the chooser reports cancellation and closes the pending session.
+An error, timeout or explicit release also closes any pending request and
+session. The session token gives the picker its expected path before the
+creation response arrives. For portals returning a different Request handle,
+the picker matches any early response with the handle in the method reply.
+[ScreenCast portal interface](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
 
 When no portal is registered on the session bus, the picker falls back
 deterministically to Qt's own screen model (`QGuiApplication::screens()`),
@@ -189,29 +194,28 @@ the picker result is the value that gets passed through.
   screen-model sources; the injected portal bridge reports a source or a
   failure;
   `shareSourcePickerDrivesThePortalScreenCastContract` proves the whole
-  CreateSession/SelectSources/PickStreams exchange against a session-bus
-  portal stub (stream reference published as the live source, the still
-  `PictureUri` API never called, cancel code 1 -> translated failure);
+  CreateSession/SelectSources/Start exchange against a session-bus fixture. It
+  checks the typed stream tuple, explicit release, and cancellation at Start;
   `shareSourcePickerCancelsTheCompletedExchangeTimerAndSubscription`
   reproduces finding 3 (first exchange completes, second exchange starts,
   the first exchange's timeout deadline elapses inside the second exchange:
   the second is still decided only by its own portal reply);
-  `shareSourcePickerParsesThePortalStreamResultForm` covers the stream
-  result forms.
+  `shareSourcePickerRejectsMalformedOrMissingPortalStreams` rejects missing
+  results and object-path lists.
 
 `native-call` group: a source-contract guard that the shipped embed view
 routes `DesktopVideoCapture` through the controller's frame-trust gate and
 never hardcodes a frame flag into the modeled gate (round 2), matching the
 existing shipped-source guard pattern.
 
-## Not established
+## Linux desktop verification
 
-Live portal dialog acceptance on a real desktop host (the ScreenCast
-exchange here is proven against a session-bus portal stub; the live ao wire
-form of `streams` on a real portal could not be exercised by the unit stub -
-Qt cannot re-marshal a self-built `QDBusArgument` array inside a signal -
-although the reader walks any `QDBusArgument` array), actual
-`getDisplayMedia` source selection inside the meeting page (blocked by the
-Qt API gap above), the display-capture grant itself (fail-closed on this
-runtime until Qt exposes frame identity), and Wayland/other-platform picker
-behavior.
+A nested Sway desktop with the wlr portal backend, a monitor chooser and
+PipeWire exercised the production picker on the session bus. Esc cancelled
+the first chooser. Selecting the test monitor in the second returned a
+session and a node. Calling `OpenPipeWireRemote` on that session returned
+a usable file descriptor.
+
+Selecting a source for the embedded meeting page still requires Qt to
+expose a trustworthy requesting frame and a way to bind the chosen stream.
+Windows and macOS use other capture APIs and were not exercised here.

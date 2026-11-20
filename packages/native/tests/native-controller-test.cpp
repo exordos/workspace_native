@@ -42,6 +42,7 @@
 #include <QSignalSpy>
 #include <ctime>
 #include <QDBusConnection>
+#include <QDBusMetaType>
 #include <QDBusAbstractAdaptor>
 #include <QProcess>
 #include <QStandardPaths>
@@ -1743,6 +1744,7 @@ class PortalRequestStub final : public QObject
 public:
     using QObject::QObject;
     QString path; // path the test registered this object at (#87 round 2)
+    int closeCalls = 0;
 };
 
 class PortalRequestAdaptor final : public QDBusAbstractAdaptor
@@ -1750,7 +1752,9 @@ class PortalRequestAdaptor final : public QDBusAbstractAdaptor
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
 public:
-    explicit PortalRequestAdaptor(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+    explicit PortalRequestAdaptor(PortalRequestStub *request) : QDBusAbstractAdaptor(request) {}
+public slots:
+    void Close() { ++static_cast<PortalRequestStub *>(parent())->closeCalls; }
 signals:
     void Response(quint32 code, const QVariantMap &results);
 };
@@ -1790,31 +1794,38 @@ QDBusObjectPath PortalScreenshotAdaptor::PictureUri(const QString &parentWindow,
     return QDBusObjectPath(m_stub->requestPath);
 }
 
-// #87 round 2 (finding 4): stand-in for org.freedesktop.portal.ScreenCast,
-// the portal's LIVE source-selection contract (the still-image Screenshot
-// interface above is what the finding rejects). Exchange per the portal
-// interface docs: CreateSession(a{sv}) answers a Request object path whose
-// Response carries "session_target"; SelectSources(s, o, a{sv}) lets the
-// user pick screen/window sources (the types option selects screens and
-// windows); PickStreams(s, o, a{sv}) Response carries "streams", an array
-// of stream-reference object paths - the live references a capture pipeline
-// consumes via OpenPipeWireRemote - plus a "name" member. Every step hands
-// back its own Request object and answers after responseDelayMs, like the
-// real portal does.
+// Stand-in for the public org.freedesktop.portal.ScreenCast interface.
+// Start returns the documented a(ua{sv}) stream tuples over the real bus.
+using FixturePortalStream = std::pair<quint32, QVariantMap>;
+
+class PortalSessionStub final : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Session")
+public:
+    int closeCalls = 0;
+public slots:
+    void Close() { ++closeCalls; }
+};
+
 class PortalScreenCastStub final : public QObject
 {
     Q_OBJECT
 public:
     using QObject::QObject;
+    std::function<void(const QString &)> sessionCreated;
     int createSessionCalls = 0;
     int selectSourcesCalls = 0;
-    int pickStreamsCalls = 0;
+    int startCalls = 0;
+    QString selectedSession;
+    QString startedSession;
+    quint32 types = 0;
+    bool validTokens = true;
     int responseDelayMs = 120;
-    quint32 responseCode = 0; // portal semantics: 1 is the user cancelling
+    quint32 startResponseCode = 0; // 1 is the user cancelling in the chooser
     QString sessionPath = QStringLiteral("/org/freedesktop/portal/desktop/session/87/session");
-    QStringList streamPaths {
-        QStringLiteral("/org/freedesktop/portal/desktop/session/87/stream_1") };
-    QString streamName = QStringLiteral("Monitor 1");
+    const quint32 nodeId = 73;
+    const quint64 streamSerial = 18023;
     // Each step gets its own Request object from the pool the test registered.
     QList<PortalRequestStub *> requestPool;
     int requestCursor = 0;
@@ -1836,66 +1847,58 @@ public:
 
 public slots:
     QDBusObjectPath CreateSession(const QVariantMap &options);
-    QDBusObjectPath SelectSources(const QString &parentWindow,
-        const QDBusObjectPath &session, const QVariantMap &options);
-    QDBusObjectPath PickStreams(const QString &parentWindow,
-        const QDBusObjectPath &session, const QVariantMap &options);
+    QDBusObjectPath SelectSources(const QDBusObjectPath &session, const QVariantMap &options);
+    QDBusObjectPath Start(const QDBusObjectPath &session, const QString &parentWindow, const QVariantMap &options);
 
 private:
-    QDBusObjectPath answerWith(const QVariantMap &results);
+    QDBusObjectPath answerWith(const QVariantMap &results, quint32 code = 0);
     PortalScreenCastStub *m_stub;
 };
 
-QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results)
+QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results, quint32 code)
 {
     auto *request = m_stub->takeRequest();
     auto *adaptor = request->findChild<PortalRequestAdaptor *>();
     const int delayMs = m_stub->responseDelayMs;
-    const quint32 code = m_stub->responseCode;
-    QTimer::singleShot(delayMs, request, [request, adaptor, code, results] {
+    if (delayMs < 0)
         adaptor->Response(code, results);
-    });
+    else
+        QTimer::singleShot(delayMs, request, [adaptor, code, results] { adaptor->Response(code, results); });
     return QDBusObjectPath(request->path);
 }
 
 QDBusObjectPath PortalScreenCastAdaptor::CreateSession(const QVariantMap &options)
 {
-    Q_UNUSED(options)
     ++m_stub->createSessionCalls;
-    const QVariantMap results {
-        {QStringLiteral("session_target"),
-            QVariant::fromValue(QDBusVariant(m_stub->sessionPath))}
-    };
-    return answerWith(results);
+    const QRegularExpression validToken(QStringLiteral("^[a-zA-Z0-9_]+$"));
+    m_stub->validTokens = validToken.match(options.value("handle_token").toString()).hasMatch()
+        && validToken.match(options.value("session_handle_token").toString()).hasMatch();
+    if (m_stub->sessionCreated)
+        m_stub->sessionCreated(options.value("session_handle_token").toString());
+    return answerWith({{"session_handle", m_stub->sessionPath}});
 }
 
-QDBusObjectPath PortalScreenCastAdaptor::SelectSources(const QString &parentWindow,
-    const QDBusObjectPath &session, const QVariantMap &options)
+QDBusObjectPath PortalScreenCastAdaptor::SelectSources(const QDBusObjectPath &session,
+    const QVariantMap &options)
 {
-    Q_UNUSED(parentWindow)
-    Q_UNUSED(session)
-    Q_UNUSED(options)
     ++m_stub->selectSourcesCalls;
+    m_stub->selectedSession = session.path();
+    m_stub->types = options.value("types").toUInt();
     return answerWith({});
 }
 
-QDBusObjectPath PortalScreenCastAdaptor::PickStreams(const QString &parentWindow,
-    const QDBusObjectPath &session, const QVariantMap &options)
+QDBusObjectPath PortalScreenCastAdaptor::Start(const QDBusObjectPath &session,
+    const QString &parentWindow, const QVariantMap &options)
 {
     Q_UNUSED(parentWindow)
-    Q_UNUSED(session)
     Q_UNUSED(options)
-    ++m_stub->pickStreamsCalls;
-    // "streams" travels as an array of stream-reference strings. The ao
-    // (array of object paths) wire form of a live portal cannot be re-shipped
-    // inside a signal-emitted a{sv} with a self-built QDBusArgument (Qt's
-    // re-marshalling path corrupts it), so the stub uses the QStringList-as
-    // form and the result-form case covers both shapes.
-    const QVariantMap results {
-        {QStringLiteral("streams"), QVariant::fromValue(QDBusVariant(QVariant(m_stub->streamPaths)))},
-        {QStringLiteral("name"), QVariant::fromValue(QDBusVariant(m_stub->streamName))}
-    };
-    return answerWith(results);
+    ++m_stub->startCalls;
+    m_stub->startedSession = session.path();
+    qDBusRegisterMetaType<FixturePortalStream>();
+    qDBusRegisterMetaType<QList<FixturePortalStream>>();
+    const QList<FixturePortalStream> streams{{m_stub->nodeId,
+        {{"source_type", 1u}, {"pipewire-serial", QVariant::fromValue(m_stub->streamSerial)}}}};
+    return answerWith({{"streams", QVariant::fromValue(streams)}}, m_stub->startResponseCode);
 }
 
 // Registers the per-step Request pool the ScreenCast stub hands out.
@@ -26705,12 +26708,7 @@ private slots:
         QCOMPARE(failed.at(0).at(0).toString(), QStringLiteral("bridge rejected the pick"));
     }
 
-    // #87 round 2 (finding 4): the default portal transport must drive the
-    // LIVE source-selection contract (org.freedesktop.portal.ScreenCast
-    // CreateSession -> SelectSources -> PickStreams) and publish the picked
-    // stream reference, never a still PictureUri screenshot file. Before the
-    // fix the shipped transport calls Screenshot.PictureUri instead, so every
-    // ScreenCast counter and stream assertion below fails.
+    // Exercise the public ScreenCast wire types and the portal-owned session lifetime.
     void shareSourcePickerDrivesThePortalScreenCastContract()
     {
         auto bus = QDBusConnection::sessionBus();
@@ -26724,6 +26722,8 @@ private slots:
         new PortalScreenshotAdaptor(&shot, &portal);
         shot.requestObject = &shotRequest;
         new PortalScreenCastAdaptor(&cast, &portal);
+        PortalSessionStub session;
+        QVERIFY(bus.registerObject(cast.sessionPath, &session, QDBusConnection::ExportAllSlots));
         PortalRequestPool pool;
         QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &portal));
         QVERIFY(bus.registerObject(shotRequest.path = shot.requestPath, &shotRequest));
@@ -26734,6 +26734,7 @@ private slots:
         auto cleanup = qScopeGuard([&] {
             bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
             bus.unregisterObject(shot.requestPath);
+            bus.unregisterObject(cast.sessionPath);
             pool.unregisterFrom(bus);
             bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
         });
@@ -26746,48 +26747,97 @@ private slots:
         // The live contract ran end to end, and the still-image API was never used.
         QCOMPARE(cast.createSessionCalls, 1);
         QCOMPARE(cast.selectSourcesCalls, 1);
-        QCOMPARE(cast.pickStreamsCalls, 1);
+        QCOMPARE(cast.startCalls, 1);
+        QVERIFY(cast.validTokens);
+        QCOMPARE(cast.selectedSession, cast.sessionPath);
+        QCOMPARE(cast.startedSession, cast.sessionPath);
+        QCOMPARE(cast.types, 3u);
         QCOMPARE(shot.pictureUriCalls, 0);
         const auto source = selected.at(0).at(0).toMap();
         QCOMPARE(source.value(QStringLiteral("id")).toString(), QStringLiteral("portal-stream"));
-        QCOMPARE(source.value(QStringLiteral("uri")).toString(), cast.streamPaths.first());
-        QCOMPARE(source.value(QStringLiteral("name")).toString(), cast.streamName);
+        QCOMPARE(source.value("nodeId").toUInt(), cast.nodeId);
+        QCOMPARE(source.value("sessionHandle").toString(), cast.sessionPath);
+        QCOMPARE(source.value("properties").toMap().value("pipewire-serial").toULongLong(), cast.streamSerial);
         QVERIFY(source.value(QStringLiteral("fromPortal")).toBool());
         QVERIFY(source.value(QStringLiteral("live")).toBool());
 
-        // The portal cancel code must surface as a translated failure, not a
-        // hang and not a fallback source.
-        cast.responseCode = 1;
-        QSignalSpy failedAgain(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        QCOMPARE(session.closeCalls, 0);
+        picker.releaseSource();
+        QTRY_COMPARE(session.closeCalls, 1);
+
+        cast.startResponseCode = 1;
         picker.requestSource();
-        QTRY_VERIFY_WITH_TIMEOUT(failedAgain.count() == 1, 8000);
-        QCOMPARE(selected.count(), 1); // only the earlier real pick; the cancel adds no source
-        QCOMPARE(cast.createSessionCalls, 2);
-        QVERIFY(!failedAgain.at(0).at(0).toString().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 8000);
+        QCOMPARE(selected.count(), 1);
+        QCOMPARE(cast.startCalls, 2);
+        QVERIFY(!failed.at(0).at(0).toString().isEmpty());
+        QTRY_COMPARE(session.closeCalls, 2);
     }
 
-    // Result forms of the live stream reader: the array and plain-string
-    // forms a reply variant demarshal produces (a live portal ships ao; the
-    // reader walks any QDBusArgument array - Qt refuses to read back a
-    // self-built QDBusArgument and corrupts a re-marshalled one inside a
-    // signal, so the array stream form is exercised through QStringList and
-    // the live ao form stays a real-portal verification item). Replaces the
-    // old PictureUri result-form case the finding retired.
-    void shareSourcePickerParsesThePortalStreamResultForm()
+    void shareSourcePickerHandlesPortalResponseTiming_data()
     {
-        QString error;
-        const QVariantMap stringListForm {
-            {QStringLiteral("streams"),
-                QVariant::fromValue(QDBusVariant(QVariant(QStringList { QStringLiteral("screen:0") })))}
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("immediate-alternate-request-path") << QString("immediate");
+        QTest::newRow("timeout-during-create") << QString("timeout");
+        QTest::newRow("release-during-start") << QString("release");
+        QTest::newRow("release-before-alternate-request-reply") << QString("releaseBeforePath");
+    }
+
+    void shareSourcePickerHandlesPortalResponseTiming()
+    {
+        QFETCH(QString, scenario);
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected() || !bus.registerService("org.freedesktop.portal.Desktop"))
+            QSKIP("the fixture needs a private session bus");
+        auto unown = qScopeGuard([&] { bus.unregisterService("org.freedesktop.portal.Desktop"); });
+        QObject portal;
+        PortalScreenCastStub cast;
+        new PortalScreenCastAdaptor(&cast, &portal);
+        const QString portalPath = "/org/freedesktop/portal/desktop";
+        QVERIFY(bus.registerObject(portalPath, &portal));
+        PortalRequestPool requests;
+        QVERIFY(requests.registerOn(bus, portalPath + "/request/fixture/alternative", 3, cast));
+        PortalSessionStub session;
+        cast.sessionCreated = [&](const QString &token) {
+            auto sender = bus.baseService().mid(1);
+            cast.sessionPath = portalPath + "/session/" + sender.replace('.', '_') + "/" + token;
+            QVERIFY(bus.registerObject(cast.sessionPath, &session, QDBusConnection::ExportAllSlots));
         };
-        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(stringListForm, error),
-            QStringLiteral("screen:0"));
-        const QVariantMap plainForm {{QStringLiteral("streams"), QStringLiteral("screen:1")}};
-        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(plainForm, error),
-            QStringLiteral("screen:1"));
-        const QVariantMap none;
-        QVERIFY(workspace::ScreenShareSourcePicker::streamReferenceFromResult(none, error).isEmpty());
-        QVERIFY(!error.isEmpty());
+        auto cleanup = qScopeGuard([&] {
+            requests.unregisterFrom(bus);
+            bus.unregisterObject(cast.sessionPath);
+            bus.unregisterObject(portalPath);
+        });
+        cast.responseDelayMs = scenario == "immediate" ? -1 : 120;
+        ScreenShareSourcePicker picker;
+        picker.setPortalTimeoutMs(scenario == "timeout" ? 60 : 1000);
+        QSignalSpy selected(&picker, &ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        if (scenario == "immediate") {
+            QTRY_COMPARE_WITH_TIMEOUT(selected.size(), 1, 1800);
+            QCOMPARE(failed.size(), 0);
+            picker.releaseSource();
+        } else {
+            if (scenario.startsWith("release")) {
+                if (scenario == "release")
+                    QTRY_COMPARE_WITH_TIMEOUT(cast.startCalls, 1, 800);
+                picker.releaseSource();
+            }
+            QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 1800);
+            QTRY_VERIFY(cast.requestCursor > 0);
+            QTRY_COMPARE(cast.requestPool.at(cast.requestCursor - 1)->closeCalls, 1);
+            QTest::qWait(150);
+            QCOMPARE(selected.size(), 0);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(session.closeCalls, 1, 1000);
+    }
+
+    void shareSourcePickerRejectsMalformedOrMissingPortalStreams()
+    {
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({}).isEmpty());
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({{"streams", "/not/a/node"}}).isEmpty());
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({{"streams", QStringList{"/not/a/node"}}}).isEmpty());
     }
 
     // #87 round 2 (finding 3): a completed exchange's timeout timer and
