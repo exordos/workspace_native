@@ -3876,6 +3876,13 @@
             <translation>Добавить</translation>
         </message>
     </context>
+<context>
+    <name>NativeUserSearch</name>
+    <message><source>Retry</source><translation>Повторить</translation></message>
+    <message><source>Search</source><translation>Поиск</translation></message>
+    <message><source>Start chat</source><translation>Начать чат</translation></message>
+    <message><source>No results found</source><translation>Ничего не найдено</translation></message>
+</context>
     <context>
         <name>NativeUserProfile</name>
         <message>
@@ -4979,11 +4986,4 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
-<context>
-    <name>NativeUserSearch</name>
-    <message><source>Retry</source><translation>Повторить</translation></message>
-    <message><source>Search</source><translation>Поиск</translation></message>
-    <message><source>Start chat</source><translation>Начать чат</translation></message>
-    <message><source>No results found</source><translation>Ничего не найдено</translation></message>
-</context>
 </TS>
