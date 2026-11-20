@@ -16354,7 +16354,11 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
         return;
     const qreal base = qMax<qreal>(100.0, viewportHeightPx);
     qreal reserve = base;
-    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+    if (m_scrollSampleSelection != m_selection) {
+        m_scrollSampleClock.invalidate();
+        m_scrollSampleSelection = m_selection;
+    }
+    if (m_historyTimingGeneration == m_api->generation() && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
         const auto elapsed = m_scrollSampleClock.elapsed();
         const qreal travel = m_previousTopDistance - distanceFromTopPx;
         // Exclude layout jumps and idle gestures. Ahead of steady input, keep
@@ -16766,8 +16770,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
-        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
-        m_historyTimingSelection = selection;
+        m_historyTimingGeneration = m_api->generation();
         m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
