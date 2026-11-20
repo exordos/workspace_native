@@ -12533,16 +12533,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QJsonObject saved;
         const QString peerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         QString directoryName = "Cassi";
+        std::function<void()> releaseDirectory;
+        bool firstDirectoryRequest = true;
         QJsonObject verifiedProfile{{"uuid", userId}, {"username", "cassi"},
             {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}};
-        server.handler = [&saved, &verifiedProfile, &peerId, &directoryName](const Request &request) {
+        server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/streams/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
                     {"name", "Product team"}, {"description", "Native preview"}, {"encryption", false}, {"unread_count", 2}}}};
-            if (path.endsWith("/users/"))
-                return Response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
+            if (path.endsWith("/users/")) {
+                Response response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
                     QJsonObject{{"uuid", peerId}, {"username", "Cassi"}}}};
+                if (std::exchange(firstDirectoryRequest, false))
+                    response.defer = [&releaseDirectory](auto send) { releaseDirectory = std::move(send); };
+                return response;
+            }
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "Native desktop"}, {"unread_count", 2}}}};
@@ -12599,7 +12605,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "profileDisplayName"), 1000);
         // A committed sign-in persists the organization origin for future suggestions.
         QCOMPARE(preferences.organizationHistory(), QStringList{server.origin().toString()});
-        QCOMPARE(item(content, "profileDisplayName")->property("text").toString(), QString("Cassi"));
+        QTRY_VERIFY(static_cast<bool>(releaseDirectory));
+        auto *profileName = item(content, "profileDisplayName");
+        QCOMPARE(profileName->property("text").toString(), QString("Cassandra Volkova"));
+        releaseDirectory();
+        QTRY_COMPARE(profileName->property("text").toString(), directoryName);
         QCOMPARE(item(content, "profileEmail")->property("text").toString(), QString("cassi@example.invalid"));
         QCOMPARE(item(content, "profileInitial")->property("text").toString(), QString("C"));
         QCOMPARE(item(content, "profileAvatar")->width(), 36);
