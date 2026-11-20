@@ -26,9 +26,10 @@ function Control([string]$Name, $Type) {
             Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
         if ($results.Count -eq 1) {
             if ($Name -eq 'Password') {
-                $label = $results[0].Current.Name
-                $safeLabel = if ($label -match '^[a-zA-Z ():.-]{1,65}$') { $label } else { "<length $($label.Length)>" }
-                Write-Host "The protected input's accessible name is $safeLabel."
+                $field = $results[0].Current
+                if ($field.Name -ne $Name -and (!$field.LabeledBy -or $field.LabeledBy.Current.Name -ne $Name)) {
+                    throw 'The protected input has neither an accessible name nor its visible Password label.'
+                }
             }
             return $results[0]
         }
@@ -78,29 +79,6 @@ switch ($Mode) {
         Press 'Profile'
         Press 'App version'
         Press 'Check for updates'
-        $target = (Control 'Check for updates' ([System.Windows.Automation.ControlType]::Button)).Current.BoundingRectangle
-        Start-Sleep -Milliseconds 700
-        Add-Type -AssemblyName System.Drawing
-        $boxWidth = [Math]::Max(1, [int]$target.Width)
-        $boxHeight = [Math]::Min(145, [Math]::Max(1, [int]$target.Top))
-        $bitmap = [System.Drawing.Bitmap]::new($boxWidth, $boxHeight)
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        try {
-            $graphics.CopyFromScreen([int]$target.Left, [int]$target.Top - $boxHeight, 0, 0, $bitmap.Size)
-            $bitmap.Save((Join-Path $env:RUNNER_TEMP 'updater-card.png'))
-        } finally {
-            $graphics.Dispose()
-            $bitmap.Dispose()
-        }
-        $expected = @('The update configuration is invalid.', 'Failed to check updates', "You're up to date",
-                       'Updates are not available for this platform.', 'Checking for updates…',
-                       'Check whether a new version is available', 'Check for updates', 'Application update')
-        $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-        foreach ($item in $all) {
-            if ($item.Current.Name -in $expected) {
-                Write-Host "Update control: $($item.Current.Name) $($item.Current.ControlType.ProgrammaticName) shown=$(!$item.Current.IsOffscreen)"
-            }
-        }
         [void](Control 'Updates are not available for this platform.' ([System.Windows.Automation.ControlType]::Text))
         Press 'Close'
     }
