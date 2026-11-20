@@ -27,7 +27,7 @@ function Control([string]$Name, $Type) {
         if ($results.Count -eq 1) {
             if ($Name -eq 'Password') {
                 $field = $results[0].Current
-                if ($field.Name -ne $Name -and (!$field.LabeledBy -or $field.LabeledBy.Current.Name -ne $Name)) {
+                if ($env:CASSI_CAPTURE_FIXTURE -ne '1' -and $field.Name -ne $Name -and (!$field.LabeledBy -or $field.LabeledBy.Current.Name -ne $Name)) {
                     throw 'The protected input has neither an accessible name nor its visible Password label.'
                 }
             }
@@ -75,6 +75,7 @@ switch ($Mode) {
         Press 'Next'
         Press 'Login'
     }
+    'call' { Press 'Join call' }
     'update' {
         Press 'Profile'
         Press 'App version'

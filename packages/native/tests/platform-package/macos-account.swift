@@ -115,6 +115,8 @@ case "login":
     try fill("Password", "package-demo")
     try press("Next")
     try press("Login")
+case "call":
+    try press("Join call")
 case "update":
     try press("Profile")
     try press("App version")

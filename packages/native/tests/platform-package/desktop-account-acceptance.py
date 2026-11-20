@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -77,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         fixture = self.server
+        if getattr(fixture, "conversation", None) and fixture.conversation.handle(self):
+            return
         path = self.path.partition("?")[0]
         if path.endswith("/messenger/server_settings"):
             fixture.settings_count += 1
@@ -189,7 +192,7 @@ def drive(pid, mode, origin):
         run("swift", HERE / "macos-account.swift", pid, mode, origin, timeout=100)
 
 
-def scenario(executable, check_updater):
+def scenario(executable, check_updater, check_media):
     check(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
           "The TLS fixture requires a disposable GitHub-hosted runner")
     check(WINDOWS or sys.platform == "darwin", "A Windows or macOS desktop is required")
@@ -201,6 +204,11 @@ def scenario(executable, check_updater):
             fixture.tls = context
             print("Trusted an ephemeral loopback TLS fixture.", flush=True)
             origin = "https://127.0.0.1:" + str(fixture.server_port)
+            if check_media:
+                spec = importlib.util.spec_from_file_location("package_routes", HERE / "desktop-route-fixture.py")
+                routes = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(routes)
+                fixture.conversation = routes.PackageConversation(PROJECT, USER, origin)
             identity = json.dumps(["workspace-session-v1", origin, PROJECT, USER], separators=(",", ":"))
             record = hashlib.sha256(identity.encode()).hexdigest()
             check(not stored(record), "The new account already has an OS store entry")
@@ -227,6 +235,17 @@ def scenario(executable, check_updater):
                             else:
                                 wait_for(lambda: fixture.introspect_count >= 2, "Restart did not authenticate using the stored refresh token")
                                 check(fixture.login_count == 1 and fixture.refresh_count >= 2, "Restore used unexpected credentials")
+                                if check_media:
+                                    route = fixture.conversation
+                                    link = f"ew://open/org/127.0.0.1-{fixture.server_port}/project/{PROJECT}/message/{route.message}"
+                                    run(executable, link)
+                                    wait_for(lambda: route.history_gets and route.target_gets, "The routed conversation was not fetched")
+                                    print("The normal package fetched the link target and its conversation.", flush=True)
+                                    drive(app.pid, "call", origin)
+                                    wait_for(lambda: "page" in route.probe_results, "The package did not load its real WebEngine meeting")
+                                    wait_for(lambda: "audio" in route.probe_results and "video" in route.probe_results,
+                                             "The hosted audio/video requests did not both resolve", timeout=40)
+                                    print("Hosted package capture outcomes:", route.probe_results, flush=True)
                                 if check_updater:
                                     drive(app.pid, "update", origin)
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)
@@ -262,5 +281,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("executable")
     parser.add_argument("--check-updater", action="store_true")
+    parser.add_argument("--check-media", action="store_true")
     args = parser.parse_args()
-    scenario(args.executable, args.check_updater)
+    scenario(args.executable, args.check_updater, args.check_media)
