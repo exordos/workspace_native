@@ -16955,6 +16955,89 @@ private slots:
         }
     }
 
+    void reconnectRevalidatesOnlyTheFailedSelectedHistory_data()
+    {
+        QTest::addColumn<bool>("leaveRoute");
+        QTest::addColumn<bool>("forbidden");
+        QTest::addColumn<bool>("lateFailure");
+        QTest::newRow("offline-topic") << false << false << false;
+        QTest::newRow("http-failure-after-reconnect") << false << false << true;
+        QTest::newRow("left-topic") << true << false << false;
+        QTest::newRow("permission-denied") << false << true << false;
+    }
+
+    void reconnectRevalidatesOnlyTheFailedSelectedHistory()
+    {
+        QFETCH(bool, leaveRoute);
+        QFETCH(bool, forbidden);
+        QFETCH(bool, lateFailure);
+        Fixture fixture;
+        fixture.extraTopic = true;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        bool online = false, sawHistoryError = false;
+        bool holdFailure = lateFailure;
+        std::function<void()> release;
+        connect(&fixture.controller, &NativeController::stateChanged, this, [&] {
+            if (fixture.controller.error().contains("Could not load messages")) {
+                sawHistoryError = true;
+                online = true;
+            }
+        });
+        int revalidated = 0;
+        fixture.messages = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") != secondTopicId)
+                return Response{QJsonArray{}};
+            if (!online) {
+                if (forbidden) return Response{QJsonObject{}, 403};
+                Response offline;
+                offline.abortConnection = true;
+                if (holdFailure)
+                    offline.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+                return offline;
+            }
+            ++revalidated;
+            auto row = message("History restored after reconnect");
+            row["topic_uuid"] = secondTopicId;
+            return Response{QJsonArray{row}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), "live");
+        QVERIFY(!gateway.sockets.isEmpty() && gateway.sockets.last());
+        gateway.sockets.last()->close();
+        QTRY_COMPARE(fixture.controller.syncState(), "retrying");
+        fixture.controller.selectTopic(secondTopicId);
+        if (lateFailure) {
+            QTRY_VERIFY(static_cast<bool>(release));
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), "live", 5000);
+            holdFailure = false;
+            release();
+        }
+        QTRY_VERIFY(sawHistoryError);
+        if (leaveRoute) fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), "live", 5000);
+        if (!leaveRoute && !forbidden) {
+            QTRY_COMPARE_WITH_TIMEOUT(revalidated, 1, 2000);
+            QTRY_COMPARE(fixture.controller.messages().size(), 1);
+            QVERIFY(!fixture.controller.error().contains("Could not load messages"));
+        } else {
+            QCOMPARE(revalidated, 0);
+        }
+        const auto previousSockets = gateway.sockets.size();
+        QVERIFY(gateway.sockets.last());
+        gateway.sockets.last()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(gateway.sockets.size() > previousSockets
+            && fixture.controller.syncState() == "live", 5000);
+        QCOMPARE(revalidated, !leaveRoute && !forbidden ? 1 : 0);
+    }
+
     void sameOwnerRenewalReloadsCancelledRouteRequestsAndPreservesDraft()
     {
         Fixture fixture;

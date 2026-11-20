@@ -10668,6 +10668,7 @@ void NativeController::useRealtime(RealtimeClient *client)
         m_syncState = state;
         if (state == "live") {
             m_syncBlocked = false;
+            if (previous) ++m_realtimeRecovery;
             // A healthy realtime link proves reachability on its own: a
             // stale transport-offline flag must not outlive the realtime
             // recovery and mask live sync state with the offline banner.
@@ -10680,7 +10681,9 @@ void NativeController::useRealtime(RealtimeClient *client)
         }
         if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
             || state == "waiting_for_session" || state == "stopped") markCacheStale();
+        const QPointer<NativeController> guard(this);
         if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
+        if (guard && previous && state == "live") retryInterruptedHistory();
     });
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
         // Issue #50: diagnostics realtime stats mirror
@@ -15998,10 +16001,21 @@ void NativeController::loadLatestMessages()
     if (guard) loadMessages(false, true);
 }
 
-void NativeController::loadMessages(bool older, bool latest)
+void NativeController::retryInterruptedHistory()
+{
+    if (!m_interruptedHistory || m_interruptedHistory->selection != m_selection) return;
+    loadMessages(false, false, true);
+}
+
+void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
 {
     if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
         || m_loading || (older && m_before.isEmpty())) return;
+    if (!older && m_interruptedHistory) {
+        if (m_interruptedHistory->selection == m_selection && m_error == m_interruptedHistory->error)
+            m_error.clear();
+        m_interruptedHistory.reset();
+    }
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, older ? m_before : QByteArray{}};
     const auto selection = m_selection;
     const auto generation = m_api->generation();
@@ -16079,7 +16093,7 @@ void NativeController::loadMessages(bool older, bool latest)
             if (!savedOnly) network();
         });
     };
-    if (latest || !cache || !cache->available()) {
+    if (latest || forceNetwork || !cache || !cache->available()) {
         if (cache && !older) m_cacheHydrations[static_cast<int>(NativeCache::Kind::History)] = [fetchCache] { fetchCache(true); };
         network();
         return;
@@ -16093,6 +16107,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
 {
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, marker};
     const auto lease = m_cacheLease;
+    const auto recovery = m_realtimeRecovery;
     const auto cacheRevision = m_cacheRevision;
     const QPointer<NativeCacheService> cache = m_cache;
     QUrlQuery query;
@@ -16104,7 +16119,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     if (!marker.isEmpty())
         query.addQueryItem("page_marker", QString::fromUtf8(marker));
     request("GET", messenger + "/messages/", {}, query,
-        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache](const ApiResult &result) mutable {
+        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
         if (revision != m_messageRevision) {
@@ -16129,7 +16144,14 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             // Issue #156: a failed page keeps the older boundary; allow the
             // next user-attributed descent below the reserve to retry once.
             m_olderPrefetchArmed = true;
-            report(tr("Could not load messages. %1").arg(result.error));
+            const bool interrupted = !older && marker.isEmpty() && result.transportFailed && result.status == 0;
+            const auto error = tr("Could not load messages. %1").arg(result.error);
+            if (interrupted) m_interruptedHistory = InterruptedHistory{selection, error};
+            const QPointer<NativeController> guard(this);
+            report(error);
+            // The socket can recover before the failed HTTP reply reaches us.
+            if (guard && interrupted && recovery != m_realtimeRecovery && m_syncState == "live")
+                retryInterruptedHistory();
             return;
         }
         const auto page = result.data.toArray();
