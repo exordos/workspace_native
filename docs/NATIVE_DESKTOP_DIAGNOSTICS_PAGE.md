@@ -1,5 +1,8 @@
 # Diagnostics page: connection dashboard (status pill, nine cards, server ping)
 
+For the local diagnostic file, its preview and the pre-login command, see the
+[support report guide](NATIVE_DESKTOP_SUPPORT_REPORT.md).
+
 Issue: #50 (part of #49). Reference contract measured from `workspace_ui` at
 sha `61dacef78dab2f5d0be76f283bebf49fe29b84af`. Figma token unavailable -
 mockups not consulted; the reference code is the oracle.

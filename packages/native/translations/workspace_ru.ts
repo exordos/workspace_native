@@ -73,6 +73,8 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>Folder list</source><translation>Список папок</translation></message>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
             <source>Nothing to preview yet</source>
@@ -4967,7 +4969,24 @@
         <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
     </context>
     <context>
+        <name>NativeSupportReport</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
+        <message><source>Describe what you expected, what happened, when it happened and how to reproduce it. This description is kept separate from the diagnostic file.</source><translation>Опишите, что вы ожидали, что и когда произошло и как это воспроизвести. Описание сохраняется отдельно от файла диагностики.</translation></message>
+        <message><source>Problem description</source><translation>Описание проблемы</translation></message>
+        <message><source>Copy description</source><translation>Скопировать описание</translation></message>
+        <message><source>Include session counts and response times</source><translation>Включить счётчики событий и время ответа за сессию</translation></message>
+        <message><source>Preparing report…</source><translation>Подготовка отчёта…</translation></message>
+        <message><source>Prepare report</source><translation>Подготовить отчёт</translation></message>
+        <message><source>Diagnostic file preview</source><translation>Предпросмотр файла диагностики</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Save report</source><translation>Сохранить отчёт</translation></message>
+        <message><source>JSON files (*.json)</source><translation>Файлы JSON (*.json)</translation></message>
+        <message><source>Report saved</source><translation>Отчёт сохранён</translation></message>
+        <message><source>Could not save the report</source><translation>Не удалось сохранить отчёт</translation></message>
+    </context>
+    <context>
         <name>NativeDiagnosticsPage</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
         <message><source>Memory</source><translation>Память</translation></message>
@@ -5081,6 +5100,7 @@
     </context>
 <context>
     <name>NativeAccountPreferences</name>
+        <message><source>Keyboard shortcuts</source><translation>Горячие клавиши</translation></message>
     <message><source>Theme settings</source><translation>Настройки темы</translation></message>
     <message><source>Stream and topic order</source><translation>Порядок стримов и топиков</translation></message>
     <message><source>Last message</source><translation>По последнему сообщению</translation></message>
@@ -5121,4 +5141,54 @@
     <message><source>Blue mist</source><translation>Синий туман</translation></message>
     <message><source>Emerald chat</source><translation>Изумрудный чат</translation></message>
 </context>
+    <context>
+        <name>NativeHotkeysDialog</name>
+        <message><source>Activity</source><translation>Активность</translation></message>
+        <message><source>Back</source><translation>Назад</translation></message>
+        <message><source>Bold</source><translation>Жирный</translation></message>
+        <message><source>Calendar</source><translation>Календарь</translation></message>
+        <message><source>Calls</source><translation>Звонки</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Change theme</source><translation>Сменить тему</translation></message>
+        <message><source>Chat information</source><translation>Информация о чате</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Close or cancel</source><translation>Закрыть или отменить</translation></message>
+        <message><source>Code</source><translation>Код</translation></message>
+        <message><source>Composer</source><translation>Редактор</translation></message>
+        <message><source>Could not save settings</source><translation>Не удалось сохранить настройки</translation></message>
+        <message><source>Disable</source><translation>Отключить</translation></message>
+        <message><source>Disabled</source><translation>Отключено</translation></message>
+        <message><source>Edit last message</source><translation>Редактировать последнее сообщение</translation></message>
+        <message><source>Enable keyboard shortcuts</source><translation>Включить горячие клавиши</translation></message>
+        <message><source>Fixed shortcuts</source><translation>Фиксированные сочетания</translation></message>
+        <message><source>Folder list</source><translation>Список папок</translation></message>
+        <message><source>Forward</source><translation>Вперёд</translation></message>
+        <message><source>Help</source><translation>Справка</translation></message>
+        <message><source>Interface</source><translation>Интерфейс</translation></message>
+        <message><source>Invalid shortcut</source><translation>Недопустимое сочетание</translation></message>
+        <message><source>Italic</source><translation>Курсив</translation></message>
+        <message><source>Keyboard shortcuts</source><translation>Горячие клавиши</translation></message>
+        <message><source>Mail</source><translation>Почта</translation></message>
+        <message><source>Messenger</source><translation>Мессенджер</translation></message>
+        <message><source>Move between focus areas</source><translation>Переход между областями фокуса</translation></message>
+        <message><source>Move focus (Shift+Tab moves backward)</source><translation>Переход по элементам (Shift+Tab — назад)</translation></message>
+        <message><source>Navigation</source><translation>Навигация</translation></message>
+        <message><source>No shortcuts found</source><translation>Сочетания не найдены</translation></message>
+        <message><source>Press a key combination. Escape cancels.</source><translation>Нажмите сочетание клавиш. Escape отменяет запись.</translation></message>
+        <message><source>Press a shortcut</source><translation>Нажмите сочетание</translation></message>
+        <message><source>Quote message</source><translation>Цитировать сообщение</translation></message>
+        <message><source>Reset</source><translation>Сбросить</translation></message>
+        <message><source>Reset all</source><translation>Сбросить все</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Search shortcuts</source><translation>Поиск сочетаний</translation></message>
+        <message><source>Select text, focus a message with Tab, or point to it.</source><translation>Выделите текст, перейдите к сообщению клавишей Tab или наведите на него курсор.</translation></message>
+        <message><source>Send or insert a line, depending on send settings</source><translation>Отправка или перенос строки согласно настройке отправки</translation></message>
+        <message><source>Settings are stored on this device. Composer shortcuts apply while editing a message.</source><translation>Настройки сохраняются на этом устройстве. Сочетания редактора действуют при вводе сообщения.</translation></message>
+        <message><source>Standard editing shortcuts, such as copy</source><translation>Стандартные операции редактирования, например копирование</translation></message>
+        <message><source>Strikethrough</source><translation>Зачёркнутый</translation></message>
+        <message><source>This shortcut is already in use</source><translation>Это сочетание уже используется</translation></message>
+        <message><source>This shortcut is reserved</source><translation>Это сочетание зарезервировано</translation></message>
+        <message><source>Toggle sidebar</source><translation>Боковая панель</translation></message>
+        <message><source>When the composer is empty and not editing a message</source><translation>Когда поле пустое и редактирование сообщения не активно</translation></message>
+    </context>
 </TS>
