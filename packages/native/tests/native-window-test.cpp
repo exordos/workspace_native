@@ -6468,6 +6468,70 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(view("messageComposer"));
     }
 
+    void escapeFromChatPreservesFocusedInputAndClosesPopupsFirst()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+
+        auto *composer = view("messageComposer");
+        QVERIFY(composer);
+        click(window, composer);
+        QTest::keyClick(window, Qt::Key_X);
+        QTRY_COMPARE(controller.draft(), QString("x"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!controller.inboxVisible());
+        QCOMPARE(controller.draft(), QString("x"));
+        auto *search = view("sidebarSearch");
+        QVERIFY(search);
+        click(window, search);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!controller.inboxVisible());
+
+        auto *picker = composerEmojiTrigger(window->contentItem());
+        QVERIFY(picker && picker->isEnabled());
+        click(window, picker);
+        QTRY_VERIFY(composerEmojiContent(window));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!composerEmojiContent(window));
+        QVERIFY(!controller.inboxVisible());
+        QCOMPARE(controller.draft(), QString("x"));
+
+        openChannelNewChat(window);
+        auto *dialog = window->findChild<QObject *>("createChatDialog");
+        QVERIFY(dialog && dialog->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QVERIFY(!controller.inboxVisible());
+
+        auto *history = view("messageList");
+        QVERIFY(history);
+        history->forceActiveFocus();
+        QTRY_VERIFY(history->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.inboxVisible() && view("nativeInboxPage"), 1000);
+        // The Inbox keeps its own existing close action.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!controller.inboxVisible());
+        QCOMPARE(controller.draft(), QString("x"));
+    }
+
     // Issue #38: the /feed route opens the project feed page, rows render with
     // the measured reference layout, top pagination rides X-Pagination-Marker,
     // open-in-chat reuses the topic navigation path and the forward button is
