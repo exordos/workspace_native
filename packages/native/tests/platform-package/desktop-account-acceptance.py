@@ -125,15 +125,19 @@ def trust_loopback_certificate(directory):
     key = directory / "server.key"
     csr = directory / "request.pem"
     config = directory / "server.ext"
-    config.write_text("subjectAltName=IP:127.0.0.1\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
+    config.write_text("basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\n"
+                      "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n"
+                      "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     subject = "/CN=Cassi desktop package " + uuid.uuid4().hex
     run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-sha256",
-        "-subj", subject, "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign",
+        "-subj", subject, "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+        "-addext", "subjectKeyIdentifier=hash", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
         "-keyout", ca_key, "-out", ca, **quiet)
     run("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", csr, **quiet)
     run("openssl", "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial",
         "-days", "1", "-sha256", "-extfile", config, "-out", cert, **quiet)
+    run("openssl", "verify", "-purpose", "sslserver", "-x509_strict", "-verify_ip", "127.0.0.1", "-CAfile", ca, cert)
     der = ssl.PEM_cert_to_DER_cert(ca.read_text())
     thumbprint = hashlib.sha1(der).hexdigest().upper()
     if WINDOWS:
@@ -141,7 +145,7 @@ def trust_loopback_certificate(directory):
         der_file.write_bytes(der)
         run("certutil", "-f", "-addstore", "Root", der_file, **quiet)
     else:
-        run("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k",
+        run("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl", "-k",
             "/Library/Keychains/System.keychain", ca, **quiet)
     try:
         yield cert, key
@@ -149,7 +153,7 @@ def trust_loopback_certificate(directory):
         if WINDOWS:
             run("certutil", "-delstore", "Root", thumbprint, **quiet)
         else:
-            run("sudo", "security", "delete-certificate", "-t", "-Z", thumbprint, "/Library/Keychains/System.keychain", **quiet)
+            run("sudo", "security", "delete-certificate", "-Z", thumbprint, "/Library/Keychains/System.keychain", **quiet)
 
 
 def stored(key):
@@ -177,7 +181,7 @@ def drive(pid, mode, origin):
         run("swift", HERE / "macos-account.swift", pid, mode, origin, timeout=100)
 
 
-def scenario(executable):
+def scenario(executable, check_updater):
     check(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
           "The TLS fixture requires a disposable GitHub-hosted runner")
     check(WINDOWS or sys.platform == "darwin", "A Windows or macOS desktop is required")
@@ -215,8 +219,9 @@ def scenario(executable):
                             else:
                                 wait_for(lambda: fixture.introspect_count >= 2, "Restart did not authenticate using the stored refresh token")
                                 check(fixture.login_count == 1 and fixture.refresh_count >= 2, "Restore used unexpected credentials")
-                                drive(app.pid, "update", origin)
-                                print("The installed application reported its unsupported update channel in App version.", flush=True)
+                                if check_updater:
+                                    drive(app.pid, "update", origin)
+                                    print("The installed application reported its unsupported update channel in App version.", flush=True)
                                 drive(app.pid, "logout", origin)
                                 wait_for(lambda: not stored(record), "Signing out did not remove the OS credential")
                                 print("The restarted package restored the rotated session, then sign-out removed the OS credential.", flush=True)
@@ -248,4 +253,6 @@ def scenario(executable):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("executable")
-    scenario(parser.parse_args().executable)
+    parser.add_argument("--check-updater", action="store_true")
+    args = parser.parse_args()
+    scenario(args.executable, args.check_updater)
