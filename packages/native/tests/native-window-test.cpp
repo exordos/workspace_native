@@ -21176,6 +21176,102 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void composerHeightFollowsContentDragKeyboardAndFullHeight()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("composer-height.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *shell = view("messageComposerShell");
+        auto *editor = view("messageComposer");
+        auto *list = view("messageList");
+        QVERIFY(shell && editor && list);
+        const auto draftLines = [&](int lines) {
+            QStringList words;
+            for (int i = 0; i < lines; ++i) words.append("line");
+            controller.setDraft(words.join('\n'));
+        };
+        const auto drag = [&](QQuickItem *handle, int vertical) {
+            const auto start = handle->mapToScene({handle->width() / 2, 4}).toPoint();
+            const auto end = start + QPoint(0, vertical);
+            QTest::mousePress(window, Qt::LeftButton, {}, start);
+            QTest::mouseMove(window, end);
+            QTest::mouseRelease(window, Qt::LeftButton, {}, end);
+        };
+        draftLines(1);
+        QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!view("composerResizeHandle") && !view("composerHeightButton"));
+        draftLines(2);
+        QTRY_COMPARE_WITH_TIMEOUT(shell->height(), 81.0, 1500);
+        auto *handle = view("composerResizeHandle"); QVERIFY(handle);
+        QCOMPARE(handle->height(), 20.0);
+        QVERIFY(!view("composerHeightButton"));
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        draftLines(4); QTRY_COMPARE(shell->height(), 129.0);
+        auto *heightButton = view("composerHeightButton"); QVERIFY(heightButton);
+        QCOMPARE(heightButton->size(), QSizeF(28, 28));
+        const auto *iface = QAccessible::queryAccessibleInterface(heightButton); QVERIFY(iface);
+        const auto expandName = locale == "ru" ? QString("Развернуть поле сообщения") : QString("Expand message editor");
+        QCOMPARE(iface->text(QAccessible::Name), expandName);
+        auto *attach = view("attachButton"), *emoji = view("composerEmojiButton"); QVERIFY(attach && emoji);
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).x(), emoji->mapToScene(QPointF{}).x());
+        QVERIFY(attach->mapToScene(QPointF{}).y() < emoji->mapToScene(QPointF{}).y());
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        QVERIFY(heightButton->isVisible());
+        draftLines(2); QTRY_COMPARE(shell->height(), 81.0);
+        QTRY_VERIFY(!heightButton->isVisible());
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).y(), emoji->mapToScene(QPointF{}).y());
+        click(window, editor);
+        QSet<QQuickItem *> visited;
+        while (window->activeFocusItem() != handle && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QTRY_VERIFY(handle->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up); QTRY_COMPARE(shell->height(), 105.0);
+        QTest::keyClick(window, Qt::Key_Down); QTRY_COMPARE(shell->height(), 81.0);
+        draftLines(1); QTRY_COMPARE(shell->height(), 57.0);
+        draftLines(8); QTRY_COMPARE(shell->height(), 145.0);
+        drag(handle, 160);
+        QTRY_COMPARE(shell->height(), 113.0);
+        drag(handle, -55); QTRY_COMPARE(shell->height(), 168.0);
+        controller.setDraft({}); QTRY_COMPARE(shell->height(), 168.0);
+        click(window, heightButton);
+        QTRY_COMPARE(list->height(), 4.0);
+        const auto full = shell->height(); QVERIFY(full > 168);
+        draftLines(1); QTRY_COMPARE(shell->height(), full);
+        window->resize(window->width(), window->height() - 75);
+        QTRY_COMPARE(shell->height(), full - 75);
+        QTRY_COMPARE(list->height(), 4.0);
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        QTRY_COMPARE(list->height(), 4.0);
+        click(window, heightButton); QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!handle->isVisible() && !heightButton->isVisible());
+    }
+
     void composerPreviewShowsTheBodyItSends_data()
     {
         QTest::addColumn<QString>("locale");
