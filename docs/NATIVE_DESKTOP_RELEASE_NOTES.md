@@ -1,3 +1,19 @@
+# Workspace Native 0.41.0 - Linux development preview
+
+Message timestamps become inspectable, mirroring the reference time viewer:
+
+- Clicking (or Enter/Space on) a message time chip opens a read-only
+  timestamp panel anchored to the chip: a 371 px card showing the exact
+  stored instant - the localized month caption with the stored day
+  highlighted under its weekday column, and the time rendered to the second
+  whenever the instant carries non-zero seconds. Nothing in it is editable,
+  Escape closes it and returns focus to the chip, the content scrolls when
+  the window is short, and screen readers announce the full instant. The
+  `urn:time:` reference kind now opens the same panel instead of the
+  "under development" notice.
+
+---
+
 # Workspace Native 0.40.0 - Linux development preview
 
 Calls put screen sharing behind a real permission gate with a native source
