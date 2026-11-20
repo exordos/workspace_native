@@ -427,6 +427,16 @@ static QJsonObject windowChannelTopic(const QString &id, const QString &stream, 
         {"updated_at", "2026-01-02T10:00:00Z"}};
 }
 
+static bool isInitialUnreadMentionIndex(const Request &request)
+{
+    const QUrlQuery query(request.target);
+    return request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/"
+        && query.queryItemValue("mentioned") == "true" && query.queryItemValue("read") == "false"
+        && query.queryItemValue("sort_key") == "created_at" && query.queryItemValue("sort_dir") == "desc"
+        && query.queryItemValue("page_limit") == "100" && !query.hasQueryItem("page_marker")
+        && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid");
+}
+
 class WindowChannelFixture {
 public:
     MockServer server;
@@ -3318,6 +3328,102 @@ struct WindowChatHeaderCountersScene {
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void clearCacheKeepsAccountAndOrganizations_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QStringLiteral("en"), QStringLiteral("ru")})
+            for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void clearCacheKeepsAccountAndOrganizations()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const auto cacheDir = directory.filePath("cache");
+        {
+            NativeCache seed(cacheDir, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, channelPeer));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}},
+                QJsonArray{windowChannel(streamId, "Other saved account")}));
+        }
+        bool holdBootstrap = false;
+        QVector<std::function<void()>> held;
+        const auto respond = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (holdBootstrap && request.method == "GET")
+                response.defer = [&](std::function<void()> release) { held.append(std::move(release)); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeCacheService cache(cacheDir, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.recordOrganizationOrigin("https://previous.example.invalid");
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "example-member", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(cache.available() && cache.stats().entries > 1);
+        const auto organizations = preferences.organizationHistory();
+        QVERIFY(organizations.contains("https://previous.example.invalid"));
+        preferences.setMode(mode);
+        preferences.setLocale(locale);
+        preferences.setComposerToolbarExpanded(true);
+        preferences.setChatClickAction("latestTopic");
+        auto *root = window->contentItem();
+        click(window, item(root, "accountMenuButton"));
+        QTRY_VERIFY(visibleItem(root, "currentServerLabel"));
+        QCOMPARE(visibleItem(root, "currentServerLabel")->property("text").toString(), fixture.server.origin().host());
+        QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
+        auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
+        auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
+        scroll->setProperty("contentY", std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height()));
+        click(window, action);
+        auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        const QString confirmation = locale == "en"
+            ? QStringLiteral("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
+            : QStringLiteral("Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.");
+        QCOMPARE(visibleItem(root, "clearLocalCacheConfirmation")->property("text").toString(), confirmation);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(cache.stats().entries > 1);
+        const int catalog = fixture.catalogGets;
+        holdBootstrap = true;
+        click(window, action);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QQmlExpression ok(qmlContext(dialog), dialog, "standardButton(Dialog.Ok)");
+        auto *button = qobject_cast<QQuickItem *>(ok.evaluate().value<QObject *>());
+        QVERIFY2(button, qPrintable(ok.error().toString()));
+        click(window, button);
+        QTRY_VERIFY(fixture.catalogGets > catalog && cache.available());
+        QTRY_COMPARE(cache.stats().entries, 0);
+        QCOMPARE(preferences.chatClickAction(), QString("stream"));
+        QVERIFY(!preferences.composerToolbarExpanded());
+        QCOMPARE(preferences.mode(), QString("system"));
+        QCOMPARE(preferences.organizationHistory(), organizations);
+        QCOMPARE(session.loginName(), QString("example-member"));
+        QVERIFY(controller.authenticated());
+        holdBootstrap = false;
+        for (auto &release : held) release();
+        QTRY_COMPARE(controller.streams().size(), 1);
+    }
+
     void aboutDrawerPreservesTheActualPendingCheck_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
@@ -5969,12 +6075,17 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool russian = locale == QLatin1String("ru");
         class WindowReactionsFixture final : public WindowChannelFixture {
         public:
+            int indexRequests = 0;
             int collectionRequests = 0;
             WindowReactionsFixture()
             {
                 sourceScene = true;
                 const auto fallback = server.handler;
                 server.handler = [this, fallback](const Request &request) -> Response {
+                    if (isInitialUnreadMentionIndex(request)) {
+                        ++indexRequests;
+                        return Response{QJsonArray{}};
+                    }
                     const QUrlQuery query(request.target);
                     if (request.target.path().endsWith("/messages/")
                         && (query.hasQueryItem("starred") || query.hasQueryItem("mentioned")))
@@ -5997,6 +6108,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_COMPARE(fixture.indexRequests, 1);
         QVERIFY(view("messageList")); // the conversation renders before the route
         QVERIFY(!view("activityUnsupportedText"));
         controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
@@ -6033,6 +6145,8 @@ mv -Tf "$root/.current-new" "$root/current"
             + QString::number(fixture.server.origin().port())
             + QStringLiteral("/project/") + projectId + QStringLiteral("/activity/reactions"));
         QTRY_VERIFY(view("activityUnsupportedText"));
+        QCOMPARE(fixture.indexRequests, 1);
+        QCOMPARE(fixture.collectionRequests, 0);
         QVERIFY(!view("messageList"));
         // The header close control returns to the conversation.
         auto *closeButton = view("activityUnsupportedCloseButton"); QVERIFY(closeButton);
@@ -9588,6 +9702,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "History"}}}, 200, phase == "restore" ? 350 : 0};
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const bool aggregate = !QUrlQuery(request.target).hasQueryItem("topic_uuid");
                 if (aggregate) ++aggregateGets;
@@ -9957,6 +10072,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     topics.append(QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId}, {"name", id == topicId ? "First" : "Second"}});
                 return Response{topics};
             }
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const auto id = QUrlQuery(request.target).queryItemValue("topic_uuid");
                 if (id.isEmpty()) {
@@ -12531,16 +12647,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QJsonObject saved;
         const QString peerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         QString directoryName = "Cassi";
+        std::function<void()> releaseDirectory;
+        bool firstDirectoryRequest = true;
         QJsonObject verifiedProfile{{"uuid", userId}, {"username", "cassi"},
             {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}};
-        server.handler = [&saved, &verifiedProfile, &peerId, &directoryName](const Request &request) {
+        server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/streams/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
                     {"name", "Product team"}, {"description", "Native preview"}, {"encryption", false}, {"unread_count", 2}}}};
-            if (path.endsWith("/users/"))
-                return Response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
+            if (path.endsWith("/users/")) {
+                Response response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
                     QJsonObject{{"uuid", peerId}, {"username", "Cassi"}}}};
+                if (std::exchange(firstDirectoryRequest, false))
+                    response.defer = [&releaseDirectory](auto send) { releaseDirectory = std::move(send); };
+                return response;
+            }
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "Native desktop"}, {"unread_count", 2}}}};
@@ -12597,7 +12719,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "profileDisplayName"), 1000);
         // A committed sign-in persists the organization origin for future suggestions.
         QCOMPARE(preferences.organizationHistory(), QStringList{server.origin().toString()});
-        QCOMPARE(item(content, "profileDisplayName")->property("text").toString(), QString("Cassi"));
+        QTRY_VERIFY(static_cast<bool>(releaseDirectory));
+        auto *profileName = item(content, "profileDisplayName");
+        QCOMPARE(profileName->property("text").toString(), QString("Cassandra Volkova"));
+        releaseDirectory();
+        QTRY_COMPARE(profileName->property("text").toString(), directoryName);
         QCOMPARE(item(content, "profileEmail")->property("text").toString(), QString("cassi@example.invalid"));
         QCOMPARE(item(content, "profileInitial")->property("text").toString(), QString("C"));
         QCOMPARE(item(content, "profileAvatar")->width(), 36);
@@ -14962,7 +15088,7 @@ mv -Tf "$root/.current-new" "$root/current"
             return entry;
         };
         QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
-        std::function<void()> finishSourceHistory, finishLookup;
+        std::function<void()> finishMentionIndex, finishSourceHistory, finishLookup;
         bool pagedSourceForTarget = false;
         const auto streamDto = [&] {
             return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Service fixture"},
@@ -14987,6 +15113,14 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
+                if (query.queryItemValue("mentioned") == "true") {
+                    auto mention = ordinaryRow(42);
+                    mention["mentioned"] = true;
+                    mention["read"] = false;
+                    Response response{QJsonArray{mention}};
+                    response.defer = [&](auto finish) { finishMentionIndex = std::move(finish); };
+                    return response;
+                }
                 const auto wanted = query.queryItemValue("uuid");
                 if (!wanted.isEmpty()) {
                     if (anchor && wanted == uuidOf(60)) {
@@ -15052,14 +15186,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(finishMentionIndex);
+        // Complete the independent badge request during the sidebar click's readiness wait.
+        QTimer::singleShot(0, finishMentionIndex);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
         if (!anchor) {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, item(window->contentItem(), "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_VERIFY(controller.messages().size() >= 4);
         } else {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
             QTRY_VERIFY(finishSourceHistory);
             controller.openMessageInChat(uuidOf(60));
             QTRY_VERIFY(finishLookup);
@@ -19984,7 +20119,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(viewer && !viewer->open());
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("1 / 2"));
@@ -20024,6 +20159,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
 
         wheel({}, QPoint(0, 120));
         QCOMPARE(image->scale(), 1.12);
@@ -20072,7 +20208,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // [64,189] and [1251,1376]) is a backdrop click and closes the viewer.
         QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(100, 450));
         QTRY_VERIFY(!viewer->open());
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
 
         // Click and keyboard navigation clamps without wrap-around.
@@ -20092,7 +20228,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
         // A thumbnail navigates; a backdrop click closes the overlay.
-        click(window, visibleItem(content, "inline-image-" + second));
+        clickActiveInlineImage(window, second);
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->index(), 1);
         QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
@@ -23559,6 +23695,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23578,6 +23715,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23675,7 +23816,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // The gesture continues while the page is in flight, including a
         // direction change: coalescing must hold the single request.
         QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
@@ -23751,6 +23893,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23770,6 +23913,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23857,7 +24004,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // Park below the reserve but not at the top: with the reference-notch
         // mapping each 120 notch moves exactly 100 px, so the coarse 1200
         // steps above park at the list top and the restore lands too close to
@@ -28869,12 +29017,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto catalog = fixture.catalogGets, users = fixture.usersGets,
                    history = fixture.historyGets, canonical = fixture.canonicalGets;
         const auto selectionBefore = controller.selectedStream();
-        // The native build settings do not introduce the TOP_BAR_CALLS_NAV
-        // gate, so there is deliberately no Calls chip in the top bar; the
-        // section state (reached in production through the whitelisted
-        // /calls deep link) is the entry surface under test.
-        QVERIFY(!view("sectionCallsButton"));
-        controller.showSection(QStringLiteral("calls"));
+        const auto configured = engine.rootContext()->contextProperty("nativeCallsNavigationEnabled");
+        QVERIFY(configured.isValid());
+        auto *calls = view("sectionCallsButton");
+        QCOMPARE(bool(calls), configured.toBool());
+        if (calls) {
+            QCOMPARE(calls->property("help").toString(),
+                locale == "ru" ? QStringLiteral("Звонки") : QStringLiteral("Calls"));
+            click(window, calls);
+            QTRY_COMPARE(controller.section(), QStringLiteral("calls"));
+            QVERIFY(calls->property("selected").toBool());
+            controller.showSection("chat");
+        }
+        controller.showSection("calls");
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
         auto *page = view("nativeCallsPage"); QVERIFY(page);
         // Full-width page: it fills the content slot the conversation used,
@@ -34286,6 +34441,7 @@ private slots:
     // exports the snapshot JSON through the save dialog.
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
+        QAccessible::setActive(true);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         ApiClient api(nullptr, true);
@@ -34301,7 +34457,11 @@ private slots:
         QVERIFY(window);
         const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
         QVERIFY(QTest::qWaitForWindowExposed(window));
-        controller.showSection("diagnostics");
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("diagnosticsAction"));
+        click(window, visibleItem("diagnosticsAction"));
         QTRY_VERIFY(visibleItem("diagnosticsViewLogsButton"));
         auto *view = visibleItem("diagnosticsViewLogsButton");
         auto *accessible = QAccessible::queryAccessibleInterface(view);
@@ -34314,12 +34474,24 @@ private slots:
         auto *previous = view->nextItemInFocusChain(false);
         QVERIFY(previous && previous != view);
         previous->forceActiveFocus(Qt::BacktabFocusReason);
-        for (const auto *id : {"diagnosticsViewLogsButton", "diagnosticsRefreshButton",
+        QSet<QQuickItem *> visited;
+        QStringList focusOrder;
+        while (window->activeFocusItem() != view && window->activeFocusItem()
+                && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            focusOrder.append(window->activeFocusItem()->objectName());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QVERIFY2(view->hasActiveFocus(), qPrintable(QString("Tab did not reach View logs through %1")
+            .arg(focusOrder.join(QStringLiteral(" → ")))));
+        for (const auto *id : {"diagnosticsRefreshButton",
                               "diagnosticsCopyReportButton", "diagnosticsCopySnapshotButton"}) {
             QTest::keyClick(window, Qt::Key_Tab);
             auto *item = visibleItem(id);
             QVERIFY(item);
-            QTRY_VERIFY(item->hasActiveFocus());
+            QTRY_VERIFY2(item->hasActiveFocus(), qPrintable(QString("Expected %1; focused %2; window active=%3")
+                .arg(QString::fromLatin1(id), window->activeFocusItem() ? window->activeFocusItem()->objectName() : QString())
+                .arg(window->isActive())));
             QVERIFY(item->property("visualFocus").toBool());
         }
         view->forceActiveFocus(Qt::TabFocusReason);

@@ -29,6 +29,7 @@ public:
 
 signals:
     void activateRequested();
+    void sectionRequested(const QString &name);
     void quitRequested();
     void checkForUpdatesRequested();
 

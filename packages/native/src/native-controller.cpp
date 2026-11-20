@@ -3052,6 +3052,9 @@ QVariantMap NativeController::account() const
 {
     auto profile = m_session->publicProfile();
     if (!profile.isEmpty()) {
+        profile.insert("login", m_session->loginName());
+        const auto host = m_api->server().host();
+        profile.insert("serverLabel", host.isEmpty() ? m_session->loginName() : host);
         profile.insert("avatar", userAvatar(m_session->user()));
         profile.insert("presence", userPresence(m_session->user()));
         profile.insert("statusLabel", userStatusLabel(m_session->user()));
@@ -9611,50 +9614,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit stateChanged();
         if (guard) emit messagesChanged();
     });
-    connect(session, &Session::authenticated, this, [this] {
-        const QPointer<NativeController> guard(this);
-        prepareOwnStatusPreferences();
-        interruptTopicOpening();
-        if (!guard) return;
-        interruptChannelCreations();
-        interruptDirectChats();
-        // Issue #293: an automatic stage-recovery pass abandoned across the
-        // sign-out (its GET was retired with the previous generation) re-arms
-        // here, once the same owner is ready again.
-        maybeResolveChannelCreateStages();
-        // Issue #294: same contract for an automatic rotation-resolution pass
-        // abandoned across the sign-out.
-        maybeResolveRotationStages();
-        openCache();
-        if (!guard) return;
-        m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
-        for (auto it = m_reactionIntents.begin(); it != m_reactionIntents.end();)
-            if (it->owner != ownerKey()) it = m_reactionIntents.erase(it); else ++it;
-        resetReadState();
-        ++m_selection;
-        prepareConversationRestore();
-        if (!guard) return;
-        m_loading = false;
-        m_sending = false;
-        m_topicChanging = false;
-        ++m_topicMutation;
-        m_recoveringMarker = m_resumeOlder = false;
-        m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
-        m_presenceHeartbeat.start();
-        if (!m_realtimeMode) {
-            refresh();
-            m_poll.start();
-        } else {
-            // Token replacement cancels outstanding route reads. Re-establish
-            // their snapshots behind a fresh epoch barrier while keeping drafts.
-            m_snapshotActive = false;
-            m_snapshotParts = 0;
-            emit resynchronizeRequested();
-        }
-        if (!guard) return;
-        finishDownloadRetries(true);
-        if (guard) emit stateChanged();
-    });
+    connect(session, &Session::authenticated, this, &NativeController::startAuthenticatedWorkspace);
     m_mentionIndexRetry.setSingleShot(true);
     connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);
@@ -9666,6 +9626,52 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // logging in never adds a request to the bootstrap round itself.
     m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
     connect(&m_presenceHeartbeat, &QTimer::timeout, this, [this] { reportPresenceHeartbeat(); });
+}
+
+void NativeController::startAuthenticatedWorkspace()
+{
+    const QPointer<NativeController> guard(this);
+    prepareOwnStatusPreferences();
+    interruptTopicOpening();
+    if (!guard) return;
+    interruptChannelCreations();
+    interruptDirectChats();
+    // Issue #293: an automatic stage-recovery pass abandoned across the
+    // sign-out (its GET was retired with the previous generation) re-arms
+    // here, once the same owner is ready again.
+    maybeResolveChannelCreateStages();
+    // Issue #294: same contract for an automatic rotation-resolution pass
+    // abandoned across the sign-out.
+    maybeResolveRotationStages();
+    openCache();
+    if (!guard) return;
+    m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
+    for (auto it = m_reactionIntents.begin(); it != m_reactionIntents.end();)
+        if (it->owner != ownerKey()) it = m_reactionIntents.erase(it); else ++it;
+    resetReadState();
+    ++m_selection;
+    prepareConversationRestore();
+    if (!guard) return;
+    m_loading = false;
+    m_sending = false;
+    m_topicChanging = false;
+    ++m_topicMutation;
+    m_recoveringMarker = m_resumeOlder = false;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+    m_presenceHeartbeat.start();
+    if (!m_realtimeMode) {
+        refresh();
+        m_poll.start();
+    } else {
+        // Token replacement cancels outstanding route reads. Re-establish
+        // their snapshots behind a fresh epoch barrier while keeping drafts.
+        m_snapshotActive = false;
+        m_snapshotParts = 0;
+        emit resynchronizeRequested();
+    }
+    if (!guard) return;
+    finishDownloadRetries(true);
+    if (guard) emit stateChanged();
 }
 
 NativeController::~NativeController()
@@ -10662,6 +10668,7 @@ void NativeController::useRealtime(RealtimeClient *client)
         m_syncState = state;
         if (state == "live") {
             m_syncBlocked = false;
+            if (previous) ++m_realtimeRecovery;
             // A healthy realtime link proves reachability on its own: a
             // stale transport-offline flag must not outlive the realtime
             // recovery and mask live sync state with the offline banner.
@@ -10674,7 +10681,9 @@ void NativeController::useRealtime(RealtimeClient *client)
         }
         if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
             || state == "waiting_for_session" || state == "stopped") markCacheStale();
+        const QPointer<NativeController> guard(this);
         if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
+        if (guard && previous && state == "live") retryInterruptedHistory();
     });
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
         // Issue #50: diagnostics realtime stats mirror
@@ -10704,9 +10713,10 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
 {
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
+    const auto resetGeneration = m_localResetGeneration;
     const auto started = QDateTime::currentMSecsSinceEpoch();
-    return m_api->request(method, path, body, query, [self, owner, callback, method, path, started](const ApiResult &result) {
-        if (self && self->m_api->generation() == owner) {
+    return m_api->request(method, path, body, query, [self, owner, resetGeneration, callback, method, path, started](const ApiResult &result) {
+        if (self && self->m_api->generation() == owner && self->m_localResetGeneration == resetGeneration) {
             self->observeTransport(result);
             // Issue #50: "API latency from HTTP response timing" — every
             // answered HTTP round feeds the bounded diagnostics ring.
@@ -11424,6 +11434,37 @@ void NativeController::finishForgetSavedAccount(const QString &id, std::function
 bool NativeController::isAuthGuardActive() const
 {
     return m_authGuard && m_authGuard->active();
+}
+
+void NativeController::clearLocalCache()
+{
+    if (!authenticated() || !m_statusPreferences || m_cacheForgettingAccount) return;
+    const auto generation = m_api->generation();
+    const auto resetGeneration = m_localResetGeneration;
+    const QPointer<NativeController> guard(this);
+    const QPointer<NativeCacheService> cache(m_cache);
+    const auto finish = [this, guard, cache, generation, resetGeneration](bool cleared) {
+        if (!guard || cache != m_cache || generation != m_api->generation()
+            || resetGeneration != m_localResetGeneration || !m_cacheForgettingAccount) return;
+        m_cacheForgettingAccount = false;
+        ++m_localResetGeneration;
+        reset();
+        if (!guard || !authenticated() || generation != m_api->generation()) return;
+        const bool preferencesCleared = m_statusPreferences && m_statusPreferences->resetLocalSettings();
+        if (!guard || generation != m_api->generation()) return;
+        m_sessionProjections.clear();
+        startAuthenticatedWorkspace();
+        if (guard && (!cleared || !preferencesCleared)) {
+            m_error = tr("Some local data could not be cleared.");
+            emit stateChanged();
+        }
+    };
+    m_cacheForgettingAccount = true;
+    emit stateChanged();
+    if (!guard || generation != m_api->generation() || cache != m_cache) return;
+    if (!cache) { finish(true); return; }
+    if (!cache->clearAll(m_api->server(), m_session->project(), m_session->user(), this, finish))
+        finish(false);
 }
 
 void NativeController::logout()
@@ -15960,10 +16001,21 @@ void NativeController::loadLatestMessages()
     if (guard) loadMessages(false, true);
 }
 
-void NativeController::loadMessages(bool older, bool latest)
+void NativeController::retryInterruptedHistory()
+{
+    if (!m_interruptedHistory || m_interruptedHistory->selection != m_selection) return;
+    loadMessages(false, false, true);
+}
+
+void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
 {
     if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
         || m_loading || (older && m_before.isEmpty())) return;
+    if (!older && m_interruptedHistory) {
+        if (m_interruptedHistory->selection == m_selection && m_error == m_interruptedHistory->error)
+            m_error.clear();
+        m_interruptedHistory.reset();
+    }
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, older ? m_before : QByteArray{}};
     const auto selection = m_selection;
     const auto generation = m_api->generation();
@@ -16041,7 +16093,7 @@ void NativeController::loadMessages(bool older, bool latest)
             if (!savedOnly) network();
         });
     };
-    if (latest || !cache || !cache->available()) {
+    if (latest || forceNetwork || !cache || !cache->available()) {
         if (cache && !older) m_cacheHydrations[static_cast<int>(NativeCache::Kind::History)] = [fetchCache] { fetchCache(true); };
         network();
         return;
@@ -16055,6 +16107,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
 {
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, marker};
     const auto lease = m_cacheLease;
+    const auto recovery = m_realtimeRecovery;
     const auto cacheRevision = m_cacheRevision;
     const QPointer<NativeCacheService> cache = m_cache;
     QUrlQuery query;
@@ -16066,7 +16119,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     if (!marker.isEmpty())
         query.addQueryItem("page_marker", QString::fromUtf8(marker));
     request("GET", messenger + "/messages/", {}, query,
-        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache](const ApiResult &result) mutable {
+        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
         if (revision != m_messageRevision) {
@@ -16091,7 +16144,14 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             // Issue #156: a failed page keeps the older boundary; allow the
             // next user-attributed descent below the reserve to retry once.
             m_olderPrefetchArmed = true;
-            report(tr("Could not load messages. %1").arg(result.error));
+            const bool interrupted = !older && marker.isEmpty() && result.transportFailed && result.status == 0;
+            const auto error = tr("Could not load messages. %1").arg(result.error);
+            if (interrupted) m_interruptedHistory = InterruptedHistory{selection, error};
+            const QPointer<NativeController> guard(this);
+            report(error);
+            // The socket can recover before the failed HTTP reply reaches us.
+            if (guard && interrupted && recovery != m_realtimeRecovery && m_syncState == "live")
+                retryInterruptedHistory();
             return;
         }
         const auto page = result.data.toArray();

@@ -54,6 +54,7 @@ struct Input {
     qint64 limit = NativeCache::DefaultDiskLimitBytes;
     quint64 epoch = 0;
     bool retainOnly = false;
+    bool allOwners = false;
     NativeCache::Removal removal = NativeCache::Removal::Omission;
 };
 struct Result {
@@ -137,7 +138,9 @@ class CacheWorker final : public QObject
                 } else
                     target->setCancellationCheck(cancelled);
                 if (target) {
-                    if (input.op == Op::Forget)
+                    if (input.op == Op::Forget && input.allOwners)
+                        result.okay = target->clearAll(target->lease());
+                    else if (input.op == Op::Forget)
                         result.okay = target->forgetAccount(input.identity.server, input.identity.project,
                                                             input.identity.user);
                     if (input.op == Op::Invalidate)
@@ -863,6 +866,16 @@ bool NativeCacheService::clearOwner(const Lease &lease, QObject *receiver, Compl
 bool NativeCacheService::forgetAccount(const QUrl &server, const QString &project, const QString &user,
                                        QObject *receiver, Completion done)
 {
+    return enqueueErasure(server, project, user, false, receiver, std::move(done));
+}
+bool NativeCacheService::clearAll(const QUrl &server, const QString &project, const QString &user,
+                                  QObject *receiver, Completion done)
+{
+    return enqueueErasure(server, project, user, true, receiver, std::move(done));
+}
+bool NativeCacheService::enqueueErasure(const QUrl &server, const QString &project, const QString &user,
+                                         bool allOwners, QObject *receiver, Completion done)
+{
     auto target = identity(server, project, user, d->loopback);
     if (target.owner.isEmpty() || d->shutting)
         return false;
@@ -874,7 +887,7 @@ bool NativeCacheService::forgetAccount(const QUrl &server, const QString &projec
         d->setError(tr("The local cache cleanup queue is busy. Please try again."));
         return false;
     }
-    if (target.owner == d->owner.owner) {
+    if (allOwners || target.owner == d->owner.owner) {
         ++d->shared->epoch;
         ++d->revision;
         d->dropOptional();
@@ -886,6 +899,7 @@ bool NativeCacheService::forgetAccount(const QUrl &server, const QString &projec
     const QPointer<NativeCacheService> guard(this);
     auto job = d->make(Op::Forget, receiver, std::move(done));
     job.input.identity = std::move(target);
+    job.input.allOwners = allOwners;
     job.required = true;
     const bool accepted = d->enqueue(std::move(job));
     if (!guard)

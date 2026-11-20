@@ -62,6 +62,22 @@
     </context>
     <context>
         <name>Main</name>
+        <message>
+            <source>Current server</source>
+            <translation>Текущий сервер</translation>
+        </message>
+        <message>
+            <source>Clear cache</source>
+            <translation>Очистить кэш</translation>
+        </message>
+        <message>
+            <source>Message cache, local settings, then reload</source>
+            <translation>Кэш сообщений, локальные настройки, перезагрузка</translation>
+        </message>
+        <message>
+            <source>Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.</source>
+            <translation>Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.</translation>
+        </message>
     <message>
         <source>Profile is still loading. Try again in a moment.</source>
         <translation>Профиль ещё загружается. Попробуйте через пару секунд.</translation>
@@ -464,6 +480,10 @@
         <message>
             <source>Chats and channels</source>
             <translation>Чаты и каналы</translation>
+        </message>
+        <message>
+            <source>Calls</source>
+            <translation>Звонки</translation>
         </message>
         <message>
             <source>Calendar</source>
@@ -1796,6 +1816,10 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message>
+            <source>Some local data could not be cleared.</source>
+            <translation>Не удалось очистить часть локальных данных.</translation>
+        </message>
         <message><source>Please fill in all fields</source><translation>Заполните все поля</translation></message>
     <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
     <message>
@@ -2824,14 +2848,6 @@
             <source>Quit</source>
             <translation>Выход</translation>
         </message>
-        <message>
-            <source>Calendar is not available in this native preview</source>
-            <translation>Календарь пока недоступен в нативной версии</translation>
-        </message>
-        <message>
-            <source>Mail is not available in this native preview</source>
-            <translation>Почта пока недоступна в нативной версии</translation>
-        </message>
     </context>
     <context>
         <name>workspace::NativeInstance</name>
@@ -2873,6 +2889,10 @@
     </context>
     <context>
         <name>workspace::NativePreferences</name>
+        <message>
+            <source>The local settings could not be cleared.</source>
+            <translation>Не удалось очистить локальные настройки.</translation>
+        </message>
         <message>
             <source>Saved appearance preferences could not be read.</source>
             <translation>Не удалось прочитать сохранённые параметры внешнего вида.</translation>

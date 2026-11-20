@@ -233,6 +233,12 @@ int main(int argc, char **argv)
     preferences.attachWindow(window);
     const auto activate = [&preferences, &shuttingDown] { if (!shuttingDown) preferences.activateWindow(); };
     QObject::connect(&desktop, &workspace::NativeDesktop::activateRequested, &app, activate);
+    QObject::connect(&desktop, &workspace::NativeDesktop::sectionRequested, &app,
+                     [&](const QString &section) {
+                         if (shuttingDown) return;
+                         activate();
+                         controller.showSection(section);
+                     });
     // A valid notification click reuses this same guarded activation path as
     // tray activation and second-instance deep links (issue #117); expired or
     // unknown tags emit nothing and keep the window untouched.

@@ -543,6 +543,7 @@ public:
     Q_INVOKABLE void logoutWorkspaceSession(const QString &id);
     Q_INVOKABLE void openAddServer();
     Q_INVOKABLE void publishSessionProjection(const QString &accountId, const QVariantMap &projection);
+    Q_INVOKABLE void clearLocalCache();
     Q_INVOKABLE void logout();
     // Issue #165: the inactivity guard is armed only while a live session
     // exists (docs/NATIVE_DESKTOP_AUTH_IDLE_TIMEOUT.md). The accessor is the
@@ -1647,7 +1648,8 @@ private:
     // Notification metadata backfill: topics of background streams are not in
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);
-    void loadMessages(bool older = false, bool latest = false);
+    void loadMessages(bool older = false, bool latest = false, bool forceNetwork = false);
+    void retryInterruptedHistory();
     void retireConversationOpening();
     void resolveOpeningUnread(quint64 ticket, int attempt = 0);
     void resolveOpeningSaved(quint64 ticket, const QString &savedAnchor, int attempt = 0);
@@ -1678,6 +1680,7 @@ private:
     void refreshQuoteOriginDecryptions();
     const Message *editableMessage(const QString &id) const;
     void reset();
+    void startAuthenticatedWorkspace();
     void forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done);
     void report(const QString &message);
     void finishSnapshotPart(unsigned part);
@@ -1713,6 +1716,7 @@ private:
     QHash<int, std::function<void()>> m_cacheHydrations;
     bool m_cacheWasAvailable = false;
     bool m_cacheForgettingAccount = false;
+    quint64 m_localResetGeneration = 0;
     NativeCache::Lease m_cacheLease;
     quint64 m_cacheRevision = 0;
     bool m_cacheProtection = false;
@@ -1728,6 +1732,9 @@ private:
     TopicOpening m_topicOpening;
     quint64 m_nextTopicOpening = 0;
     bool m_historyVerified = false;
+    struct InterruptedHistory { quint64 selection; QString error; };
+    std::optional<InterruptedHistory> m_interruptedHistory;
+    quint64 m_realtimeRecovery = 0;
     // Counts accepted cache/network publications, never route clears or live rows.
     quint64 m_historyCommitRevision = 0;
     bool m_syncBlocked = false;

@@ -1168,6 +1168,12 @@ bool NativeCache::clearOwner(const Lease &lease)
     return eraseMatching("owner=?", {m_owner}) || fail();
 }
 
+bool NativeCache::clearAll(const Lease &lease)
+{
+    if (!accepts(lease)) return false;
+    return eraseMatching(QStringLiteral("1"), {}) || fail();
+}
+
 bool NativeCache::forgetAccount(const QUrl &server, const QString &project, const QString &user)
 {
     const auto canonical = origin(server, m_allowLoopback);

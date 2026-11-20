@@ -94,7 +94,7 @@ private slots:
         QVERIFY(window.close());
     }
 
-    void trayUsesSourceIconsAndKeepsUnsupportedSectionsExplicit()
+    void trayUsesSourceIconsAndOpensWorkspaceSections()
     {
         QWindow window;
         NativeDesktop desktop(&window, nullptr, [] { return false; });
@@ -121,12 +121,17 @@ private slots:
         QCOMPARE(unread, QIcon(base + "-unread.png").pixmap(32, 32).toImage());
         desktop.setUnreadCount(-1);
         QCOMPARE(menu->actions().first()->text(), QString("Workspace"));
-        for (const auto *name : {"trayCalendar", "trayMail"}) {
-            auto *action = menu->findChild<QAction *>(name);
-            QVERIFY(action && !action->isEnabled());
-            QVERIFY(action->toolTip().contains("not available"));
-        }
+        QSignalSpy section(&desktop, &NativeDesktop::sectionRequested);
         QSignalSpy activate(&desktop, &NativeDesktop::activateRequested);
+        for (const auto &route : {QStringLiteral("calendar"), QStringLiteral("mail")}) {
+            auto name = route;
+            name[0] = name[0].toUpper();
+            auto *action = menu->findChild<QAction *>("tray" + name);
+            QVERIFY(action && action->isEnabled());
+            action->trigger();
+            QCOMPARE(section.count(), 1);
+            QCOMPARE(section.takeFirst().first().toString(), route);
+        }
         auto *messenger = menu->findChild<QAction *>("trayMessenger");
         QVERIFY(messenger && messenger->isEnabled());
         messenger->trigger();
