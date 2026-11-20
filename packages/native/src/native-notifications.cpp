@@ -1,4 +1,5 @@
 #include "native-notifications.h"
+#include "native-platform-shell.h"
 #include "native-markdown.h"
 
 #include <QCoreApplication>
@@ -677,6 +678,13 @@ void DBusNotificationTransport::AttentionBackend::flash(bool demand)
         XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT,
         reinterpret_cast<const char *>(&event));
     xcb_flush(connection);
+}
+
+#elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+
+void DBusNotificationTransport::AttentionBackend::flash(bool demand)
+{
+    setPlatformAttention(m_windowId ? m_windowId() : 0, demand);
 }
 
 #else

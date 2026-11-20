@@ -8,13 +8,21 @@ The repository workflow builds each platform on its own GitHub-hosted runner and
 | --- | --- | --- |
 | Package integrity, relocated application, first visible window | Hosted Windows window enumeration | Hosted macOS WindowServer enumeration |
 | Normal and unread tray assets | Windows notification-area icon | macOS status item |
-| Unread and attention | Shell taskbar unread dot and accessible name | Dock badge and attention bounce |
+| Unread and attention | Shell taskbar unread dot and accessible name | Dock unread icon, active-call badge and informational bounce |
 | Updater progress | Taskbar progress and its cleared state | Dock progress and its cleared state |
 
 The clean macOS arm64 runner verified the archive digest and observed a 1024 × 681 window owned by the extracted application. The first Windows build caught a Windows SDK macro expanding the unread-count saturation expression in the application entry point.
 
-The first row is automated by the package workflow. The OS integration rows need an observed shell state and a controlled unread or updater event. A successful package launch alone cannot certify those rows. The existing Linux workflow and its Release acceptance results remain independent. These archives are unsigned preview builds for the workflow. Store distribution, Windows signing and Apple notarization require their own release process.
+The first row is automated by the package workflow. The OS integration rows need an observed shell state and a controlled unread or updater event. A successful package launch alone cannot certify those rows. The existing Linux workflow and its Release acceptance results remain independent. The workflow produces an unsigned Windows preview and an ad hoc signed macOS preview. Windows signing, Apple notarization and store distribution require their own release process.
 
 CMake installs the application using Qt's QML deployment script. The package jobs build the pinned Markdown and keychain libraries against the same Qt kit. OpenSSL supplies the existing native TLS and HPKE APIs. The Windows and macOS smoke checks run independently so a failure on either platform remains visible.
 
 The package targets follow the [Qt QML deployment documentation](https://doc.qt.io/qt-6/qt-generate-deploy-qml-app-script.html).
+
+## Native shell acceptance
+
+The Electron reference keeps the macOS Dock text empty for unread messages and selects the normal or dotted Dock image. During a call it keeps the normal icon and shows a telephone badge. Ending the call restores the current unread image. The application-wide numeric badge call in the reference runs on Linux. The macOS check reads the actual AppKit icon pixels and Dock badge after each transition and compares both images with the reference PNGs.
+
+On Windows the overlay is a transparent 16 × 16 icon containing an orange circle with a two-pixel radius. Its accessible description follows the current application language. The Windows acceptance window checks for added and removed orange pixels on Explorer's taskbar. Both platforms also exercise the installed normal and unread tray resources.
+
+The shell adapter accepts download progress from the existing updater bridge. The macOS check reads the native progress indicator on the Dock tile. The Windows check captures Explorer's taskbar while the progress bar appears and clears. The current release updater supports Linux x86_64 and reports that updates are unavailable on other platforms. The Windows and macOS checks therefore supply controlled progress values to the shell adapter. A signed Windows or macOS update channel requires its own distribution and installation acceptance.

@@ -1,5 +1,8 @@
 #include "native-desktop.h"
+#include "native-platform-shell.h"
 
+#include <QApplication>
+#include <QScopeGuard>
 #include <QScreen>
 #include <QSystemTrayIcon>
 #include <QTest>
@@ -9,18 +12,51 @@
 #include <algorithm>
 
 namespace {
+class OverlayTranslation final : public QTranslator {
+public:
+    mutable QString lastDescription;
+    QString translate(const char *context, const char *source, const char *comment, int count) const override
+    {
+        const auto translated = QTranslator::translate(context, source, comment, count);
+        if (qstrcmp(context, "workspace::NativeDesktop") == 0 && qstrcmp(source, "Unread messages") == 0)
+            lastDescription = translated;
+        return translated;
+    }
+};
+
 QImage taskbarPixels()
 {
     const auto taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
     if (!taskbar) return {};
     auto *screen = QGuiApplication::primaryScreen();
     if (!screen) return {};
-    return screen->grabWindow(reinterpret_cast<WId>(taskbar)).toImage().convertToFormat(QImage::Format_RGB32);
+    // Only the app-button area belongs to the overlay. Capturing the
+    // notification area would also see the separate dotted tray icon.
+    HWND buttons = nullptr;
+    EnumChildWindows(taskbar, [](HWND child, LPARAM data) -> BOOL {
+        wchar_t name[64] = {};
+        GetClassNameW(child, name, 64);
+        if (wcscmp(name, L"MSTaskListWClass") != 0) return TRUE;
+        *reinterpret_cast<HWND *>(data) = child;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&buttons));
+    if (!buttons) return {};
+    RECT buttonRect{}, taskbarRect{};
+    if (!GetWindowRect(buttons, &buttonRect) || !GetWindowRect(taskbar, &taskbarRect)) return {};
+    const auto taskbarImage = screen->grabWindow(reinterpret_cast<WId>(taskbar)).toImage();
+    return taskbarImage.copy(buttonRect.left - taskbarRect.left, buttonRect.top - taskbarRect.top,
+                             buttonRect.right - buttonRect.left, buttonRect.bottom - buttonRect.top)
+        .convertToFormat(QImage::Format_RGB32);
 }
 
 bool orange(QRgb pixel)
 {
     return qRed(pixel) > 170 && qGreen(pixel) > 28 && qGreen(pixel) < 155 && qBlue(pixel) < 75;
+}
+
+bool green(QRgb pixel)
+{
+    return qGreen(pixel) > 65 && qGreen(pixel) > qRed(pixel) * 1.2 && qGreen(pixel) > qBlue(pixel) * 1.2;
 }
 
 template<class Color>
@@ -39,8 +75,42 @@ QVector<QPoint> changedPixels(const QImage &before, const QImage &after, Color m
 class WindowsShellTest final : public QObject {
     Q_OBJECT
 private slots:
+    void progressReachesTheExplorerTaskbarAndClears()
+    {
+        QWindow window;
+        window.setTitle("Workspace updater acceptance");
+        window.resize(640, 400);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto before = taskbarPixels();
+        QVERIFY(!before.isNull());
+        workspace::setPlatformTaskbarProgress(&window, .55);
+        QVector<QPoint> filled;
+        QTRY_VERIFY_WITH_TIMEOUT((filled = changedPixels(before, taskbarPixels(), green)).size() > 4, 10000);
+        workspace::setPlatformTaskbarProgress(&window, -1);
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            const auto cleared = taskbarPixels();
+            return cleared.size() == before.size() && std::none_of(filled.cbegin(), filled.cend(),
+                [&](const QPoint &point) { return green(cleared.pixel(point)); });
+        }(), 10000);
+    }
+
+    void unreadOverlayReachesTheExplorerTaskbar_data()
+    {
+        QTest::addColumn<bool>("russian");
+        QTest::newRow("English") << false;
+        QTest::newRow("Russian") << true;
+    }
+
     void unreadOverlayReachesTheExplorerTaskbar()
     {
+        QFETCH(bool, russian);
+        OverlayTranslation translator;
+        if (russian) {
+            QVERIFY(translator.load(QStringLiteral("build/desktop-package/application/translations/workspace_ru.qm")));
+            QVERIFY(QCoreApplication::installTranslator(&translator));
+        }
+        const auto remove = qScopeGuard([&] { if (russian) QCoreApplication::removeTranslator(&translator); });
         QWindow window;
         window.setTitle("Workspace desktop acceptance");
         window.resize(640, 400);
@@ -49,11 +119,16 @@ private slots:
         workspace::NativeDesktop desktop(&window);
         auto *tray = desktop.findChild<QSystemTrayIcon *>();
         QVERIFY(tray && tray->isVisible());
+        // The Windows Qt backend asks Explorer's Shell_NotifyIconGetRect.
+        QTRY_VERIFY_WITH_TIMEOUT(tray->geometry().isValid(), 5000);
         const auto normal = tray->icon().pixmap(32, 32).toImage();
         QVERIFY(!normal.isNull());
         const auto before = taskbarPixels();
         QVERIFY2(!before.isNull(), "The smoke runner requires an interactive Explorer taskbar.");
+        translator.lastDescription.clear();
         desktop.setUnreadCount(7);
+        if (russian)
+            QCOMPARE(translator.lastDescription, QStringLiteral("Непрочитанные сообщения"));
         QVERIFY(tray->icon().pixmap(32, 32).toImage() != normal);
         QVector<QPoint> dots;
         QTRY_VERIFY_WITH_TIMEOUT(!(dots = changedPixels(before, taskbarPixels(), orange)).isEmpty(), 10000);
@@ -65,9 +140,6 @@ private slots:
         }(), 10000);
         QCOMPARE(tray->icon().pixmap(32, 32).toImage(), normal);
 
-        QTranslator russian;
-        QVERIFY(russian.load(QStringLiteral("build/desktop-package/application/translations/workspace_ru.qm")));
-        QCOMPARE(russian.translate("workspace::NativeDesktop", "Unread messages"), QStringLiteral("Непрочитанные сообщения"));
     }
 };
 

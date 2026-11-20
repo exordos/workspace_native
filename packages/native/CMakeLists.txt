@@ -18,6 +18,19 @@ find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
 qt_standard_project_setup(REQUIRES 6.8)
 
+if(WIN32 OR APPLE)
+    if(APPLE)
+        enable_language(OBJCXX)
+        add_library(workspace-native-platform-shell STATIC src/native-platform-shell-macos.mm)
+        target_compile_options(workspace-native-platform-shell PRIVATE -fobjc-arc)
+        target_link_libraries(workspace-native-platform-shell PRIVATE "-framework AppKit")
+    else()
+        add_library(workspace-native-platform-shell STATIC src/native-platform-shell-windows.cpp)
+        target_link_libraries(workspace-native-platform-shell PRIVATE ole32 uuid user32)
+    endif()
+    target_link_libraries(workspace-native-platform-shell PUBLIC Qt6::Gui)
+endif()
+
 add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
@@ -94,11 +107,19 @@ target_compile_definitions(workspace-native-ui PRIVATE WORKSPACE_NATIVE_CALLS_NA
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
 target_link_libraries(workspace-native-desktop PUBLIC Qt6::Widgets)
+if(TARGET workspace-native-platform-shell)
+    target_link_libraries(workspace-native-core PRIVATE workspace-native-platform-shell)
+    target_link_libraries(workspace-native-desktop PRIVATE workspace-native-platform-shell)
+endif()
+if(APPLE)
+    set(native_dock_icons ../electron/resources/dock-icon.png ../electron/resources/dock-icon-unread.png)
+endif()
 qt_add_resources(workspace-native-desktop native_tray PREFIX /workspace/tray
     BASE ../electron/resources FILES
         ../electron/resources/tray-icon-linux.png ../electron/resources/tray-icon-linux-unread.png
         ../electron/resources/tray-icon-mac.png ../electron/resources/tray-icon-mac-unread.png
-        ../electron/resources/tray-icon.png ../electron/resources/tray-icon-unread.png)
+        ../electron/resources/tray-icon.png ../electron/resources/tray-icon-unread.png
+        ${native_dock_icons})
 get_target_property(native_qmake Qt6::qmake IMPORTED_LOCATION)
 get_filename_component(native_qt_tools "${native_qmake}" DIRECTORY)
 find_program(WORKSPACE_NATIVE_LRELEASE NAMES lrelease-qt6 lrelease6 lrelease
@@ -302,6 +323,9 @@ if(BUILD_TESTING)
         src/native-updater-taskbar.cpp src/native-updater-taskbar.h)
     target_include_directories(native-updater-test PRIVATE src)
     target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test Qt6::DBus)
+    if(TARGET workspace-native-platform-shell)
+        target_link_libraries(native-updater-test PRIVATE workspace-native-platform-shell)
+    endif()
     add_test(NAME native-updater COMMAND native-updater-test)
     set_tests_properties(native-updater PROPERTIES TIMEOUT 180)
     # Focused selection of the LauncherEntry bus case (its own entry so
@@ -648,7 +672,6 @@ if(WORKSPACE_NATIVE_CALL_SPIKE)
 endif()
 
 option(WORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE "Exercise the real native desktop shell" OFF)
-
 if(WORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE AND (APPLE OR WIN32))
     find_package(Qt6 REQUIRED COMPONENTS Test)
     if(APPLE)
@@ -658,6 +681,9 @@ if(WORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE AND (APPLE OR WIN32))
     else()
         add_executable(native-platform-shell-test tests/platform-shell/windows-taskbar.cpp)
         target_link_libraries(native-platform-shell-test PRIVATE user32)
+        if(MSVC)
+            target_compile_options(native-platform-shell-test PRIVATE /utf-8)
+        endif()
     endif()
-    target_link_libraries(native-platform-shell-test PRIVATE workspace-native-desktop Qt6::Test)
+    target_link_libraries(native-platform-shell-test PRIVATE workspace-native-core workspace-native-desktop Qt6::Test)
 endif()
