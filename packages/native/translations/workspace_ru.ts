@@ -2848,6 +2848,10 @@
         <translation>Не удалось отправить пересылку. %1</translation>
     </message>
     <message>
+        <source>Forwarding was interrupted by a session change.</source>
+        <translation>Пересылка прервана из-за смены сеанса.</translation>
+    </message>
+    <message>
         <source>Forwarding was not confirmed. Check does not send it again.</source>
         <translation>Пересылка не подтверждена. Проверка не отправляет её повторно.</translation>
     </message>

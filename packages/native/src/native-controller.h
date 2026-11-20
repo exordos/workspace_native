@@ -1653,6 +1653,7 @@ private:
     };
     static QStringList uniqueForwardUuids(const QStringList &messageUuids);
     bool forwardOwned(const ForwardIntent &intent) const;
+    void interruptForward(bool sameOwnerRenewal);
     void clearForwardIntent();
     void failForward(const QString &error);
     QString forwardDestinationRefusal(const QString &streamUuid) const;
