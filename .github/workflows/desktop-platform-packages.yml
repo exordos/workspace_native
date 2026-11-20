@@ -83,9 +83,10 @@ jobs:
           $cache = Join-Path $env:RUNNER_TEMP workspace-vcpkg-cache
           New-Item -ItemType Directory -Force $cache | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
-      - name: Cache Windows OpenSSL binaries
+      - name: Restore Windows OpenSSL binaries
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        id: openssl-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/workspace-vcpkg-cache
           key: workspace-openssl-${{ matrix.cpu }}-static-md-${{ steps.vcpkg.outputs.registry }}
@@ -96,6 +97,12 @@ jobs:
           vcpkg install openssl:${{ matrix.cpu }}-windows-static-md --classic
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "WORKSPACE_OPENSSL_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/${{ matrix.cpu }}-windows-static-md" >> $env:GITHUB_ENV
+      - name: Save compiled Windows OpenSSL binaries
+        if: runner.os == 'Windows' && steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/workspace-vcpkg-cache
+          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
       - name: Select OpenSSL for macOS
         if: runner.os == 'macOS'
         run: |
@@ -104,11 +111,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Prepare the Windows 11 Explorer desktop
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class DesktopShell {
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string name, string title);
+              [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
+          }
+          "@
+          $session = (Get-Process -Id $PID).SessionId
+          Write-Output "Runner session $session, active console session $([DesktopShell]::WTSGetActiveConsoleSessionId())."
+          Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object Id, SessionId
+          if ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) {
+              Start-Process "$env:WINDIR/explorer.exe"
+              $deadline = (Get-Date).AddSeconds(20)
+              while ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline) {
+                  Start-Sleep -Milliseconds 250
+              }
+          }
+          Write-Output "Explorer taskbar handle $([DesktopShell]::FindWindow('Shell_TrayWnd', $null))."
       - name: Build and archive the desktop application
         env:
           WORKSPACE_PACKAGE_PLATFORM: ${{ matrix.platform }}
         run: python packages/native/scripts/build-desktop-package.py
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('build/desktop-package/archives/SHA256SUMS') != '' }}
         with:
           name: desktop-${{ matrix.platform }}
           path: build/desktop-package/archives/
