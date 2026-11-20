@@ -189,6 +189,13 @@ class HostedTest(unittest.TestCase):
             self.assertEqual(set(kwargs["env"]), {"PATH", "LANG"})
             self.assertNotIn(fixture["password"], repr(args))
             self.assertEqual(json.loads(kwargs["input"])["reference"], "github-ubuntu-24.04-container-26.04-sway-1440")
+            command = child.call_args.args[0]
+            self.assertIn("--limits", command)
+            limits = json.loads(Path(command[command.index("--limits") + 1]).read_text())
+            self.assertEqual(limits["reference"], json.loads(kwargs["input"])["reference"])
+            for metric in ("gui_stall_ms", "active_frame_ms", "visible_response_ms", "settled_anchor_px", "min_occupancy"):
+                self.assertGreater(limits[metric], 0)
+
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QQueue>
 #include <QVariantMap>
+#include <functional>
 
 namespace workspace {
 
@@ -17,6 +18,12 @@ public:
     // (reference hiddenWorkspaceMediaFileUuids, issue #217): the body keeps its
     // text and loses the media label the renderer would otherwise print.
     Q_INVOKABLE QVariantMap render(const QString &markdown, bool hideMedia = false);
+    Q_INVOKABLE QVariantMap renderMessage(const QString &markdown, bool hideMedia, const QStringList &opened);
+    // Only a mounted message supplies a resolver. Protected output bypasses the shared cache.
+    using SecretResolver = std::function<QVariantMap(const QString &target, const QString &occurrence)>;
+    QVariantMap renderProtected(const QString &body, const QStringList &opened, const SecretResolver &resolver);
+    static bool mayContainSpoilers(const QString &markdown);
+    QVariantMap renderPreview(const QString &markdown, bool hideMedia = false);
     Q_INVOKABLE QVariantMap reference(const QString &target) const;
     Q_INVOKABLE bool openExternal(const QString &target) const;
     // Workspace image/video references found in a message body in document
@@ -31,6 +38,7 @@ public:
     static QString prependEditAttachments(const QString &markdown, const QVariantList &attachments);
 
 private:
+    QVariantMap renderBody(const QString &markdown, bool hideMedia, const QStringList &opened, bool expandAll, const SecretResolver &resolver = {});
     QHash<QString, QVariantMap> m_cache;
     QQueue<QString> m_order;
 };

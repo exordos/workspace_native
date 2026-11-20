@@ -17,7 +17,7 @@ namespace workspace
 namespace
 {
 std::atomic<quint64> ServiceGeneration{0};
-enum class Op { Open, Resize, Close, Get, GetBody, Put, Project, Invalidate, OmitBody, Stale, Read, Forget, Flush, Stop };
+enum class Op { Open, Resize, Close, Search, Get, GetBody, Put, Project, Invalidate, OmitBody, Stale, Read, Forget, Flush, Stop };
 struct Identity {
     QUrl server;
     QString project, user, owner;
@@ -52,13 +52,16 @@ struct Input {
     QSet<QString> ids;
     NativeCache::ProjectionFields fields;
     qint64 limit = NativeCache::DefaultDiskLimitBytes;
+    quint64 searchTicket = 0;
     quint64 epoch = 0;
     bool retainOnly = false;
+    bool allOwners = false;
     NativeCache::Removal removal = NativeCache::Removal::Omission;
 };
 struct Result {
     bool okay = false, cancelled = false;
     QString error, availableOwner;
+    std::optional<QJsonArray> matches;
     std::optional<NativeCache::Entry> entry;
     std::optional<NativeCache::MessageBody> body;
     NativeCache::Stats stats;
@@ -66,6 +69,7 @@ struct Result {
 };
 struct Shared {
     std::atomic<quint64> epoch{1};
+    std::atomic<quint64> searchTicket{0};
     QMutex mutex;
     Result result;
 };
@@ -75,6 +79,7 @@ struct Job {
     bool required = false;
     QPointer<QObject> receiver;
     NativeCacheService::Completion done;
+    NativeCacheService::SearchCallback search;
     NativeCacheService::ReadCallback read;
     NativeCacheService::BodyReadCallback readBody;
     qint64 bytes() const
@@ -137,7 +142,9 @@ class CacheWorker final : public QObject
                 } else
                     target->setCancellationCheck(cancelled);
                 if (target) {
-                    if (input.op == Op::Forget)
+                    if (input.op == Op::Forget && input.allOwners)
+                        result.okay = target->clearAll(target->lease());
+                    else if (input.op == Op::Forget)
                         result.okay = target->forgetAccount(input.identity.server, input.identity.project,
                                                             input.identity.user);
                     if (input.op == Op::Invalidate)
@@ -178,6 +185,14 @@ class CacheWorker final : public QObject
                 }
                 if (store && store->available() && current.owner == input.identity.owner) {
                     store->setCancellationCheck(cancelled);
+                    if (input.op == Op::Search) {
+                        store->setCancellationCheck([cancelled, state = shared, ticket = input.searchTicket] {
+                            return cancelled() || state->searchTicket.load() != ticket;
+                        });
+                        result.matches = store->searchMessages(store->lease(), QString::fromUtf8(input.payload));
+                        store->setCancellationCheck(cancelled);
+                        result.okay = result.matches.has_value();
+                    }
                     if (input.op == Op::Get) {
                         result.entry = store->get(store->lease(), input.key);
                         result.okay = bool(result.entry);
@@ -297,7 +312,8 @@ struct NativeCacheService::Private {
         job.done = std::move(done);
         return job;
     }
-    void notify(Job job, bool okay, std::optional<Entry> entry = {}, std::optional<MessageBody> body = {})
+    void notify(Job job, bool okay, std::optional<Entry> entry = {}, std::optional<MessageBody> body = {},
+                std::optional<QJsonArray> matches = {})
     {
         if (!job.receiver || destroying)
             return;
@@ -307,12 +323,24 @@ struct NativeCacheService::Private {
         const auto receiver = job.receiver;
         QMetaObject::invokeMethod(
             q,
-            [guard, receiver, job = std::move(job), okay, entry = std::move(entry), body = std::move(body), generation, rev,
+            [guard, receiver, job = std::move(job), okay, entry = std::move(entry), body = std::move(body), matches = std::move(matches), generation, rev,
              required]() mutable {
                 if (!guard || !receiver || guard->d->destroying || receiver->thread() != guard->thread())
                     return;
                 const bool valid =
                     required || (generation == guard->d->lease.generation && rev == guard->d->revision);
+                if (job.search) {
+                    const bool current = generation == guard->d->lease.generation
+                        && job.input.searchTicket == guard->d->shared->searchTicket.load();
+                    if (current && okay && !valid && guard->available()) {
+                        // A read receipt or deletion completed while this snapshot
+                        // was in flight. Run behind it before returning any rows.
+                        job.revision = guard->d->revision;
+                        guard->d->enqueue(std::move(job));
+                        return;
+                    }
+                    job.search(current && okay && valid ? std::move(matches) : std::nullopt);
+                }
                 if (job.read)
                     job.read(valid ? std::move(entry) : std::optional<Entry>{});
                 if (job.readBody)
@@ -511,7 +539,7 @@ struct NativeCacheService::Private {
         }
         const bool stop = job.input.op == Op::Stop;
         const bool okay = (valid || job.required) && result.okay;
-        notify(std::move(job), okay, std::move(result.entry), std::move(result.body));
+        notify(std::move(job), okay, std::move(result.entry), std::move(result.body), std::move(result.matches));
         if (!stop)
             pump();
     }
@@ -659,6 +687,31 @@ bool NativeCacheService::setDiskLimitBytes(qint64 bytes)
     emit stateChanged();
     return guard && accepted;
 }
+void NativeCacheService::cancelMessageSearch()
+{
+    ++d->shared->searchTicket;
+    for (auto it = d->queue.begin(); it != d->queue.end();) {
+        if (it->input.op != Op::Search) { ++it; continue; }
+        auto job = std::move(*it);
+        it = d->queue.erase(it);
+        d->notify(std::move(job), false);
+    }
+}
+
+void NativeCacheService::searchMessages(const Lease &lease, const QString &query, QObject *receiver, SearchCallback done)
+{
+    cancelMessageSearch();
+    auto job = d->make(Op::Search, receiver);
+    job.search = std::move(done);
+    job.input.searchTicket = d->shared->searchTicket.load();
+    if (!available() || !d->accepts(lease) || query.trimmed().isEmpty() || query.size() > 256) {
+        d->notify(std::move(job), false);
+        return;
+    }
+    job.input.payload = query.toUtf8();
+    d->enqueue(std::move(job));
+}
+
 void NativeCacheService::get(const Lease &lease, const Key &key, QObject *receiver, ReadCallback done)
 {
     auto job = d->make(Op::Get, receiver);
@@ -863,6 +916,16 @@ bool NativeCacheService::clearOwner(const Lease &lease, QObject *receiver, Compl
 bool NativeCacheService::forgetAccount(const QUrl &server, const QString &project, const QString &user,
                                        QObject *receiver, Completion done)
 {
+    return enqueueErasure(server, project, user, false, receiver, std::move(done));
+}
+bool NativeCacheService::clearAll(const QUrl &server, const QString &project, const QString &user,
+                                  QObject *receiver, Completion done)
+{
+    return enqueueErasure(server, project, user, true, receiver, std::move(done));
+}
+bool NativeCacheService::enqueueErasure(const QUrl &server, const QString &project, const QString &user,
+                                         bool allOwners, QObject *receiver, Completion done)
+{
     auto target = identity(server, project, user, d->loopback);
     if (target.owner.isEmpty() || d->shutting)
         return false;
@@ -874,7 +937,7 @@ bool NativeCacheService::forgetAccount(const QUrl &server, const QString &projec
         d->setError(tr("The local cache cleanup queue is busy. Please try again."));
         return false;
     }
-    if (target.owner == d->owner.owner) {
+    if (allOwners || target.owner == d->owner.owner) {
         ++d->shared->epoch;
         ++d->revision;
         d->dropOptional();
@@ -886,6 +949,7 @@ bool NativeCacheService::forgetAccount(const QUrl &server, const QString &projec
     const QPointer<NativeCacheService> guard(this);
     auto job = d->make(Op::Forget, receiver, std::move(done));
     job.input.identity = std::move(target);
+    job.input.allOwners = allOwners;
     job.required = true;
     const bool accepted = d->enqueue(std::move(job));
     if (!guard)

@@ -25,6 +25,7 @@ class NativeCacheService final : public QObject
     using ProjectionFields = NativeCache::ProjectionFields;
     using Completion = std::function<void(bool)>;
     using ReadCallback = std::function<void(std::optional<Entry>)>;
+    using SearchCallback = std::function<void(std::optional<QJsonArray>)>;
     using BodyReadCallback = std::function<void(std::optional<MessageBody>)>;
     static constexpr int MaximumQueuedJobs = 8;
     static constexpr qint64 MaximumQueuedBytes = 32 * 1024 * 1024;
@@ -51,6 +52,8 @@ class NativeCacheService final : public QObject
     // actual DB+WAL+SHM fits; reductions can remain pending in the background.
     bool setDiskLimitBytes(qint64 bytes);
 
+    void searchMessages(const Lease &lease, const QString &query, QObject *receiver, SearchCallback done);
+    void cancelMessageSearch();
     void get(const Lease &lease, const Key &key, QObject *receiver, ReadCallback done);
     void getMessageBody(const Lease &lease, const QString &uuid, QObject *receiver, BodyReadCallback done);
     bool putMessageBody(const Lease &lease, const QJsonObject &canonical,
@@ -73,6 +76,7 @@ class NativeCacheService final : public QObject
                          const QSet<QString> &ids, QObject *receiver = nullptr, Completion done = {});
     bool projectMessage(const Lease &lease, const QJsonObject &canonical, ProjectionFields fields,
                         QObject *receiver = nullptr, Completion done = {});
+    bool clearAll(const QUrl &server, const QString &project, const QString &user, QObject *receiver, Completion done);
     bool clearOwner(const Lease &lease, QObject *receiver = nullptr, Completion done = {});
     bool forgetAccount(const QUrl &server, const QString &project, const QString &user,
                        QObject *receiver = nullptr, Completion done = {});
@@ -89,6 +93,8 @@ class NativeCacheService final : public QObject
     void shutdownFinished();
 
   private:
+    bool enqueueErasure(const QUrl &server, const QString &project, const QString &user,
+                        bool allOwners, QObject *receiver, Completion done);
     bool eraseMessageCopies(const Lease &lease, const QString &uuid, const QString &stream,
                            const QString &topic, NativeCache::Removal reason, QObject *receiver, Completion done);
     struct Private;

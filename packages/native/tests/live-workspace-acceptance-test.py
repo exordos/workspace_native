@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Temporal fault controls run independently of credentials or public services."""
 
+import contextlib
 import runpy
 import socket
 import socketserver
@@ -144,6 +145,39 @@ class Controls(unittest.TestCase):
         rows.insert(-1, {"event": "sample", "ms": 200, "intent": 3, "count": 22})
         self.assertIn("gui-stall", evaluate(rows, LIMITS)["failures"])
 
+    def test_warm_switch_waits_for_the_client_to_observe_invalidation(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                                    / "scripts" / "live-workspace-acceptance.py"))
+        peer = runner["Peer"]({}, "writer")
+        desktop = Mock()
+        desktop.events = [{"event": "realtime", "kind": "message.created", "peer": True}]
+        cleanup = Mock()
+        create = Mock()
+
+        @contextlib.contextmanager
+        def message(*args):
+            try:
+                yield create
+            finally:
+                cleanup()
+
+        peer.temporary_message = message
+
+        def deliver(predicate, reason, timeout):
+            create.assert_called_once()
+            self.assertFalse(predicate())
+            desktop.events.append(sanitize_native_event({
+                "event": "realtime", "ms": 100, "peer": True,
+                "kind": "message.created", "revalidation": True,
+            }))
+            self.assertTrue(predicate())
+
+        desktop.until.side_effect = deliver
+        with peer.invalidate_warmed_topic(desktop):
+            desktop.until.assert_called_once()
+            cleanup.assert_not_called()
+        cleanup.assert_called_once()
+
     def test_peer_uses_the_public_uuid_returned_by_the_deployed_backend(self):
         runner = runpy.run_path(
             str(
@@ -220,6 +254,24 @@ class Controls(unittest.TestCase):
             desktop.click.call_args_list[:2],
             [call("organizationNextButton"), call("organizationNextButton")],
         )
+
+    def test_restore_timeout_identifies_the_last_auth_response_from_this_launch(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "live-workspace-acceptance.py"))
+        desktop = object.__new__(runner["Desktop"])
+        desktop.lock = threading.Lock()
+        desktop.until = Mock(side_effect=runner["Blocked"]("saved-session-restore"))
+        def response(status):
+            return {"event": "response", "category": "auth", "status": status}
+        for current, expected in [
+            ([response(502)], "restore-auth-http-502"),
+            ([response(401)], "restore-auth-http-401"),
+            ([response(502), response(200)], "saved-session-restore"),
+            ([{"event": "response", "category": "image", "status": 503}], "saved-session-restore"),
+        ]:
+            with self.subTest(expected=expected):
+                desktop.events = [response(503), {"event": "launch"}, *current]
+                with self.assertRaisesRegex(runner["Blocked"], "^" + expected + "$"):
+                    desktop.wait_for_restored_session(30)
 
     def test_wrong_visible_organization_stops_before_submitting_credentials(self):
         runner = runpy.run_path(

@@ -170,3 +170,40 @@ are cited inside the geometry assertions):
 
 i18n: new `NativeRightDrawer` context strings `Close`, `Back`, `Info panel`
 are added to `packages/native/translations/workspace_ru.ts` (locale guard).
+
+## Current server and local reset
+
+The account menu shows the connected organization's hostname above the signed-in
+login. Both values come from the active session. The reference uses the login as
+the label when the organization has no usable hostname. Each text line elides
+independently. The title, icon and spacing follow the current-server row in
+`widgets/right-panel/right-panel-user-menu.ui.tsx`.
+
+Clear cache opens a confirmation with the local effects spelled out. Cancel
+returns to the account menu. Confirm clears the local message cache and
+application preferences and reloads the workspace with the same sign-in. The
+saved organization list and the credential vault survive. Outgoing work and
+encryption keys have their own stores. The reset performs its database work on
+the cache worker; old requests and pending settings writes must not restore the
+discarded state. The web counterpart is `shared/lib/local-reset.ts`.
+
+The window test covers the server and login lines, the localized confirmation,
+cancellation, and confirmation with a populated cache and nondefault preferences.
+Clear cache, the language choices and the disk limit field sit in the scrollable
+body above the fixed Sign out footer. The window tests scroll each control into
+view and wait for a painted frame before clicking its center.
+The Clear cache test holds the refreshed history response so it can observe an empty cache before
+new server data arrives.
+
+## Entry from the conversation header
+
+The channel title and information button both open the channel root. Selecting
+the header while viewing a nested profile returns to the channel information.
+Opening it over account settings leaves that settings layer beneath the chat
+layer, so Close restores it. A direct chat uses the partner profile identified
+by its verified peer. Both title and icon are keyboard accessible. Workspace group
+conversations with no individual direct peer open their channel information. The Favorites header
+keeps its title-only presentation.
+
+The original Workspace under the primary account opened the named partner from
+the direct-chat header. Closing the profile returned to the same conversation.

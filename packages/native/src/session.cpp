@@ -167,6 +167,7 @@ void Session::clearMemory()
     m_savedAccountId.clear();
     m_login.clear();
     m_publicProfile.clear();
+    m_summaryServiceAllowed = false;
     m_project.clear();
     m_user.clear();
     m_projects.clear();
@@ -426,7 +427,7 @@ void Session::fetchOrganizationSettings(const QUrl &origin,
     }, true);
 }
 
-bool Session::acceptToken(const ApiResult &result, qint64 requestStarted)
+bool Session::acceptToken(const ApiResult &result, qint64 requestStarted, bool sameOwnerRenewal)
 {
     const auto json = result.data.toObject();
     const auto token = json.value("access_token").toString().toUtf8();
@@ -447,7 +448,7 @@ bool Session::acceptToken(const ApiResult &result, qint64 requestStarted)
         m_refreshToken = refresh;
     m_accessExpiresAt = expiresAt;
     m_refreshFailures = 0;
-    m_api->setAccessToken(token);
+    m_api->setAccessToken(token, sameOwnerRenewal);
     m_expiryTimer.start(int(remaining));
     m_refreshTimer.start(int(std::max(qint64(1), remaining - std::min(qint64(60000), remaining / 4))));
     return true;
@@ -601,7 +602,7 @@ void Session::refreshProject()
             fail(tr("Your session could not be renewed. Sign in again."));
             return;
         }
-        if (!acceptToken(result, requestStarted))
+        if (!acceptToken(result, requestStarted, m_ready))
             return;
         request("GET", "/api/core/v1/iam/clients/default/actions/introspect", {}, {},
             [this, attempt](const ApiResult &identity) {
@@ -618,6 +619,9 @@ void Session::refreshProject()
                 return;
             }
             m_user = user;
+            const auto permissions = json.value("permissions").toArray();
+            m_summaryServiceAllowed = permissions.contains(QStringLiteral("workspace.topic_summary_settings.manage"))
+                || permissions.contains(QStringLiteral("workspace.topic_summary_endpoint.manage"));
             m_publicProfile = publicIdentityProfile(json.value("user_info").toObject(), user, m_login);
             m_ready = true;
             m_refreshInFlight = false;

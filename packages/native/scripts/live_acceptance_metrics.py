@@ -32,7 +32,7 @@ def sanitize_native_event(raw):
         "frame": (),
         "click": (),
         "wheel": ("angle", "pixel", "phase"),
-        "realtime": ("peer", "reaction", "receipt"),
+        "realtime": ("peer", "reaction", "receipt", "revalidation"),
         "request": ("older", "index"),
         "response": ("older", "elapsed", "status", "index"),
     }

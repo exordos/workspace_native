@@ -78,6 +78,8 @@ public:
     // Worker-owned operations poll between bounded SQL/row/vacuum steps. The
     // callback must be thread-safe and must not touch GUI objects.
     void setCancellationCheck(std::function<bool()> check) { m_cancel = std::move(check); }
+    static constexpr int MaximumSearchResults = 50;
+    std::optional<QJsonArray> searchMessages(const Lease &lease, const QString &query);
     std::optional<Entry> get(const Lease &lease, const Key &key);
     bool put(const Lease &lease, const Key &key, const QJsonArray &rows,
              const QByteArray &nextMarker = {});
@@ -113,6 +115,7 @@ public:
     // reconstructs encoded payloads, or restores a deleted page.
     bool projectMessage(const Lease &lease, const QJsonObject &canonical, ProjectionFields fields);
     bool clearOwner(const Lease &lease);
+    bool clearAll(const Lease &lease);
     // Cleanup only: accept the exact identity of a verified saved account being
     // forgotten. Does not expose its cached rows or switch the active owner.
     bool forgetAccount(const QUrl &server, const QString &project, const QString &user);

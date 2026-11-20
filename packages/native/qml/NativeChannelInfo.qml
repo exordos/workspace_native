@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQuick.Effects
 
@@ -14,6 +15,7 @@ import QtQuick.Effects
 // the shell. Geometry and colors are measured from the pinned reference.
 Item {
     id: page
+    signal referenceActivated(string link)
     required property var colors
     required property var controller
     objectName: "channelInfoPage"
@@ -272,6 +274,8 @@ Item {
                 Rectangle {
                     id: notificationSwitch
                     objectName: "channelInfoNotificationSwitch"
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: qsTr("Notifications")
                     visible: page.notificationSupported
                     width: flow.width
                     height: 44
@@ -293,7 +297,7 @@ Item {
                                 {mode: "all_messages", objectName: "channelInfoNotifSubscribed",
                                  asset: "bell.svg", label: qsTr("All messages")}
                             ]
-                            delegate: Button {
+                            delegate: CheckBox {
                                 id: segment
                                 required property var modelData
                                 objectName: modelData.objectName
@@ -301,20 +305,34 @@ Item {
                                 Layout.preferredHeight: 36
                                 Layout.minimumWidth: 0
                                 enabled: !page.notificationBusy
-                                property bool isCurrent: page.notificationMode === modelData.mode
-                                display: AbstractButton.IconOnly
+                                readonly property bool isCurrent: page.notificationMode === modelData.mode
+                                checked: isCurrent
+                                nextCheckState: () => isCurrent ? Qt.Checked : Qt.Unchecked
+                                indicator: null
+                                hoverEnabled: true
+                                opacity: enabled ? 1.0 : 0.5
+                                contentItem: ControlsImpl.IconLabel {
+                                    icon: segment.icon
+                                    display: AbstractButton.IconOnly
+                                }
                                 padding: 0
                                 icon.source: "qrc:/workspace/icons/" + modelData.asset
                                 icon.width: 28
                                 icon.height: 28
-                                icon.color: segment.isCurrent ? page.colors["icon-active"] : page.colors["text-muted"]
+                                icon.color: segment.isCurrent ? page.colors["icon-active"]
+                                    : page.colors[segment.hovered ? "text-primary" : "text-muted"]
+                                Accessible.role: Accessible.RadioButton
                                 Accessible.name: modelData.label
+                                Accessible.onToggleAction: choose()
+                                function choose() {
+                                    if (enabled) page.controller.setChannelInfoNotificationMode(modelData.mode)
+                                }
                                 background: Rectangle {
                                     radius: 8
-                                    color: segment.isCurrent ? page.colors["card-bg"] : "transparent"
-                                    opacity: segment.enabled ? 1.0 : 0.5
+                                    color: segment.isCurrent ? page.colors["card-bg"]
+                                        : segment.hovered ? page.colors["sidebar-item-hover"] : "transparent"
                                 }
-                                onClicked: page.controller.setChannelInfoNotificationMode(segment.modelData.mode)
+                                onClicked: choose()
                             }
                         }
                     }
@@ -349,6 +367,14 @@ Item {
                     color: page.colors["notice-base"]
                     leftPadding: 8
                 }
+            }
+
+            Loader {
+                width: flow.width - 16
+                x: 8
+                active: page.visible && page.controller.selectedTopic.length > 0
+                visible: active && !!page.controller.topics.find(row => row.id === page.controller.selectedTopic)
+                sourceComponent: Component { NativeTopicSummary { controller: page.controller; colors: page.colors; onReferenceActivated: link => page.referenceActivated(link) } }
             }
 
             // ---- Description block (reference 730-739) ----
@@ -386,6 +412,12 @@ Item {
                         color: page.colors["text-primary"]
                     }
                 }
+            }
+
+            Loader {
+                width: flow.width
+                active: page.visible
+                sourceComponent: Component { NativeChannelTopics { controller: page.controller; colors: page.colors } }
             }
 
             // ---- Members block (reference 748-812) ----
