@@ -138,7 +138,10 @@ case "update":
     RunLoop.current.run(until: Date().addingTimeInterval(0.6))
     let screenshot = Process()
     screenshot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    screenshot.arguments = ["-x", "-R" + [Int(position.x), Int(position.y)-125, Int(size.width), 125].map(String.init).joined(separator: ","), image.path]
+    let entries = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+    guard let primary = entries.first(where: { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+          let windowId = primary[kCGWindowNumber as String] as? Int else { throw fail("Missing application window.") }
+    screenshot.arguments = ["-x", "-o", "-l", String(windowId), image.path]
     try screenshot.run()
     screenshot.waitUntilExit()
     guard screenshot.terminationStatus == 0 else { throw fail("No packaged updater pixels captured.") }
@@ -146,7 +149,10 @@ case "update":
     recognition.recognitionLevel = .accurate
     try VNImageRequestHandler(url: image).perform([recognition])
     let recognized = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
-    guard recognized.contains("updates are not available for this platform") else { throw fail("The expected unavailable message was absent from the macOS screen.") }
+    let publicStrings = ["app version", "application update", "check for updates", "updates are not available", "for this platform", "configuration is invalid", "current version"]
+    print("Recognized visible updater phrases:", publicStrings.filter { recognized.contains($0) })
+    let bounded = recognized.replacingOccurrences(of: "[^a-z0-9 ]+", with: "", options: .regularExpression)
+    guard bounded.contains("updates are not available for this platform") else { throw fail("The expected unavailable message was absent from the macOS screen.") }
     print("Vision read the unavailable update status from the visible native About panel.")
     try press("Close")
 case "logout":
