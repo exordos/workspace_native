@@ -8,7 +8,9 @@ on:
       - .github/workflows/desktop-platform-packages.yml
       - packages/native/CMakeLists.txt
       - packages/native/packaging/windows-*
+      - packages/native/resources/macos-info.plist.in
       - packages/native/src/main.cpp
+      - packages/native/src/native-instance.*
       - packages/native/scripts/build-desktop-package.py
       - packages/native/tests/platform-package/**
       - packages/native/tests/platform-shell/**
@@ -21,6 +23,9 @@ on:
       - packages/native/src/session-vault.*
       - packages/native/qml/Main.qml
       - packages/native/qml/NativeAboutDrawer.qml
+      - packages/native/qml/NativeCallWebEngineView.qml
+      - packages/native/qml/NativeCallWindow.qml
+      - packages/native/qml/ShellIconButton.qml
   push:
     tags: ['[0-9]*']
 
@@ -161,7 +166,7 @@ jobs:
           $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
           ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
-          python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater
+          python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater --check-capture
       - name: Install, launch and uninstall the Windows application for the current user
         if: runner.os == 'Windows'
         shell: pwsh
@@ -186,4 +191,4 @@ jobs:
             exit 1
           fi
           python3 packages/native/tests/platform-package/macos-startup-icons.py "$startup"
-          python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
+          python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater --check-capture

@@ -289,6 +289,7 @@ qt_add_qml_module(workspace-native
     NO_GENERATE_QMLTYPES
     QML_FILES ${native_qml_files})
 set_target_properties(workspace-native PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos-info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "Workspace Native"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.exordos.workspace.native.preview"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
