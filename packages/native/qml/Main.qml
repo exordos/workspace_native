@@ -140,7 +140,7 @@ ApplicationWindow {
                     preferences: root.preferences
                     colors: root.colors
                     appearance: rightDrawer.currentAccountScreen === "appearance"
-                    onShortcutsRequested: shortcutsDialog.open()
+                    onShortcutsRequested: shortcutPopup.sourceComponent = shortcutSettingsComponent
                 }
             }
         }
@@ -4693,8 +4693,8 @@ component NativeMentionChip: Item {
     }
     function handleAppShortcut(action, activate) {
         if (!root.controller.authenticated || !root.active) return false;
-        if (shortcutsHelp.visible && action === "interface.help") {
-            if (activate) shortcutsHelp.close();
+        if (shortcutPopup.item && shortcutPopup.item.helpOnly && shortcutPopup.item.visible && action === "interface.help") {
+            if (activate) shortcutPopup.item.close();
             return true;
         }
         if (root.Overlay.overlay.visible || root.controller.mediaViewer.open || callWindowOverlayItem.visible
@@ -4734,21 +4734,37 @@ component NativeMentionChip: Item {
             else if (action === "interface.theme") root.preferences.mode = root.preferences.dark ? "light" : "dark";
             else if (action === "interface.sidebar") shortcutSidebarVisible = !shortcutSidebarVisible;
             else if (action === "interface.infoPanel") rightDrawer.toggleVisibility();
-            else if (action === "interface.help") shortcutsHelp.open();
+            else if (action === "interface.help") shortcutPopup.sourceComponent = shortcutHelpComponent;
         }
         return true;
     }
-    NativeHotkeysDialog {
-        id: shortcutsDialog
-        objectName: "shortcutSettings"
-        registry: root.preferences.hotkeys
-        colors: root.colors
+    Loader {
+        id: shortcutPopup
+        asynchronous: true
+        onLoaded: item.open()
+        function unloadClosed() {
+            if (item && !item.visible) sourceComponent = null;
+        }
     }
-    NativeShortcutsHelp {
-        id: shortcutsHelp
-        objectName: "shortcutsHelp"
-        registry: root.preferences.hotkeys
-        colors: root.colors
+    Component {
+        id: shortcutSettingsComponent
+        NativeHotkeysDialog {
+            objectName: "shortcutSettings"
+            parent: root.contentItem
+            registry: root.preferences.hotkeys
+            colors: root.colors
+            onClosed: Qt.callLater(shortcutPopup.unloadClosed)
+        }
+    }
+    Component {
+        id: shortcutHelpComponent
+        NativeShortcutsHelp {
+            objectName: "shortcutsHelp"
+            parent: root.contentItem
+            registry: root.preferences.hotkeys
+            colors: root.colors
+            onClosed: Qt.callLater(shortcutPopup.unloadClosed)
+        }
     }
     Dialog {
         id: shortcutFolders
