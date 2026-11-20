@@ -16836,8 +16836,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "passwordInput"));
         QVERIFY(!item(content, "signInButton"));
         QVERIFY(!item(content, "realmPreviewCard"));
-        QVERIFY(!item(content, "defaultOrganizationBlock"));
         QVERIFY(!item(content, "organizationNextButton")->isEnabled());
+        const auto expectedUrl = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL",
+                                                       QStringLiteral(EXPECTED_LOGIN_ORG_URL)).trimmed();
+        QCOMPARE(controller.defaultOrganizationUrl(), expectedUrl);
+        auto *shortcut = item(content, "defaultOrganizationBlock");
+        if (expectedUrl.isEmpty()) {
+            QVERIFY(!shortcut);
+        } else {
+            QVERIFY(shortcut && shortcut->isVisible());
+            const auto name = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME",
+                                                   QStringLiteral(EXPECTED_LOGIN_ORG_NAME)).trimmed();
+            QCOMPARE(shortcut->property("text").toString(),
+                     name.isEmpty() ? QStringLiteral("Exordos Core Public") : name);
+            click(window, shortcut);
+            QTRY_COMPARE(item(content, "serverInput")->property("text").toString(), expectedUrl);
+        }
         item(content, "serverInput")->setProperty("text", server.origin().toString());
         QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
         click(window, item(content, "organizationNextButton"));
@@ -32642,6 +32656,13 @@ private slots:
         QVERIFY(visibleItem("logsEntryDataPre-0")); // the error row carries its data pre
         // Recent errors block appears for the fresh error row (max-h-40 list).
         QVERIFY(visibleItem("logsRecentErrorRow-0"));
+        auto *page = visibleItem("nativeDiagnosticsPage");
+        QVERIFY(page);
+        const auto overviewErrors = [page] {
+            return page->property("snapshot").toMap().value("logs").toMap()
+                .value("byLevel").toMap().value("error").toInt();
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(overviewErrors(), 1, 4000);
         QCOMPARE(visibleItem("logsResultsLabel")->property("text").toString(), QString("2 of 2 entries"));
         // Level filter: newest-first rows are [info/app, error/api], so the
         // Error level keeps a single row.
@@ -32680,6 +32701,7 @@ private slots:
         // Clear empties to the empty state and disables itself; a line after
         // Clear appends live again.
         click(window, visibleItem("logsClearButton"));
+        QTRY_COMPARE_WITH_TIMEOUT(overviewErrors(), 0, 4000);
         QTRY_VERIFY_WITH_TIMEOUT(
             visibleItem("logsResultsLabel")->property("text").toString()==QString("0 of 0 entries"), 4000);
         QVERIFY(visibleItem("logsEmptyState"));

@@ -102,10 +102,11 @@ itself rounded-lg border `border-subtle` `bg-bg` px-4 py-2.5 (16/10 px)
 text-sm font-medium `text-text-primary`. Pressing it clears all downstream
 state and refills the field (lines 235-248). Name falls back to
 `auth.defaultOrganizationName` ("Exordos Core Public", both locales).
-Native build default: none compiled in (block hidden); the value can also come
-from `WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL` /
-`WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME` process environment, which
-keeps the surface testable without a source edit.
+Distributors can set `WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL` and
+`WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME` when configuring CMake.
+The controller reads those defaults at startup. Environment variables of the
+same names override each setting independently. An empty URL hides the
+shortcut. An empty name uses the translated public-service label.
 
 Organization history (`entities/workspace-auth/workspace-organization-history.lib.ts`):
 persisted origin list, deduped, newest first, recorded only after a login

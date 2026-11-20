@@ -41,78 +41,6 @@ inline QString resolveOverallStatus(const QString &phase, bool online, int recen
     return QStringLiteral("healthy");
 }
 
-struct RecentLogError {
-    QString timestamp; // original ISO-8601 UTC stamp from the log line
-    QString level;     // "critical" | "fatal"
-    QString message;
-};
-
-struct SessionLogSummary {
-    int totalLines = 0;
-    int debugCount = 0;
-    int infoCount = 0;
-    int warnCount = 0;
-    int errorCount = 0;
-    int recentErrorCount = 0;
-    QList<RecentLogError> recentErrors; // newest first, at most RecentErrorLimit
-};
-
-// Parses the NativeLogging line format "<ISO-8601 UTC> <level>: <message>"
-// with level names debug|info|warning|critical|fatal
-// (docs/NATIVE_DESKTOP_DIAGNOSTICS.md). Level buckets reproduce the reference
-// byLevel shape: warning counts as warn, critical and fatal count as error.
-// Recent errors are error-bucket lines whose timestamp falls inside the last
-// RecentErrorWindowMs; the list is newest first and capped at
-// RecentErrorLimit while recentErrorCount stays uncapped.
-inline SessionLogSummary parseSessionLog(const QString &logText, qint64 nowMs)
-{
-    SessionLogSummary summary;
-    const auto lines = logText.split(QLatin1Char('\n'));
-    QList<RecentLogError> collected;
-    for (const auto &line : lines) {
-        const auto trimmed = line.trimmed();
-        if (trimmed.isEmpty())
-            continue;
-        const auto space = trimmed.indexOf(QLatin1Char(' '));
-        if (space <= 0)
-            continue;
-        auto stamp = trimmed.left(space);
-        // Keep the UTC suffix: chopping it made Qt parse the stamp in the
-        // machine-local zone (review 4611502317), shifting recent-error
-        // decisions by the local offset.
-        auto when = QDateTime::fromString(stamp, Qt::ISODateWithMs);
-        if (!when.isValid())
-            when = QDateTime::fromString(stamp, Qt::ISODate);
-        if (!when.isValid())
-            continue;
-        ++summary.totalLines;
-        const auto rest = trimmed.mid(space + 1);
-        const auto colon = rest.indexOf(QLatin1Char(':'));
-        if (colon <= 0)
-            continue;
-        const auto level = rest.left(colon).toLower();
-        const auto message = rest.mid(colon + 1).trimmed();
-        const auto stampMs = when.toUTC().toMSecsSinceEpoch();
-        if (level == QLatin1String("debug"))
-            ++summary.debugCount;
-        else if (level == QLatin1String("info"))
-            ++summary.infoCount;
-        else if (level == QLatin1String("warning"))
-            ++summary.warnCount;
-        else if (level == QLatin1String("critical") || level == QLatin1String("fatal")) {
-            ++summary.errorCount;
-            if (stampMs >= nowMs - RecentErrorWindowMs) {
-                ++summary.recentErrorCount;
-                collected.prepend(RecentLogError{trimmed.left(space), level, message});
-            }
-        }
-    }
-    while (collected.size() > RecentErrorLimit)
-        collected.removeLast();
-    summary.recentErrors = collected;
-    return summary;
-}
-
 struct LatencySummary {
     int sampleCount = 0;
     qint64 medianMs = -1; // -1 means "no samples" (reference null)
@@ -154,6 +82,16 @@ struct SessionLogEntry {
     QString runtime;   // native runtime label (fixed set: linux | macos | windows)
     QVariantMap data;  // optional structured payload
     bool hasData = false;
+};
+
+struct SessionLogSummary {
+    int totalLines = 0;
+    int debugCount = 0;
+    int infoCount = 0;
+    int warnCount = 0;
+    int errorCount = 0;
+    int recentErrorCount = 0;
+    QList<SessionLogEntry> recentErrors; // newest first, at most RecentErrorLimit
 };
 
 // logger.ts redact(): sensitive keys are lower-cased with '-'/'_' stripped
@@ -203,6 +141,7 @@ public:
     void append(const QString &level, const QString &scope, const QString &message,
         const QVariantMap &data = QVariantMap(), qint64 timestampMs = -1);
     QList<SessionLogEntry> entries() const; // newest first
+    SessionLogSummary summary(qint64 nowMs) const;
     int size() const { return m_entries.size(); }
     void clear();
 
@@ -236,10 +175,16 @@ public:
     // peakWorkingSetKb, totalWorkingSetKb}, processes[{type "Main", pid,
     // workingSetKb, peakWorkingSetKb, cpuPercent|null}],
     // capabilities{processMetricsAvailable, systemMemoryAvailable} }.
-    QVariantMap snapshot() const;
+    QVariantMap snapshot(bool sampleCpu = true) const;
+    void resetCpu() const;
 
 private:
     QString m_procRoot = QStringLiteral("/proc");
+    // /proc/uptime is monotonic and shares its time base with process start ticks.
+    mutable double m_previousUptime = -1;
+    mutable qint64 m_previousTicks = 0;
+    mutable qint64 m_previousStart = -1;
+    mutable QVariant m_cpuPercent;
     mutable qint64 m_peakWorkingSetKb = 0; // monotonic across polls
 };
 
