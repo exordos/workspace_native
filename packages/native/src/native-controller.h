@@ -2248,6 +2248,7 @@ private:
     bool m_anchorLinkPending = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
+    QString m_failedAnchorConversation;
     std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;

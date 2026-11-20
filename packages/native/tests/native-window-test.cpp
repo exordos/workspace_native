@@ -31204,6 +31204,127 @@ private slots:
         QCOMPARE(controller.selectedStream(),streamId);
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+    void anchorOverlayOwnsOnlyItsVisibleConversation_data()
+    {
+        QTest::addColumn<QString>("action");
+        for (const auto *action : {"switch-stream", "switch-topic", "pending-read", "failed-read"})
+            QTest::newRow(action) << QString(action);
+    }
+
+    void anchorOverlayOwnsOnlyItsVisibleConversation()
+    {
+        QFETCH(QString, action);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const QString otherStream = "d8000000-0000-4000-8000-000000000001";
+        const QString missing = "d8000000-0000-4000-8000-000000000002";
+        const QString incoming = "d8000000-0000-4000-8000-000000000003";
+        auto unread = message("New incoming message", incoming);
+        unread["created_at"] = "2026-02-02T12:00:00.000Z";
+        unread["author_uuid"] = channelPeer;
+        unread["is_own"] = false;
+        unread["read"] = false;
+        std::function<void()> finishLookup;
+        QStringList reads;
+        bool incomingDelivered = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/") && request.method == "GET") {
+                auto rows = fallback(request).data.toArray();
+                rows.append(windowChannel(otherStream, "Second channel"));
+                return {rows};
+            }
+            if (path.endsWith("/messages/") && QUrlQuery(request.target).queryItemValue("uuid") == missing) {
+                Response response{QJsonArray{}};
+                response.defer = [&](std::function<void()> send) { finishLookup = std::move(send); };
+                return response;
+            }
+            const QUrlQuery query(request.target);
+            if (incomingDelivered && path.endsWith("/messages/") && query.queryItemValue("stream_uuid") == streamId
+                && (query.queryItemValue("topic_uuid").isEmpty() || query.queryItemValue("topic_uuid") == topicId)) {
+                auto rows = fallback(request).data.toArray();
+                rows.append(unread);
+                return {rows};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                reads.append(id);
+                if (id == incoming) unread["read"] = true;
+                return {id == incoming ? unread : message("Already read", id)};
+            }
+            if (path.endsWith("/messages/" + incoming)) {
+                auto confirmed = unread;
+                confirmed["read"] = true;
+                return {confirmed};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *list = item(window->contentItem(), "messageList");
+        auto *layer = item(window->contentItem(), "anchorTransitionLayer");
+        QVERIFY(list && layer);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        controller.openMessageLink(QString("ew://open/org/%1/project/%2/message/%3")
+            .arg(orgRouteIdFromOrigin(fixture.server.origin()), projectId, missing));
+        QTRY_VERIFY(finishLookup && layer->isVisible());
+        const bool pending = action == "pending-read";
+        if (!pending) {
+            finishLookup();
+            QTRY_VERIFY(!controller.anchorNavigationError().isEmpty());
+        }
+        if (action.startsWith("switch-")) {
+            if (action == "switch-stream") controller.selectStream(otherStream);
+            else controller.selectTopic(secondTopicId);
+            QTRY_COMPARE(controller.selectedStream(), action == "switch-stream" ? otherStream : streamId);
+            QTRY_COMPARE(controller.selectedTopic(), action == "switch-stream" ? QString{} : secondTopicId);
+            QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 1500);
+            QVERIFY(controller.anchorNavigationError().isEmpty());
+            return;
+        }
+        // Scrolling a covered chat can still reach the ListView's wheel observer.
+        const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+        QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, -120),
+            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &wheel);
+        QTRY_VERIFY(list->property("userScrollSeen").toBool());
+        QTRY_VERIFY(controller.conversationOpening().value("ready").toBool());
+        incomingDelivered = true;
+        auto event = unread;
+        event["kind"] = "message.created";
+        QVERIFY(controller.applyRealtimeEvent({{"project_id", projectId}, {"user_uuid", userId},
+            {"uuid", returnedId}, {"payload", event}}));
+        QTRY_VERIFY(item(window->contentItem(), "message-" + incoming));
+        QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+        QTRY_VERIFY(list->property("atYEnd").toBool());
+        QTRY_VERIFY(!list->property("positioning").toBool());
+        QVERIFY(QMetaObject::invokeMethod(list, "markVisibleRead"));
+        QTest::qWait(350);
+        QVERIFY2(!reads.contains(incoming), "A read receipt was sent through the covering overlay");
+        if (pending) {
+            finishLookup();
+            QTRY_VERIFY(!controller.anchorNavigationError().isEmpty());
+        }
+        click(window, item(window->contentItem(), "anchorScrollToBottom"));
+        QTRY_VERIFY(!layer->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(reads.contains(incoming), 3000);
+    }
+
     // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): a message link for a
     // message outside the loaded window shows the reference skeleton preview zones
     // (workspace_ui 61dacef7 workspace-message-anchor-transition.ui.tsx) while the
