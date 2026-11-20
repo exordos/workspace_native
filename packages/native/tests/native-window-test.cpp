@@ -6044,6 +6044,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal()
             > list->height() + 96.0, 5000);
         QCOMPARE(fixture.starredPages, 1);
+        // Opening or resizing the page can report an underfilled viewport
+        // before the final list geometry arrives in the same layout pass.
+        // The overflowing page must keep its marker until someone scrolls.
+        auto *page = view("nativeStarredPage"); QVERIFY(page);
+        const qreal settledHeight = page->height();
+        page->setHeight(settledHeight + list->property("contentHeight").toReal());
+        QVERIFY(list->height() > list->property("contentHeight").toReal());
+        page->setHeight(settledHeight);
+        QVERIFY(list->height() + 96 < list->property("contentHeight").toReal());
+        QVERIFY(controller.starredPage().value("canLoadMore").toBool());
         // Moving within 64 px of the bottom fires exactly one request with
         // the exact marker, and it does not re-fire while still down there.
         const auto travel = list->property("contentHeight").toReal() - list->height();

@@ -218,11 +218,14 @@ FocusScope {
                 page.controller.loadMoreStarred()
             }
         }
-        onContentYChanged: starredList.checkPagination()
-        onContentHeightChanged: starredList.checkPagination()
-        onHeightChanged: starredList.checkPagination()
-        onCountChanged: Qt.callLater(() => starredList.checkPagination())
-        onMovementEnded: starredList.checkPagination()
+        // The delegates and the viewport can report different intermediate
+        // sizes during one layout pass. Only the settled geometry can tell
+        // whether a page really needs another marker.
+        onContentYChanged: Qt.callLater(starredList.checkPagination)
+        onContentHeightChanged: Qt.callLater(starredList.checkPagination)
+        onHeightChanged: Qt.callLater(starredList.checkPagination)
+        onCountChanged: Qt.callLater(starredList.checkPagination)
+        onMovementEnded: Qt.callLater(starredList.checkPagination)
 
         delegate: Rectangle {
             id: card
