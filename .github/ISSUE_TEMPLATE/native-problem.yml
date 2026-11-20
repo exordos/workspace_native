@@ -1,0 +1,45 @@
+name: Native desktop problem
+description: Report a reproducible problem with the Workspace native client.
+title: "[Native] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub issues can be public. Use synthetic examples. Keep messages, usernames, tokens, screenshots containing private data and diagnostic files out of this form. Contact your Workspace administrator privately if support needs sensitive details.
+  - type: input
+    id: build
+    attributes:
+      label: Application version and build
+      placeholder: Version shown in About, and package type
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and desktop environment
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and approximate incident time
+      description: Include the time zone and frequency if known.
+    validations:
+      required: true
+  - type: input
+    id: report
+    attributes:
+      label: Local support report ID, if available
+      description: Include only the report ID after reviewing the report.
