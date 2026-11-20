@@ -33201,8 +33201,13 @@ private slots:
         // Close icon closes the modal; the Log counts card reopens it.
         click(window, visibleItem("logsCloseButton"));
         QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("logsModalHeader"), 4000);
-        QVERIFY(visibleItem("diagnosticsCardLogCountsViewButton"));
-        click(window, visibleItem("diagnosticsCardLogCountsViewButton"));
+        QPointer<QQuickItem> cardAction = visibleItem("diagnosticsCardLogCountsViewButton");
+        QVERIFY(cardAction);
+        cardAction->forceActiveFocus(Qt::TabFocusReason);
+        QVERIFY(QMetaObject::invokeMethod(visibleItem("nativeDiagnosticsPage"), "refresh"));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QVERIFY2(cardAction && cardAction->hasActiveFocus(), "Dashboard refresh replaced the focused log viewer action");
+        click(window, cardAction);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
         // Entries append live while the modal is open (subscribeLogHistory).
         controller.appendSessionLog(QStringLiteral("error"), QStringLiteral("api"),
