@@ -96,3 +96,11 @@ POST. All four cases fail before ticket retirement and check the visible final
 tail or remaining unread target after the late lookup is released. Existing
 opening cancellation, foreign/invalid responses, bounded retries and explicit
 anchor checks cover the unchanged guards. Live-server and non-Linux acceptance are separate from these local synthetic transport/window checks.
+
+Completing many chat actions can replace a sidebar delegate while Qt Quick is
+still creating its button. The button reads the control's `implicitContentWidth`
+for layout. This preserves the finished width and lets Qt create the content at
+its usual point in the delegate lifecycle. The regression pauses at the first
+width change, cancels the unfinished button, and checks a replacement button's
+natural width. The archive menu test also exercises this path with 32 reads in
+flight and an archive confirmation in the actual window.
