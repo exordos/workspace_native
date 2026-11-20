@@ -2824,14 +2824,6 @@
             <source>Quit</source>
             <translation>Выход</translation>
         </message>
-        <message>
-            <source>Calendar is not available in this native preview</source>
-            <translation>Календарь пока недоступен в нативной версии</translation>
-        </message>
-        <message>
-            <source>Mail is not available in this native preview</source>
-            <translation>Почта пока недоступна в нативной версии</translation>
-        </message>
     </context>
     <context>
         <name>workspace::NativeInstance</name>
