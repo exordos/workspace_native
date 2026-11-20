@@ -28,7 +28,7 @@ namespace {
 // addressing (service org.freedesktop.portal.Desktop, object path
 // /org/freedesktop/portal/desktop, interface org.freedesktop.portal.Settings):
 // Read(ns, key) answers org.freedesktop.appearance/reduced-motion with the
-// pinned value, and SetReducedMotion mirrors a user flipping the system
+// documented nested variant containing a uint32. SetReducedMotion mirrors a user flipping the system
 // toggle by emitting SettingChanged the way the portal does.
 class FakeSettingsPortal final : public QDBusAbstractAdaptor
 {
@@ -41,19 +41,19 @@ public slots:
     {
         if (ns == QLatin1String("org.freedesktop.appearance")
             && key == QLatin1String("reduced-motion"))
-            return QDBusVariant(QVariant(m_reducedMotion));
+            return QDBusVariant(QVariant::fromValue(QDBusVariant(QVariant(m_reducedMotion))));
         return QDBusVariant(QVariant(QStringLiteral("unexpected-key")));
     }
     Q_SCRIPTABLE void SetReducedMotion(int value)
     {
         m_reducedMotion = value;
         emit SettingChanged(QStringLiteral("org.freedesktop.appearance"),
-            QStringLiteral("reduced-motion"), QDBusVariant(QVariant(value)));
+            QStringLiteral("reduced-motion"), QDBusVariant(QVariant(m_reducedMotion)));
     }
 signals:
     void SettingChanged(const QString &ns, const QString &key, const QDBusVariant &value);
 private:
-    int m_reducedMotion = 1;
+    uint m_reducedMotion = 1;
 };
 
 // The reduced-motion probe talks to the session bus, so this binary brings up
@@ -823,7 +823,7 @@ private slots:
     // the XDG Settings portal the way the portal spec does - D-Bus service
     // org.freedesktop.portal.Desktop, object path /org/freedesktop/portal/
     // desktop, interface org.freedesktop.portal.Settings, Read(namespace, key)
-    // returning a variant - and keep the SettingChanged watch on that same
+    // returning a nested variant - and keep the SettingChanged watch on that same
     // addressing. Namespace and key stay org.freedesktop.appearance /
     // reduced-motion, and an unknown value means "no preference".
     void prefersReducedMotionFollowsTheXDGSettingsPortal()
@@ -862,8 +862,11 @@ private slots:
             QCOMPARE(changed.count(), 1);
             QVERIFY(!reduced.prefersReducedMotion());
         }
+        portal->SetReducedMotion(0);
+        QVERIFY(!NativePreferences(path).prefersReducedMotion());
         bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
         bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
+        QVERIFY(!NativePreferences(path).prefersReducedMotion());
     }
 
     // Issue #107, exordy #387 round 4: QDir::tempPath() honours TMPDIR, and a
