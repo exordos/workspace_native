@@ -13453,10 +13453,10 @@ void NativeController::renameFolder(const QString &folderUuid, const QString &na
         emit folderMutationChanged();
         return;
     }
+    const auto uuid = m_folders.at(position).uuid;
     m_folderMutationError.clear();
     m_folderMutationPending = true;
     emit folderMutationChanged();
-    const auto uuid = m_folders.at(position).uuid;
     const QPointer<NativeController> guard(this);
     const auto current = [this, guard, owner, generation, ticket] {
         return guard && authenticated() && owner == creationOwnerKey()
@@ -13464,7 +13464,7 @@ void NativeController::renameFolder(const QString &folderUuid, const QString &na
     };
     m_api->request("PUT", messenger + QStringLiteral("/folders/") + uuid,
         QJsonObject{{"title", trimmed}, {"background_color_value", static_cast<double>(quint32(backgroundColor))}}, {},
-        [this, current, position, trimmed, backgroundColor](const ApiResult &result) {
+        [this, current, uuid, backgroundColor](const ApiResult &result) {
         if (!current()) return;
         m_folderMutationPending = false;
         m_folderMutationKind.clear();
@@ -13474,17 +13474,18 @@ void NativeController::renameFolder(const QString &folderUuid, const QString &na
             emit folderMutationChanged();
             return;
         }
-        // The row identity never moves; membership (streamIds) and selection
-        // survive untouched, so the scoped sidebar keeps working.
-        if (position < m_folders.size()) {
-            auto &target = m_folders[position];
+        const auto target = std::find_if(m_folders.begin(), m_folders.end(),
+            [&](const FolderRow &folder) { return folder.uuid == uuid; });
+        if (target == m_folders.end()) {
+            loadFolders();
+        } else {
             const auto title = row.value("title").toString();
-            if (!title.isEmpty()) target.title = title;
+            if (!title.isEmpty()) target->title = title;
             if (row.value("background_color_value").isDouble())
-                target.color = quint32(row.value("background_color_value").toDouble()) & 0x00ffffffu;
-            else target.color = quint32(backgroundColor) & 0x00ffffffu;
+                target->color = quint32(row.value("background_color_value").toDouble()) & 0x00ffffffu;
+            else target->color = quint32(backgroundColor) & 0x00ffffffu;
+            emit foldersChanged();
         }
-        emit foldersChanged();
         if (!current()) return;
         emit folderMutationChanged();
     });
