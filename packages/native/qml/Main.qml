@@ -8419,7 +8419,6 @@ component NativeMentionChip: Item {
                         id: bubble
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
-                        KeyNavigation.tab: quickReply.visible ? quickReply : null
                         width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
                             ? Math.min(360, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
                             : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, messageRow.hasInlineImages ? mediaMessageBody.imagePreferredWidth : 0, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
@@ -8467,6 +8466,43 @@ component NativeMentionChip: Item {
                                 NumberAnimation { target: readRequestOverlay; property: "opacity"; from: 0.0; to: 0.2; duration: 800; easing.type: Easing.InOutQuad }
                                 NumberAnimation { target: readRequestOverlay; property: "opacity"; from: 0.2; to: 0.0; duration: 800; easing.type: Easing.InOutQuad }
                             }
+                        }
+                        Button {
+                            id: quickReply
+                            objectName: "quickReply-" + messageRow.modelData.id
+                            x: messageRow.own ? 12 : parent.width - width - 12
+                            y: -12
+                            z: 3
+                            width: implicitWidth
+                            height: 24
+                            horizontalPadding: 10
+                            verticalPadding: 0
+                            text: qsTr("Reply")
+                            Accessible.name: text
+                            hoverEnabled: true
+                            visible: root.composerAvailable && !root.controller.topicClosed && !root.encryptedConversation
+                                && messageRow.modelData.kind === "markdown" && !root.controller.cacheStale
+                                && root.messageSelectionCount === 0 && !root.aggregateConversation
+                                && (messageHover.hovered || bubble.activeFocus || visualFocus || hovered
+                                    || quickReactions.hasFocus || messageBody.activeFocus
+                                    || bodyMentionOverlay.activeFocus || mediaMentionOverlay.activeFocus)
+                            enabled: visible && !root.controller.busy
+                            font.pixelSize: 12
+                            contentItem: Text {
+                                text: quickReply.text
+                                font: quickReply.font
+                                color: root.colors["text-primary"]
+                                textFormat: Text.PlainText
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                radius: height / 2
+                                color: quickReply.hovered ? root.colors["card-bg-active"] : root.colors["card-bg"]
+                                border.color: quickReply.visualFocus ? root.colors.accent : root.colors["border-subtle"]
+                            }
+                            onClicked: root.controller.addReplyTab(messageRow.modelData.id,
+                                String(messageBody.selectedText || "").replace(/[\u2028\u2029]/g, "\n"))
                         }
                         Column {
                             id: bubbleContent
@@ -9152,7 +9188,7 @@ component NativeMentionChip: Item {
                                 // (see docs/NATIVE_DESKTOP_MENTION_CHIPS.md).
                                 // Children of the body item keep the bubble
                                 // Column layout untouched.
-                                Item {
+                                FocusScope {
                                     id: bodyMentionOverlay
                                     objectName: messageRow.hasInlineImages
                                         ? "" : "message-mentions-" + String(messageRow.modelData.id)
@@ -9264,7 +9300,7 @@ component NativeMentionChip: Item {
                                         }
                                     }
                                 }
-                                Item {
+                                FocusScope {
                                     id: mediaMentionOverlay
                                     objectName: messageRow.hasInlineImages
                                         ? "message-mentions-" + String(messageRow.modelData.id) : ""
@@ -9444,43 +9480,6 @@ component NativeMentionChip: Item {
                                     onClicked: root.checkReaction(messageRow.modelData.id)
                                 }
                             }
-                        }
-                        Button {
-                            id: quickReply
-                            objectName: "quickReply-" + messageRow.modelData.id
-                            x: messageRow.own ? 12 : parent.width - width - 12
-                            y: -12
-                            z: 3
-                            width: implicitWidth
-                            height: 24
-                            horizontalPadding: 10
-                            verticalPadding: 0
-                            text: qsTr("Reply")
-                            Accessible.name: text
-                            hoverEnabled: true
-                            visible: root.composerAvailable && !root.controller.topicClosed && !root.encryptedConversation
-                                && messageRow.modelData.kind === "markdown" && !root.controller.cacheStale
-                                && root.messageSelectionCount === 0 && !root.aggregateConversation
-                                && (messageHover.hovered || bubble.activeFocus || visualFocus || hovered
-                                    || quickReactions.hasFocus || messageBody.activeFocus)
-                            enabled: visible && !root.controller.busy
-                            KeyNavigation.backtab: bubble
-                            font.pixelSize: 12
-                            contentItem: Text {
-                                text: quickReply.text
-                                font: quickReply.font
-                                color: root.colors["text-primary"]
-                                textFormat: Text.PlainText
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-                            background: Rectangle {
-                                radius: height / 2
-                                color: quickReply.hovered ? root.colors["card-bg-active"] : root.colors["card-bg"]
-                                border.color: quickReply.visualFocus ? root.colors.accent : root.colors["border-subtle"]
-                            }
-                            onClicked: root.controller.addReplyTab(messageRow.modelData.id,
-                                String(messageBody.selectedText || "").replace(/[\u2028\u2029]/g, "\n"))
                         }
                         NativeQuickReactions {
                             id: quickReactions
