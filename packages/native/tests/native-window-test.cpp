@@ -21040,6 +21040,181 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerAiNoticeTracksItsTriggerAndOtherPickers_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void composerAiNoticeTracksItsTriggerAndOtherPickers()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable message")}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("composer-ai.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *expand = view("composerToolbarExpand");
+        QVERIFY(expand);
+        QVERIFY(!view("composerAiButton"));
+        click(window, expand);
+        auto *ai = view("composerAiButton");
+        QVERIFY2(ai, "The expanded formatting toolbar must expose the AI assistant");
+        QCOMPARE(ai->size(), QSizeF(32, 32));
+        auto *iface = QAccessible::queryAccessibleInterface(ai);
+        QVERIFY(iface);
+        QCOMPARE(iface->text(QAccessible::Name), QString("AI assistant"));
+        QVERIFY(iface->state().checkable);
+        QVERIFY(!iface->state().checked);
+        QObject *notice = window->findChild<QObject *>("composerAiUnavailablePopover");
+        QObject *emoji = window->findChild<QObject *>("composerEmojiPicker");
+        QObject *attachments = window->findChild<QObject *>("attachmentPicker");
+        QVERIFY(notice && emoji && attachments);
+        const auto open = [](QObject *popup) { return popup->property("visible").toBool(); };
+        controller.setDraft("preserved draft");
+        QSignalSpy sent(&controller, &NativeController::messageSent);
+
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QVERIFY(iface->state().checked);
+        const auto message = locale == "ru" ? QString("AI-функции в вашей организации не подключены.")
+                                            : QString("AI features are temporarily unavailable in your organization.");
+        auto *body = view("composerAiNoticeText");
+        QVERIFY(body);
+        QCOMPARE(body->property("text").toString(), message);
+        QCOMPARE(notice->property("width").toReal(), 320.0);
+        if (locale == "en") QTRY_COMPARE(notice->property("height").toReal(), 58.0);
+        QVERIFY(body->mapToScene({}).y() + body->height() < ai->mapToScene({}).y());
+        auto *dialog = QAccessible::queryAccessibleInterface(body);
+        QVERIFY(dialog);
+        QCOMPARE(dialog->role(), QAccessible::Dialog);
+        QCOMPARE(dialog->text(QAccessible::Name), message);
+        click(window, ai);
+        QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        // The transparent backdrop consumes the outside click, even over Send.
+        auto *send = view("sendButton");
+        QVERIFY(send && send->isEnabled());
+        click(window, send);
+        QTRY_VERIFY(!open(notice));
+        QCOMPARE(sent.size(), 0);
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+        QTRY_VERIFY(ai->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+
+        auto *emojiButton = view("composerEmojiButton");
+        QVERIFY(emojiButton);
+        click(window, emojiButton);
+        QTRY_VERIFY(open(emoji));
+        QVERIFY(!open(notice));
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QVERIFY(!open(emoji));
+        auto *attach = view("attachButton");
+        QVERIFY(attach && attach->isEnabled());
+        click(window, attach);
+        QTRY_VERIFY(!open(notice));
+        click(window, attach);
+        QTRY_VERIFY(open(attachments));
+        QVERIFY(!open(notice));
+        QVERIFY(QMetaObject::invokeMethod(attachments, "reject"));
+        QTRY_VERIFY(!open(attachments));
+        QCOMPARE(controller.draft(), QString("preserved draft"));
+        QCOMPARE(sent.size(), 0);
+
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        auto *toolbar = view("composerToolbarRow");
+        auto *spoiler = item(window->contentItem(), "composerFormatSpoiler");
+        QVERIFY(toolbar && spoiler);
+        const auto withinToolbar = [&](QQuickItem *button) {
+            const auto rect = button->mapRectToItem(toolbar, QRectF(QPointF{}, button->size()));
+            return QRectF(QPointF{}, toolbar->size()).contains(rect);
+        };
+        QVERIFY(withinToolbar(ai));
+        QTRY_VERIFY(QRectF(QPointF{}, window->size()).contains(
+            toolbar->mapRectToScene(QRectF(QPointF{}, toolbar->size()))));
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        const auto scrollTo = [&](QQuickItem *button, int angle) {
+            for (int i = 0; i < 12 && !withinToolbar(button); ++i) {
+                const auto center = toolbar->mapToScene({toolbar->width() / 2, toolbar->height() / 2});
+                const auto before = toolbar->property("contentX").toReal();
+                QTest::wheelEvent(window, center, QPoint(angle, 0));
+                if (!QTest::qWaitFor([&] {
+                        return toolbar->property("contentX").toReal() != before || withinToolbar(button);
+                    }, 300))
+                    continue;
+                QTRY_VERIFY(!toolbar->property("moving").toBool());
+            }
+            QVERIFY2(withinToolbar(button), qPrintable(QString("%1 at x=%2, toolbar width=%3, scroll=%4 of %5")
+                .arg(button->objectName()).arg(button->mapToItem(toolbar, QPointF{}).x()).arg(toolbar->width())
+                .arg(toolbar->property("contentX").toReal()).arg(toolbar->property("contentWidth").toReal())));
+        };
+        scrollTo(spoiler, -720);
+        if (QTest::currentTestFailed()) return;
+        auto *editor = view("messageComposer");
+        QVERIFY(editor);
+        click(window, editor);
+        QTest::keyClick(window, Qt::Key_End);
+        click(window, spoiler);
+        QTRY_COMPARE(controller.draft(), QString("preserved draft||||"));
+        click(window, editor);
+        for (int i = 0; i < 10 && window->activeFocusItem() != spoiler; ++i)
+            QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_COMPARE(window->activeFocusItem(), spoiler);
+        QTRY_VERIFY(withinToolbar(spoiler));
+        scrollTo(ai, 720);
+        if (QTest::currentTestFailed()) return;
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+        QVERIFY(controller.beginEditMessage(messageId));
+        QTRY_VERIFY(!view("composerAiButton"));
+        controller.cancelEditMessage();
+        QTRY_VERIFY(view("composerAiButton"));
+    }
+
     void composerToolbarKeyboardNavigationPreservesSelection_data()
     {
         QTest::addColumn<QString>("locale");
