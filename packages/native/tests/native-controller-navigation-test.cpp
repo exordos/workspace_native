@@ -39,6 +39,7 @@ private slots:
         QCOMPARE(test.lookups, mode == "stream" ? 0 : 1);
         QCOMPARE(test.mutations, 0);
         QCOMPARE(preferences.loadLastConversation(owner), (QStringList{expectedStream, expectedTopic}));
+        QCOMPARE(test.historyTargets.size(), 1);
         for (const auto &target : test.historyTargets) {
             const QUrlQuery query(target);
             QCOMPARE(query.queryItemValue("stream_uuid"), expectedStream);
