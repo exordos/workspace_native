@@ -210,6 +210,7 @@ public:
     Session session{&api};
     NativeController controller{&api, &session};
     std::function<Response(const Request &)> messages;
+    std::function<Response(const Request &)> mentions;
     std::function<Response(const Request &)> users;
     std::function<Response(const Request &)> topics;
     std::function<Response(const Request &)> topicActions;
@@ -268,6 +269,8 @@ public:
             }
             if (path.contains("/messages/")) {
                 if (request.method == "GET" && path.endsWith("/messages/")) {
+                    if (QUrlQuery(request.target).hasQueryItem("mentioned"))
+                        return mentions ? mentions(request) : Response{QJsonArray{}};
                     if (QUrlQuery(request.target).hasQueryItem("topic_uuid")) ++topicHistoryGets;
                     else ++aggregateHistoryGets;
                 }

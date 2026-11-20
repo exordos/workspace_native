@@ -57,6 +57,7 @@ static const QString messenger = "/api/workspace/v1/messenger";
 // Issue #83: reference fixed system folder UUIDs
 // (workspace_ui 61dacef7 entities/messenger/messenger-folder-system-type.lib.ts).
 static const QString allChatsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000000");
+static QString sidebarStatusEmojiDisplay(const QString &raw);
 static const QString personalFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000001");
 static const QString channelsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000002");
 
@@ -7073,6 +7074,7 @@ void NativeController::loadMentionCollection(const QString &filter, bool append)
 
 void NativeController::loadMentionIndex()
 {
+    m_mentionIndexRetry.stop();
     m_mentionIndexWalking = true;
     QUrlQuery query;
     query.addQueryItem("mentioned", "true");
@@ -7088,13 +7090,19 @@ void NativeController::loadMentionIndex()
             // index is unavailable the row's own read flag decides the dot.
             m_mentionIndexWalking = false;
             m_mentionIndexMarker.clear();
+            m_mentionIndexMarkers.clear();
+            m_fetchedMentions.clear();
+            if (m_mentionRetryCount < 2)
+                m_mentionIndexRetry.start(++m_mentionRetryCount == 1 ? 1000 : 3000);
+            else
+                m_mentionWalkMutations.clear();
             emit stateChanged();
             return;
         }
         for (const auto &value : result.data.toArray()) {
             const auto parsed = parseMessage(value.toObject(), m_session->project());
             if (parsed)
-                m_unreadMentions.insert(parsed->uuid,
+                m_fetchedMentions.insert(parsed->uuid,
                     {parsed->stream, parsed->topic, parsed->createdMicros});
         }
         if (!result.nextMarker.isEmpty() && !m_mentionIndexMarkers.contains(result.nextMarker)) {
@@ -7105,6 +7113,12 @@ void NativeController::loadMentionIndex()
         }
         m_mentionIndexMarker.clear();
         m_mentionIndexWalking = false;
+        for (const auto &mutation : std::as_const(m_mentionWalkMutations))
+            mutation(m_fetchedMentions);
+        m_mentionWalkMutations.clear();
+        m_unreadMentions = std::move(m_fetchedMentions);
+        m_mentionIndexMarkers.clear();
+        m_mentionRetryCount = 0;
         m_mentionIndexReady = true;
         emit stateChanged();
         // Issue #96: the walk is the sidebar row badge source (mention membership),
@@ -7118,65 +7132,54 @@ bool NativeController::mentionUnread(const Message &message) const
     return m_mentionIndexReady ? m_unreadMentions.contains(message.uuid) : !message.read;
 }
 
+// A read or deletion can precede a delayed index page. Update the visible
+// index immediately and apply the same changes to the completed snapshot.
+bool NativeController::mutateMentionIndex(MentionMutation mutation)
+{
+    if (m_mentionIndexWalking || m_mentionIndexRetry.isActive()) m_mentionWalkMutations.append(mutation);
+    return mutation(m_unreadMentions);
+}
+
 bool NativeController::mentionIndexRemove(const QString &uuid)
 {
-    return m_unreadMentions.remove(uuid) > 0;
+    return mutateMentionIndex([uuid](MentionIndex &index) { return index.remove(uuid) > 0; });
 }
 
 bool NativeController::mentionIndexUpsert(const Message &message)
 {
-    const auto existing = m_unreadMentions.constFind(message.uuid);
-    if (existing != m_unreadMentions.cend() && existing->stream == message.stream
-        && existing->topic == message.topic && existing->createdMicros == message.createdMicros)
-        return false;
-    m_unreadMentions.insert(message.uuid, {message.stream, message.topic, message.createdMicros});
-    return true;
+    const MentionIndexEntry entry{message.stream, message.topic, message.createdMicros};
+    return mutateMentionIndex([uuid = message.uuid, entry](MentionIndex &index) {
+        const auto existing = index.constFind(uuid);
+        if (existing != index.cend() && existing->stream == entry.stream
+            && existing->topic == entry.topic && existing->createdMicros == entry.createdMicros)
+            return false;
+        index.insert(uuid, entry);
+        return true;
+    });
 }
 
-// A read marker consumes the boundary message plus every earlier index entry in
-// the same topic (read-boundary mutation, activity-realtime-applier.lib.ts:70-76
-// applied via activity.model.ts applyUnreadMentionMutation).
 bool NativeController::mentionIndexBoundary(const Message &message)
 {
-    bool changed = mentionIndexRemove(message.uuid);
-    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
-        if (it->stream == message.stream && it->topic == message.topic
-            && it->createdMicros <= message.createdMicros) {
-            it = m_unreadMentions.erase(it);
-            changed = true;
-        } else {
-            ++it;
-        }
-    }
-    return changed;
+    return mutateMentionIndex([uuid = message.uuid, stream = message.stream,
+                               topic = message.topic, time = message.createdMicros](MentionIndex &index) {
+        return index.removeIf([&](MentionIndex::iterator it) {
+            return it.key() == uuid || (it->stream == stream && it->topic == topic && it->createdMicros <= time);
+        }) > 0;
+    });
 }
 
 bool NativeController::mentionIndexClearTopic(const QString &stream, const QString &topic)
 {
-    bool changed = false;
-    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
-        if (it->stream == stream && it->topic == topic) {
-            it = m_unreadMentions.erase(it);
-            changed = true;
-        } else {
-            ++it;
-        }
-    }
-    return changed;
+    return mutateMentionIndex([stream, topic](MentionIndex &index) {
+        return index.removeIf([&](MentionIndex::iterator it) { return it->stream == stream && it->topic == topic; }) > 0;
+    });
 }
 
 bool NativeController::mentionIndexClearStream(const QString &stream)
 {
-    bool changed = false;
-    for (auto it = m_unreadMentions.begin(); it != m_unreadMentions.end();) {
-        if (it->stream == stream) {
-            it = m_unreadMentions.erase(it);
-            changed = true;
-        } else {
-            ++it;
-        }
-    }
-    return changed;
+    return mutateMentionIndex([stream](MentionIndex &index) {
+        return index.removeIf([&](MentionIndex::iterator it) { return it->stream == stream; }) > 0;
+    });
 }
 
 void NativeController::mentionLiveUpsert(const Message &message)
@@ -7327,10 +7330,19 @@ void NativeController::resetMentions()
     m_mentionsVisible = false;
     m_mentionsFilter = QStringLiteral("all");
     m_mentionsCollections.clear();
-    m_unreadMentions.clear();
+    resetMentionIndex();
     m_liveMentions.clear();
     m_deletedMentionIds.clear();
     m_deletedMentionOrder.clear();
+}
+
+void NativeController::resetMentionIndex()
+{
+    m_mentionIndexRetry.stop();
+    m_mentionRetryCount = 0;
+    m_unreadMentions.clear();
+    m_fetchedMentions.clear();
+    m_mentionWalkMutations.clear();
     m_mentionIndexReady = false;
     m_mentionIndexWalking = false;
     m_mentionIndexMarker.clear();
@@ -9506,6 +9518,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_channelInfoNotificationError.clear();
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
+        resetMentionIndex();
         ++m_chatHeaderMembersTicket;
         m_chatHeaderMembersLoading = false;
         m_chatHeaderMembersPendingEvents.clear();
@@ -9614,6 +9627,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         finishDownloadRetries(true);
         if (guard) emit stateChanged();
     });
+    m_mentionIndexRetry.setSingleShot(true);
+    connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);
     connect(&m_poll, &QTimer::timeout, this, [this] {
         if (QGuiApplication::applicationState() == Qt::ApplicationActive)
@@ -11764,11 +11779,13 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // collection in place (activity-realtime-applier.lib.ts:66-71 and
         // :118-124), and the tombstone keeps outstanding pages from putting
         // it back. QML is notified once, after all stores are updated.
-        bool mentionsChanged = mentionIndexRemove(id);
+        const bool unreadMentionRemoved = mentionIndexRemove(id);
+        bool mentionsChanged = unreadMentionRemoved;
         mentionsChanged = mentionLiveRemove(id) || mentionsChanged;
         mentionsChanged = mentionCollectionsPrune(id) || mentionsChanged;
         if (mentionsChanged)
             emit stateChanged();
+        if (unreadMentionRemoved) emit sidebarStreamsChanged();
         // Deletion closes notifications the same way a read does in the
         // reference closeReadMessageNotifications flow.
         m_notifications.onMessagesClosed(creationOwnerKey(), {id});
@@ -11838,7 +11855,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         bool mentionsRead = false;
         for (const auto &readId : ids)
             mentionsRead = mentionIndexRemove(readId) || mentionsRead;
-        if (mentionsRead) emit stateChanged();
+        if (mentionsRead) { emit stateChanged(); emit sidebarStreamsChanged(); }
         for (auto &message : m_messages)
             if (ids.contains(message.uuid))
                 message.read = true;
@@ -12314,12 +12331,16 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // Issue #89: the chat header caption's online half reads the raw
         // directory status (selectOnlineUserCount), so a changed status must
         // re-notify the stateChanged consumers that gate the caption.
-        const auto previousStatus = m_names.value(id).status;
-        m_names.insert(id, makeUserPresentation(name.isEmpty() ? username : name, payload, true,
-            m_channelDirectoryOwner == owner ? m_names.value(id) : UserPresentation{}));
-        if (previousStatus != m_names.value(id).status) emit stateChanged();
+        const auto previous = m_names.value(id);
+        const auto updated = makeUserPresentation(name.isEmpty() ? username : name, payload, true,
+            m_channelDirectoryOwner == owner ? previous : UserPresentation{});
+        m_names.insert(id, updated);
+        if (previous.status != updated.status) emit stateChanged();
+        if (!current()) return true;
         if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar
-            || userPresence(id) != previousPresence)) emit streamsChanged();
+            || userPresence(id) != previousPresence || previous.statusText.trimmed() != updated.statusText.trimmed()
+            || sidebarStatusEmojiDisplay(previous.statusEmoji) != sidebarStatusEmojiDisplay(updated.statusEmoji)))
+            emit streamsChanged();
         if (!current()) return true;
         emit messagesChanged();
         if (!current()) return true;
@@ -12960,7 +12981,6 @@ void NativeController::persistStreams()
 
 // Forward declaration for the direct-row status emoji display port (issue #96);
 // the definition lives next to the other row projection helpers below.
-static QString sidebarStatusEmojiDisplay(const QString &raw);
 
 QVariantList NativeController::streams() const
 {
@@ -15094,6 +15114,8 @@ void NativeController::reloadSnapshot()
     // Issue #83: the folder rail rides the same bootstrap but is not a
     // snapshot part: a missing /folders/ answer degrades to system slots
     // instead of gating the conversation projection.
+    if (!m_mentionIndexReady && !m_mentionIndexWalking)
+        loadMentionIndex();
     loadFolders();
     notifyTrustChanged();
     const auto chatAccess = m_chatAccessRevision;
