@@ -61,17 +61,18 @@
         </message>
     </context>
     <context>
-        <name>Main</name>
+        <name>ComposerMode</name>
         <message>
             <source>Preview</source>
-            <comment>composer mode</comment>
             <translation>Предпросмотр</translation>
         </message>
         <message>
             <source>Write</source>
-            <comment>composer mode</comment>
             <translation>Написание</translation>
         </message>
+    </context>
+    <context>
+        <name>Main</name>
         <message>
             <source>Nothing to preview yet</source>
             <translation>Пока нечего предпросматривать</translation>

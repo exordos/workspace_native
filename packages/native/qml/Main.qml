@@ -11111,7 +11111,7 @@ component NativeMentionChip: Item {
                                     contentHeight: composerPreviewContents.implicitHeight
                                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                                     Accessible.role: Accessible.Pane
-                                    Accessible.name: qsTr("Preview", "composer mode")
+                                    Accessible.name: qsTranslate("ComposerMode", "Preview")
                                     Column {
                                         id: composerPreviewContents
                                         width: composerPreviewScroll.availableWidth
@@ -11580,7 +11580,7 @@ component NativeMentionChip: Item {
                                 objectName: "composerPreviewToggle"
                                 colors: root.colors
                                 asset: "composer-visibility.svg"
-                                help: messageComposerShell.preview ? qsTr("Write", "composer mode") : qsTr("Preview", "composer mode")
+                                help: messageComposerShell.preview ? qsTranslate("ComposerMode", "Write") : qsTranslate("ComposerMode", "Preview")
                                 Accessible.checkable: true
                                 Accessible.checked: messageComposerShell.preview
                                 iconColor: messageComposerShell.preview ? root.colors["icon-active"] : root.colors["composer-icon"]
