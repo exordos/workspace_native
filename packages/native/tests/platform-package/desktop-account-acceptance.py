@@ -189,7 +189,7 @@ def drive(pid, mode, origin):
         run("pwsh", "-NoProfile", "-File", HERE / "windows-account.ps1", "-ApplicationPid", pid,
             "-Mode", mode, "-Origin", origin, timeout=100)
     else:
-        run("swift", HERE / "macos-account.swift", pid, mode, origin, timeout=100)
+        run("swift", HERE / ("macos-reviewed-account.swift" if os.environ.get("CASSI_LABELLED_CHECK") == "1" else "macos-account.swift"), pid, mode, origin, timeout=100)
 
 
 def scenario(executable, check_updater, check_media):

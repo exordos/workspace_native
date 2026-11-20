@@ -15,7 +15,7 @@ on:
         description: Installed application scenario
         type: choice
         default: account
-        options: [account, update, media, window]
+        options: [account, update, labelled, media, window]
 permissions:
   contents: read
   actions: read
@@ -82,6 +82,8 @@ jobs:
                 exit 1
               fi
             done
+          elif [ "${{ inputs.slice }}" = "labelled" ]; then
+            CASSI_LABELLED_CHECK=1 python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
           elif [ "${{ inputs.slice }}" = "update" ]; then
             python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
           elif [ "${{ inputs.slice }}" = "media" ]; then
