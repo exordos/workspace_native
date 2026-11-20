@@ -7756,8 +7756,21 @@ component NativeMentionChip: Item {
                     // link bounds. Review F2 (cid 4639284117): inline-image
                     // bodies locate the mentions of every visible text part.
                     readonly property var mentionLabels: rendered.mentionLabels || []
-                    readonly property var mentionPairs: messageRow.mentionUrns.map(
-                        (urn, index) => ({ urn: urn, label: String(messageRow.mentionLabels[index] || "") }))
+                    // Issue #109 review N4 (cid 4641051847): the renderer
+                    // reports each mention anchor's own range in the plain
+                    // text. When that list aligns with the urn order, the
+                    // locator takes the anchor position directly, so a
+                    // plain-text copy of the label earlier in the body can
+                    // never steal the chip's hit target.
+                    readonly property var mentionSpans: rendered.mentionSpans || []
+                    readonly property bool mentionSpansAligned: messageRow.mentionSpans.length > 0
+                        && messageRow.mentionSpans.length === messageRow.mentionUrns.length
+                    property var mentionPairs: messageRow.mentionUrns.map(
+                        (urn, index) => ({ urn: urn, label: String(messageRow.mentionLabels[index] || ""),
+                            anchorStart: messageRow.mentionSpansAligned
+                                ? Number(messageRow.mentionSpans[index].start) : -1,
+                            anchorLength: messageRow.mentionSpansAligned
+                                ? Number(messageRow.mentionSpans[index].length) : 0 }))
                     property var mentionTargets: locateMentionTargets()
                     function mentionRectsIn(item, pairs, overlay) {
                         const out = [];
@@ -7769,22 +7782,38 @@ component NativeMentionChip: Item {
                             const label = pair.label;
                             if (!label.length)
                                 continue;
-                            let found = full.indexOf(label, cursor);
-                            if (found < 0)
-                                found = full.indexOf(label);
-                            if (found < 0)
-                                continue;
-                            cursor = found + label.length;
-                            const end = found + label.length;
+                            let found = -1;
+                            let end = -1;
+                            if (Number.isInteger(pair.anchorStart) && pair.anchorStart >= 0
+                                && pair.anchorStart + pair.anchorLength <= full.length) {
+                                found = pair.anchorStart;
+                                end = found + pair.anchorLength;
+                            } else {
+                                found = full.indexOf(label, cursor);
+                                if (found < 0)
+                                    found = full.indexOf(label);
+                                if (found < 0)
+                                    continue;
+                                end = found + label.length;
+                            }
+                            cursor = end;
                             let i = found;
                             while (i < end) {
                                 const top = item.positionToRectangle(i);
                                 let j = i;
                                 while (j + 1 < end && Math.abs(item.positionToRectangle(j + 1).y - top.y) < 0.5)
                                     ++j;
-                                const next = item.positionToRectangle(Math.min(j + 1, end));
-                                const right = (j + 1 < end && Math.abs(next.y - top.y) < 0.5)
-                                    ? next.x : top.x + Math.max(8, top.width);
+                                // Issue #109 review N3 (cid 4641051840): the
+                                // right edge is the layout cursor just after
+                                // this line's last character when that cursor
+                                // still sits on the line; when the run wraps,
+                                // it is the last character's own rectangle
+                                // edge. The old fallback shrank every line
+                                // rect to about 8 px at the line start.
+                                const after = item.positionToRectangle(j + 1);
+                                const lastChar = j > i ? item.positionToRectangle(j) : top;
+                                const right = Math.abs(after.y - top.y) < 0.5
+                                    ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
                                 out.push({ urn: pair.urn, label: label,
                                     x: origin.x, y: origin.y,
@@ -7810,7 +7839,11 @@ component NativeMentionChip: Item {
                             const count = String(part.html || "").split("<a href=\"urn:user:").length - 1;
                             if (count <= 0)
                                 continue;
-                            const pairs = messageRow.mentionPairs.slice(consumed, consumed + count);
+                            // Round-4 review N4: whole-document anchor spans
+                            // do not index a part's own text document, so
+                            // inline-image parts keep the in-part text search.
+                            const pairs = messageRow.mentionPairs.slice(consumed, consumed + count)
+                                .map(pair => ({ urn: pair.urn, label: pair.label }));
                             consumed += count;
                             for (const rect of mentionRectsIn(run.textPart, pairs, mediaMentionOverlay))
                                 out.push(rect);

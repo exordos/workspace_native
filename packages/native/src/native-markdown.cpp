@@ -629,12 +629,51 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
         cursor.insertText(text, format);
     }
     auto html = document.toHtml();
+    // Round-4 review N4 (cid 4641051847): plain-text copies of a mention
+    // label can appear earlier in the same body, so the view must locate
+    // each mention's own anchor span instead of the first text occurrence.
+    // The rendered document already carries the anchor identity: report the
+    // range of every urn:user anchor fragment in the document plain text,
+    // in document order. When the ranges cannot be aligned 1:1 with the
+    // ordered urn list (unusual crafted documents), the list stays empty
+    // and the view keeps its text search as the fallback.
+    QVariantList mentionSpans;
+    {
+        struct AnchorSpan { int start; int length; QString href; };
+        QVector<AnchorSpan> spans;
+        for (auto block = document.begin(); block.isValid(); block = block.next()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const auto fragment = it.fragment();
+                if (!fragment.isValid())
+                    continue;
+                const auto format = fragment.charFormat();
+                if (!format.isAnchor())
+                    continue;
+                const auto href = format.anchorHref();
+                if (!href.startsWith(QLatin1String("urn:user:")))
+                    continue;
+                if (!spans.isEmpty() && spans.last().href == href
+                    && spans.last().start + spans.last().length == fragment.position()) {
+                    spans.last().length += fragment.length();
+                    continue;
+                }
+                spans.append({fragment.position(), fragment.length(), href});
+            }
+        }
+        bool aligned = spans.size() == mentionUrns.size();
+        for (qsizetype index = 0; aligned && index < spans.size(); ++index)
+            aligned = spans.at(index).href == mentionUrns.at(index);
+        if (aligned)
+            for (const auto &span : std::as_const(spans))
+                mentionSpans.append(QVariantMap{{"start", span.start}, {"length", span.length}});
+    }
     const auto body = html.indexOf("<body");
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
                              {"parts", orderedImageParts(document)}, {"mentions", mentionUrns},
+                             {"mentionSpans", mentionSpans},
                              // Issue #109 reviews F4/F6: the visible plain text of every
                              // mention occurrence (with the same "@" prefix rules the
                              // anchor got), in document order, so the view can locate the
