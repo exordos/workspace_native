@@ -1647,7 +1647,8 @@ private:
     // Notification metadata backfill: topics of background streams are not in
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);
-    void loadMessages(bool older = false, bool latest = false);
+    void loadMessages(bool older = false, bool latest = false, bool forceNetwork = false);
+    void retryInterruptedHistory();
     void retireConversationOpening();
     void resolveOpeningUnread(quint64 ticket, int attempt = 0);
     void resolveOpeningSaved(quint64 ticket, const QString &savedAnchor, int attempt = 0);
@@ -1728,6 +1729,9 @@ private:
     TopicOpening m_topicOpening;
     quint64 m_nextTopicOpening = 0;
     bool m_historyVerified = false;
+    struct InterruptedHistory { quint64 selection; QString error; };
+    std::optional<InterruptedHistory> m_interruptedHistory;
+    quint64 m_realtimeRecovery = 0;
     // Counts accepted cache/network publications, never route clears or live rows.
     quint64 m_historyCommitRevision = 0;
     bool m_syncBlocked = false;
