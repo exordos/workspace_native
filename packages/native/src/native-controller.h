@@ -2401,6 +2401,12 @@ private:
     quint64 m_topicMutation = 0;
     bool m_topicChanging = false;
     quint64 m_messageRevision = 0;
+    // Tail arrivals cannot overlap a page requested before the oldest loaded row.
+    quint64 m_historyTailAppends = 0;
+    quint64 historyPageRevision(bool older) const
+    {
+        return older ? m_messageRevision - m_historyTailAppends : m_messageRevision;
+    }
     quint64 m_streamRevision = 0;
     quint64 m_readTicket = 0;
     quint64 m_readCounterRequest = 0;

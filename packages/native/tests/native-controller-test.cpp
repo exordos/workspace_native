@@ -17121,6 +17121,65 @@ private slots:
         QCOMPARE(c.property("historyCommitRevision").toULongLong(), qulonglong(1));
     }
 
+    void olderPageSurvivesConcurrentTailArrivals_data()
+    {
+        QTest::addColumn<bool>("editLoadedRow");
+        QTest::newRow("two-tail-arrivals") << false;
+        QTest::newRow("tail-arrivals-and-edit") << true;
+    }
+
+    void olderPageSurvivesConcurrentTailArrivals()
+    {
+        QFETCH(bool, editLoadedRow);
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 200; ++n) rows.insert(n, historyMessage(n));
+        bool holdPage = false;
+        QStringList markers;
+        std::function<void()> release;
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            if (!QUrlQuery(request.target).hasQueryItem("topic_uuid")) return response;
+            const auto marker = QUrlQuery(request.target).queryItemValue("page_marker");
+            markers.append(marker);
+            if (holdPage && !marker.isEmpty()) {
+                holdPage = false;
+                response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.loadOlder();
+        QTRY_COMPARE(controller.messages().size(), 100);
+        markers.clear();
+        holdPage = true;
+        controller.loadOlder();
+        QTRY_VERIFY(bool(release));
+        for (int n : {201, 202}) {
+            rows.insert(n, historyMessage(n));
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.created", rows[n], n)));
+        }
+        QCOMPARE(controller.messages().size(), 102);
+        if (editLoadedRow) {
+            rows[170]["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Updated while paging"}};
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.updated", rows[170], 203)));
+        }
+        release();
+        QTRY_VERIFY(!controller.busy());
+        if (editLoadedRow) {
+            QVERIFY(markers.contains(QString{}));
+            QCOMPARE(modelMessage(controller, rows[170].value("uuid").toString()).value("content").toString(),
+                     QStringLiteral("Updated while paging"));
+            return;
+        }
+        QCOMPARE(markers, QStringList{historyMessage(101).value("uuid").toString()});
+        const auto messages = controller.messages();
+        QCOMPARE(messages.size(), 152);
+        for (int i = 0; i < messages.size(); ++i)
+            QCOMPARE(messages.at(i).toMap().value("id").toString(), rows[i + 51].value("uuid").toString());
+    }
+
     void historyCommitDoesNotCountLiveRowsOrOlderAdmission()
     {
         Fixture f;
