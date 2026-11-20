@@ -53,6 +53,22 @@ jobs:
           arch: ${{ matrix.arch }}
           modules: qtwebsockets qtmultimedia qtpositioning qtwebchannel qtwebengine
           cache: true
+      - name: Identify the Windows package registry
+        if: runner.os == 'Windows'
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $registry = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
+          "registry=$registry" >> $env:GITHUB_OUTPUT
+          $cache = Join-Path $env:RUNNER_TEMP workspace-vcpkg-cache
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+      - name: Cache Windows OpenSSL binaries
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/workspace-vcpkg-cache
+          key: workspace-openssl-x64-static-md-${{ steps.vcpkg.outputs.registry }}
       - name: Install OpenSSL for Windows
         if: runner.os == 'Windows'
         shell: pwsh
