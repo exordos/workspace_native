@@ -6911,6 +6911,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6918,7 +6919,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6938,10 +6939,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 
@@ -27595,11 +27597,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
             QTRY_COMPARE(controller.streams().size(), 1);
             preferences.setOwner(controller.ownerKey());
-            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            // This fixture exercises invalidated poll submissions. A fresh
+            // sign-in can publish its catalogue before the new sidebar row
+            // replaces the previous owner's delegate.
+            controller.selectStream(streamId);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
             QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            controller.selectTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            click(window, visibleItem(window->contentItem(), "pollButton"));
+            QQuickItem *pollButton = nullptr;
+            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
+                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            clickReadyItem(window, pollButton);
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -36051,6 +36061,66 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void supportReportBeforeLoginAndFromDiagnostics_data()
+    {
+        QTest::addColumn<bool>("authenticated");
+        QTest::newRow("sign-in") << false;
+        QTest::newRow("diagnostics") << true;
+    }
+
+    void supportReportBeforeLoginAndFromDiagnostics()
+    {
+        QFETCH(bool, authenticated);
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("report.ini"));
+        WindowOwnStatusFixture fixture;
+        for (int i = 0; i < 24; ++i)
+            controller.appendSessionLog("error", "app", "Synthetic pre-login failure");
+        if (authenticated) QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (authenticated) {
+            click(window, visibleItem("accountMenuButton"));
+            QTRY_VERIFY(visibleItem("diagnosticsAction"));
+            click(window, visibleItem("diagnosticsAction"));
+        }
+        const auto entry = authenticated ? "diagnosticsSupportAction" : "loginSupportAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(window, visibleItem(entry));
+        QTRY_VERIFY(visibleItem("supportPrepare"));
+        auto *save = visibleItem("supportSave");
+        QVERIFY(save && !save->isEnabled());
+        auto *description = visibleItem("supportDescription");
+        QVERIFY(description);
+        description->setProperty("text", QStringLiteral("private-test-description"));
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        auto *preview = visibleItem("supportPreview");
+        QVERIFY(preview);
+        const auto bytes = preview->property("text").toString().toUtf8();
+        QVERIFY(!bytes.contains("private-test-description"));
+        QVERIFY(QJsonDocument::fromJson(bytes).object()["eventCounts"].isNull());
+        click(window, visibleItem("supportIncludeCounts"));
+        QTRY_VERIFY(!save->isEnabled());
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        const auto counts = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object()["eventCounts"].toObject();
+        QVERIFY(counts.contains("error"));
+        if (authenticated) QVERIFY(counts["error"].toInt() < 24);
+        else QCOMPARE(counts["error"].toInt(), 24);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("supportPrepare"));
+    }
+
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
         QAccessible::setActive(true);
@@ -37590,6 +37660,49 @@ private:
     }
 
 private slots:
+    void messageTimeViewOpensWithoutApplicationServices()
+    {
+        QTest::failOnWarning();
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/workspace/qml/messages/time" as MessageTime
+            Window {
+                id: win
+                width: 800
+                height: 480
+                visible: true
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
+                MessageTime.MessageTimeView {
+                    historyViewport: history
+                    windowContent: win.contentItem
+                    language: "en"
+                    colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
+                              "text-primary": "black", "text-muted": "gray"})
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
+                }
+            }
+        )", QUrl("qrc:/tests/isolated-message-time.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 2000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *panel = window->findChild<QObject *>("messageTimePanel");
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
+        QVERIFY(QMetaObject::invokeMethod(panel, "close"));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeChipOpensReadOnlyTimestampPanel_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");

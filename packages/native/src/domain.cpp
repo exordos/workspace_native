@@ -486,9 +486,11 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
     bool complete = true;
     for (const auto *field : {"owner", "user_uuid", "source_name", "current_encryption_key_uuid",
                              "default_topic_uuid", "provider_uuid", "provider_identity"}) complete = complete && json.contains(field);
+    if (json.contains("allow_key_sharing_by_holders") && !json.value("allow_key_sharing_by_holders").isBool()) return {};
     if (complete) stream.security = StreamCryptoMetadata{json.value("owner").toString(), json.value("user_uuid").toString(),
         json.value("source_name").toString(), json.value("current_encryption_key_uuid").toString(),
-        json.value("default_topic_uuid").toString(), json.value("provider_uuid").toString(), json.value("provider_identity").toString()};
+        json.value("default_topic_uuid").toString(), json.value("provider_uuid").toString(), json.value("provider_identity").toString(),
+        json.value("allow_key_sharing_by_holders").toBool()};
     const auto color = json.value("color").toDouble(-1);
     if (json.value("color").isDouble() && std::isfinite(color) && color >= 0 && color <= 0xffffff && std::floor(color) == color)
         stream.color = quint32(color);

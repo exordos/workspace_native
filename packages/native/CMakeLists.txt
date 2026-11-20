@@ -18,6 +18,15 @@ find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
 qt_standard_project_setup(REQUIRES 6.8)
 
+add_library(workspace-native-support STATIC src/support/support-report.cpp src/support/support-report.h)
+target_include_directories(workspace-native-support PUBLIC src)
+target_compile_definitions(workspace-native-support PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
+target_link_libraries(workspace-native-support PUBLIC Qt6::Core PRIVATE Qt6::Concurrent)
+
+add_library(workspace-message-time STATIC
+    src/messages/time/message-time.cpp src/messages/time/message-time.h)
+target_link_libraries(workspace-message-time PUBLIC Qt6::Core)
+
 add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
@@ -69,7 +78,7 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
-target_link_libraries(workspace-native-core PRIVATE Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE workspace-message-time Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -89,7 +98,7 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
 add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
     src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
     src/message-images.cpp src/message-images.h)
-target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
+target_link_libraries(workspace-native-ui PUBLIC workspace-native-support workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
 option(WORKSPACE_NATIVE_CALLS_NAV "Show Calls in the main window section bar" OFF)
 target_compile_definitions(workspace-native-ui PRIVATE WORKSPACE_NATIVE_CALLS_NAV=$<BOOL:${WORKSPACE_NATIVE_CALLS_NAV}>)
 
@@ -160,8 +169,11 @@ set(native_qml_files
 qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
+qml/NativeSupportReport.qml
+qml/NativeKeyRequests.qml
 qml/NativeDownloadCenter.qml
 qml/NativeUserSearch.qml
+qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
@@ -171,7 +183,7 @@ qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicSummary.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
-    get_filename_component(qml_name "${qml_file}" NAME)
+    string(REGEX REPLACE "^qml/" "" qml_name "${qml_file}")
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
 set(native_icons chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
@@ -272,6 +284,9 @@ foreach(target workspace-native-core workspace-native-ui workspace-native-deskto
 endforeach()
 
 install(TARGETS workspace-native BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(MSVC)
+    include(InstallRequiredSystemLibraries)
+endif()
 install(FILES ../../LICENSE resources/unicode_emoji.LICENSE resources/emoji_picker.LICENSE resources/md4c.LICENSE resources/openssl.LICENSE
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/workspace-native-preview)
 if(UNIX AND NOT APPLE)
@@ -329,6 +344,11 @@ if(BUILD_TESTING)
     add_test(NAME native-updater-launcher-entry COMMAND native-updater-test
         downloadProgressReachesTheLauncherEntryChannel)
     set_tests_properties(native-updater-launcher-entry PROPERTIES TIMEOUT 180)
+
+    add_executable(native-support-report-test tests/native-support-report-test.cpp)
+    target_link_libraries(native-support-report-test PRIVATE workspace-native-support Qt6::Test)
+    add_test(NAME native-support-report COMMAND native-support-report-test)
+    set_tests_properties(native-support-report PROPERTIES LABELS unit TIMEOUT 30)
 
     # Real About leaf policy with public QObject adapters; no network/window.
     add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
@@ -598,6 +618,7 @@ if(BUILD_TESTING)
         uiOrdinaryManagerRejectsFromTheActualMainAction
         uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
         uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction
+        uiKeyRequestHistoryShowsEmptyAndIncomingRows
         uiEncryptedChatInfoDrawerShowsProtectedIdentity
         uiEncryptedChatInfoSettingsScreenNavigation
         uiEncryptedChatInfoMemberListScrollsToEnd
@@ -668,3 +689,17 @@ if(WORKSPACE_NATIVE_CALL_SPIKE)
         spike/call/jitsi-loader-attempt.html spike/call/vendor/jitsi-external_api.js)
     qt_finalize_executable(native-call-spike)
 endif()
+
+# Check the final direct dependencies after all platform-specific additions.
+get_target_property(message_time_links workspace-message-time LINK_LIBRARIES)
+if(NOT "${message_time_links}" STREQUAL "Qt6::Core")
+    message(FATAL_ERROR "Message time formatting must depend only on Qt Core: ${message_time_links}")
+endif()
+set(message_time_view "${CMAKE_CURRENT_SOURCE_DIR}/qml/messages/time/MessageTimeView.qml")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${message_time_view}")
+file(STRINGS "${message_time_view}" message_time_imports REGEX "^[ 	]*import[ 	]+")
+foreach(message_time_import IN LISTS message_time_imports)
+    if(NOT message_time_import MATCHES "^import (QtQuick|QtQuick[.]Controls)$")
+        message(FATAL_ERROR "Unexpected dependency in the message time view: ${message_time_import}")
+    endif()
+endforeach()

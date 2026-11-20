@@ -4,6 +4,20 @@ Part of #105. Parity-preserving reproduction of the read-only message time
 viewer from the packaged web reference
 (`workspace_ui` @ `61dacef78dab2f5d0be76f283bebf49fe29b84af`).
 
+## Native ownership
+
+The message time feature owns the read-only calendar, clock, trigger focus, scroll
+tracking and popover placement in `packages/native/qml/messages/time/MessageTimeView.qml`.
+The window passes its content bounds, history viewport, language and color palette.
+A time chip or a parsed time reference calls the existing `openMessageTimeView` entry
+point. The view works in a fresh QML engine with those four inputs.
+
+`packages/native/src/messages/time` owns the sidebar and Feed date labels. Callers
+supply the instant, locale, local calendar day and, for a relative label, the translated
+word for yesterday. The formatter target links to Qt Core. The native build checks
+its direct dependencies and the view's QML imports during configuration. The window
+suite exercises both the isolated component and the application entry points.
+
 ## Reference consultation notes
 
 Figma token unavailable - mockups not consulted (the `figma-token` helper

@@ -199,7 +199,7 @@ Item {
                 ? Math.max(infoFlow.y + infoFlow.height, membersSection.y + membersSection.height)
                 : page.keyScreen
                     ? Math.max(keySummaryFlow.y + keySummaryFlow.height,
-                        keyLocalSection.y + keyLocalSection.height)
+                        requestsSection.y + requestsSection.height)
                     : page.localKeyScreen
                         ? localKeyFlow.y + localKeyFlow.height
                         : settingsFlow.y + settingsFlow.height) + 16
@@ -342,6 +342,18 @@ Item {
             }
         }
 
+        NativeKeyRequests {
+            id: requestsSection
+            objectName: "drawerKeyRequests"
+            width: pageScroll.width
+            colors: page.colors
+            controller: page.controller
+            infoScreen: page.infoScreen
+            visible: page.keyScreen || (page.infoScreen && incoming.length > 0)
+            y: page.infoScreen ? infoFlow.y + infoFlow.height + 20
+                : keyLocalSection.y + keyLocalSection.height + 20
+        }
+
         // ---- Member management (reference MemberList :416-480, the last child
         // of the reference info screen). The section spans the scroll viewport
         // (the reference section carries no own padding): border-t pt-5 (20)
@@ -351,7 +363,7 @@ Item {
             id: membersSection
             objectName: "protectedChatMembersBlock"
             x: 0
-            y: infoFlow.y + infoFlow.height + 20
+            y: requestsSection.visible ? requestsSection.y + requestsSection.height + 20 : infoFlow.y + infoFlow.height + 20
             width: pageScroll.width
             // The section must carry its member flow in the scroll height: the
             // contentHeight binding sizes from this item (reviewer finding

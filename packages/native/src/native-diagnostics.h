@@ -142,6 +142,8 @@ public:
         const QVariantMap &data = QVariantMap(), qint64 timestampMs = -1);
     QList<SessionLogEntry> entries() const; // newest first
     SessionLogSummary summary(qint64 nowMs) const;
+    void beginSupportScope() { m_scopeEntries = 0; }
+    QVariantMap supportEventCounts() const;
     int size() const { return m_entries.size(); }
     void clear();
 
@@ -149,6 +151,7 @@ signals:
     void entriesChanged();
 
 private:
+    qsizetype m_scopeEntries = 0;
     QList<SessionLogEntry> m_entries; // newest first
     QString m_runtimeLabel;
 };
