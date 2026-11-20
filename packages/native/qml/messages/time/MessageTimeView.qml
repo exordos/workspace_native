@@ -11,6 +11,7 @@ Popup {
     required property string language
 
     property Item trigger: null
+    property bool openedFromChip: false
     property string instantText: ""
     readonly property var instantDate: instantText.length ? new Date(instantText) : null
     readonly property bool validInstant: instantDate != null && !isNaN(instantDate.getTime())
@@ -53,6 +54,7 @@ Popup {
         if (!value.length || isNaN(new Date(value).getTime()))
             return
         panel.instantText = value
+        panel.openedFromChip = !!anchor
         panel.trigger = anchor || null
         panel.open()
     }
@@ -69,8 +71,10 @@ Popup {
     }
     readonly property point triggerInHistory: trigger
         ? offsetFrom(trigger, panel.historyViewport) : Qt.point(0, 0)
-    readonly property bool triggerOffscreen: !!trigger
-        && (triggerInHistory.y >= panel.historyViewport.height || triggerInHistory.y + trigger.height <= 0)
+    // A virtualized row can disappear before the deferred visibility check.
+    // Timestamp links can open the same panel without a chip.
+    readonly property bool triggerOffscreen: openedFromChip
+        && (!trigger || triggerInHistory.y >= panel.historyViewport.height || triggerInHistory.y + trigger.height <= 0)
     onTriggerOffscreenChanged: {
         if (triggerOffscreen)
             Qt.callLater(function() {
@@ -124,6 +128,7 @@ Popup {
     }
     onClosed: {
         const anchor = panel.trigger
+        panel.openedFromChip = false
         panel.trigger = null
         if (anchor != null)
             anchor.forceActiveFocus(Qt.OtherFocusReason)

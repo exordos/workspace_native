@@ -192,7 +192,7 @@ here; when the quick list lands it must register in both modes.
   preferences object and a fresh window (restart parity).
 - Pointer-drag scrolling of the horizontal strip past the 3 px threshold,
   the trailing click suppressed after a drag, and an unmoved press still
-  selecting the folder; the add-folder button clickable.
+  selecting the folder; the add-folder button clickable. The test waits for the rebuilt chips to be positioned in a presented frame before pressing their centers.
 - System folders hidden: Personal/Channels gone from both rail views, All
   and custom folders stay, the sidebar keeps the All-chats effective
   selection (stream list unchanged), and the flag persists.

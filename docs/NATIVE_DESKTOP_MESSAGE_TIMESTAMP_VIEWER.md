@@ -162,6 +162,6 @@ Design cross-check deltas (recorded for review):
 - Keyboard and screen-reader activation open the same panel. Window tests use
   `Enter`, `Space`, and the Qt accessibility Press action.
 - A real wheel event moves an open panel with its chip, preserving the 8 px
-  gap. Scrolling the chip beyond the visible history closes the panel.
+  gap. Scrolling the chip beyond the visible history closes the panel, whether the list retains or releases its row. A timestamp link can still open the viewer without a chip.
 - `openReference("urn:time:...")` opens the panel with the normalized
   instant instead of the fallback notice.
