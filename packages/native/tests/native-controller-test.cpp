@@ -17124,14 +17124,21 @@ private slots:
     void olderPageSurvivesConcurrentTailArrivals_data()
     {
         QTest::addColumn<bool>("editLoadedRow");
-        QTest::newRow("two-tail-arrivals") << false;
-        QTest::newRow("tail-arrivals-and-edit") << true;
+        QTest::addColumn<bool>("duringCacheRead");
+        QTest::newRow("two-tail-arrivals") << false << false;
+        QTest::newRow("tail-arrivals-and-edit") << true << false;
+        QTest::newRow("cache-read-tail-arrivals") << false << true;
+        QTest::newRow("cache-read-and-edit") << true << true;
     }
 
     void olderPageSurvivesConcurrentTailArrivals()
     {
         QFETCH(bool, editLoadedRow);
+        QFETCH(bool, duringCacheRead);
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
         Fixture fixture;
+        if (duringCacheRead) fixture.controller.useCache(&cache);
         QMap<int, QJsonObject> rows;
         for (int n = 1; n <= 200; ++n) rows.insert(n, historyMessage(n));
         bool holdPage = false;
@@ -17153,9 +17160,9 @@ private slots:
         controller.loadOlder();
         QTRY_COMPARE(controller.messages().size(), 100);
         markers.clear();
-        holdPage = true;
+        holdPage = !duringCacheRead;
         controller.loadOlder();
-        QTRY_VERIFY(bool(release));
+        if (!duringCacheRead) QTRY_VERIFY(bool(release));
         for (int n : {201, 202}) {
             rows.insert(n, historyMessage(n));
             QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.created", rows[n], n)));
@@ -17165,7 +17172,7 @@ private slots:
             rows[170]["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Updated while paging"}};
             QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.updated", rows[170], 203)));
         }
-        release();
+        if (release) release();
         QTRY_VERIFY(!controller.busy());
         if (editLoadedRow) {
             QVERIFY(markers.contains(QString{}));
