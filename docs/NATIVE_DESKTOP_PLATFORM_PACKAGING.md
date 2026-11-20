@@ -33,12 +33,15 @@ Each platform test minimizes the existing window and launches the unpacked execu
 | Sign in, quit, restore the rotated account in a second process and sign out | PASS, including Windows Credential Manager entry creation and removal | PASS, including macOS Keychain entry creation and removal |
 | Check for updates in App version | The Windows preview reports that updates are unavailable | The macOS preview reports that updates are unavailable |
 | OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
+| Embedded meeting loads and asks for microphone and camera | Hosted Windows reported zero capture endpoints and the meeting returned `NotFoundError` for both devices | Hosted macOS supplied a live audio track. The video request returned `NotFoundError` |
 | Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
 | Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
 
 The account check uses a disposable loopback HTTPS organization. The normal installed executable performs password login, rotates its project-scoped refresh credential, and signs in again after restart. The test checks whether its randomly identified entry exists. It never inspects, decodes or logs the credential value. On Windows it frees the structure returned by Credential Manager immediately. Signing out must return to the login screen and remove that account. The runner removes the temporary certificate and account data before disposal.
 
 On each desktop, the App version panel displayed the unavailable update status after Check for updates. The Windows screenshot and macOS WindowServer capture showed the message on screen. The previews have no Windows or macOS update installation path.
+
+For the call check, the package joins a meeting served by the same loopback HTTPS fixture. The meeting calls `getUserMedia`, reads each track's state and stops the track without retaining media. Windows Runtime and AVFoundation count the devices visible to that runner independently. The package must return a live track for an available device or report that a device is absent. First-use privacy prompts, physical cameras and screen recording require separate checks.
 
 The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
 
