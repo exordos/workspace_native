@@ -331,7 +331,9 @@ dark/light over `ProtectedChatInfoScene`:
    generation's local row -> `Request current key`) exercises the same
    primitive with the bytes absent. The catalog snapshot that follows stream
    load keeps `canRequest` false until it settles; the case waits for the
-   rights projection (same gate the reference reads from `getRights()`).
+   rights projection (same gate the reference reads from `getRights()`).   The Copy check waits for the visible button to fit inside the drawer's
+   rendered viewport, then verifies that one pointer click sets the clipboard.
+
 9. `uiEncryptedChatKeyScreenSourceGeometry` (data-driven en/ru x dark/light):
    the measured reference geometry - `text-sm` muted label over the card-bg
    chip (height 32), the 24 px ghost copy button, the 36 px `Reissue key`

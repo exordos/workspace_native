@@ -10647,7 +10647,15 @@ private slots:
         QVERIFY(scene.require("encryptedChatReissueButton")->isVisible());
         QVERIFY(!scene.item("encryptedChatKeyUnavailable"));
         QVERIFY(!scene.item("encryptedChatKeyCreated"));
-        encryptedUiClick(scene.require("encryptedChatKeyCopyButton"));
+        auto *copy = scene.require("encryptedChatKeyCopyButton");
+        auto *scroll = scene.require("protectedChatScroll");
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        QTRY_VERIFY(scroll->boundingRect().contains(copy->mapRectToItem(scroll, copy->boundingRect())));
+        QSignalSpy clicked(copy, SIGNAL(clicked()));
+        encryptedUiClick(copy);
+        QCOMPARE(clicked.size(), 1);
         QTRY_COMPARE(QGuiApplication::clipboard()->text(), OtherGeneration);
         // The saved-keys section starts collapsed and enumerates the vault on reveal.
         QVERIFY(!scene.item("encryptedChatLocalKeysList"));
