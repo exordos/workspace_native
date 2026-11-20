@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$Installer,
-    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64'
+    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64',
+    [switch]$WindowOnly
 )
 $ErrorActionPreference = 'Stop'
 $installerFile = Get-Item -LiteralPath $Installer
@@ -42,7 +43,7 @@ try {
         throw 'The Start menu shortcut has an unexpected application ID.'
     }
     Set-Content -LiteralPath $sentinel -Value 'keep'
-    & "$PSScriptRoot/windows-window.ps1" -Executable $link.TargetPath -Architecture $Architecture
+    & "$PSScriptRoot/windows-window.ps1" -Executable $link.TargetPath -Architecture $Architecture -WindowOnly:$WindowOnly
     Write-Output "Verified per-user installation of $name $version."
 } finally {
     if ($windowsInstaller.ProductState($productCode) -eq 5) {

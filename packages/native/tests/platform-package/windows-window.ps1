@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$Executable,
-    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64'
+    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64',
+    [switch]$WindowOnly
 )
 $ErrorActionPreference = "Stop"
 $machine = if ($Architecture -eq 'arm64') { 0xaa64 } else { 0x8664 }
@@ -101,6 +102,13 @@ try {
             if ($addresses.Count -ne 1) { throw "The accessible login address field could not be identified." }
             $field = $addresses[0]
             $field.SetFocus()
+            if ($WindowOnly) {
+                if (!$field.Current.HasKeyboardFocus -or $field.Current.IsOffscreen) {
+                    throw "The accessible login address field did not receive focus in the visible window."
+                }
+                Write-Output "The visible login form exposed and focused its server address field."
+                return
+            }
             $pattern = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
             $text = "Cassi clipboard | Привет"
             Set-Clipboard -Value $text

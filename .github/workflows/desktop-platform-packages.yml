@@ -123,29 +123,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare the Windows 11 Explorer desktop
-        if: matrix.platform == 'windows-arm64'
-        shell: pwsh
-        run: |
-          Add-Type -TypeDefinition @"
-          using System;
-          using System.Runtime.InteropServices;
-          public static class DesktopShell {
-              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string name, string title);
-              [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
-          }
-          "@
-          $session = (Get-Process -Id $PID).SessionId
-          Write-Output "Runner session $session, active console session $([DesktopShell]::WTSGetActiveConsoleSessionId())."
-          Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object Id, SessionId
-          if ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) {
-              Start-Process "$env:WINDIR/explorer.exe"
-              $deadline = (Get-Date).AddSeconds(20)
-              while ([DesktopShell]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline) {
-                  Start-Sleep -Milliseconds 250
-              }
-          }
-          Write-Output "Explorer taskbar handle $([DesktopShell]::FindWindow('Shell_TrayWnd', $null))."
       - name: Prepare the per-user Windows Installer tools
         if: runner.os == 'Windows'
         shell: pwsh
@@ -169,7 +146,7 @@ jobs:
       - name: Build and archive the desktop application
         env:
           WORKSPACE_PACKAGE_PLATFORM: ${{ matrix.platform }}
-        run: python packages/native/scripts/build-desktop-package.py
+        run: python packages/native/scripts/build-desktop-package.py ${{ matrix.platform == 'windows-arm64' && '--archive-only' || '' }}
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && hashFiles('build/desktop-package/archives/SHA256SUMS') != '' }}
         with:
@@ -213,12 +190,15 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $destination
           $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
-          ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe" -Architecture ${{ matrix.cpu }}
-          python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater --check-capture
+          ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe" -Architecture ${{ matrix.cpu }} ${{ matrix.platform == 'windows-arm64' && '-WindowOnly' || '' }}
+      - name: Verify Windows account, updater and capture on the interactive desktop
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: python packages/native/tests/platform-package/desktop-account-acceptance.py "$env:RUNNER_TEMP/Workspace relocated/bin/workspace-native.exe" --check-updater --check-capture
       - name: Install, launch and uninstall the Windows application for the current user
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Architecture ${{ matrix.cpu }} -Installer "archive/workspace-native-${{ matrix.platform }}-setup.msi"
+        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Architecture ${{ matrix.cpu }} ${{ matrix.platform == 'windows-arm64' && '-WindowOnly' || '' }} -Installer "archive/workspace-native-${{ matrix.platform }}-setup.msi"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'
         run: |

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build and archive the native application on a Windows or macOS host."""
+import argparse
 import hashlib
 import os
 from pathlib import Path
@@ -10,6 +11,10 @@ import struct
 import subprocess
 import sys
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--archive-only", action="store_true",
+                    help="build the desktop archives without running the visual shell acceptance")
+options = parser.parse_args()
 root = Path.cwd()
 build = root / "build" / "desktop-package"
 prefix = build / "dependencies"
@@ -114,6 +119,10 @@ for package in packages:
     checksums.append(f"{digest}  {package.name}\n")
     print(f"Created {package.name} ({package.stat().st_size} bytes).")
 (artifacts / "SHA256SUMS").write_text("".join(checksums), encoding="ascii")
+
+if options.archive_only:
+    print("Archive checks complete. Visual shell acceptance was not requested.")
+    sys.exit(0)
 
 shell_test = build / "application" / ("Release/native-platform-shell-test.exe" if windows
                                      else "native-platform-shell-test")
