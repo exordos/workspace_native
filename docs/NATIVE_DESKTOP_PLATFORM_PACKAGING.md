@@ -49,6 +49,8 @@ On Apple Silicon, the warm and cold URL checks requested different messages. The
 
 For the call check, the package joins a meeting served by the same loopback HTTPS fixture. The meeting calls `getUserMedia`, reads each track's state and stops the track without retaining media. Windows Runtime and AVFoundation count the devices visible to that runner independently. The package must return a live track for an available device or report that a device is absent. A fresh permission prompt and a physical camera require a desktop with the corresponding OS privacy state and hardware. The current Qt WebEngine permission interface omits the requesting frame identity, so the call controller declines display capture before the platform picker. [Display-capture policy](NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md)
 
+A clean Intel macOS runner also completed the account and update checks. AVFoundation counted one audio input and no camera. The installed meeting returned a live audio track and reported the missing video device before the application signed out. [Intel package acceptance](https://github.com/exordos/workspace_native/actions/runs/44838160279/job/136644241868)
+
 The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
 
 ## Native shell acceptance
