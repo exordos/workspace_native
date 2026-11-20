@@ -119,19 +119,17 @@ Tailwind sizes used by the page: `text-xl` = 20 px, `text-sm` = 14 px,
   `licensesHeaderRow`, `licensesList` (ListView of `licensesRow-<index>`),
   row cells `licensesName-<index>`, `licensesVersion-<index>`,
   `licensesLicense-<index>`, `licensesAuthor-<index>`.
-- Dataset: `scripts/collect-native-licenses.py` (release-notes.py precedent:
-  argparse `--out`) emits the deterministic fixture dataset of the native
-  client's own runtime dependencies (Qt 6 modules, md4c, SQLite, Qt6Keychain,
-  OpenSSL, and their linked third-party parts) as JSON entries
-  `{name, version, license, repository, publisher}`, byte-stable sorted.
-  CMake runs it at build time and embeds the output through
-  `qt_add_resources(workspace-native-ui native_licenses PREFIX
-  /workspace/licenses ...)` at `qrc:/workspace/licenses/licenses.json`, the
-  same generated-resource pattern as the compiled `workspace_ru.qm`. Because
-  QML XMLHttpRequest refuses local-file GETs by policy, the page receives the
-  JSON through `NativeController::licensesDatasetJson()` (wired in
-  `Main.qml` as the page's `datasetJson`).
-  The React app npm dataset is not used.
+- The packaged Linux page reads the catalog next to the bundled third-party
+  notices. Packaging generates one row per source package and version in
+  `bundled-libraries.json`, so the version includes the distribution
+  revision. Known components use the established display names, publishers
+  and license labels. Other packages link to their recorded Ubuntu source
+  page and refer to the bundled notice. Qt WebEngine and Chromium require
+  corresponding inventory evidence.
+- For unpackaged builds CMake embeds the versions of the libraries it found.
+  Opening the Licenses page obtains the SQLite engine version from the active
+  QSQLITE driver using an in-memory database. Window tests use a fixed catalog
+  to exercise filtering and chip ordering.
 - Entry surfaces:
   - `NativeAboutDrawer.qml` gains an "Open Source Licenses" entry link
     (`nativeAboutLicensesLink`) below the update card emitting

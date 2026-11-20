@@ -29860,6 +29860,17 @@ private slots:
         controller.showSection(QStringLiteral("licenses"));
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
         auto *page = view("nativeLicensesPage"); QVERIFY(page);
+        const auto actual = QJsonDocument::fromJson(controller.licensesDatasetJson().toUtf8()).array();
+        QVERIFY(!actual.isEmpty());
+        QTRY_COMPARE(view("licensesList")->property("count").toInt(), actual.size());
+        const auto sqlite = std::find_if(actual.cbegin(), actual.cend(), [](const auto &entry) {
+            return entry.toObject().value("name") == "SQLite";
+        });
+        QVERIFY2(sqlite != actual.cend(), "The build catalog omitted the active SQLite driver");
+        QVERIFY(!(*sqlite).toObject().value("version").toString().isEmpty());
+        QFile catalog(QFINDTESTDATA("fixtures/licenses/ui-catalog.json"));
+        QVERIFY(catalog.open(QIODevice::ReadOnly));
+        page->setProperty("datasetJson", QString::fromUtf8(catalog.readAll()));
         // Full-width page (reference root flex w-full, no narrow cap).
         QTRY_VERIFY_WITH_TIMEOUT(page->width() >= panelWidth - 8, 5000);
         const auto chipColor = [](QQuickItem *chip) {
@@ -30038,6 +30049,9 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(view("messageComposer"), 5000);
         controller.showSection(QStringLiteral("licenses"));
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeLicensesPage"), 5000);
+        QFile catalog(QFINDTESTDATA("fixtures/licenses/ui-catalog.json"));
+        QVERIFY(catalog.open(QIODevice::ReadOnly));
+        view("nativeLicensesPage")->setProperty("datasetJson", QString::fromUtf8(catalog.readAll()));
         // Stub the browser handoff exactly where production hands the URL to
         // QDesktopServices (Qt.openUrlExternally in Main.qml).
         LicensesExternalProbe probe;

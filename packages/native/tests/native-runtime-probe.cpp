@@ -1,5 +1,6 @@
 // Installed Linux runtime regression: synthetic transient keys, no account I/O or network.
 #include "native-chat-crypto.h"
+#include "native-controller.h"
 #include "image-decode-fixtures.h"
 #include "native-image-input.h"
 
@@ -95,7 +96,8 @@ int main(int argc, char **argv)
     sortedPaths.sort();
     QJsonArray runtimePaths;
     for (const auto &path : sortedPaths) runtimePaths.append(path);
-    const QJsonObject output{{"imageRoundTrips", imageRoundTrips}, {"imagesDecoded", imagesDecoded},
+    const QJsonObject output{{"displayedLicenses", QJsonDocument::fromJson(workspace::NativeController::licensesDatasetJson().toUtf8()).array()},
+        {"imageRoundTrips", imageRoundTrips}, {"imagesDecoded", imagesDecoded},
         {"svgDecodeError", svgDecoded ? QString{} : svgReader.errorString()},
         {"runtimePaths", runtimePaths}, {"messageRoundTrip", true}, {"grantRoundTrip", true},
         {"tlsSupported", tls}, {"tlsBackend", QSslSocket::activeBackend()}, {"tlsVersion", QSslSocket::sslLibraryVersionString()},
