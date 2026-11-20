@@ -260,6 +260,33 @@ ApplicationWindow {
     readonly property var chatEncryption: root.controller.encryption
     readonly property bool encryptedConversation: root.controller.authenticated && root.controller.hasConversation && root.selectedStreamEncrypted
     readonly property string encryptedStreamName: root.controller.selectedStream.length ? root.selectedName(root.controller.streams, root.controller.selectedStream) || root.selectedName(root.controller.archivedChats, root.controller.selectedStream) : ""
+    // Issue #90 (docs/NATIVE_DESKTOP_E2EE_HEADER_AVATAR.md): the reference
+    // paints the encrypted header lock avatar with
+    // resolveAvatarBackgroundColor(stream.color) (chat-header-channel.ui.tsx:56,
+    // avatar-color.lib.ts:2-7: integer 0..0xffffff -> #rrggbb with 0 -> #000000,
+    // null/invalid -> the Avatar bg-bg theme fallback, avatar.tsx:61). The
+    // streams() projection already carries that resolution as avatarColor
+    // (native-controller.cpp:12996-12997, DTO admission domain.cpp:492-493);
+    // archived rows expose the raw integer color (native-controller.cpp:12907),
+    // hexed here with the same padding. Pure binding over existing projections
+    // (same pattern as the sidebar avatar, Main.qml:4986-4988): no new fetch,
+    // no new signal. Empty string means "no stream color" - callers must test
+    // the length, never falsiness, so 0 keeps its #000000 paint.
+    readonly property string encryptedHeaderAvatarColor: {
+        const selected = root.controller.selectedStream
+        if (!selected.length) return ""
+        const streams = root.controller.streams
+        for (let i = 0; i < streams.length; ++i)
+            if (streams[i].id === selected) return String(streams[i].avatarColor || "")
+        const archived = root.controller.archivedChats
+        for (let i = 0; i < archived.length; ++i) {
+            if (archived[i].id !== selected) continue
+            const color = archived[i].color
+            return Number.isInteger(color) && color >= 0 && color <= 0xffffff
+                ? "#" + Number(color).toString(16).padStart(6, "0") : ""
+        }
+        return ""
+    }
     // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the caption of
     // chat-header-channel.ui.tsx - t("channel.participants", {count}) + ", " +
     // t("channel.online", {count}). The plural sources match the reviewed
@@ -5681,7 +5708,10 @@ ApplicationWindow {
                     Rectangle {
                         implicitWidth: 32; implicitHeight: 32; radius: 16
                         Layout.alignment: Qt.AlignVCenter
-                        color: root.colors.bg
+                        // Issue #90: resolveAvatarBackgroundColor(stream.color),
+                        // falling back to the Avatar bg-bg token only when the
+                        // stream carries no color (avatar-color.lib.ts:2-7).
+                        color: root.encryptedHeaderAvatarColor.length ? root.encryptedHeaderAvatarColor : root.colors.bg
                         border.width: 1
                         border.color: root.colors["border-subtle"]
                         NativeIconButton {
@@ -5734,14 +5764,98 @@ ApplicationWindow {
                                 objectName: "protectedChatInformation"
                                 width: implicitWidth; height: 20
                                 padding: 0; spacing: 6; hoverEnabled: true
+                                // The reference trigger is a real tabbable button
+                                // (chat-header-channel.ui.tsx:100-102), and its
+                                // focus alone opens the tooltip
+                                // (app-tooltip.ui.tsx:97-100).
+                                focusPolicy: Qt.TabFocus
                                 text: qsTr("Protected chat")
                                 icon.source: "qrc:/workspace/icons/info.svg"
                                 icon.width: 14; icon.height: 14; icon.color: root.colors.accent
                                 font.pixelSize: 16; palette.buttonText: root.colors.accent
                                 background: Rectangle { color: "transparent"; radius: 2; border.width: protectedChatInfo.visualFocus ? 2 : 0; border.color: root.colors["accent-soft"] }
                                 Accessible.name: qsTr("Protected chat information")
-                                ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: qsTr("Keys are stored on the device. Different periods of chat history may require different keys.") + "\n" + qsTr("Without the matching key, a message cannot be read even if it has already been downloaded to the device.")
+                                // Issue #90 (docs/NATIVE_DESKTOP_E2EE_HEADER_AVATAR.md):
+                                // the reference AppTooltip (chat-header-channel.ui.tsx:86-110)
+                                // shows the e2ee.chatFeatures title plus the five
+                                // chatFeatures* bullets (en.json:1632-1637,
+                                // ru.json:1645-1650), on hover AND focus
+                                // (app-tooltip.ui.tsx:91-107). Surface: w-80 px-4 py-3
+                                // rounded-xl border-border-subtle bg-bg-elevated text-sm
+                                // leading-relaxed text-text-secondary (app-tooltip.ui.tsx:208-215);
+                                // body rhythm space-y-2 (8 px), list-disc pl-4 (16 px).
+                                ToolTip {
+                                    id: protectedChatTooltip
+                                    visible: protectedChatInfo.hovered || protectedChatInfo.visualFocus
+                                    delay: 0
+                                    timeout: 0
+                                    padding: 16
+                                    topPadding: 12
+                                    bottomPadding: 12
+                                    // w-80 is a fixed width in the reference, not a
+                                    // content-derived implicit width, so the popup
+                                    // pins 320 and the paragraphs wrap inside it.
+                                    width: 320
+                                    background: Rectangle {
+                                        objectName: "protectedChatTooltipSurface"
+                                        radius: 12
+                                        color: root.colors["bg-elevated"]
+                                        border.width: 1
+                                        border.color: root.colors["border-subtle"]
+                                    }
+                                    contentItem: ColumnLayout {
+                                        // The popup opens as an overlay; the test-observable
+                                        // nodes are the reparented content and surface items.
+                                        objectName: "protectedChatTooltip"
+                                        spacing: 8 // space-y-2.
+                                        Text {
+                                            objectName: "protectedChatTooltipTitle"
+                                            Layout.fillWidth: true
+                                            text: qsTr("Protected chat information")
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 14; font.weight: Font.Medium // font-medium text-text-primary.
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 23 // leading-relaxed.
+                                            color: root.colors["text-primary"]
+                                            wrapMode: Text.Wrap
+                                        }
+                                        Repeater {
+                                            model: [
+                                                qsTr("Message text and all links within it are protected by end-to-end encryption."),
+                                                qsTr("Keys are stored on the device. Different periods of chat history may require different keys."),
+                                                qsTr("Without the matching key, a message cannot be read even if it has already been downloaded to the device."),
+                                                qsTr("Images, videos, and files are stored without end-to-end encryption and can be accessed by the server and storage."),
+                                                qsTr("To open an attachment from the chat, you need to decrypt the message containing its link.")
+                                            ]
+                                            delegate: RowLayout {
+                                                required property int index
+                                                required property string modelData
+                                                objectName: "protectedChatTooltipFeature-" + index
+                                                Layout.fillWidth: true
+                                                spacing: 0
+                                                Text {
+                                                    objectName: "protectedChatTooltipBullet-" + index
+                                                    text: "\u2022"
+                                                    Layout.preferredWidth: 16 // list-disc pl-4.
+                                                    Layout.alignment: Qt.AlignTop
+                                                    textFormat: Text.PlainText
+                                                    font.pixelSize: 14
+                                                    lineHeightMode: Text.FixedHeight; lineHeight: 23
+                                                    color: root.colors["text-secondary"]
+                                                }
+                                                Text {
+                                                    objectName: "protectedChatTooltipFeatureText-" + index
+                                                    Layout.fillWidth: true
+                                                    text: modelData
+                                                    textFormat: Text.PlainText
+                                                    font.pixelSize: 14
+                                                    lineHeightMode: Text.FixedHeight; lineHeight: 23 // text-sm leading-relaxed.
+                                                    color: root.colors["text-secondary"]
+                                                    wrapMode: Text.Wrap
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Item {

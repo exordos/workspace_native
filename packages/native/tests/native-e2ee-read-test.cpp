@@ -9452,11 +9452,15 @@ private slots:
         QVERIFY2(encryptedUiItem(window, "protectedChatTooltipTitle") == nullptr,
             "no tooltip content may exist while nothing hovers or focuses the label");
         // Hover opens the tooltip (app-tooltip.ui.tsx:91-94 show on pointer enter).
+        // Settle the pointer first: this row follows another window teardown.
+        QTest::mouseMove(window, QPoint(0, 0)); QTest::qWait(50);
         QTest::mouseMove(window, info->mapToScene(QPointF(info->width() / 2, info->height() / 2)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(encryptedUiItem(window, "protectedChatTooltip"), 3000);
         auto *tooltip = encryptedUiItem(window, "protectedChatTooltip"); QVERIFY(tooltip);
         QTRY_VERIFY(tooltip->isVisible());
         // Surface: w-80 = 320 px (app-tooltip.ui.tsx:212).
-        QCOMPARE(qRound(tooltip->width()), 320);
+        auto *surface = encryptedUiItem(window, "protectedChatTooltipSurface"); QVERIFY(surface);
+        QCOMPARE(qRound(surface->width()), 320);
         auto *titleText = encryptedUiItem(window, "protectedChatTooltipTitle"); QVERIFY(titleText);
         QCOMPARE(titleText->property("text").toString(), title);
         // Title plus five list items with the exact reference sentences, in
@@ -9470,13 +9474,16 @@ private slots:
         QVERIFY2(encryptedUiItem(window, "protectedChatTooltipFeature-5") == nullptr,
             "the reference list has exactly five items (chat-header-channel.ui.tsx:93-97)");
         // Focus alone keeps the tooltip open after the pointer leaves
-        // (app-tooltip.ui.tsx:97-100 shows on focus).
-        window->requestActivate(); QTest::qWait(250);
-        info->forceActiveFocus();
-        QTRY_VERIFY2(info->property("visualFocus").toBool(), "the label did not take keyboard focus");
+        // (app-tooltip.ui.tsx:97-100 shows on focus). Qt 6 paints visualFocus
+        // only for keyboard focus, so drive real Tab presses to the label.
+        window->requestActivate();
+        QTRY_VERIFY_WITH_TIMEOUT(window->isActive(), 3000);
+        for (int i = 0; i < 80 && !info->property("activeFocus").toBool(); ++i)
+            QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY2(info->property("visualFocus").toBool(), "tabbing did not give the label keyboard focus");
         QTest::mouseMove(window, QPoint(4, int(window->height()) - 4));
         QTRY_VERIFY(encryptedUiItem(window, "protectedChatTooltip"));
-        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
         QTRY_VERIFY2(encryptedUiItem(window, "protectedChatTooltip") == nullptr,
             "losing hover and focus must close the tooltip");
         // Clicking the label must not toggle the right panel (reference keeps
