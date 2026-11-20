@@ -16945,16 +16945,26 @@ mv -Tf "$root/.current-new" "$root/current"
     void loginLinkedOrganizationDiscoversOnlyAKnownOrigin_data()
     {
         QTest::addColumn<bool>("known");
-        QTest::newRow("matching-default") << true;
-        QTest::newRow("unknown-organization") << false;
+        QTest::addColumn<bool>("replaced");
+        QTest::addColumn<bool>("ambiguous");
+        QTest::newRow("matching-default") << true << false << false;
+        QTest::newRow("unknown-organization") << false << false << false;
+        QTest::newRow("replaced-link") << true << true << false;
+        QTest::newRow("ambiguous-origin") << true << false << true;
     }
 
     void loginLinkedOrganizationDiscoversOnlyAKnownOrigin()
     {
         QFETCH(bool, known);
+        QFETCH(bool, replaced);
+        QFETCH(bool, ambiguous);
         MockServer server;
-        server.handler = [](const Request &) {
-            return Response{QJsonObject{{"realm_name", "Known organization"}}};
+        std::function<void()> finish;
+        server.handler = [&](const Request &) {
+            Response response{QJsonObject{{"realm_name", "Known organization"}}};
+            if (replaced)
+                response.defer = [&](std::function<void()> reply) { finish = std::move(reply); };
+            return response;
         };
         const auto oldUrl = qgetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
         qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", server.origin().toEncoded());
@@ -16964,8 +16974,20 @@ mv -Tf "$root/.current-new" "$root/current"
         });
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        if (ambiguous) {
+            // Both origins map to the same route segment: host:port and host-port.
+            const QUrl alias("https://" + workspace::orgRouteIdFromOrigin(server.origin()));
+            SavedAccount account{SessionVault::accountId(alias, projectId, userId), alias,
+                                 projectId, userId, "test", "Project"};
+            bool saved = false;
+            vault.save(account, "fixture", [&](const QString &error) { saved = error.isEmpty(); });
+            QTRY_VERIFY(saved);
+        }
         ApiClient api(nullptr, true);
         Session session(&api);
+        session.setVault(&vault);
         NativeController controller(&api, &session);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
@@ -16976,7 +16998,16 @@ mv -Tf "$root/.current-new" "$root/current"
                                         : QStringLiteral("unknown.example");
         controller.openMessageLink(QStringLiteral("ew://open/org/%1/project/%2/message/%3")
                                    .arg(organization, projectId, messageId));
-        if (known) {
+        if (replaced) {
+            QTRY_VERIFY(bool(finish));
+            controller.openMessageLink(QStringLiteral("ew://open/org/unknown.example/project/%1/message/%2")
+                                       .arg(projectId, messageId));
+            finish();
+            QTRY_VERIFY(!controller.organizationLoading());
+            QVERIFY(visibleItem(content, "serverInput"));
+            QVERIFY(controller.organizationRealm().isEmpty());
+            QVERIFY(!visibleItem(content, "userInput"));
+        } else if (known && !ambiguous) {
             QTRY_VERIFY(visibleItem(content, "userInput"));
             QCOMPARE(controller.organizationRealm(), server.origin().toString());
             QCOMPARE(server.requests.size(), 1);

@@ -2229,6 +2229,8 @@ private:
     // lowercased project uuid (reference messageTarget). Returns false when
     // no parked message link exists.
     bool linkedMessageTarget(QString *org, QString *project) const;
+    void discoverInitialLinkedOrganization();
+    void discoverLoginOrganization(const QString &text, quint64 linkSerial);
     QString m_pendingDeepLink;
     QMetaObject::Connection m_profileLinkCacheDestroyed;
     std::weak_ptr<quint64> m_profileLinkSelection;
