@@ -1584,7 +1584,13 @@ ApplicationWindow {
     // follows the light/dark theme automatically.
     function mentionChipHtml(html) {
         const accent = String(root.colors["accent"] || "#7087ff");
-        return String(html).replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
+        const themed = String(html).replace(/(<a href="workspace-spoiler:[^"]+"><span style=")([^"]*)(")/g,
+            function (whole, head, style, tail) {
+                const fg = String(root.colors["text-primary"]);
+                const mask = String(root.colors["border-subtle"]);
+                return head + style.replace(/#84909c/gi, mask).replace(/#0000ff/gi, fg) + tail;
+            });
+        return themed.replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
             function (whole, head, tail) {
                 return head + " color:" + accent + "; font-weight:500; text-decoration:none;" + tail;
             });
@@ -1599,6 +1605,8 @@ ApplicationWindow {
 // activation; no pointer is needed to reach or use it.
 component NativeMentionChip: Item {
     required property var modelData
+    property var activate: () => root.openReference(modelData.urn)
+    Accessible.onPressAction: activate()
     objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
     x: modelData.x
     y: modelData.y
@@ -1612,13 +1620,13 @@ component NativeMentionChip: Item {
     Keys.onPressed: (event) => {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             event.accepted = true;
-            root.openReference(modelData.urn);
+            activate();
         }
     }
     Keys.onReleased: (event) => {
         if (event.key === Qt.Key_Space) {
             event.accepted = true;
-            root.openReference(modelData.urn);
+            activate();
         }
     }
     Rectangle {
@@ -1635,9 +1643,28 @@ component NativeMentionChip: Item {
         acceptedButtons: Qt.LeftButton
         cursorShape: Qt.PointingHandCursor
         onPressed: parent.forceActiveFocus()
-        onClicked: root.openReference(modelData.urn)
+        onClicked: parent.activate()
     }
 }
+
+    component MessageSpoilerControl: NativeMentionChip {
+        required property var row
+        objectName: "message-spoiler-" + row.modelData.id + "-" + modelData.id
+        Accessible.name: modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
+        Accessible.checkable: true
+        Accessible.checked: row.openedSpoilers.includes(modelData.id)
+        activate: () => row.activateBodyLink(modelData.urn, true)
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            visible: parent.modelData.header
+            color: "transparent"
+            border.width: 1
+            border.color: root.colors["border-subtle"]
+            radius: 8
+            z: -1
+        }
+    }
 
     // The reference keeps the "Copy link" item only for http/https hrefs
     // (isValidUrl, shared/lib/validation.ts:8,20-27); a mailto anchor right-click
@@ -8064,8 +8091,33 @@ component NativeMentionChip: Item {
                     readonly property var avatar: messageList.avatarPlacement(messageRow, index)
                     // displayContent === "" is a valid empty answer (quote-only message);
                     // only a missing key falls back to the raw content (review #119).
-                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel
-                        : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content))
+                    readonly property string bodyMarkdown: encryptedLocked ? "" : keyControl ? controlLabel
+                        : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content)
+                    property var spoilerState: ({})
+                    readonly property var openedSpoilers: spoilerState.message === modelData.id
+                        && spoilerState.body === bodyMarkdown ? spoilerState.opened : []
+                    readonly property var rendered: root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers)
+                    onBodyMarkdownChanged: spoilerState = ({})
+                    function activateBodyLink(link, restoreFocus) {
+                        const target = (rendered.spoilers || []).find(span => span.href === String(link));
+                        if (!target) {
+                            root.openReference(link);
+                            return;
+                        }
+                        spoilerState = { message: modelData.id, body: bodyMarkdown,
+                            opened: openedSpoilers.includes(target.id)
+                                ? openedSpoilers.filter(id => id !== target.id) : openedSpoilers.concat([target.id]) };
+                        if (restoreFocus) Qt.callLater(() => {
+                            const chips = hasInlineImages ? mediaSpoilerChips : bodySpoilerChips;
+                            for (let i = 0; chips && i < chips.count; ++i) {
+                                const chip = chips.itemAt(i);
+                                if (chip && chip.modelData.id === target.id) {
+                                    chip.forceActiveFocus();
+                                    break;
+                                }
+                            }
+                        });
+                    }
                     readonly property var imageParts: rendered.parts || []
                     // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
                     // ordered urn:user references the renderer recognised in
@@ -8112,6 +8164,25 @@ component NativeMentionChip: Item {
                             anchorLength: messageRow.mentionSpansAligned
                                 ? Number(messageRow.mentionSpans[index].length) : 0 }))
                     property var mentionTargets: locateMentionTargets()
+                    property var spoilerTargets: locateSpoilers()
+                    function locateSpoilers() {
+                        const spans = rendered.spoilers || [];
+                        if (!spans.length) return [];
+                        const pairs = spans.map(span => ({ urn: span.href, label: span.label,
+                            id: span.id, header: span.header, anchorStart: span.start, anchorLength: span.length }));
+                        if (!hasInlineImages) return mentionRectsIn(messageBody, pairs, bodyMentionOverlay);
+                        const targets = [];
+                        for (let i = 0; i < imageRuns.count; ++i) {
+                            const run = imageRuns.itemAt(i);
+                            if (!run || run.part.kind !== "text") continue;
+                            const part = run.part;
+                            const localPairs = pairs.filter(pair => pair.anchorStart >= part.start
+                                && pair.anchorStart < part.start + String(part.plain).length)
+                                .map(pair => Object.assign({}, pair, { anchorStart: pair.anchorStart - part.start }));
+                            targets.push(...mentionRectsIn(run.textPart, localPairs, mediaMentionOverlay));
+                        }
+                        return targets;
+                    }
                     function mentionRectsIn(item, pairs, overlay) {
                         const out = [];
                         if (!item || !item.visible || item.width <= 0 || pairs.length === 0)
@@ -8155,7 +8226,7 @@ component NativeMentionChip: Item {
                                 const right = Math.abs(after.y - top.y) < 0.5
                                     ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
-                                out.push({ urn: pair.urn, label: label,
+                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header,
                                     x: origin.x, y: origin.y,
                                     w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
                                 i = j + 1;
@@ -8245,6 +8316,7 @@ component NativeMentionChip: Item {
                         // Issue #109 review F4/F6: the locator reads the laid-out
                         // text, so rebind it after the forced layout passes settle.
                         messageRow.mentionTargets = Qt.binding(() => locateMentionTargets());
+                        messageRow.spoilerTargets = Qt.binding(() => locateSpoilers());
                     }
                     Component.onCompleted: {
                         settleGeometry();
@@ -9199,7 +9271,7 @@ component NativeMentionChip: Item {
                                 font.pixelSize: 14
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 palette.link: root.colors.accent
-                                onLinkActivated: link => root.openReference(link)
+                                onLinkActivated: link => messageRow.activateBodyLink(link)
                                 // Test seam (issue #109 review F6): counts the
                                 // linkAt samples the mention locator performs
                                 // for this body, so window cases can assert
@@ -9214,13 +9286,18 @@ component NativeMentionChip: Item {
                                     id: bodyMentionOverlay
                                     objectName: messageRow.hasInlineImages
                                         ? "" : "message-mentions-" + String(messageRow.modelData.id)
-                                    visible: !messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    visible: !messageRow.hasInlineImages && (messageRow.mentionTargets.length > 0 || messageRow.spoilerTargets.length > 0)
                                     width: 0
                                     height: 0
                                     z: 2
                                     Repeater {
                                         model: messageRow.mentionTargets
                                         delegate: NativeMentionChip {}
+                                    }
+                                    Repeater {
+                                        id: bodySpoilerChips
+                                        model: messageRow.spoilerTargets
+                                        delegate: MessageSpoilerControl { row: messageRow }
                                     }
                                 }
                             }
@@ -9282,7 +9359,7 @@ component NativeMentionChip: Item {
                                             font.pixelSize: 14
                                             bottomPadding: messageRow.inlineMeta && imageRun.index === messageRow.imageParts.length - 1 ? 2 : 0
                                             palette.link: root.colors.accent
-                                            onLinkActivated: link => root.openReference(link)
+                                            onLinkActivated: link => messageRow.activateBodyLink(link)
                                             Accessible.ignored: true
                                         }
                                         TextEdit {
@@ -9328,13 +9405,18 @@ component NativeMentionChip: Item {
                                         ? "message-mentions-" + String(messageRow.modelData.id) : ""
                                     anchors.left: parent.left
                                     anchors.top: parent.top
-                                    visible: messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    visible: messageRow.hasInlineImages && (messageRow.mentionTargets.length > 0 || messageRow.spoilerTargets.length > 0)
                                     width: 0
                                     height: 0
                                     z: 2
                                     Repeater {
                                         model: messageRow.mentionTargets
                                         delegate: NativeMentionChip {}
+                                    }
+                                    Repeater {
+                                        id: mediaSpoilerChips
+                                        model: messageRow.spoilerTargets
+                                        delegate: MessageSpoilerControl { row: messageRow }
                                     }
                                 }
                             }

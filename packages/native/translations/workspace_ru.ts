@@ -2851,6 +2851,10 @@
     <context>
         <name>workspace::NativeMarkdown</name>
         <message>
+            <source>Spoiler</source>
+            <translation>Спойлер</translation>
+        </message>
+        <message>
             <source>Could not display this message.</source>
             <translation>Не удалось отобразить сообщение.</translation>
         </message>

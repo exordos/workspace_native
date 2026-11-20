@@ -1,4 +1,5 @@
 #include "native-markdown.h"
+#include "native-notifications.h"
 #include "mock-server.h"
 
 #include <QTest>
@@ -13,6 +14,55 @@ using namespace workspace::test;
 class NativeMarkdownTest final : public QObject {
     Q_OBJECT
 private slots:
+    void messageSpoilersKeepIndependentStateAndOpenInSummaries()
+    {
+        const QString source = "Before ||one|| and ||two||.\n\n```spoiler Details\n**bold** ||inner||\n```";
+        NativeMarkdown renderer;
+        const auto closed = renderer.render(source);
+        const auto spans = closed.value("spoilers").toList();
+        QCOMPARE(spans.size(), 3);
+        const auto plain = closed.value("plain").toString();
+        QVERIFY(!plain.contains("one"));
+        QVERIFY(!plain.contains("two"));
+        QVERIFY(!plain.contains("bold"));
+        QVERIFY(plain.contains("Details"));
+        const auto first = spans.first().toMap();
+        QCOMPARE(plain.mid(first.value("start").toInt(), first.value("length").toInt()), first.value("label").toString());
+        QVERIFY(renderer.reference(first.value("href").toString()).isEmpty());
+        const auto opened = renderer.renderMessage(source, false, {"1", "3"});
+        const auto revealed = opened.value("plain").toString();
+        QVERIFY(revealed.contains("one"));
+        QVERIFY(!revealed.contains("two"));
+        QVERIFY(revealed.contains("bold"));
+        QVERIFY(!revealed.contains("inner"));
+        QVERIFY(renderer.renderMessage(source, false, {"3", "3.1"}).value("plain").toString().contains("inner"));
+        const auto preview = renderer.renderPreview(source).value("plain").toString();
+        for (const auto &word : {"one", "two", "bold", "inner"}) QVERIFY(preview.contains(word));
+        QCOMPARE(renderer.render(source), closed);
+
+        NotificationCandidate candidate;
+        candidate.owner = "owner"; candidate.messageUuid = messageId;
+        candidate.streamUuid = streamId; candidate.streamPrivate = true;
+        candidate.content = source;
+        NotificationAggregateRegistry registry;
+        const auto notification = registry.upsert(candidate, {});
+        QVERIFY(notification);
+        QCOMPARE(notification->body, preview);
+    }
+
+    void spoilerCodeAndUnmatchedBarsStayLiteral()
+    {
+        NativeMarkdown renderer;
+        const QString source = "`||literal||` and |||| and unmatched ||\n\n```cpp\n||code||\n```\n\n~~~SpOiLeR\nbody\n~~~";
+        const auto result = renderer.render(source);
+        const auto plain = result.value("plain").toString();
+        for (const auto &text : {"||literal||", "||||", "unmatched ||", "||code||", "Spoiler"})
+            QVERIFY2(plain.contains(text), qPrintable(plain));
+        QCOMPARE(result.value("spoilers").toList().size(), 1);
+        QVERIFY(!plain.contains("body"));
+        QVERIFY(renderer.renderPreview(source).value("plain").toString().contains("body"));
+    }
+
     void editAttachmentExtractionUsesParsedMarkdown_data()
     {
         QTest::addColumn<QString>("body"); QTest::addColumn<QString>("editable"); QTest::addColumn<int>("cards");
