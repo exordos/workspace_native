@@ -22341,6 +22341,17 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_VERIFY(!visibleItem(option));
         };
         if (appearance) {
+            auto *summary = visibleItem("accountSettingValue-theme");
+            QVERIFY(summary);
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Dark"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(!visibleItem("accountOption-mode-light"));
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Light"));
             choose("sidebarSortMode", "alphabetical");
             QCOMPARE(scene.preferences.property("sidebarSortMode").toString(), QString("alphabetical"));
             QTRY_COMPARE(scene.controller.sidebarStreams().first().toMap().value("id").toString(), scene.fixture.secondStreamRow.value("uuid").toString());

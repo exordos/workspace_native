@@ -98,7 +98,9 @@ ScrollView {
                         }
                         Label {
                             objectName: "accountSettingValue-" + section.modelData.key
-                            readonly property var selected: section.modelData.choices.find(c => c[0] === panel.preferences[section.modelData.key])
+                            readonly property var selected: section.modelData.key === "theme"
+                                ? panel.modes.find(mode => mode[0] === panel.preferences.mode)
+                                : section.modelData.choices.find(choice => choice[0] === panel.preferences[section.modelData.key])
                             text: selected ? selected[1] : ""; font.pixelSize: 12; color: panel.colors["text-secondary"]
                         }
                         Label { text: section.expanded ? "⌃" : "›"; color: panel.colors["text-muted"]; font.pixelSize: 16; Accessible.ignored: true }
