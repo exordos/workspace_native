@@ -2,6 +2,7 @@
 #include "mock-server.h"
 
 #include <QTest>
+#include <QElapsedTimer>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextOption>
@@ -503,6 +504,62 @@ private slots:
             QVERIFY2(refs.isEmpty(),
                 "References inside a body too large to render must not enter the gallery");
         }
+    }
+
+    // Issue #109 review F1 (cid 4639284110): a mention link whose label carries
+    // formatting (MD4C emits <a href="urn:user:.."><strong>Na</strong>me</a>)
+    // must still gain the mention treatment: urn recorded, "@" prefix, while a
+    // silent formatted anchor keeps no prefix.
+    void mentionFormatedLabelsGainChipTreatment()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+        const auto out = renderer.render(
+            "Lead [**Na**me](urn:user:" + uuid + ") tail [**Qui**et](urn:user:" + uuid + " \"silent\")");
+        const auto html = out.value("html").toString();
+        const auto plain = out.value("plain").toString();
+        const auto mentions = out.value("mentions").toStringList();
+        QStringList problems;
+        // Both anchors (the regular and the silent one) are recorded, matching
+        // the unformatted-label behavior the renderer already had.
+        if (mentions.size() != 2 || mentions.at(0) != QStringLiteral("urn:user:") + uuid
+            || mentions.at(1) != QStringLiteral("urn:user:") + uuid)
+            problems << QStringLiteral("mentions=%1").arg(mentions.join(","));
+        if (!plain.contains("@Name"))
+            problems << QStringLiteral("plain=%1").arg(plain);
+        if (html.contains("@Quiet") || html.contains(">@Qui"))
+            problems << QStringLiteral("silent got prefix: %1").arg(html);
+        if (!plain.contains("Quiet"))
+            problems << QStringLiteral("silent label missing: %1").arg(plain);
+        for (const auto &problem : problems)
+            qWarning().noquote() << "F1 witness:" << problem;
+        QCOMPARE(problems, QStringList{});
+    }
+
+    // Issue #109 review F5 (cid 4639284135): repeated entities inside a
+    // mention label made the escaping regex backtrack exponentially
+    // (repeated-entity + nested-tag labels produced 2^n failed match paths
+    // on the render path). Parsing must stay bounded: the old regex needs
+    // multiple minutes for this 27-entity adversarial label, so a generous
+    // 1 s ceiling cannot be reached by any linear-time implementation.
+    void mentionEscapingParsesWithoutBacktracking()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("99999999-8888-4777-9666-555555555555");
+        QString label;
+        for (int i = 0; i < 20; ++i)
+            label += QStringLiteral("& ");
+        label += QStringLiteral("**x**");
+        QString markdown;
+        for (int i = 0; i < 60; ++i)
+            markdown += QStringLiteral(" a [") + label + QStringLiteral("](urn:user:") + uuid + QStringLiteral(")");
+        QElapsedTimer clock;
+        clock.start();
+        const auto out = renderer.render(markdown);
+        const auto elapsed = clock.elapsed();
+        QVERIFY2(elapsed < 250,
+            qPrintable(QStringLiteral("render took %1 ms; backtracking regex suspected").arg(elapsed)));
+        QCOMPARE(out.value("mentions").toStringList().size(), 60);
     }
 };
 

@@ -403,26 +403,103 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     // the ordered urn list is exposed to the view as "mentions".
     QStringList mentionUrns;
     {
-        static const QRegularExpression mentionAnchor(QStringLiteral(
-            "<a href=\"urn:user:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
-            "( title=\"silent\")?>((?:[^<]|&(?:amp|lt|gt|quot|#\\d+);)*)</a>"),
+        // Issue #109 review F1/F5 (cid 4639284110, cid 4639284135): the
+        // original anchor regex rejected HTML tags inside labels, so MD4C
+        // output for formatted labels was silently dropped; its overlapping
+        // single-character/entity alternatives also backtracked exponentially
+        // when a repeated-entity label was followed by a nested tag (1 s of
+        // the UI render path for one crafted message in measurement). Anchor
+        // recognition is now a linear scan: find the anchor open, validate
+        // the urn and optional silent title, then pair the closing tag while
+        // tracking only nested <a> depth (non-anchor tags cannot affect it).
+        static const QRegularExpression anchorStart(QStringLiteral("<a href=\"urn:user:"),
             QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression anchorHead(QStringLiteral(
+            "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression openAnchor(QStringLiteral("<a(?=[\\s/>])"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression closeAnchor(QStringLiteral("</a(?=[\\s/>])"),
+            QRegularExpression::CaseInsensitiveOption);
+        // The TextEdit shows the parsed plain text, so the "@" prefix decision
+        // and the QML run search both need the label with its formatting tags
+        // removed and its entities decoded back to the visible characters.
+        const auto plainLabel = [](const QString &labelHtml) {
+            auto text = labelHtml;
+            text.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+            text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+            text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+            text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+            int amp = 0;
+            while ((amp = text.indexOf(QLatin1Char('&'), amp)) >= 0) {
+                const int semi = text.indexOf(QLatin1Char(';'), amp + 1);
+                const auto body = semi >= 0 ? text.mid(amp + 1, semi - amp - 1) : QString();
+                bool decoded = false;
+                if (body.startsWith(QLatin1Char('#')) && body.size() > 1) {
+                    const auto digits = body.mid(1);
+                    const bool hex = digits.startsWith(QLatin1Char('x')) || digits.startsWith(QLatin1Char('X'));
+                    bool ok = false;
+                    const uint code = (hex ? digits.mid(1).toUInt(&ok, 16) : digits.toUInt(&ok, 10));
+                    if (ok && code > 0 && code <= 0x10FFFF) {
+                        const char32_t plain = static_cast<char32_t>(code);
+                        text.replace(amp, semi - amp + 1, QString::fromUcs4(&plain, 1));
+                        decoded = true;
+                    }
+                }
+                amp += decoded ? 1 : 1;
+            }
+            return text;
+        };
         QString html = QString::fromUtf8(generated);
-        QVector<QRegularExpressionMatch> matches;
-        auto scan = mentionAnchor.globalMatch(html);
-        while (scan.hasNext()) matches.append(scan.next());
-        for (const auto &match : matches)
-            mentionUrns.append(QStringLiteral("urn:user:") + match.captured(1).toLower());
-        // Rewriting from the back keeps the earlier matches' offsets valid.
-        for (auto it = matches.crbegin(); it != matches.crend(); ++it) {
-            const auto &match = *it;
-            auto label = match.captured(3);
-            if (match.captured(2).isEmpty() && !label.startsWith(QLatin1Char('@')))
+        struct Anchor { int start; int length; QString uuid; QString label; };
+        QVector<Anchor> anchors;
+        int from = 0;
+        for (;;) {
+            const auto hit = anchorStart.match(html, from);
+            if (!hit.hasMatch())
+                break;
+            // Match the uuid on a short window so the "^" anchor stays valid.
+            const auto head = anchorHead.match(html.mid(hit.capturedEnd(), 40));
+            if (!head.hasMatch() || head.capturedStart() != 0) { from = hit.capturedStart() + 4; continue; }
+            int cursor = hit.capturedEnd() + head.capturedLength();
+            bool silent = false;
+            if (html.mid(cursor, 15).compare(QStringLiteral(" title=\"silent\""), Qt::CaseInsensitive) == 0) {
+                silent = true;
+                cursor += 15;
+            }
+            if (cursor >= html.size() || html.at(cursor) != QLatin1Char('>')) { from = hit.capturedStart() + 4; continue; }
+            ++cursor;
+            int closeStart = -1;
+            int closeEnd = -1;
+            int depth = 0;
+            for (int p = cursor; p < html.size(); ) {
+                const int lt = html.indexOf(QLatin1Char('<'), p);
+                if (lt < 0)
+                    break;
+                const int gt = html.indexOf(QLatin1Char('>'), lt + 1);
+                if (gt < 0)
+                    break;
+                if (closeAnchor.match(html, lt).capturedStart() == lt) {
+                    if (depth == 0) { closeStart = lt; closeEnd = gt + 1; break; }
+                    --depth;
+                } else if (openAnchor.match(html, lt).capturedStart() == lt) {
+                    ++depth;
+                }
+                p = gt + 1;
+            }
+            if (closeEnd < 0) { from = hit.capturedStart() + 4; continue; }
+            auto label = plainLabel(html.mid(cursor, closeStart - cursor));
+            if (!silent && !label.startsWith(QLatin1Char('@')))
                 label.prepend(QLatin1Char('@'));
-            html.replace(match.capturedStart(), match.capturedLength(),
-                QStringLiteral("<a href=\"urn:user:%1\">%2</a>")
-                    .arg(match.captured(1).toLower(), label));
+            mentionUrns.append(QStringLiteral("urn:user:") + head.captured(1).toLower());
+            anchors.append({static_cast<int>(hit.capturedStart()), static_cast<int>(closeEnd - hit.capturedStart()), head.captured(1).toLower(), label});
+            from = closeEnd;
         }
+        // Rewriting from the back keeps the earlier anchors' offsets valid.
+        for (auto it = anchors.crbegin(); it != anchors.crend(); ++it)
+            html.replace(it->start, it->length,
+                QStringLiteral("<a href=\"urn:user:%1\">%2</a>").arg(it->uuid, it->label));
         generated = html.toUtf8();
     }
     document.setDefaultStyleSheet("pre { margin-top: 0px; margin-bottom: 0px; } "
