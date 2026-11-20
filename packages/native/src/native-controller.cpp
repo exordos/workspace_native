@@ -114,7 +114,7 @@ QString chatStreamSecurity(const Stream *stream)
     QJsonArray values{stream->uuid, stream->role, stream->encrypted};
     if (stream->security) {
         const auto &s = *stream->security;
-        values.append(QJsonArray{s.owner, s.viewer, s.source, s.currentKey, s.defaultTopic, s.provider, s.providerIdentity});
+        values.append(QJsonArray{s.owner, s.viewer, s.source, s.currentKey, s.defaultTopic, s.provider, s.providerIdentity, s.allowKeySharingByHolders});
     }
     return QString::fromUtf8(QJsonDocument(values).toJson(QJsonDocument::Compact));
 }
@@ -123,6 +123,7 @@ QString chatStreamSecurity(const Stream *stream)
 void NativeController::resetChatRuntime(bool preserveInitialOrder)
 {
     const QPointer<NativeController> lookupGuard(this);
+    resetChatGrantQueue();
     ++m_chatEpoch; ++m_chatOperation;
     resetChatControls(false, preserveInitialOrder ? ChatOutcomeRetention::OrderOnly : ChatOutcomeRetention::Clear);
     if (!lookupGuard) return;
@@ -262,6 +263,7 @@ void NativeController::checkChatLifetime()
         && m_catalog == m_chatCatalog && m_cache == m_chatCache && sameChatCache(m_cacheLease, m_chatCacheLease)
         && (!m_chatAccessKnown || m_chatReadableStreams.contains(m_stream));
     if (live) {
+        resetChatGrantQueue();
         resetChatControls(!lifetime, !lifetime ? ChatOutcomeRetention::PublicFacts
             : firstOpen ? ChatOutcomeRetention::OrderOnly : ChatOutcomeRetention::Clear);
         if (!lookupGuard) return;
@@ -403,9 +405,20 @@ QVariantMap NativeController::encryption() const
         }
         if (earliest.isValid()) keyAnnouncedAt = earliest.toString(Qt::ISODateWithMs);
     }
+    const auto requests = chatKeyRequestsMetadata();
+    QVariantList incoming, granted, rejected;
+    for (const auto &entry : requests) {
+        const auto row = entry.toMap();
+        const auto status = row.value("status").toString();
+        if (status == "granted") granted.append(entry);
+        else if (status == "rejected") rejected.append(entry);
+        else if (!row.value("ownCurrentDevice").toBool()) incoming.append(entry);
+    }
     return {{"available", chatVaultMatches()}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
         {"busy", m_chatBusy || issuing || m_chatReissueBusy}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
-        {"keyRequests", chatKeyRequestsMetadata()}, {"keyResponse", chatKeyResponseMetadata()},
+        {"keyRequests", requests}, {"keyResponse", chatKeyResponseMetadata()},
+        {"incomingKeyRequests", incoming}, {"grantedKeyRequests", granted}, {"rejectedKeyRequests", rejected},
+        {"grantAllBusy", m_chatGrantEpoch != 0}, {"grantAllFailures", m_failedBulkGrants.size()},
         {"storeOpening", m_chatKeyStoreOpening}, {"pendingSend", pendingSendMetadata()},
         {"currentKeyUuid", verified ? stream->security->currentKey : QString{}},
         {"keyAnnouncedAt", keyAnnouncedAt},
@@ -554,8 +567,9 @@ void NativeController::fetchChatAuthority(const QString &stream, quint64 epoch, 
         }
         // currentKey is nullable. An explicit historical generation is independent
         // of a current generation; the live watermark still captures the null.
-        auto authority = std::make_shared<ChatAuthority>(ChatAuthority{ownerKey(), stream, parsed->security->defaultTopic, parsed->security->currentKey, parsed->role,
-            parsed->security->owner, {}, epoch, false});
+        auto authority = std::make_shared<ChatAuthority>(ChatAuthority{ownerKey(), stream, parsed->security->defaultTopic,
+            parsed->security->currentKey, parsed->role, parsed->security->owner, {}, epoch, false, {},
+            parsed->security->allowKeySharingByHolders, parsed->encrypted});
         QUrlQuery query; query.addQueryItem("stream_uuid", stream);
         chatCollection(messenger + "/stream_topics/", query, epoch, selection,
             [this, stream, epoch, selection, query, done, authority](const QJsonArray &topics, const QString &error) {
@@ -1672,6 +1686,8 @@ void NativeController::observeChatRequest(const Message &message)
         return;
     }
     m_chatRequestFactUnits += fact.units - oldUnits;
+    m_chatGrantErrors.remove(message.uuid);
+    m_failedBulkGrants.remove(message.uuid);
     m_chatRequestFacts.insert(message.uuid, std::move(fact)); m_chatIssueChanged = true;
     if (!previousKey.isEmpty() && std::none_of(m_chatRequestFacts.cbegin(), m_chatRequestFacts.cend(),
         [&](const ChatRequestFact &row) { return row.key == previousKey; })) m_chatIssueKeys.remove(previousKey);
@@ -1803,8 +1819,10 @@ bool NativeController::receiveChatControl(const Message &message)
             return;
         }
         const auto role = authority.roles.value(message.author);
-        if ((message.author != authority.issuerOwner && role != "owner" && role != "administrator")
-            || payload.recipientDevice != m_chatKeys->device().id) { m_chatResponses.remove(responseKey); return; }
+        const bool allowed = message.kind == "key_grant" && authority.encrypted
+            ? chatGrantIssuerAllowed(authority, message.author, m_session->user())
+            : message.author == authority.issuerOwner || role == "owner" || role == "administrator";
+        if (!allowed || payload.recipientDevice != m_chatKeys->device().id) { m_chatResponses.remove(responseKey); return; }
         const NativeChatKeyVault::Address address{message.stream, payload.keyUuid};
         auto requests = m_chatKeys->pendingRequests(m_chatVaultLease, address);
         const auto cleanup = qScopeGuard([&] { for (auto &item : requests.values) item.clearSecrets(); });
@@ -2137,11 +2155,23 @@ bool NativeController::chatIssuerAllowed() const
     return m_chatAuthority.issuerOwner == m_session->user() || role == "owner" || role == "administrator";
 }
 
-bool NativeController::chatResponseAllowed(const ChatRequestFact &fact) const
+bool NativeController::chatGrantIssuerAllowed(const ChatAuthority &authority, const QString &issuer, const QString &requester) const
+{
+    if (!chatContext(m_chatEpoch, m_selection) || !authority.ready || authority.epoch != m_chatEpoch
+        || authority.owner != ownerKey()) return false;
+    if (!authority.allowKeySharingByHolders) return issuer == authority.issuerOwner;
+    const auto participant = [&](const QString &user) {
+        return user == authority.issuerOwner || authority.roles.contains(user);
+    };
+    return participant(issuer) && participant(requester);
+}
+
+bool NativeController::chatResponseAllowed(const ChatRequestFact &fact, bool grant) const
 {
     const auto *stream = currentStream();
     if (!stream) return false;
-    if (stream->encrypted) return chatIssuerAllowed();
+    if (stream->encrypted) return grant ? m_chatAuthority.stream == m_stream
+        && chatGrantIssuerAllowed(m_chatAuthority, m_session->user(), fact.author) : chatIssuerAllowed();
     // Ordinary current participants may relay an exact locally held generation.
     // Managers retain Reject without A; Grant separately checks material/deletion.
     if (!stream->security || stream->security->viewer != m_session->user()
@@ -2193,19 +2223,20 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
         const bool ordinaryEligible = ordinary && participant
             && (m_chatAuthority.issuerOwner == m_session->user() || selfRole == "owner" || selfRole == "administrator"
                 || key.state == ChatKeyAvailability::Present);
-        const bool responseAllowed = chatResponseAllowed(fact);
+        const bool grantAllowed = chatResponseAllowed(fact, true);
+        const bool rejectAllowed = chatResponseAllowed(fact, false);
         const bool pending = m_chatKeyResponse && m_chatKeyResponse->request == id && m_chatKeyResponse->busy;
         const auto status = fact.outcome.isEmpty() ? QStringLiteral("pending") : fact.outcome;
         rows.append(QVariantMap{{"id", id}, {"authorId", fact.author},
-            {"name", userDisplayName(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name},
+            {"name", userDisplayName(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name}, {"avatar", userAvatar(fact.author)},
             {"keyUuid", fact.key}, {"status", status}, {"pending", pending},
             {"ownCurrentDevice", fact.author == m_session->user() && fact.device == localDevice},
             {"canManageKeys", ordinary ? ordinaryEligible : manager}, {"hasRequestedKey", key.state == ChatKeyAvailability::Present},
-            {"offerGrant", responseAllowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"offerReject", responseAllowed && valid && status == "pending"},
-            {"canGrant", responseAllowed && !busy && !retained && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"canReject", responseAllowed && !busy && !retained && valid && status == "pending"},
-            {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : QString{}}});
+            {"offerGrant", grantAllowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"offerReject", rejectAllowed && valid && status == "pending"},
+            {"canGrant", grantAllowed && !busy && !retained && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"canReject", rejectAllowed && !busy && !retained && valid && status == "pending"},
+            {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : m_chatGrantErrors.value(id)}});
     }
     return rows;
 }
@@ -2297,11 +2328,14 @@ void NativeController::reduceChatKeyOutcomes()
             if (request == m_chatRequestFacts.end() || request->deleted || !request->outcome.isEmpty()
                 || request->stream != fact.stream || request->key != fact.key || request->device != fact.device
                 || (currentStream() && currentStream()->encrypted
-                    ? fact.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator"
+                    ? (fact.outcome == "granted" ? !chatGrantIssuerAllowed(m_chatAuthority, fact.author, request->author)
+                        : fact.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator")
                     : (fact.author != m_chatAuthority.issuerOwner && !m_chatAuthority.roles.contains(fact.author))
                         || (request->author != m_chatAuthority.issuerOwner && !m_chatAuthority.roles.contains(request->author)))) continue;
             const auto units = fact.outcome.size() + fact.id.size();
             if (m_chatRequestFactUnits + units > 2000000) { m_chatRequestFactsLimited = true; break; }
+            m_chatGrantErrors.remove(fact.request);
+            m_failedBulkGrants.remove(fact.request);
             request->outcome = fact.outcome; request->response = fact.id; request->units += units;
             m_chatRequestFactUnits += units;
         }
@@ -2334,7 +2368,7 @@ bool NativeController::chatKeyResponseOwned(bool writing) const
     const auto fact = m_chatRequestFacts.constFind(intent.request);
     if (fact == m_chatRequestFacts.cend() || !chatRequestMatches(*fact, intent)
         || (!fact->outcome.isEmpty() && fact->response != intent.publicId)
-        || !chatResponseAllowed(*fact)) return false;
+        || !chatResponseAllowed(*fact, intent.action == "grant")) return false;
     if (intent.action == "grant") {
         const auto key = m_chatIssueKeys.constFind(intent.key);
         if (key == m_chatIssueKeys.cend() || key->state != ChatKeyAvailability::Present || key->deletion != intent.deletion) return false;
@@ -2386,10 +2420,82 @@ void NativeController::interruptChatKeyResponse()
     intent.error = tr("The key response was interrupted. Check its saved status before retrying.");
 }
 
-void NativeController::grantChatKey(const QString &request) { startChatKeyResponse(request, true); }
-void NativeController::rejectChatKey(const QString &request) { startChatKeyResponse(request, false); }
+void NativeController::resetChatGrantQueue()
+{
+    m_chatGrantQueue.clear();
+    m_chatGrantErrors.clear();
+    m_failedBulkGrants.clear();
+    m_chatGrantInFlight.clear();
+    m_chatGrantEpoch = 0;
+}
 
-void NativeController::startChatKeyResponse(const QString &request, bool grant)
+void NativeController::grantAllChatKeys()
+{
+    if (m_chatGrantEpoch || !chatContext(m_chatEpoch, m_selection)) return;
+    QStringList eligible;
+    for (const auto &entry : chatKeyRequestsMetadata()) {
+        const auto row = entry.toMap();
+        if (row.value("canGrant").toBool() && !row.value("ownCurrentDevice").toBool())
+            eligible.append(row.value("id").toString());
+    }
+    if (eligible.isEmpty()) return;
+    m_failedBulkGrants.clear();
+    m_chatGrantQueue = std::move(eligible);
+    m_chatGrantEpoch = m_chatEpoch;
+    advanceChatGrants();
+}
+
+void NativeController::advanceChatGrants()
+{
+    if (!m_chatGrantEpoch || m_chatGrantEpoch != m_chatEpoch || !m_chatGrantInFlight.isEmpty()) return;
+    if (m_chatGrantQueue.isEmpty()) {
+        m_chatGrantEpoch = 0;
+        const QPointer<NativeController> guard(this);
+        emit stateChanged();
+        if (guard && !m_failedBulkGrants.isEmpty())
+            report(tr("Could not send the key. Requests to retry: %1.").arg(m_failedBulkGrants.size()));
+        return;
+    }
+    const auto request = m_chatGrantQueue.takeFirst();
+    m_chatGrantInFlight = request;
+    const QPointer<NativeController> guard(this);
+    const auto oldResponse = m_chatKeyResponse ? m_chatKeyResponse->uuid : QString{};
+    startChatKeyResponse(request, true, true);
+    if (guard && m_chatGrantInFlight == request && (!m_chatKeyResponse || m_chatKeyResponse->uuid == oldResponse)) {
+        m_chatGrantErrors.insert(request, tr("The key could not be sent to this device."));
+        m_failedBulkGrants.insert(request);
+        settleChatGrant(request, false);
+    }
+}
+
+void NativeController::settleChatGrant(const QString &request, bool ambiguous)
+{
+    if (!m_chatGrantEpoch || m_chatGrantInFlight != request) return;
+    m_chatGrantInFlight.clear();
+    if (ambiguous) {
+        // Keep the single uncertain wire identity intact for Check / Retry.
+        // The rest have never been sent and may be selected after recovery.
+        m_chatGrantErrors.insert(request, m_chatKeyResponse->error);
+        m_failedBulkGrants.insert(request);
+        for (const auto &unsent : std::as_const(m_chatGrantQueue)) {
+            m_chatGrantErrors.insert(unsent, tr("This request has not been sent."));
+            m_failedBulkGrants.insert(unsent);
+        }
+        m_chatGrantQueue.clear();
+    }
+    QTimer::singleShot(0, this, &NativeController::advanceChatGrants);
+}
+
+void NativeController::grantChatKey(const QString &request, bool fromDrawer)
+{
+    if (!m_chatGrantEpoch) startChatKeyResponse(request, true, fromDrawer);
+}
+void NativeController::rejectChatKey(const QString &request, bool fromDrawer)
+{
+    if (!m_chatGrantEpoch) startChatKeyResponse(request, false, fromDrawer);
+}
+
+void NativeController::startChatKeyResponse(const QString &request, bool grant, bool fromDrawer)
 {
     const QPointer<NativeController> lookupGuard(this);
     checkChatLifetime();
@@ -2399,11 +2505,12 @@ void NativeController::startChatKeyResponse(const QString &request, bool grant)
     const auto found = m_chatRequestFacts.constFind(request);
     if (found == m_chatRequestFacts.cend() || found->deleted || found->stream != m_stream || !found->outcome.isEmpty()
         || !isUuid(found->key) || found->device.isEmpty() || !isUuid(found->author)
-        || !chatResponseAllowed(*found)) return;
+        || !chatResponseAllowed(*found, grant)) return;
     const auto publicKey = strictChatBase64(found->publicKey, 2048);
     if (publicKey.isEmpty() || (grant && publicKey.size() != 32) || !isUuid(m_chatAuthority.defaultTopic)) return;
     const auto fact = *found;
     ChatKeyResponse intent;
+    intent.fromDrawer = fromDrawer;
     intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     intent.owner = ownerKey(); intent.project = m_session->project(); intent.user = m_session->user();
     intent.request = request; intent.requester = fact.author; intent.deviceName = fact.name; intent.publicKey = fact.publicKey;
@@ -2443,6 +2550,7 @@ void NativeController::finishChatKeyResponse(const QString &id, quint64 ticket, 
 {
     if (!m_chatKeyResponse || m_chatKeyResponse->uuid != id || m_chatKeyResponse->ticket != ticket) return;
     m_chatKeyResponse->busy = false; m_chatKeyResponse->phase = "uncertain"; m_chatKeyResponse->error = error;
+    settleChatGrant(m_chatKeyResponse->request, true);
     const auto epoch = m_chatEpoch, selection = m_selection;
     const QPointer<NativeController> guard(this);
     emit stateChanged();
@@ -2479,6 +2587,23 @@ void NativeController::postChatKeyResponse(const QString &id, quint64 ticket)
     const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", intent.stream}, {"topic_uuid", intent.topic}, {"payload", intent.payload}};
     request("POST", messenger + "/messages/", body, {}, [this, id, ticket](const ApiResult &result) {
         if (!chatKeyResponseContext(id, ticket) || !m_chatKeyResponse->busy) return;
+        if (m_chatKeyResponse->fromDrawer && (result.status == 400 || result.status == 403 || result.status == 404 || result.status == 422)) {
+            const auto request = m_chatKeyResponse->request;
+            const bool bulk = m_chatGrantEpoch && m_chatGrantInFlight == request;
+            const auto error = m_chatKeyResponse->action == "grant"
+                ? tr("The key could not be sent to this device.") : tr("The request could not be rejected.");
+            m_chatGrantErrors.insert(request, error);
+            if (bulk) m_failedBulkGrants.insert(request);
+            if (m_chatKeyResponse->holdsField) finishMessageIntent(m_chatKeyResponse->publicId);
+            m_chatKeyResponse.reset();
+            if (bulk) {
+                settleChatGrant(request, false);
+                emit stateChanged();
+            } else {
+                report(error);
+            }
+            return;
+        }
         if (!result.ok() || !matchesChatKeyResponse(result.data.toObject(), false)) {
             finishChatKeyResponse(id, ticket, tr("The key response was not confirmed. Check does not send it again.")); return;
         }
@@ -2505,6 +2630,7 @@ bool NativeController::confirmChatKeyResponse(const QJsonObject &raw, const QStr
     if (!message) return false;
     m_chatKeyResponse->busy = false; m_chatKeyResponse->phase = "ready"; m_chatKeyResponse->error.clear();
     m_chatKeyResponse->holdsField = false;
+    settleChatGrant(intent.request, false);
     observeChatKeyOutcome(*message);
     const bool visible = inConversation(*message);
     if (visible && !findMessage(message->uuid)) {
@@ -12168,6 +12294,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             cancelChatRequestLookup(id);
             if (!lookupGuard) return true;
             if (m_chatRequestFacts.contains(id)) {
+                m_chatGrantErrors.remove(id);
+                m_failedBulkGrants.remove(id);
                 m_chatRequestFacts[id].deleted = true;
                 m_chatRequestFacts[id].lookupRetry = ChatRequestFact::LookupRetry::LiveDeleted;
                 m_chatRequestFacts[id].revision = ++m_nextChatRequestFact;

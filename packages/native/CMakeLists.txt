@@ -170,6 +170,7 @@ qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeSupportReport.qml
+qml/NativeKeyRequests.qml
 qml/NativeDownloadCenter.qml
 qml/NativeUserSearch.qml
 qml/messages/time/MessageTimeView.qml
@@ -616,6 +617,7 @@ if(BUILD_TESTING)
         uiOrdinaryManagerRejectsFromTheActualMainAction
         uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
         uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction
+        uiKeyRequestHistoryShowsEmptyAndIncomingRows
         uiEncryptedChatInfoDrawerShowsProtectedIdentity
         uiEncryptedChatInfoSettingsScreenNavigation
         uiEncryptedChatInfoMemberListScrollsToEnd
