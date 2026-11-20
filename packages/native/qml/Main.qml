@@ -2634,6 +2634,7 @@ component NativeMentionChip: Item {
 
     Rectangle {
         id: topBar
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         objectName: "topBar"
         visible: root.controller.authenticated
         anchors.top: profileLinkFailure.bottom
@@ -4311,8 +4312,24 @@ component NativeMentionChip: Item {
         }
     }
 
+    function chatNavigationHasInputFocus() {
+        for (let item = root.activeFocusItem; item; item = item.parent) {
+            if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox)
+                return true;
+        }
+        return false;
+    }
+
+    function handleChatEscape(event) {
+        event.accepted = conversation.visible && root.controller.hasConversation
+            && !root.controller.favoritesVisible && !aboutDrawer.visible
+            && !root.controller.mediaViewer.open && !root.chatNavigationHasInputFocus();
+        if (event.accepted) root.controller.showInbox();
+    }
+
     RowLayout {
         id: workspace
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         visible: root.controller.authenticated
         anchors.top: topBar.bottom
         anchors.topMargin: 4
@@ -5387,10 +5404,12 @@ component NativeMentionChip: Item {
                                 Text {
                                     anchors.centerIn: parent
                                     visible: !Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
-                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1).toUpperCase()
+                                    objectName: "streamInitial-" + streamDelegate.modelData.id
+                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1)
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
-                                    font.pixelSize: 16
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
                                 }
                                 Rectangle {
                                     // Keyboard focus ring for the avatar action below, the
@@ -6042,6 +6061,8 @@ component NativeMentionChip: Item {
                     y: 30
                     width: parent.width - 100
                     text: root.chatHeaderCountersText()
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
                     textFormat: Text.PlainText
                     font.pixelSize: 12
                     color: root.colors["text-muted"]
@@ -6221,6 +6242,8 @@ component NativeMentionChip: Item {
                                 anchors.right: parent.right
                                 height: 18
                                 text: root.chatHeaderCountersText()
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
                                 textFormat: Text.PlainText
                                 font.pixelSize: 12
                                 lineHeightMode: Text.FixedHeight; lineHeight: 18
@@ -6301,10 +6324,12 @@ component NativeMentionChip: Item {
                         Text {
                             visible: !directHeaderPhoto.replacesFallback
                             anchors.centerIn: parent
+                            objectName: "directHeaderInitial"
                             text: String(root.controller.directPeer.displayName || "").slice(0, 1).toUpperCase()
                             textFormat: Text.PlainText
                             color: root.colors["text-muted"]
-                            font.pixelSize: 16
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
                         }
                     }
                     ColumnLayout {
@@ -6527,7 +6552,9 @@ component NativeMentionChip: Item {
                 // of the boolean edge.
                 property int userScrollGeneration: 0
                 property bool anchorJumpPending: false
-                readonly property real distanceFromTop: contentY - originY + topMargin
+                // Read the current position inside the scroll signal. A dependent
+                // binding can still hold the previous Y during contentYChanged.
+                function distanceFromTop() { return contentY - originY + topMargin }
                 // Drag/fling is user scrolling too (handleTouchMove analogue).
                 onMovementStarted: { userScrollSeen = true; ++userScrollGeneration; takeOpeningControl() }
                 MouseArea {
@@ -6899,7 +6926,7 @@ component NativeMentionChip: Item {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -7202,7 +7229,7 @@ component NativeMentionChip: Item {
                         // arm/coalescing/end-of-history guards inside
                         // noteScrollReserve keep this from ever duplicating or
                         // storming a request.
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                         finishServiceHistoryReady();
                         scheduleVisibleRead();
                         return;
@@ -7250,7 +7277,7 @@ component NativeMentionChip: Item {
                     // from the restored geometry - re-arm only; this call can
                     // never start a request, keeping programmatic movement
                     // unattributed as user scrolling.
-                    root.controller.noteScrollRearm(distanceFromTop, height)
+                    root.controller.noteScrollRearm(distanceFromTop(), height)
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                     maybeAdvanceHiddenWindow();
@@ -7370,7 +7397,7 @@ component NativeMentionChip: Item {
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
                     if (userScrollSeen && !positioning && !anchorJumpPending)
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                     // Issue #253: same reference syncAtBottomFromElement analogue
                     // that keeps the resize-time tail intent current outside the
                     // programmatic capture/restore passes. Programmatic movement
@@ -8219,7 +8246,7 @@ component NativeMentionChip: Item {
                             visible: !messagePhoto.replacesFallback
                             objectName: "message-avatar-initial-" + messageRow.modelData.id
                             anchors.centerIn: parent
-                            text: String(messageRow.modelData.author).slice(0, 1).toUpperCase()
+                            text: String(messageRow.modelData.author).slice(0, 1)
                             textFormat: Text.PlainText
                             color: root.colors["text-primary"]
                             font.pixelSize: 18
@@ -8369,6 +8396,7 @@ component NativeMentionChip: Item {
                             // place of the text body (issue #161, reference
                             // workspace-message-bubble-presentation.ui.tsx:543+906).
                             NativeJitsiCard {
+                                id: callCard
                                 objectName: "call-card-" + messageRow.modelData.id
                                 visible: messageRow.isCallCard && !messageRow.keyControl
                                 width: parent.width
@@ -8378,7 +8406,6 @@ component NativeMentionChip: Item {
                                 roomName: root.controller.callRoomName(messageRow.callUrl)
                                 locationName: ""
                                 authorName: String(messageRow.modelData.author || "")
-                                timeText: String(messageRow.modelData.time || "")
                                 onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
                             }
                             // Poll card (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md): the
@@ -9173,7 +9200,8 @@ component NativeMentionChip: Item {
                             }
                             Item {
                                 id: messageFooter
-                                visible: !messageRow.keyControl && !messageRow.inlineMeta && !messageRow.lockedInlineMeta
+                                visible: !messageRow.keyControl && (messageRow.isCallCard
+                                    ? reactionFlow.implicitHeight > 0 : !messageRow.inlineMeta && !messageRow.lockedInlineMeta)
                                 width: parent.width
                                 height: Math.max(reactionFlow.implicitHeight, messageTime.height)
                                 Flow {
@@ -9503,8 +9531,10 @@ component NativeMentionChip: Item {
                             id: messageTime
                             visible: !messageRow.keyControl
                             objectName: "message-time-" + messageRow.modelData.id
-                            x: bubble.width - 12 - implicitWidth
-                            y: messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
+                            parent: messageRow.isCallCard ? callCard.metadataRow : bubble
+                            x: parent.width - (messageRow.isCallCard ? 0 : 12) - implicitWidth
+                            y: messageRow.isCallCard ? (parent.height - height) / 2
+                                : messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
                             height: 16
                             text: messageRow.modelData.time
                             textFormat: Text.PlainText
@@ -11411,7 +11441,7 @@ component NativeMentionChip: Item {
         // the open, else the messenger home (the native chat section).
         NativeLicensesPage {
             colors: root.colors
-            datasetJson: root.controller.licensesDatasetJson()
+            datasetJson: visible ? root.controller.licensesDatasetJson() : ""
             visible: root.controller.section === "licenses"
             canGoBack: root.controller.sectionBeforeLicenses !== "chat"
             Layout.fillWidth: true

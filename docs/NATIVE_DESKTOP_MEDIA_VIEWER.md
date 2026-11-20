@@ -66,9 +66,14 @@ palette `shared/lib/themes/blue-cold.ts`, default palette `blue-cold`,
   this release does not introduce a second download behaviour.
 - "Open in new tab" is omitted deliberately: the reference shows it only in
   browser builds.
-- Wheel zoom (`media-viewer-zoom.hook.ts`, 0.5x-3x) is deferred to a follow-up
-  with the video slots: it is an interaction on top of the viewer shell, not
-  the viewing/navigation/download contract named in issue #8.
+- Wheel input on a ready image changes its scale by 0.001 per vertical delta
+  unit and clamps it between 0.5 and 3. A new slot or gallery starts at 1.
+  The pinned web overlay binds the zoom hook to the image. The native video
+  slot also supports the wheel interaction specified in issue #204. Both keep
+  the covered conversation at its current scroll position.
+- While the viewer is open, its localized loading label is a status region
+  with polite announcements. A download or display failure exposes an alert
+  with an assertive announcement. Ready and closed slots are silent.
 
 ## Native design
 

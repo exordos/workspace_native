@@ -5,11 +5,13 @@ claim runtime or operating-system acceptance; the visible installed app must
 also be exercised on each supported operating system.
 """
 
+import json
 import argparse
 import configparser
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -114,6 +116,15 @@ def verify(prefix, pid=None):
         print(f"Process mapping check passed: {len(libraries)} Qt/keychain/QML/plugin/Markdown libraries inside package")
 
 
+def verify_license_catalog(rows, packages):
+    script = Path(__file__).resolve().parents[1] / "scripts/collect-native-licenses.py"
+    names = {source: metadata[0] for source, metadata in runpy.run_path(str(script))["COMPONENTS"].items()}
+    expected = {(names.get(row["sourcePackage"], row["sourcePackage"]), row["sourceVersion"]) for row in packages.values()}
+    displayed = {(row["name"], row["version"]) for row in rows}
+    assert len(displayed) == len(rows), "Duplicate packaged license rows"
+    assert expected == displayed, f"License catalog drift: missing {sorted(expected - displayed)}, unexpected {sorted(displayed - expected)}"
+
+
 def probe_runtime(prefix, executable):
     """Run synthetic crypto/TLS operations with the installed runtime; no network."""
     assert sys.platform.startswith("linux"), "The runtime probe currently checks Linux mappings"
@@ -126,8 +137,13 @@ def probe_runtime(prefix, executable):
         subprocess.run(["patchelf", "--set-rpath", "$ORIGIN/../lib", str(temporary)], check=True,
                        capture_output=True, text=True)
         result = subprocess.run([str(temporary)], capture_output=True, text=True, timeout=15)
-        print(result.stdout.strip())
         assert result.returncode == 0, f"Installed crypto/TLS runtime probe failed ({result.returncode})"
+        report = json.loads(result.stdout)
+        notices = prefix / "share/doc/workspace-native-preview/third-party"
+        packages = json.loads((notices / "bundled-libraries.json").read_text())["packages"]
+        rows = report.pop("displayedLicenses")
+        verify_license_catalog(rows, packages)
+        print(json.dumps(report), f"Verified {len(rows)} packaged license rows")
     finally:
         temporary.unlink(missing_ok=True)
 

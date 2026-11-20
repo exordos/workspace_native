@@ -304,3 +304,12 @@ hydration still in flight stays deduplicated across reopen cycles.
 
 Patch release in the 0.3.x chain (policy per #16): CMake version → `0.3.10`,
 tag `0.3.10`, section appended to `docs/NATIVE_DESKTOP_RELEASE_NOTES.md`.
+
+## Escape from a conversation
+
+On the web, `resolveLayoutEscapeKeyDown` in
+`packages/web/src/widgets/layout/layout-escape-navigation.lib.ts` returns to
+Inbox from a stream, topic or message when Escape reaches the layout. A focused
+form control keeps its input, and an open popup handles its own Escape. The
+native window uses the same Inbox action as the sidebar and gives child key
+handlers the first opportunity to consume the event.

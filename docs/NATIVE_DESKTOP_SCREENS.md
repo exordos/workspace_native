@@ -287,7 +287,10 @@ Yesterday, and localized month/day rule. Visible checks compare the actual nativ
 header/list origin and date-group geometry, independently of a reference fixture's
 outer origin.
 Peer initial avatars use the shared source [Avatar](https://github.com/exordos/workspace_ui/blob/95495b10b828f853c9e770b47216073eb973fa95/packages/web/src/shared/ui/avatar/avatar.tsx)
-48px frame and 18px semibold text. In the generated source stylesheet,
+48px frame and 18px semibold text. The message rail and sidebar keep the
+first character in its original case. The direct header and the profile
+trigger uppercase it. Both the 32px and 40px sidebar surfaces and the 40px
+direct header use a 12px letter. In the generated source stylesheet,
 `text-text-primary` wins the equal-specificity `text-accent-soft` utility;
 light/dark regressions check the resulting primary text color rather than the
 sidebar sender color. Actual avatar images remain a separate acceptance item.

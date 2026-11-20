@@ -600,7 +600,7 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
-    Q_INVOKABLE QString licensesDatasetJson() const;
+    Q_INVOKABLE static QString licensesDatasetJson();
     // Issue #50: the Diagnostics page surface (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
     // the live dataset object, the pretty-printed snapshot JSON for the copy
     // action and the advanced block, the connection-report subset, the live
@@ -1811,20 +1811,13 @@ private:
     void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                    QStringList accepted, QSet<QString> seenUsers);
     void applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows);
-    // Issue #438: the automatic fetch trigger, scoped the same way #434 scoped
-    // the binding-event NOTIFY: only a selection edge on an on-screen header
-    // may load member pages; the same owner+stream never refetches on its own.
+    // Load missing membership on a visible channel, once per pending or successful snapshot.
     void ensureChatHeaderMembers();
+    void publishChatHeaderMembers(QStringList accepted);
     QString m_chatHeaderMembersStream;
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
     bool m_chatHeaderVisible = false;
-    // Issue #438 review (finding 4633233517): has the header surface ever
-    // been on screen? Pre-mount selection skips arm nothing; only skips
-    // after the first mount record a deferred recovery obligation, cleared
-    // when the current selection claims its page (or is unselected).
-    bool m_chatHeaderVisibilityMounted = false;
-    bool m_chatHeaderDeferredEdge = false;
     quint64 m_chatHeaderMembersTicket = 0;
     // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
     // membership event that lands while a member page load is in flight is
@@ -2255,6 +2248,7 @@ private:
     bool m_anchorLinkPending = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
+    QString m_failedAnchorConversation;
     std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;
