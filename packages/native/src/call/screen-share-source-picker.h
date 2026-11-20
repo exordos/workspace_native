@@ -5,6 +5,7 @@
 
 #include <functional>
 
+class QDBusMessage;
 class QTimer;
 
 namespace workspace {
@@ -16,13 +17,10 @@ namespace workspace {
 // portal's LIVE source-selection contract,
 // org.freedesktop.portal.ScreenCast on the session bus (service
 // org.freedesktop.portal.Desktop, object /org/freedesktop/portal/desktop):
-// CreateSession answers a session target, SelectSources (types mask
-// screens|windows) lets the user pick a screen or window, and PickStreams
-// answers "streams" - stream-reference object paths that a capture pipeline
-// consumes via OpenPipeWireRemote, not a still PictureUri screenshot file,
-// which is what the replaced transport returned. When no portal is registered
-// on the session bus the picker falls back deterministically to Qt's own
-// screen model.
+// CreateSession creates a session, SelectSources configures it, and Start
+// opens the consent dialog. The selected PipeWire node and session handle
+// identify the source for OpenPipeWireRemote. With no portal the picker
+// falls back to Qt's screen model.
 //
 // Each exchange is tracked by its own serial and owns its own timeout timer
 // and Request subscription (round 2, finding 3): completion cancels both
@@ -60,6 +58,7 @@ public:
     void setPortalTimeoutMs(int ms);
 
     explicit ScreenShareSourcePicker(QObject *parent = nullptr);
+    ~ScreenShareSourcePicker() override;
 
     // True when org.freedesktop.portal.Desktop answers on the session bus.
     bool portalAvailable() const;
@@ -70,40 +69,29 @@ public:
     // A call while an exchange is still in flight is ignored; a completed
     // exchange leaves no timer or subscription behind.
     Q_INVOKABLE void requestSource();
+    Q_INVOKABLE void releaseSource();
 
     // One fallback source per Qt screen, in Qt's own screen order.
     static QList<Source> screenModelSources();
 
-    // The first stream reference out of PickStreams' a{sv} results: "streams"
-    // is an array of stream-reference strings (ao object paths on a real
-    // portal, delivered through the reply variants as a QDBusArgument stream,
-    // QStringList, or plain string forms). Empty plus an error text when
-    // absent. Public for the same reason the old PictureUri reader was: the
-    // result forms are only observable over a real portal otherwise.
-    static QString streamReferenceFromResult(const QVariantMap &results, QString &error);
+    // Decode the single selected (PipeWire node ID, properties) tuple.
+    static QVariantMap streamFromResult(const QVariantMap &results);
 
 signals:
     void sourceSelected(QVariantMap source);
     void sourceFailed(QString reason);
 
 private slots:
-    // Receives the portal Request Response(u code, a{sv} results) signal of
-    // the in-flight exchange. QDBusConnection subscriptions bind to a
-    // receiver slot (not a functor), so exchange correlation is carried by
-    // the subscription set itself: while an exchange is in flight this slot's
-    // only live subscriptions are its own steps (finishCurrentExchange drops
-    // every one of them at completion, and the steps answer strictly in
-    // call order), so a late reply of a completed exchange can never reach a
-    // later exchange (finding 3).
-    void onPortalResponse(uint code, const QVariantMap &results);
+    void onPortalResponse(uint code, const QVariantMap &results, const QDBusMessage &signal);
 
 private:
-    enum class Step { CreateSession, SelectSources, PickStreams };
+    enum class Step { CreateSession, SelectSources, Start };
 
     bool defaultPortalProbe() const;
     void startDefaultPortalExchange();
     void callPortalStep(quint64 serial, const char *method, const QVariantList &args);
-    void subscribePortalRequest(quint64 serial, const QString &requestPath);
+    bool subscribePortalRequest(const QString &requestPath);
+    void unsubscribePortalRequest();
     void armPortalTimeout(quint64 serial);
     bool isCurrentExchange(quint64 serial) const;
     void failCurrentExchange(const QString &reason);
@@ -118,7 +106,8 @@ private:
     Step m_portalStep = Step::CreateSession;
     QString m_sessionPath;
     QTimer *m_portalTimer = nullptr;
-    QStringList m_portalRequestPaths; // Request subscriptions owned by the exchange
+    QString m_requestPath;
+    QString m_selectedSession;
 };
 
 } // namespace workspace
