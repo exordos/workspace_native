@@ -20,8 +20,10 @@ topic selection.
 
 The latest explicit navigation wins. A later known or unknown topic selection,
 account/API generation change, cache replacement or controller destruction cancels
-the pending resolver. Request handles cancel only the exact in-flight request;
-they cannot cancel another client or a completed/replacement request. A selected
+the pending resolver. Each request handle applies to one in-flight request and
+retires immediately on cancellation. Qt delivers the completion callback
+on the event loop after the network signal returns, so its owner can start a new
+request or destroy the transport. A selected
 topic follows an owned realtime move without an additional resolver lookup.
 
 An admitted deletion of the selected explicit topic keeps that address and its

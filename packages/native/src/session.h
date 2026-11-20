@@ -62,6 +62,7 @@ public:
     // as the refresh guard in session.cpp).
     qint64 accessRemainingMs() const;
     const QVector<Project> &projects() const { return m_projects; }
+    bool canConfigureSummaryService() const { return m_ready && m_summaryServiceAllowed; }
     QVariantMap publicProfile() const { return m_ready ? m_publicProfile : QVariantMap{}; }
 
 signals:
@@ -96,6 +97,7 @@ private:
     QString m_savedAccountId;
     QString m_login;
     QVariantMap m_publicProfile;
+    bool m_summaryServiceAllowed = false;
     QElapsedTimer m_clock;
     QTimer m_refreshTimer;
     QTimer m_expiryTimer;

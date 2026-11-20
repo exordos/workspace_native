@@ -15,3 +15,7 @@
 - Document changes under `docs`; do not change or add README without approval.
 - Use `gh` for GitHub operations. Preserve unrelated changes and add regression
   coverage for confirmed defects. Report local, live and platform checks separately.
+- Apply the [architecture](docs/standards/architecture.md),
+  [testing](docs/standards/testing.md), [documentation](docs/standards/documentation.md)
+  and [diagnostics](docs/standards/diagnostics.md) standards. Record
+  cross-feature decisions and temporary exceptions in a reviewed decision record.
