@@ -50,14 +50,21 @@ QList<Fence> codeFences(const QByteArray &source)
 QString protectEscapedBars(const QByteArray &source, const QString &html, QByteArray &marker)
 {
     if (!source.contains("\\|")) return html;
-    struct Scan { const char *begin; QList<qsizetype> offsets; } scan{source.constData(), {}};
+    struct Scan { const char *begin; QList<qsizetype> offsets; int linkDepth = 0; } scan{source.constData(), {}};
     MD_PARSER parser{};
     parser.flags = Dialect;
     parser.enter_block = parser.leave_block = [](MD_BLOCKTYPE, void *, void *) { return 0; };
-    parser.enter_span = parser.leave_span = [](MD_SPANTYPE, void *, void *) { return 0; };
+    parser.enter_span = [](MD_SPANTYPE type, void *, void *data) {
+        if (type == MD_SPAN_A || type == MD_SPAN_IMG) ++static_cast<Scan *>(data)->linkDepth;
+        return 0;
+    };
+    parser.leave_span = [](MD_SPANTYPE type, void *, void *data) {
+        if (type == MD_SPAN_A || type == MD_SPAN_IMG) --static_cast<Scan *>(data)->linkDepth;
+        return 0;
+    };
     parser.text = [](MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *data) {
         auto &scan = *static_cast<Scan *>(data);
-        if (type == MD_TEXT_NORMAL && size == 1 && *text == '|' && text > scan.begin && text[-1] == '\\') {
+        if (!scan.linkDepth && type == MD_TEXT_NORMAL && size == 1 && *text == '|' && text > scan.begin && text[-1] == '\\') {
             qsizetype offset = text - scan.begin;
             qsizetype start = offset;
             while (start > 0 && scan.begin[start - 1] == '\\') --start;

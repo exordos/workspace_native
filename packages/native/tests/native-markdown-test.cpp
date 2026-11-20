@@ -64,6 +64,17 @@ private slots:
         QVERIFY(renderer.renderMessage(source, false, {"1"}).value("plain").toString().contains("concealed"));
     }
 
+    void spoilerEscapesKeepReferenceStyleLinksIntact()
+    {
+        const auto result = NativeMarkdown().render(R"([a\|b] and ||hidden|| and \|\|literal\|\|
+
+[a\|b]: https://example.com/test)");
+        const auto html = result.value("html").toString();
+        QVERIFY2(html.contains("href=\"https://example.com/test\""), qPrintable(html));
+        QVERIFY(result.value("plain").toString().contains("a|b"));
+        QCOMPARE(result.value("spoilers").toList().size(), 1);
+    }
+
     void spoilerCodeAndUnmatchedBarsStayLiteral()
     {
         NativeMarkdown renderer;
