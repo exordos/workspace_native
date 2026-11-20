@@ -62,6 +62,7 @@
     </context>
     <context>
         <name>Main</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
             <source>Current server</source>
             <translation>Текущий сервер</translation>
@@ -4932,5 +4933,17 @@
         <message><source>Loading…</source><translation>Загрузка…</translation></message>
         <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
         <message><source>Try again</source><translation>Попробовать снова</translation></message>
+    </context>
+    <context>
+        <name>NativeCachedMessageSearch</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
+        <message><source>Searches history saved on this device for the selected account and project.</source><translation>Поиск по истории выбранного аккаунта и проекта, сохранённой на этом устройстве.</translation></message>
+        <message><source>Search message text</source><translation>Поиск по тексту сообщения</translation></message>
+        <message><source>Enter text to search.</source><translation>Введите текст для поиска.</translation></message>
+        <message><source>The local message cache is unavailable.</source><translation>Локальный кэш сообщений недоступен.</translation></message>
+        <message><source>Searching…</source><translation>Поиск…</translation></message>
+        <message><source>No matches in cached messages.</source><translation>В сохранённых сообщениях совпадений нет.</translation></message>
+        <message><source>Showing 50 matches. Refine your search for more specific results.</source><translation>Показано 50 совпадений. Уточните запрос.</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
     </context>
 </TS>

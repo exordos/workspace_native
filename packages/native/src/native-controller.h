@@ -152,6 +152,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList archivedChats READ archivedChats NOTIFY archivedChatsChanged)
     Q_PROPERTY(bool archiveLoading READ archiveLoading NOTIFY stateChanged)
     Q_PROPERTY(QString archiveError READ archiveError NOTIFY stateChanged)
+    Q_PROPERTY(bool cachedSearchAvailable READ cachedSearchAvailable NOTIFY cachedSearchAvailabilityChanged)
+    Q_PROPERTY(QVariantList cachedSearchResults READ cachedSearchResults NOTIFY cachedSearchChanged)
+    Q_PROPERTY(QString cachedSearchState READ cachedSearchState NOTIFY cachedSearchChanged)
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
     // Issue #83: folder rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md). The rail
     // rows, the effective folder selection and the folder-scoped sidebar
@@ -424,6 +427,12 @@ public:
     Q_INVOKABLE void setStreamNotificationMode(const QString &id, const QString &mode);
     Q_INVOKABLE bool streamNotificationBusy(const QString &id) const;
     Q_INVOKABLE QVariantMap chatActionState(const QString &id) const;
+    bool cachedSearchAvailable() const { return m_cache && m_cache->available() && !m_cacheLease.owner.isEmpty(); }
+    QVariantList cachedSearchResults() const { return m_searchOwner == ownerKey() ? m_searchResults : QVariantList{}; }
+    QString cachedSearchState() const { return m_searchOwner == ownerKey() ? m_searchState : QString{}; }
+    Q_INVOKABLE void searchCachedMessages(const QString &query);
+    Q_INVOKABLE void clearCachedSearch();
+    Q_INVOKABLE bool openCachedSearchResult(const QString &id);
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
@@ -926,6 +935,8 @@ public:
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);
 
 signals:
+    void cachedSearchAvailabilityChanged();
+    void cachedSearchChanged();
     void otpCodeRejected();
     void sidebarExpansionChanged();
     void activityOpenChanged();
@@ -1032,7 +1043,7 @@ private:
     void applyMessageRoute(const QString &org, const QString &project, const QString &message);
     void setAnchorMessage(const QString &id);
     void clearAnchor(const QString &notice = {});
-    void beginAnchorLinkJump(const QString &target);
+    void beginAnchorLinkJump(const QString &target, const QString &cachedStream = {}, const QString &cachedTopic = {});
     bool topicOpeningOwnsPendingAnchor() const;
     void reanchorFromWindow();
     static QString deepLinkUnavailableNotice();
@@ -1710,6 +1721,9 @@ private:
     // generation even when the owner key matches again.
     quint64 m_sessionGeneration = 0;
     QString m_sessionGenerationOwner;
+    QString m_searchOwner, m_searchState;
+    QVariantList m_searchResults;
+    quint64 m_searchTicket = 0;
     QPointer<NativeCacheService> m_cache;
     QMetaObject::Connection m_cacheDestroyed;
     QMetaObject::Connection m_cacheStatusChanged;
@@ -2273,6 +2287,7 @@ private:
     // message-link anchors (applyMessageRoute / retry) set the flag, so the
     // service conversation-open automatic anchor keeps its old silent flow.
     bool m_anchorLinkPending = false;
+    bool m_anchorFromCachedSearch = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
     QString m_failedAnchorConversation;

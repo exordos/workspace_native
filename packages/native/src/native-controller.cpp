@@ -6303,9 +6303,77 @@ bool NativeController::cacheStale() const
             || (!m_historyVerified && !m_messages.isEmpty()))));
 }
 
+void NativeController::clearCachedSearch()
+{
+    if (m_searchState.isEmpty() && m_searchResults.isEmpty()) return;
+    ++m_searchTicket;
+    if (m_cache) m_cache->cancelMessageSearch();
+    m_searchOwner.clear();
+    m_searchState.clear();
+    m_searchResults.clear();
+    emit cachedSearchChanged();
+}
+
+void NativeController::searchCachedMessages(const QString &query)
+{
+    const auto needle = query.trimmed().simplified();
+    if (needle.isEmpty() || !authenticated()) { clearCachedSearch(); return; }
+    const auto ticket = ++m_searchTicket;
+    m_searchOwner = ownerKey();
+    m_searchResults.clear();
+    auto cache = m_cache;
+    const auto lease = m_cacheLease;
+    const bool available = cache && cache->available() && !lease.owner.isEmpty() && needle.size() <= 256;
+    m_searchState = available ? QStringLiteral("loading") : QStringLiteral("unavailable");
+    const QPointer<NativeController> guard(this);
+    emit cachedSearchChanged();
+    if (!guard || !available || !cache || ticket != m_searchTicket) return;
+    cache->searchMessages(lease, needle, this, [this, ticket, lease](std::optional<QJsonArray> matches) {
+        if (ticket != m_searchTicket || ownerKey() != m_searchOwner
+            || m_cacheLease.owner != lease.owner || m_cacheLease.generation != lease.generation) return;
+        m_searchState = matches ? QStringLiteral("ready") : QStringLiteral("unavailable");
+        if (matches) {
+            for (const auto &value : *matches) {
+                auto row = value.toObject().toVariantMap();
+                const auto streamId = row.value("stream").toString(), topicId = row.value("topic").toString();
+                QString streamName = streamId, topicName = topicId;
+                for (const auto &stream : std::as_const(m_streams))
+                    if (stream.uuid == streamId) {
+                        streamName = isUuid(stream.directUser) ? peerDisplayName(stream.directUser) : stream.name;
+                        break;
+                    }
+                const auto topics = streamId == m_stream ? m_topics : m_inboxTopics.value(streamId);
+                for (const auto &topic : topics)
+                    if (topic.uuid == topicId) { topicName = topic.name; break; }
+                row.insert("location", streamName + QStringLiteral(" / ") + topicName);
+                m_searchResults.append(row);
+            }
+        }
+        emit cachedSearchChanged();
+    });
+}
+
+bool NativeController::openCachedSearchResult(const QString &id)
+{
+    if (!authenticated() || m_searchOwner != ownerKey() || m_searchState != QStringLiteral("ready")) return false;
+    const auto found = std::find_if(m_searchResults.cbegin(), m_searchResults.cend(), [&id](const QVariant &row) {
+        return row.toMap().value("id").toString() == id;
+    });
+    if (found == m_searchResults.cend()) return false;
+    const auto selected = found->toMap();
+    const auto owner = m_searchOwner;
+    const QPointer<NativeController> guard(this);
+    showSection(QStringLiteral("chat"));
+    if (!guard || owner != ownerKey()) return false;
+    beginAnchorLinkJump(id, selected.value("stream").toString(), selected.value("topic").toString());
+    return true;
+}
+
 void NativeController::closeCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -6323,6 +6391,8 @@ void NativeController::closeCache()
 void NativeController::openCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -8817,7 +8887,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!openingGuard) return;
         interruptChannelCreations();
         interruptDirectChats();
+        clearCachedSearch();
+        if (!openingGuard) return;
         m_cache.clear(); m_cacheLease = {}; ++m_cacheRevision;
+        emit cachedSearchAvailabilityChanged();
+        if (!openingGuard) return;
         m_cacheHydrations.clear(); m_cacheWasAvailable = false;
         m_loading = false;
         if (m_cacheForgettingAccount) {
@@ -8847,7 +8921,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (m_cache != cache) return;
         const bool ready = cache->available();
         const bool becameReady = ready && !m_cacheWasAvailable;
+        const bool changed = ready != m_cacheWasAvailable;
         m_cacheWasAvailable = ready;
+        const QPointer<NativeController> availabilityGuard(this);
+        if (changed) emit cachedSearchAvailabilityChanged();
+        if (!availabilityGuard) return;
         if (!becameReady) return;
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
@@ -8860,6 +8938,7 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!guard) return;
         refresh();
     }
+    if (guard) emit cachedSearchAvailabilityChanged();
     if (guard) emit stateChanged();
 }
 
@@ -16968,7 +17047,7 @@ void NativeController::flushPendingDeepLink(bool settle)
     applyDeepLink(url);
 }
 
-void NativeController::beginAnchorLinkJump(const QString &target)
+void NativeController::beginAnchorLinkJump(const QString &target, const QString &cachedStream, const QString &cachedTopic)
 {
     // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): the jump owns a
     // visible transition phase until the anchor resolves or the bounded walk
@@ -16982,6 +17061,7 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         emit anchorNavigationErrorChanged();
     }
     m_anchorLinkPending = true;
+    m_anchorFromCachedSearch = !cachedStream.isEmpty();
     m_pendingAnchorMessage = target;
     m_pendingAnchorParsed.reset();
     m_pendingAnchorStream = m_stream;
@@ -16993,8 +17073,25 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         reanchorFromWindow();
         return;
     }
+    const auto open = [this](const QString &stream, const QString &topic) {
+        m_pendingAnchorStream = stream;
+        m_pendingAnchorTopic = topic;
+        if (topic.isEmpty()) {
+            if (stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
+            else selectStream(stream);
+        } else if (stream == m_stream && topic == m_topic) {
+            reanchorFromWindow();
+        } else {
+            openTopic(topic);
+        }
+    };
+    if (m_anchorFromCachedSearch) {
+        // A cached hit supplies a route. Only a row present in the reopened history can be highlighted.
+        open(cachedStream, cachedTopic);
+        return;
+    }
     request("GET", messenger + "/messages/", {}, {{"project_id", m_session->project()}, {"uuid", target}},
-        [this, target](const ApiResult &result) {
+        [this, target, open](const ApiResult &result) {
         if (m_pendingAnchorMessage != target || !m_anchorLinkPending) return;
         const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
         const auto parsed = rows.isEmpty() ? std::optional<Message>{}
@@ -17003,18 +17100,8 @@ void NativeController::beginAnchorLinkJump(const QString &target)
             clearAnchor(deepLinkUnavailableNotice());
             return;
         }
-        if (m_pendingAnchorMessage != target) return;
         m_pendingAnchorParsed = parsed;
-        m_pendingAnchorStream = parsed->stream;
-        m_pendingAnchorTopic = parsed->topic;
-        if (parsed->topic.isEmpty()) {
-            if (parsed->stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
-            else selectStream(parsed->stream);
-        } else if (parsed->stream == m_stream && parsed->topic == m_topic) {
-            reanchorFromWindow();
-        } else {
-            openTopic(parsed->topic);
-        }
+        open(parsed->stream, parsed->topic);
     });
 }
 
@@ -17061,6 +17148,7 @@ void NativeController::clearAnchor(const QString &notice)
     const QString failedTarget = m_pendingAnchorMessage;
     const QString failedConversation = conversationKey();
     m_anchorLinkPending = false;
+    m_anchorFromCachedSearch = false;
     m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
@@ -17123,6 +17211,7 @@ void NativeController::reanchorFromWindow()
         const auto target = m_pendingAnchorMessage;
         const bool hadLinkJump = m_anchorLinkPending;
         m_anchorLinkPending = false;
+        m_anchorFromCachedSearch = false;
         m_pendingAnchorMessage.clear();
         m_pendingAnchorStream.clear();
         m_pendingAnchorTopic.clear();
@@ -17139,7 +17228,7 @@ void NativeController::reanchorFromWindow()
         return;
     }
     // The lookup determines which conversation owns the around-anchor pages.
-    if (m_anchorLinkPending && !m_pendingAnchorParsed) return;
+    if (m_anchorLinkPending && !m_anchorFromCachedSearch && !m_pendingAnchorParsed) return;
     if (busy()) return; // A live page owns the next reanchor pass.
     // Reference parity (issue #71): a resolved anchor outside the loaded window opens
     // the around-anchor pages (workspace_ui 61dacef7 resolveOpeningMessageWindow in

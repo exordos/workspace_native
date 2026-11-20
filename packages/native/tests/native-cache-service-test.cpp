@@ -42,6 +42,39 @@ class NativeCacheServiceTest final : public QObject
 {
     Q_OBJECT
   private slots:
+    void messageSearchCapsResultsAndCancelsSupersededQueries()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativeCacheService service(directory.path());
+        QVERIFY(service.open(Server, Project, User));
+        QTRY_VERIFY(service.available());
+        QJsonArray history;
+        for (int i = 0; i < 60; ++i) {
+            auto row = rows().first().toObject();
+            row["uuid"] = QStringLiteral("8af00000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            row["payload"] = QJsonObject{{"kind", "markdown"}, {"content", QStringLiteral("needle %1").arg(i)}};
+            history.append(row);
+        }
+        bool saved = false;
+        const auto lease = service.lease();
+        QVERIFY(service.put(lease, {NativeCache::Kind::History, Stream, Topic, {}}, history, {}, this,
+            [&](bool okay) { saved = okay; }));
+        QTRY_VERIFY(saved);
+        int callbacks = 0;
+        bool cancelled = false;
+        std::optional<QJsonArray> matches;
+        service.searchMessages(lease, "needle", this, [&](auto result) { ++callbacks; cancelled = !result; });
+        service.searchMessages(lease, "needle", this, [&](auto result) { ++callbacks; matches = std::move(result); });
+        QTRY_COMPARE(callbacks, 2);
+        QVERIFY(cancelled);
+        QVERIFY(matches);
+        QCOMPARE(matches->size(), NativeCache::MaximumSearchResults);
+        QSet<QString> ids;
+        for (const auto &entry : *matches) ids.insert(entry.toObject().value("id").toString());
+        QCOMPARE(ids.size(), NativeCache::MaximumSearchResults);
+    }
+
     // Same five logical local-worker oracles; callbacks own their completion
     // state so even an expected capability RED can unwind without dangling refs.
     void messageBodyRunsOnExistingWorkerAndReturnsOnlyToCurrentLease()

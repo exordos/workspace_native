@@ -11228,6 +11228,133 @@ mv -Tf "$root/.current-new" "$root/current"
     // sidebar-chat-row-meta.ui.tsx) render inside the existing 60 px stream and 56 px topic
     // rows. Colors are the blue-cold light palette of qml/NativeTheme.qml: sidebar-sender
     // #7087ff, text-secondary #787878, text-muted #989898.
+    void localCachedMessageSearchNavigatesByKeyboard()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto cachePath = directory.filePath("cache");
+        const QString first = "9a000000-0000-4000-8000-000000000001";
+        const QString second = "9a000000-0000-4000-8000-000000000002";
+        const QString ignored = "9a000000-0000-4000-8000-000000000003";
+        const auto firstRow = message(QStringLiteral("First **Иголка** result."), first, secondTopicId);
+        const auto secondRow = message(QStringLiteral("Second иголка result."), second, secondTopicId);
+        const QString foreignUser = "9a000000-0000-4000-8000-000000000004";
+        const QString foreignProject = "9a000000-0000-4000-8000-000000000005";
+        {
+            qint64 savedAt = QDateTime::currentMSecsSinceEpoch();
+            NativeCache seed(cachePath, {}, true, [&] { return savedAt; });
+            for (const auto &identity : {qMakePair(foreignProject, userId), qMakePair(projectId, foreignUser)}) {
+                QVERIFY(seed.open(fixture.server.origin(), identity.first, identity.second));
+                auto foreign = message(QStringLiteral("Foreign иголка must stay private"), ignored, secondTopicId);
+                foreign["project_id"] = identity.first;
+                foreign["user_uuid"] = identity.second;
+                QVERIFY(seed.putMessageBody(seed.lease(), foreign));
+                seed.close();
+            }
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            const QString edited = "9a000000-0000-4000-8000-000000000006";
+            QVERIFY(seed.putMessageBody(seed.lease(), message("Obsolete searchable text", edited, secondTopicId)));
+            ++savedAt;
+            auto opaque = message({}, ignored, secondTopicId);
+            opaque["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", foreignProject},
+                {"content", QStringLiteral("Transport иголка must stay hidden")}};
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, secondTopicId, "older"},
+                QJsonArray{firstRow, secondRow, opaque, message("Edited content", edited, secondTopicId)}));
+            QVERIFY(seed.putMessageBody(seed.lease(), secondRow));
+            auto poll = pollCreateDto("9a000000-0000-4000-8000-000000000007");
+            poll["user_uuid"] = userId;
+            QVERIFY(seed.putMessageBody(seed.lease(), poll));
+        }
+        const auto normal = fixture.server.handler;
+        int messageLookups = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const QUrlQuery params(request.target);
+                const auto id = params.queryItemValue("uuid");
+                if (id == first || id == second) {
+                    ++messageLookups;
+                    return {QJsonArray{id == first ? firstRow : secondRow}};
+                }
+                if (params.queryItemValue("topic_uuid") == secondTopicId) return {QJsonArray{firstRow, secondRow}};
+            }
+            return normal(request);
+        };
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        controller.showSection("calendar");
+        QCOMPARE(controller.section(), QString("calendar"));
+        auto *launcher = visibleItem(window->contentItem(), "cachedMessageSearchButton");
+        QVERIFY2(launcher, "The signed-in account needs a local history search entry point");
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        QTRY_VERIFY(query->hasActiveFocus());
+        auto *content = visibleItem(window->contentItem(), "cachedMessageSearchContent");
+        QVERIFY(content);
+        auto *accessible = QAccessible::queryAccessibleInterface(content);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::Dialog);
+        QCOMPARE(accessible->text(QAccessible::Name), QString("Search cached messages"));
+        query->setProperty("text", "Obsolete searchable text");
+        QTRY_COMPARE(controller.property("cachedSearchState").toString(), QString("ready"));
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+        auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+        QVERIFY(status);
+        QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        const auto pollQuestion = pollCreateDto(ignored).value("payload").toObject().value("questions").toArray().first().toObject();
+        const auto optionText = pollQuestion.value("options").toArray().first().toObject().value("text").toString();
+        query->setProperty("text", optionText);
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 1);
+        QCOMPARE(controller.property("cachedSearchResults").toList().first().toMap().value("id").toString(),
+            QString("9a000000-0000-4000-8000-000000000007"));
+        query->setProperty("text", QStringLiteral("ИГОЛКА"));
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 2);
+        const auto rows = controller.property("cachedSearchResults").toList();
+        QSet<QString> ids;
+        for (const auto &entry : rows) {
+            const auto row = entry.toMap();
+            ids.insert(row.value("id").toString());
+            QVERIFY(row.value("text").toString().contains(QStringLiteral("иголка"), Qt::CaseInsensitive));
+            QVERIFY(!row.value("text").toString().contains("**"));
+            QVERIFY(row.value("location").toString().contains("Planning"));
+        }
+        QCOMPARE(ids, (QSet<QString>{first, second}));
+        QCOMPARE(messageLookups, 0);
+        auto *list = visibleItem(window->contentItem(), "cachedMessageSearchResults");
+        QVERIFY(list);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(list->property("currentIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(list->property("currentIndex").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Down);
+        const auto target = rows[1].toMap().value("id").toString();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(controller.section(), QString("chat"));
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+        QTRY_COMPARE(controller.anchorMessageId(), target);
+        QCOMPARE(messageLookups, 0); // Both matching identifiers and their routes are already in this cache.
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery")
+            && visibleItem(window->contentItem(), "cachedMessageSearchQuery")->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(launcher->hasActiveFocus());
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
         WindowChannelFixture fixture;
