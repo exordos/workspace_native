@@ -82,13 +82,13 @@ public:
     {
         m_unread = unread;
         m_label = label;
-        if (m_window->isExposed()) publishUnread(m_window, unread, label);
+        publishUnread(m_window, unread, label);
     }
 
     void setProgress(qreal progress)
     {
         m_progress = progress;
-        if (m_window->isExposed()) publishProgress(m_window, progress);
+        publishProgress(m_window, progress);
     }
 
     bool nativeEventFilter(const QByteArray &type, void *message, qintptr *) override
