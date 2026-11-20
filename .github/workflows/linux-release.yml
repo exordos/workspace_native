@@ -254,6 +254,7 @@ jobs:
           cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON \
             -DWORKSPACE_NATIVE_QUICK_GATE=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --target native-headless-tests --parallel "$(nproc)"
+          ccache --show-stats
       - name: Save compiled test objects
         if: steps.headless-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -265,4 +266,4 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: >-
           env -u DISPLAY -u WAYLAND_DISPLAY dbus-run-session --
-          ctest --test-dir build/headless -LE gui --parallel "$(nproc)" --output-on-failure --no-tests=error
+          ctest --test-dir build/headless -LE gui --parallel 8 --output-on-failure --no-tests=error
