@@ -98,6 +98,12 @@ ApplicationWindow {
             accountPopup.open();
         }
     }
+    property bool preferencesFromAccountMenu: false
+    function openPreferencePanel(screen) {
+        accountPopup.close()
+        rightDrawer.openAccountScreen(screen)
+        preferencesFromAccountMenu = true
+    }
     // Right drawer shell (issue #129): docks beside the chat like aboutDrawer.
     // The channel info content (issue #132) mounts on the body slot as the
     // chat-info root screen content.
@@ -113,6 +119,26 @@ ApplicationWindow {
         // useCloseFavoritesRightDrawer; issue #70).
         readonly property bool favoritesActive: root.controller.favoritesVisible
         onFavoritesActiveChanged: if (favoritesActive) rightDrawer.close()
+        readonly property bool preferenceScreen: topLayerKind === "account"
+            && (currentAccountScreen === "settings" || currentAccountScreen === "appearance")
+        Connections {
+            target: rightDrawer
+            function onCurrentAccountScreenChanged() {
+                if (!root.preferencesFromAccountMenu || rightDrawer.preferenceScreen) return
+                root.preferencesFromAccountMenu = false
+                if (rightDrawer.currentAccountScreen === "root") {
+                    rightDrawer.closeCurrent()
+                    accountPopup.open()
+                }
+            }
+        }
+        Loader {
+            anchors.fill: parent
+            active: rightDrawer.preferenceScreen && rightDrawer.drawerOpen
+            sourceComponent: Component {
+                NativeAccountPreferences { preferences: root.preferences; colors: root.colors; appearance: rightDrawer.currentAccountScreen === "appearance" }
+            }
+        }
         NativeChannelInfo {
             id: channelInfoLayer
             objectName: "channelInfoLayer"
@@ -182,7 +208,7 @@ ApplicationWindow {
                     && userUuid.length > 0
                     && rightDrawer.currentProfileOverride === "workspace-user-uuid:" + userUuid))
         }
-        title: profileLayer.visible
+        title: preferenceScreen ? (currentAccountScreen === "settings" ? qsTr("Settings") : qsTr("Appearance")) : profileLayer.visible
             ? (profileLayer.isSelf ? qsTr("Personal info") : qsTr("Information"))
             : ""
     }
@@ -3553,6 +3579,16 @@ component NativeMentionChip: Item {
                     accountPopup.close()
                     rightDrawer.openPersonalInfo()
                 }
+            }
+            NativeButton {
+                objectName: "accountSettingsAction"; Layout.fillWidth: true
+                colors: root.colors; text: qsTr("Settings")
+                onClicked: root.openPreferencePanel("settings")
+            }
+            NativeButton {
+                objectName: "accountAppearanceAction"; Layout.fillWidth: true
+                colors: root.colors; text: qsTr("Appearance")
+                onClicked: root.openPreferencePanel("appearance")
             }
             NativeButton {
                 objectName: "aboutAction"

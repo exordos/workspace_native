@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include <QCollator>
 #include "call/incoming-call.h"
 #include "media-viewer.h"
 #include "native-deeplink.h"
@@ -10982,7 +10983,19 @@ static QString resolveRealmIconUrl(const QString &origin, const QString &icon)
 
 void NativeController::setPreferences(NativePreferences *preferences)
 {
-    m_preferences = preferences;
+    if (m_preferences != preferences) {
+        disconnect(m_sidebarSortBinding);
+        disconnect(m_sidebarLocaleBinding);
+        m_preferences = preferences;
+        const auto refreshOrder = [this] { emit streamsChanged(); emit topicsChanged(); };
+        if (preferences) {
+            m_sidebarSortBinding = connect(preferences, &NativePreferences::sidebarSortModeChanged, this, refreshOrder);
+            m_sidebarLocaleBinding = connect(preferences, &NativePreferences::localeChanged, this, [this, refreshOrder] {
+                if (m_preferences && m_preferences->sidebarSortMode() == "alphabetical") refreshOrder();
+            });
+        }
+        refreshOrder();
+    }
     // Issue #165: the guard consumes the per-owner authIdleTimeout preset and
     // re-arms live whenever it changes (the #135 row writes the same key).
     if (preferences && m_authGuard)
@@ -13228,9 +13241,26 @@ QVariantList NativeController::streams() const
     QHash<QString, qint64> activity;
     for (const auto *stream : ordered)
         activity.insert(stream->uuid, rowActivityMicros(stream->lastMessage, stream->updatedMicros));
+    const auto sortMode = m_preferences ? m_preferences->sidebarSortMode() : QString{};
+    std::optional<QCollator> names;
+    if (sortMode == "alphabetical") {
+        names.emplace(QLocale(m_preferences->locale()));
+        names->setCaseSensitivity(Qt::CaseInsensitive);
+        names->setNumericMode(true);
+    }
+    const auto title = [this](const Stream *stream) {
+        return stream->privateStream && isUuid(stream->directUser)
+            ? peerDisplayName(stream->directUser) : stream->name;
+    };
     std::stable_sort(ordered.begin(), ordered.end(), [&](const Stream *a, const Stream *b) {
+        if (names) {
+            const auto comparison = names->compare(title(a), title(b));
+            return comparison ? comparison < 0 : a->uuid < b->uuid;
+        }
         const int rankA = streamGroupRank(*a), rankB = streamGroupRank(*b);
         if (rankA != rankB) return rankA < rankB;
+        if (sortMode == "unread_first" && rankA == 0 && (a->activeUnread > 0) != (b->activeUnread > 0))
+            return a->activeUnread > 0;
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
     QVariantList result;
@@ -14115,6 +14145,8 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
     for (const auto &topic : topics) sorted.append(&topic);
     std::stable_sort(sorted.begin(), sorted.end(), [&](const Topic *a, const Topic *b) {
         if (rank(a) != rank(b)) return rank(a) < rank(b);
+        if (m_preferences && m_preferences->sidebarSortMode() == "unread_first" && rank(a) == 0
+            && (a->activeUnread > 0) != (b->activeUnread > 0)) return a->activeUnread > 0;
         return timestamps.value(a->lastMessage, a->updatedMicros) > timestamps.value(b->lastMessage, b->updatedMicros);
     });
     QVariantList result;
