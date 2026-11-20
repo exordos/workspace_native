@@ -560,6 +560,41 @@ void NativePreferences::setLocale(const QString &locale)
     emit localeChanged();
 }
 
+bool NativePreferences::resetLocalSettings()
+{
+    m_conversationSaveTimer.stop();
+    m_pendingConversationOwner.clear();
+    m_pendingConversation.clear();
+    const QPointer<QWindow> window = m_window;
+    attachWindow(nullptr);
+    m_settings.clear();
+    m_settings.setValue("login/organizationHistory", m_organizationHistory);
+    m_settings.sync();
+    if (window) {
+        window->setWindowState(Qt::WindowNoState);
+        attachWindow(window);
+    }
+    if (m_settings.status() != QSettings::NoError) {
+        setError(tr("The local settings could not be cleared."));
+        return false;
+    }
+    m_mentionStore = {};
+    m_mentionStoreLoaded = false;
+    m_mentionStoreOwner.clear();
+    m_sidebarWidth = 299;
+    m_cacheLimitGb = 10;
+    m_composerToolbarExpanded = false;
+    loadAppearance();
+    loadAuthIdleTimeout();
+    loadChatLayout();
+    loadFolderRail();
+    loadReactionHistory();
+    emit sidebarPreferredWidthChanged();
+    emit cacheLimitGbChanged();
+    emit composerToolbarExpandedChanged();
+    return true;
+}
+
 void NativePreferences::setCacheLimitGb(int gigabytes)
 {
     if (gigabytes < 1 || gigabytes > 1000 || gigabytes == m_cacheLimitGb) return;
