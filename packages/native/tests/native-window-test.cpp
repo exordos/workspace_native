@@ -6575,8 +6575,8 @@ mv -Tf "$root/.current-new" "$root/current"
     void feedPageRouteOpensPageAndRendersRows()
     {
         WindowFeedFixture fixture;
-        fixture.rows = {{1, fixture.one(1)}, {2, fixture.one(2)}, {3, fixture.one(3)}};
-        const QString firstId = fixture.one(1).value("uuid").toString();
+        for (int i = 1; i <= 24; ++i) fixture.rows.insert(i, fixture.one(i));
+        const QString sourceId = fixture.one(12).value("uuid").toString();
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("p.ini"));
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
@@ -6588,6 +6588,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(!controller.messages().isEmpty());
+        const auto chatId = controller.messages().first().toMap().value("id").toString();
+        QVERIFY(!chatId.isEmpty() && chatId != sourceId);
+        QVERIFY(QMetaObject::invokeMethod(window, "toggleMessageSelection", Q_ARG(QVariant, chatId)));
+        QCOMPARE(window->property("messageSelectionCount").toInt(), 1);
         // The feed route is the entry surface: the reference keeps the rail
         // entry hidden (sidebar.lib.ts:80-98), so parity means the route only.
         const auto link = QString("ew://open/org/%1/project/%2/feed")
@@ -6596,24 +6601,57 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(controller.feedVisible());
         QVERIFY(view("nativeFeedPage"));
         QVERIFY(hasVisibleText(window->contentItem(), "All messages"));
-        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + firstId)
+        QTRY_VERIFY_WITH_TIMEOUT(view("feed-row-" + sourceId)
             && view("feed-row-" + fixture.one(3).value("uuid").toString()), 5000);
         // Context pill: "${stream name} \u00b7 ${topic name}" with the scene names.
-        auto *context = view("feed-context-" + firstId); QVERIFY(context);
+        auto *context = view("feed-context-" + sourceId); QVERIFY(context);
         QCOMPARE(context->property("text").toString(), QString("Product team \u00b7 Planning"));
-        auto *sender = view("feed-sender-" + firstId); QVERIFY(sender);
+        auto *sender = view("feed-sender-" + sourceId); QVERIFY(sender);
         QCOMPARE(sender->property("text").toString(), QString("Alice"));
-        QVERIFY(view("feed-summary-" + firstId));
+        QVERIFY(view("feed-summary-" + sourceId));
         // Row card geometry: rounded-xl (12 px) with a border (feed-page.ui.tsx:363-370).
-        auto *row = view("feed-row-" + firstId);
+        auto *row = view("feed-row-" + sourceId);
         QCOMPARE(row->property("radius").toInt(), 12);
         auto *rowBorder = qvariant_cast<QObject *>(row->property("border")); QVERIFY(rowBorder);
         QCOMPARE(rowBorder->property("width").toInt(), 1);
-        // The forward button stays gated until issue #7 ships the flow.
-        auto *forward = view("feed-forward-" + firstId); QVERIFY(forward);
-        QVERIFY(!forward->property("enabled").toBool());
+        auto *forward = view("feed-forward-" + sourceId); QVERIFY(forward);
+        auto *dialog = window->findChild<QObject *>("forwardDialog"); QVERIFY(dialog);
+        auto *list = view("feedList"); QVERIFY(list);
+        // The feed positions the initial page after delegates have been measured.
+        // Record the reading position once that startup movement has finished.
+        QTRY_VERIFY(!view("nativeFeedPage")->property("anchorRunning").toBool());
+        QTRY_VERIFY(list->property("contentHeight").toReal() > list->height() * 2);
+        const qreal position = qRound(row->y()) - 24;
+        QVERIFY(position > 0);
+        list->setProperty("contentY", position);
+        QTRY_COMPARE(list->property("contentY").toReal(), position);
+        const auto messagePosts = [&] {
+            return std::count_if(fixture.server.requests.cbegin(), fixture.server.requests.cend(),
+                [](const Request &request) { return request.method == "POST" && request.target.path().endsWith("/messages/"); });
+        };
+        const auto initialPosts = messagePosts();
+        for (const bool keyboard : {false, true}) {
+            if (keyboard) {
+                forward->forceActiveFocus(Qt::TabFocusReason);
+                QVERIFY(forward->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Space);
+            } else {
+                click(window, forward);
+            }
+            QTRY_VERIFY(dialog->property("opened").toBool());
+            QCOMPARE(dialog->property("sourceIds").value<QJSValue>().toVariant().toStringList(),
+                QStringList{sourceId});
+            QVERIFY(controller.feedVisible());
+            QCOMPARE(messagePosts(), initialPosts);
+            click(window, view("forwardCancelButton"));
+            QTRY_VERIFY(!dialog->property("visible").toBool());
+            QVERIFY(controller.feedVisible());
+            QCOMPARE(list->property("contentY").toReal(), position);
+            QCOMPARE(window->property("messageSelectionCount").toInt(), 1);
+            QCOMPARE(messagePosts(), initialPosts);
+        }
         // Open-in-chat reuses the topic navigation path and unmounts the page.
-        click(window, view("feed-open-" + firstId));
+        click(window, view("feed-open-" + sourceId));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.feedVisible()
             && controller.selectedTopic() == secondTopicId, 5000);
         // Reopening and closing via the page chrome works.
