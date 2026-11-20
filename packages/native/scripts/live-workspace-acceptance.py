@@ -843,8 +843,10 @@ class Desktop:
         # the exact route again before measuring a distinct delayed revalidation.
         self.topic("b")
         self.until(
-            lambda: self.latest("sample").get("ready")
-            and self.latest("sample").get("view") == "b",
+            lambda: (
+                self.latest("sample").get("ready")
+                and self.latest("sample").get("view") == "b"
+            ),
             "delay-target-not-ready",
         )
         self.sidebar_click("stream-" + self.config["stream"])
