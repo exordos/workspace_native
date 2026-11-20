@@ -1647,7 +1647,11 @@ ApplicationWindow {
 
     Item {
         id: loginCard
+        property bool showSavedAccounts: false
+        readonly property bool savedAccountsOnly: showSavedAccounts && root.controller.savedAccounts.length > 0
+            && root.controller.loginStep === "organization"
         visible: !root.controller.authenticated
+        onVisibleChanged: if (!visible) showSavedAccounts = false
         width: Math.min(root.width - 32, 448)
         height: Math.min(root.height - 32, loginContent.implicitHeight)
         anchors.centerIn: parent
@@ -1661,7 +1665,41 @@ ApplicationWindow {
                 id: loginContent
                 width: loginScroll.availableWidth
                 spacing: 24
+                ToolButton {
+                    id: wizardBack
+                    objectName: root.controller.loginStep === "organization" ? "savedAccountsBackButton"
+                        : root.controller.loginStep === "project" ? "projectBackButton" : "loginBackButton"
+                    visible: !loginCard.savedAccountsOnly && (root.controller.loginStep !== "organization"
+                        || root.controller.savedAccounts.length > 0)
+                    enabled: !root.controller.busy
+                    Layout.alignment: Qt.AlignLeft
+                    padding: 0
+                    spacing: 8
+                    font.pixelSize: 14
+                    text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
+                    contentItem: RowLayout {
+                        spacing: 8
+                        Image {
+                            source: "qrc:/workspace/icons/chevron-right.svg"
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            rotation: 180
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            text: wizardBack.text
+                            color: root.colors["text-muted"]
+                            font.pixelSize: 14
+                        }
+                    }
+                    onClicked: {
+                        const returnToAccounts = root.controller.loginStep === "organization";
+                        root.controller.backToOrganization();
+                        loginCard.showSavedAccounts = returnToAccounts;
+                    }
+                }
                 ColumnLayout {
+                    visible: !loginCard.savedAccountsOnly
                     Layout.fillWidth: true
                     spacing: 4
                     Text {
@@ -1774,10 +1812,18 @@ ApplicationWindow {
                         }
                     }
                 }
+                NativeButton {
+                    objectName: "savedAccountsAddServer"
+                    visible: loginCard.savedAccountsOnly
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Add server")
+                    onClicked: loginCard.showSavedAccounts = false
+                }
                 Loader {
                     objectName: "organizationFormLoader"
                     visible: active
-                    active: root.controller.projects.length === 0
+                    active: !loginCard.savedAccountsOnly && root.controller.projects.length === 0
                         && root.controller.loginStep === "organization"
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
@@ -1968,7 +2014,7 @@ ApplicationWindow {
                 }
                 Loader {
                     objectName: "realmPreviewLoader"
-                    visible: active
+                    visible: active && !loginCard.savedAccountsOnly
                     active: root.controller.projects.length === 0
                         && Object.keys(root.controller.organizationSettings).length > 0
                     Layout.fillWidth: true
@@ -2028,14 +2074,6 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 12
-                        NativeButton {
-                            objectName: "loginBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -2270,14 +2308,6 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
@@ -2366,14 +2396,6 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         Rectangle {
                             objectName: "noProjectsBanner"
                             Layout.fillWidth: true
@@ -2424,9 +2446,18 @@ ApplicationWindow {
                         }
                     }
                 }
+                NativeButton {
+                    objectName: "projectCredentialsBackButton"
+                    visible: root.controller.loginStep === "project"
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Back")
+                    enabled: !root.controller.busy
+                    onClicked: root.controller.backToCredentials()
+                }
                 Text {
                     objectName: "organizationErrorBanner"
-                    visible: root.controller.error.length > 0 && root.controller.loginStep === "organization"
+                    visible: !loginCard.savedAccountsOnly && root.controller.error.length > 0 && root.controller.loginStep === "organization"
                     text: root.controller.error
                     textFormat: Text.PlainText
                     color: root.colors.danger
