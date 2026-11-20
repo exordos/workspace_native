@@ -270,6 +270,8 @@ QVariantMap NativeMarkdown::editContent(const QString &markdown) const
     while (last >= first && attachmentLines.contains(last)) { trailing.prepend(attachmentLines.value(last)); end = last--; }
     auto text = lines.mid(first, end - first).join('\n');
     if (!trailing.isEmpty()) while (text.endsWith('\n')) text.chop(1);
+    const bool paragraphBreak = first > 0 && text.startsWith('\n');
+    if (paragraphBreak) text.remove(0, 1);
     QVariantList ordered;
     for (const auto &entry : leading) {
         auto value = entry.toMap(); value.insert("retained", first > 0); ordered.append(value);
@@ -292,6 +294,9 @@ QVariantMap NativeMarkdown::editContent(const QString &markdown) const
             continue;
         }
         positions.insert(raw, attachments.size());
+        // Retained cards share the boundary with the editable paragraph, even
+        // when the user removes the leading cards and keeps a trailing one.
+        if (paragraphBreak) value.insert("paragraphBreak", true);
         value.remove("offset"); value.remove("length"); value.remove("imageSyntax"); value.remove("standalone");
         attachments.append(value);
     }
@@ -342,15 +347,18 @@ QString NativeMarkdown::prependEditAttachments(const QString &markdown, const QV
     for (const auto &entry : editAttachmentTokens(markdown))
         present.insert(entry.toMap().value("markdown").toString());
     QStringList lines;
+    bool paragraphBreak = false;
     for (const auto &entry : attachments) {
         const auto card = entry.toMap();
         if (!card.value("retained").toBool()) continue;
         const auto line = card.value("markdown").toString();
-        if (!line.isEmpty() && !lines.contains(line) && !present.contains(line.trimmed())) lines.append(line);
+        if (line.isEmpty() || lines.contains(line) || present.contains(line.trimmed())) continue;
+        lines.append(line);
+        paragraphBreak |= card.value("paragraphBreak").toBool();
     }
     if (lines.isEmpty()) return markdown;
     if (markdown.isEmpty()) return lines.join('\n');
-    return lines.join('\n') + '\n' + markdown;
+    return lines.join('\n') + (paragraphBreak ? QStringLiteral("\n\n") : QStringLiteral("\n")) + markdown;
 }
 
 QStringList NativeMarkdown::missingAttachmentLinks(const QString &markdown, const QStringList &links)

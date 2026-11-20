@@ -215,9 +215,11 @@ private slots:
         QCOMPARE(fixture.controller.draft(), QString("first answer"));
         QCOMPARE(fixture.controller.uploadEntries().size(), 1);
         fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 1);
-        QCOMPARE(saved, "[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n[First](urn:quote:" + messageId
-            + ")\n\nfirst answer\n\n[Second](urn:quote:"
-            + otherId + ")\n\nSecond answer typed while uploading");
+        const QString attachment = "[report.txt](<urn:file:" + returnedId
+            + "?name=report.txt&content_type=text%2Fplain&size=7>)";
+        QCOMPARE(saved, "[First](urn:quote:" + messageId + ")\n\n" + attachment
+            + "\n\nfirst answer\n\n[Second](urn:quote:" + otherId
+            + ")\n\nSecond answer typed while uploading");
         QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
         QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
         QVERIFY(fixture.controller.beginEditMessage(returnedId));
@@ -227,10 +229,40 @@ private slots:
         QCOMPARE(fixture.controller.draft(), QString("first answer"));
         QVERIFY(fixture.controller.selectReplyTab(reopened[1].toMap().value("id").toString()));
         QCOMPARE(fixture.controller.draft(), QString("Second answer typed while uploading"));
-        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QVERIFY(fixture.controller.editAttachments().isEmpty());
         const auto originalWire = saved;
         fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 2);
         QCOMPARE(saved, originalWire);
+    }
+
+    void inlineEditPreservesAnExistingAttachmentBeforeTheFirstQuote()
+    {
+        const QString attachment = "[existing.txt](<urn:file:" + secondTopicId + "?name=existing.txt>)";
+        const QString quote = "[First](urn:quote:" + messageId + ")";
+        const QString prefix = attachment + "\n" + quote + "\n\n";
+        auto reply = message(prefix + "Original answer", returnedId);
+        const auto origin = message("First origin", messageId);
+        Fixture fixture;
+        QString saved;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") {
+                saved = request.body["payload"].toObject()["content"].toString();
+                reply["payload"] = request.body["payload"];
+                return {reply};
+            }
+            if (request.target.path().endsWith("/messages/"))
+                return {QJsonArray{origin, reply}};
+            return {request.target.path().endsWith(messageId) ? origin : reply};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QCOMPARE(fixture.controller.draft(), QString("Original answer"));
+        fixture.controller.setDraft("Edited answer");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, prefix + "Edited answer");
     }
 
     void inlineEditCancellationKeepsAnEarlierOrdinaryUpload()

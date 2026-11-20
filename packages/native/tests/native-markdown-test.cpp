@@ -53,6 +53,31 @@ private slots:
         QCOMPARE(saved, repeated);
     }
 
+    void removingOneRetainedAttachmentKeepsTheAnswerParagraph()
+    {
+        const QString first = "[first](<urn:file:" + messageId + ">)";
+        const QString second = "[second](<urn:file:" + returnedId + ">)";
+        const auto result = NativeMarkdown().editContent(first + "\n" + second + "\n\nAnswer");
+        QCOMPARE(result.value("markdown").toString(), QString("Answer"));
+        auto cards = result.value("attachments").toList();
+        QCOMPARE(cards.size(), 2);
+        cards.removeLast();
+        QCOMPARE(NativeMarkdown::prependEditAttachments("Edited", cards), first + "\n\nEdited");
+        QCOMPARE(NativeMarkdown::prependEditAttachments("Edited", {}), QString("Edited"));
+    }
+
+    void keepingOnlyATrailingAttachmentPreservesTheAnswerParagraph()
+    {
+        const QString first = "[first](<urn:file:" + messageId + ">)";
+        const QString last = "[last](<urn:file:" + returnedId + ">)";
+        const auto result = NativeMarkdown().editContent(first + "\n\nAnswer\n\n" + last);
+        QCOMPARE(result.value("markdown").toString(), QString("Answer"));
+        auto cards = result.value("attachments").toList();
+        QCOMPARE(cards.size(), 2);
+        cards.removeFirst();
+        QCOMPARE(NativeMarkdown::prependEditAttachments("Edited", cards), last + "\n\nEdited");
+    }
+
     void removingInlineAttachmentLeavesMatchingCodeAndEscapesUntouched()
     {
         const QString image = "![photo](<urn:image:" + messageId + ">)";
