@@ -124,6 +124,11 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   button (same look as the existing floating scroll-to-bottom) calls
   `controller.dismissAnchorNavigation()` + `messageList.scrollToLatest()`.
 
+A failed link and its Retry action belong to the stream and topic where resolution
+failed. Selecting another conversation dismisses the alert. While either the pending
+or failed layer covers the viewport, the list suspends automatic read receipts.
+Dismissing the layer resumes the normal visible-row and end-of-topic checks.
+
 ### Deterministic tests
 
 The mock server `Response.defer` gate (tests/mock-server.h) holds the

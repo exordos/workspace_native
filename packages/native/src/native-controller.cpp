@@ -16832,6 +16832,7 @@ void NativeController::beginAnchorLinkJump(const QString &target)
     if (!m_anchorNavigationError.isEmpty() || !m_failedAnchorLinkTarget.isEmpty()) {
         m_anchorNavigationError.clear();
         m_failedAnchorLinkTarget.clear();
+        m_failedAnchorConversation.clear();
         emit anchorNavigationErrorChanged();
     }
     m_anchorLinkPending = true;
@@ -16911,6 +16912,7 @@ void NativeController::clearAnchor(const QString &notice)
     // link, retry, tail escape) retires any previous failure state.
     const bool hadLinkJump = m_anchorLinkPending && !m_pendingAnchorMessage.isEmpty();
     const QString failedTarget = m_pendingAnchorMessage;
+    const QString failedConversation = conversationKey();
     m_anchorLinkPending = false;
     m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
@@ -16927,12 +16929,14 @@ void NativeController::clearAnchor(const QString &notice)
     if (automaticOpening) finishConversationOpening({}, true);
     if (!guard) return;
     const bool hadError = !m_anchorNavigationError.isEmpty();
-    if (!notice.isEmpty() && hadLinkJump) {
+    if (!notice.isEmpty() && hadLinkJump && failedConversation == conversationKey()) {
         m_anchorNavigationError = notice;
         m_failedAnchorLinkTarget = failedTarget;
+        m_failedAnchorConversation = failedConversation;
     } else {
         m_anchorNavigationError.clear();
         m_failedAnchorLinkTarget.clear();
+        m_failedAnchorConversation.clear();
     }
     if (hadError || !m_anchorNavigationError.isEmpty()) emit anchorNavigationErrorChanged();
     if (!notice.isEmpty()) {
@@ -16956,6 +16960,10 @@ bool NativeController::topicOpeningOwnsPendingAnchor() const
 
 void NativeController::reanchorFromWindow()
 {
+    if (!m_failedAnchorLinkTarget.isEmpty() && m_failedAnchorConversation != conversationKey()) {
+        dismissAnchorNavigation();
+        return;
+    }
     if (m_pendingAnchorMessage.isEmpty()) return;
     if (m_stream != m_pendingAnchorStream || m_topic != m_pendingAnchorTopic) {
         // An owned deep-link transition to the anchor's own destination is in
