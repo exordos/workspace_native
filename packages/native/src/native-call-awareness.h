@@ -8,13 +8,14 @@
 
 namespace workspace {
 
+class JitsiCallWindowController;
+
 // Shell-side call awareness (issue #86, docs/NATIVE_DESKTOP_CALL_AWARENESS.md):
 // while a call is active the shell keeps the display awake and the tray
 // tooltip shows the room. This is the native counterpart of the reference
 // Electron IPC handlers "call:start"/"call:update"/"call:end"
 // (workspace_ui 61dacef7 packages/electron/src/main.ts:1268-1322). The call
-// UI itself does not exist in the native client yet, so this service is
-// dormant: the Q_INVOKABLE API is the seam the future call surface calls.
+// window supplies its confirmed embed state, room and live participant count.
 //
 // The class owns the call state machine and the freedesktop display-sleep
 // cookie; the tooltip text itself is composed by NativeDesktop (it owns the
@@ -32,6 +33,7 @@ public:
     // PowerWatcher seam pattern, issue #78).
     static QDBusConnection defaultBus() { return QDBusConnection::sessionBus(); }
     void start(const QDBusConnection &bus = defaultBus());
+    void start(JitsiCallWindowController &window, const QDBusConnection &bus = defaultBus());
 
     // Reference rule: strip control chars [\x00-\x1f\x7f], cap at 128 chars,
     // empty falls back to "Call". The reference does not trim whitespace.
