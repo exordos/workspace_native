@@ -30871,8 +30871,7 @@ private slots:
         QVERIFY(controller.anchorNavigationError().isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), target, 4000);
         QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
-        auto *highlight = item(content, "messageHighlight-" + target); QVERIFY(highlight);
-        QVERIFY(highlight->isVisible());
+        QTRY_VERIFY(visibleItem(content, "messageHighlight-" + target));
         // A next failing jump (unknown target) re-arms the retryable alert, and
         // the inline scroll-to-bottom escapes to the conversation tail from there.
         const QString missingTarget = "99999999-9999-4999-8999-999999999999";

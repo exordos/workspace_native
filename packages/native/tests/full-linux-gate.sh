@@ -73,9 +73,11 @@ ctest_args=(--test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --
 gdbus call --session --timeout 30 --dest org.freedesktop.portal.Desktop \
     --object-path /org/freedesktop/portal/desktop --method org.freedesktop.portal.Settings.Read \
     org.freedesktop.appearance color-scheme
-QT_QPA_PLATFORMTHEME=gtk3 ctest "${ctest_args[@]}" -L gui
+gate_status=0
+QT_QPA_PLATFORMTHEME=gtk3 ctest "${ctest_args[@]}" -L gui || gate_status=1
 
 # The remaining suites execute on X11 as well. A separate empty session bus
 # leaves the well-known desktop service names available to their test fixtures.
 QT_QPA_PLATFORMTHEME=generic dbus-run-session --config-file "$state/bus.conf" -- \
-    ctest "${ctest_args[@]}" -LE gui
+    ctest "${ctest_args[@]}" -LE gui || gate_status=1
+exit "$gate_status"

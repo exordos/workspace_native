@@ -152,7 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apt-get install --no-install-recommends -y tigervnc-standalone-server openbox xauth x11-utils pulseaudio qt6-gtk-platformtheme fonts-noto-core libgl1-mesa-dri libglib2.0-bin xdg-desktop-portal xdg-desktop-portal-gtk
+          apt-get install --no-install-recommends -y tigervnc-standalone-server openbox xauth x11-utils pulseaudio qt6-gtk-platformtheme fonts-noto-core fonts-noto-color-emoji libgl1-mesa-dri libglib2.0-bin xdg-desktop-portal xdg-desktop-portal-gtk
           cmake --build build/linux-release --parallel "$(nproc)"
           # Hosted container jobs run as root with a runner-owned home. PulseAudio
           # and desktop portals use the identity and home of a real desktop user.
