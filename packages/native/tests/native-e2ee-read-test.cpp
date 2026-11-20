@@ -214,7 +214,7 @@ public:
             return sessionResponse(request);
         };
     }
-    bool start(bool archived = false) {
+    bool start(bool archived = false, int activeStreamCount = 1) {
         const auto failedStage = [this](const char *stage) {
             QJsonArray pending;
             for (auto *reply : api.findChildren<QNetworkReply *>())
@@ -230,8 +230,8 @@ public:
         controller.login(tls.origin().toString(), "Synthetic", "synthetic-password", "");
         if (!QTest::qWaitFor([this] { return controller.projects().size() == 1; }, 2000)) return failedStage("projects");
         controller.openProject(projectId);
-        if (!QTest::qWaitFor([this, archived] { return archived ? controller.archivedChats().size() == 1
-            : controller.streams().size() == 1; }, 2000)) return failedStage("streams");
+        if (!QTest::qWaitFor([this, archived, activeStreamCount] { return archived ? controller.archivedChats().size() == 1
+            : controller.streams().size() == activeStreamCount; }, 2000)) return failedStage("streams");
         if (archived) controller.openArchivedChat(streamIdentity);
         else controller.selectStream(streamIdentity);
         if (!QTest::qWaitFor([this] { return controller.topics().size() == 2; }, 2000)) return failedStage("topics");
@@ -9811,6 +9811,214 @@ private slots:
     // Issue #221 acceptance: the error row carries an inline ghost Retry (reference
     // encrypted-message-placeholder.ui.tsx:28-48 at workspace_ui 230e02b), disabled while its
     // single-message re-decrypt is in flight, and success replaces the row body.
+    void uiSecretRequestVerifiesTheReferencedStream_data()
+    {
+        QTest::addColumn<bool>("replaceBeforeReply");
+        QTest::newRow("forwarded-source") << false;
+        QTest::newRow("key-arrives-during-authority-read") << true;
+    }
+
+    void uiSecretRequestVerifiesTheReferencedStream()
+    {
+        QFETCH(bool, replaceBeforeReply);
+        const QString sourceId = "e2200000-0000-4000-8000-000000000001";
+        const QString sourceKey = "e2200000-0000-4000-8000-000000000002";
+        const QString sourceTopic = "e2200000-0000-4000-8000-000000000003";
+        auto key = NativeChatCrypto::createGroupKey();
+        QVERIFY(key);
+        const auto wipe = qScopeGuard([&] { key.bytes.fill(0); });
+        const auto sealed = NativeChatCrypto::encryptMessage(key.bytes, "Forwarded text", {sourceId, sourceKey});
+        QVERIFY(sealed);
+        const auto urn = QStringLiteral("urn:secret:v1:%1:%2:%3").arg(sourceId, sourceKey,
+            QString::fromLatin1(sealed.bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
+        Fixture f; f.stream = fullEncryptedStream();
+        f.cipher = message("Forward [fragment](" + urn + ")");
+        auto source = fullEncryptedStream();
+        source["uuid"] = sourceId;
+        source["default_topic_uuid"] = sourceTopic;
+        const auto base = f.http.handler;
+        int sourceChecks = 0, posts = 0;
+        QJsonObject submitted;
+        f.http.handler = [&](const Request &r) -> Response {
+            const auto path = r.target.path();
+            if (r.method == "GET" && path.endsWith("/streams/")) return {QJsonArray{f.stream, source}};
+            if (path.endsWith("/streams/" + sourceId)) {
+                ++sourceChecks;
+                return {source, 200, 120};
+            }
+            if (QUrlQuery(r.target).queryItemValue("stream_uuid") == sourceId) {
+                if (path.endsWith("/stream_topics/"))
+                    return {QJsonArray{QJsonObject{{"uuid",sourceTopic},{"project_id",projectId},{"stream_uuid",sourceId},
+                        {"name","Source default"},{"is_default",true}}}};
+                if (path.endsWith("/stream_bindings/"))
+                    return {QJsonArray{QJsonObject{{"uuid",messageId},{"project_id",projectId},{"stream_uuid",sourceId},
+                        {"user_uuid",userId},{"role","member"}}}};
+            }
+            if (r.method == "POST" && path.endsWith("/messages/")) {
+                ++posts;
+                submitted = r.body;
+                const auto id = QUuid::createUuidV5(QUuid(sourceTopic), r.body.value("uuid").toString().toUtf8())
+                    .toString(QUuid::WithoutBraces);
+                auto echo = message({},id,sourceTopic);
+                echo["stream_uuid"] = sourceId; echo["payload"] = r.body.value("payload");
+                return {echo, 201};
+            }
+            return base(r);
+        };
+        QVERIFY(f.start(false, 2));
+        const auto controls = [&] { return f.controller.renderSecretMessage(messageId, {}, {}).value("secretControls").toList(); };
+        QTRY_COMPARE(controls().size(), 1);
+        const auto token = controls().first().toMap().value("token").toString();
+        QVERIFY(!token.isEmpty());
+        f.controller.requestSecretMessageKey(messageId, "unrelated", {});
+        QCOMPARE(sourceChecks, 0);
+        f.controller.requestSecretMessageKey(messageId, token, {});
+        QTRY_COMPARE(sourceChecks, 1);
+        if (replaceBeforeReply)
+            QCOMPARE(f.vault.put(f.vault.lease(), {sourceId,sourceKey}, key.bytes, 0), NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(!f.controller.encryption().value("busy").toBool());
+        QCOMPARE(posts, replaceBeforeReply ? 0 : 1);
+        QCOMPARE(f.controller.selectedStream(), streamId);
+        if (replaceBeforeReply) {
+            QCOMPARE(controls().first().toMap().value("action").toString(), QString("show"));
+            return;
+        }
+        QCOMPARE(submitted.value("stream_uuid").toString(), sourceId);
+        QCOMPARE(submitted.value("topic_uuid").toString(), sourceTopic);
+        QCOMPARE(submitted.value("payload").toObject().value("key_uuid").toString(), sourceKey);
+        auto pending = f.vault.pendingRequests(f.vault.lease(), {sourceId,sourceKey});
+        QCOMPARE(pending.values.size(), 1);
+        const auto &bound = pending.values.first();
+        QVERIFY(!bound.messageId.isEmpty());
+        auto grant = NativeChatCrypto::encryptGroupKeyGrant(key.bytes, bound.publicKey,
+            {sourceId, sourceKey, bound.messageId, IssuerDevice, f.vault.device().id});
+        QVERIFY(grant);
+        auto response = message({}, QUuid::createUuid().toString(QUuid::WithoutBraces), sourceTopic);
+        response["stream_uuid"] = sourceId; response["author_uuid"] = Issuer; response["is_own"] = false;
+        response["payload"] = QJsonObject{{"kind","key_grant"},{"key_uuid",sourceKey},{"request_message_uuid",bound.messageId},
+            {"sender_device_id",IssuerDevice},{"recipient_device_id",f.vault.device().id},
+            {"content",QString::fromLatin1(grant.bytes.toBase64())}};
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(response)));
+        QTRY_COMPARE(controls().first().toMap().value("action").toString(), QString("show"));
+        QCOMPARE(f.controller.selectedStream(), streamId);
+        for (auto &entry : pending.values) entry.clearSecrets();
+        QVERIFY(f.vault.pendingRequests(f.vault.lease(), {streamId,sourceKey}).values.isEmpty());
+    }
+
+    void uiSecretArchivedFragmentUsesItsAccessibleKey()
+    {
+        Fixture f;
+        f.stream = fullEncryptedStream(true);
+        auto key = NativeChatCrypto::createGroupKey();
+        QVERIFY(key);
+        const auto wipe = qScopeGuard([&] { key.bytes.fill(0); });
+        const auto envelope = NativeChatCrypto::encryptMessage(key.bytes, "Archived fragment", {streamId, returnedId});
+        QVERIFY(envelope);
+        const auto urn = QStringLiteral("urn:secret:v1:%1:%2:%3").arg(streamId, returnedId,
+            QString::fromLatin1(envelope.bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
+        f.cipher = message("Read [item](" + urn + ")");
+        QVERIFY(f.start(true));
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId,returnedId}, key.bytes, 0), NativeChatKeyVault::Failure::None);
+        const auto controls = f.controller.renderSecretMessage(messageId, {}, {}).value("secretControls").toList();
+        QCOMPARE(controls.size(), 1);
+        const auto token = controls.first().toMap().value("token").toString();
+        QVERIFY(f.controller.renderSecretMessage(messageId, {}, {token}).value("html").toString().contains("Archived fragment"));
+        QCOMPARE(f.posts, 0);
+    }
+
+    void uiSecretFragmentTracksRequestAndVaultRemoval_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        for (const auto *locale : {"en", "ru"})
+            for (const auto *theme : {"light", "dark"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(locale, theme))) << QString(locale) << QString(theme);
+    }
+
+    void uiSecretFragmentTracksRequestAndVaultRemoval()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, theme);
+        const QString innerId = QStringLiteral("a934d123-9965-4321-b269-9a4300000002");
+        auto outer = NativeChatCrypto::createGroupKey();
+        auto inner = NativeChatCrypto::createGroupKey();
+        QVERIFY(outer && inner);
+        const auto wipe = qScopeGuard([&] { outer.bytes.fill(0); inner.bytes.fill(0); });
+        const auto fragment = NativeChatCrypto::encryptMessage(inner.bytes, "**Test note**", {streamId, innerId});
+        QVERIFY(fragment);
+        const auto token = QStringLiteral("urn:secret:v1:%1:%2:%3").arg(streamId, innerId,
+            QString::fromLatin1(fragment.bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)));
+        const auto markdown = QStringLiteral("Before [private](%1) after").arg(token);
+        auto sealed = NativeChatCrypto::encryptMessage(outer.bytes, markdown.toUtf8(), {streamId, returnedId});
+        QVERIFY(sealed);
+        Fixture f;
+        f.stream = fullEncryptedStream();
+        f.cipher["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(sealed.bytes.toBase64())}};
+        QVERIFY(f.start());
+        const auto lease = f.vault.lease();
+        QCOMPARE(f.vault.put(lease, {streamId, returnedId}, outer.bytes, 0), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("ready"));
+        NativePreferences preferences(f.directory.filePath("secret-ui.ini"));
+        preferences.setOwner(f.controller.ownerKey());
+        preferences.setLocale(locale);
+        preferences.setMode(theme);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([guard = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(guard.data()))
+                QTest::qFail("secret fragment scene teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto control = [&] { return encryptedUiItem(window, "message-secret-" + messageId + "-7"); };
+        const auto body = [&] { return encryptedUiItem(window, "message-content-" + messageId); };
+        const auto html = [&] { return body() ? body()->property("text").toString() : QString(); };
+        QTRY_VERIFY(control() && control()->isEnabled());
+        QVERIFY(!html().contains("Test note"));
+        QVERIFY(!html().contains("urn:secret"));
+        QVERIFY(!body()->property("selectByMouse").toBool());
+        QVERIFY(!body()->property("selectByKeyboard").toBool());
+        QVERIFY(html().contains(locale == "ru" ? QStringLiteral("Запросить ключ") : QStringLiteral("Request key")));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->contentItem()->contains(control()->mapToItem(window->contentItem(),
+            QPointF(control()->width() / 2, control()->height() / 2))));
+        encryptedUiClick(control());
+        QTRY_VERIFY2(f.posts == 1, qPrintable(QString("phase %1, error %2, stream reads %3, binding reads %4")
+            .arg(f.controller.encryption().value("state").toString(), f.controller.encryption().value("error").toString())
+            .arg(f.streamGets).arg(f.bindingGets)));
+        QCOMPARE(f.requestBody.value("payload").toObject().value("key_uuid").toString(), innerId);
+        QTRY_VERIFY(control() && !control()->isEnabled());
+        // A key with the right generation but different material must keep the fragment closed.
+        auto wrong = NativeChatCrypto::createGroupKey();
+        QVERIFY(wrong);
+        const auto wipeWrong = qScopeGuard([&] { wrong.bytes.fill(0); });
+        QCOMPARE(f.vault.put(lease, {streamId, innerId}, wrong.bytes, 0), NativeChatKeyVault::Failure::None);
+        const auto retry = [&] { return encryptedUiItem(window, "message-secret-" + messageId + "-7-retry"); };
+        QTRY_VERIFY(retry() && retry()->isEnabled());
+        encryptedUiClick(retry());
+        QVERIFY(!html().contains("Test note"));
+        QCOMPARE(f.posts, 1);
+        QCOMPARE(f.vault.remove(lease, {streamId, innerId}), NativeChatKeyVault::Failure::None);
+        const auto generation = f.vault.read(lease, {streamId, innerId}).value.deletionRevision;
+        QCOMPARE(f.vault.put(lease, {streamId, innerId}, inner.bytes, generation), NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(control() && control()->isEnabled());
+        QVERIFY(!html().contains("Test note"));
+        encryptedUiClick(control());
+        QTRY_VERIFY(html().contains("Test note"));
+        QVERIFY(!html().contains("urn:secret"));
+        control()->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(!html().contains("Test note"));
+        encryptedUiClick(control());
+        QTRY_VERIFY(html().contains("Test note"));
+        QCOMPARE(f.vault.remove(lease, {streamId, innerId}), NativeChatKeyVault::Failure::None);
+        QTRY_VERIFY(!html().contains("Test note"));
+        QCOMPARE(f.posts, 1);
+    }
+
     void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs_data() {
         QTest::addColumn<QString>("locale");
         QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");

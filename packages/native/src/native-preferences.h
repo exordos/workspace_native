@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include "native-hotkeys.h"
 #include <QSettings>
 #include <QPointer>
 #include <QRect>
@@ -19,6 +20,7 @@ namespace workspace {
 
 class NativePreferences final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(workspace::NativeHotkeys *hotkeys READ hotkeys CONSTANT)
     Q_PROPERTY(QString paletteId READ paletteId WRITE setPaletteId NOTIFY paletteIdChanged)
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(QString locale READ locale WRITE setLocale NOTIFY localeChanged)
@@ -40,6 +42,8 @@ class NativePreferences final : public QObject {
     // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the reference chat list
     // density and click action (settings.model.ts chatListDensity/chatClickAction).
     // Persisted globally like the reference settings blob, not per owner.
+    Q_PROPERTY(QString notificationSound READ notificationSound WRITE setNotificationSound NOTIFY notificationSoundChanged)
+    Q_PROPERTY(QString sidebarSortMode READ sidebarSortMode WRITE setSidebarSortMode NOTIFY sidebarSortModeChanged)
     Q_PROPERTY(QString chatListDensity READ chatListDensity WRITE setChatListDensity NOTIFY chatListDensityChanged)
     Q_PROPERTY(QString chatClickAction READ chatClickAction WRITE setChatClickAction NOTIFY chatClickActionChanged)
     // Issue #85 (docs/NATIVE_DESKTOP_FOLDERS_RAIL_LAYOUT.md): the folder rail
@@ -49,6 +53,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QString folderRailLayout READ folderRailLayout WRITE setFolderRailLayout NOTIFY folderRailLayoutChanged)
     Q_PROPERTY(bool showSystemFolders READ showSystemFolders WRITE setShowSystemFolders NOTIFY showSystemFoldersChanged)
 public:
+    NativeHotkeys *hotkeys() { return &m_hotkeys; }
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
     ~NativePreferences() override;
@@ -99,6 +104,11 @@ public:
     QString chatClickAction() const { return m_chatClickAction; }
     void setChatListDensity(const QString &density);
     void setChatClickAction(const QString &action);
+    QString notificationSound() const { return m_notificationSound; }
+    void setNotificationSound(const QString &preset);
+    Q_INVOKABLE void previewNotificationSound();
+    QString sidebarSortMode() const { return m_sidebarSortMode; }
+    void setSidebarSortMode(const QString &mode);
     // Issue #85: strict reference resolvers - the layout only stays "vertical"
     // on the exact token (settings.model.ts resolveFolderRailLayout), the
     // visibility flag is accepted only as a strict boolean.
@@ -150,6 +160,9 @@ signals:
     void authIdleTimeoutChanged();
     void chatListDensityChanged();
     void chatClickActionChanged();
+    void notificationSoundChanged();
+    void notificationSoundRequested(QString preset);
+    void sidebarSortModeChanged();
     void folderRailLayoutChanged();
     void showSystemFoldersChanged();
 
@@ -194,6 +207,7 @@ private:
     void saveWindow();
     void saveLastConversation();
     QSettings m_settings;
+    NativeHotkeys m_hotkeys;
     QString m_owner;
     QString m_palette = QStringLiteral("blue-cold");
     QString m_mode = QStringLiteral("system");
@@ -225,6 +239,8 @@ private:
     QStringList m_organizationHistory;
     QString m_authIdleTimeout = QStringLiteral("3d");
     QString m_chatListDensity = QStringLiteral("general");
+    QString m_notificationSound = QStringLiteral("default");
+    QString m_sidebarSortMode = QStringLiteral("last_message");
     QString m_chatClickAction = QStringLiteral("stream");
     QString m_folderRailLayout = QStringLiteral("vertical");
     bool m_showSystemFolders = true;

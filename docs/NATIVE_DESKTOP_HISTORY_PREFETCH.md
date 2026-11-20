@@ -185,3 +185,9 @@ distance in addition to the normal viewport reserve, capped at four viewports
 in total. A pause, a layout jump, switching routes or restoring an anchor
 discards the velocity estimate. Programmatic restoration only rearms the next
 user scroll. The original request coalescing and end marker still apply.
+
+When an older page preserves the order of the existing rows, the view inserts
+its new prefix in a single model notification. It still refreshes the roles of
+retained rows, including service groups that changed at the page boundary.
+The topic and stream-aggregate window tests check the inserted range and
+the position of the visible message after a 50-row page arrives.

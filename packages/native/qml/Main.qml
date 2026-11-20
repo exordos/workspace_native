@@ -98,6 +98,12 @@ ApplicationWindow {
             accountPopup.open();
         }
     }
+    property bool preferencesFromAccountMenu: false
+    function openPreferencePanel(screen) {
+        accountPopup.close()
+        rightDrawer.openAccountScreen(screen)
+        preferencesFromAccountMenu = true
+    }
     // Right drawer shell (issue #129): docks beside the chat like aboutDrawer.
     // The channel info content (issue #132) mounts on the body slot as the
     // chat-info root screen content.
@@ -113,8 +119,34 @@ ApplicationWindow {
         // useCloseFavoritesRightDrawer; issue #70).
         readonly property bool favoritesActive: root.controller.favoritesVisible
         onFavoritesActiveChanged: if (favoritesActive) rightDrawer.close()
+        readonly property bool preferenceScreen: topLayerKind === "account"
+            && (currentAccountScreen === "settings" || currentAccountScreen === "appearance")
+        Connections {
+            target: rightDrawer
+            function onCurrentAccountScreenChanged() {
+                if (!root.preferencesFromAccountMenu || rightDrawer.preferenceScreen) return
+                root.preferencesFromAccountMenu = false
+                if (rightDrawer.currentAccountScreen === "root") {
+                    rightDrawer.closeCurrent()
+                    accountPopup.open()
+                }
+            }
+        }
+        Loader {
+            anchors.fill: parent
+            active: rightDrawer.preferenceScreen && rightDrawer.drawerOpen
+            sourceComponent: Component {
+                NativeAccountPreferences {
+                    preferences: root.preferences
+                    colors: root.colors
+                    appearance: rightDrawer.currentAccountScreen === "appearance"
+                    onShortcutsRequested: shortcutPopup.sourceComponent = shortcutSettingsComponent
+                }
+            }
+        }
         NativeChannelInfo {
             id: channelInfoLayer
+            onReferenceActivated: link => root.openReference(link)
             objectName: "channelInfoLayer"
             colors: root.colors
             controller: root.controller
@@ -182,7 +214,7 @@ ApplicationWindow {
                     && userUuid.length > 0
                     && rightDrawer.currentProfileOverride === "workspace-user-uuid:" + userUuid))
         }
-        title: profileLayer.visible
+        title: preferenceScreen ? (currentAccountScreen === "settings" ? qsTr("Settings") : qsTr("Appearance")) : profileLayer.visible
             ? (profileLayer.isSelf ? qsTr("Personal info") : qsTr("Information"))
             : ""
     }
@@ -1652,15 +1684,26 @@ component NativeMentionChip: Item {
 
     component MessageSpoilerControl: NativeMentionChip {
         required property var row
-        objectName: "message-spoiler-" + row.modelData.id + "-" + modelData.id
-        Accessible.name: modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
-        Accessible.checkable: true
-        Accessible.checked: row.openedSpoilers.includes(modelData.id)
+        objectName: (modelData.secret ? "message-secret-" : "message-spoiler-") + row.modelData.id + "-" + modelData.id
+        enabled: !modelData.secret || modelData.action !== "pending"
+        Accessible.name: modelData.secret ? modelData.label.trim() : modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
+        Accessible.checkable: !modelData.secret || ["show", "hide"].includes(modelData.action)
+        Accessible.checked: modelData.secret ? modelData.action === "hide" : row.openedSpoilers.includes(modelData.id)
         activate: () => row.activateBodyLink(modelData.urn, true)
+        Image {
+            visible: Boolean(parent.modelData.secret)
+            source: visible ? "qrc:/workspace/icons/chat_lock.svg" : ""
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 13
+            height: 13
+            sourceSize: Qt.size(13, 13)
+            Accessible.ignored: true
+        }
         Rectangle {
             anchors.fill: parent
             anchors.margins: -1
-            visible: parent.modelData.header
+            visible: Boolean(parent.modelData.header)
             color: "transparent"
             border.width: 1
             border.color: root.colors["border-subtle"]
@@ -2842,6 +2885,15 @@ component NativeMentionChip: Item {
             anchors.verticalCenter: sectionButtons.verticalCenter
             anchors.alignWhenCentered: false
             spacing: 12
+            NativeIconButton {
+                objectName: "globalUserSearchButton"
+                colors: root.colors
+                width: 40; height: 40; glyphSize: 20
+                anchors.verticalCenter: parent.verticalCenter
+                asset: "search.svg"
+                help: qsTr("Search")
+                onClicked: userSearch.open()
+            }
             NativeDownloadCenter {
                 controller: root.controller
                 colors: root.colors
@@ -3444,7 +3496,7 @@ component NativeMentionChip: Item {
         width: 315
         height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: externalAccountsBlock.formOpen ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
@@ -3524,6 +3576,14 @@ component NativeMentionChip: Item {
                     }
                 }
             }
+            NativeExternalAccountBlock {
+                id: externalAccountsBlock
+                Layout.fillWidth: true
+                visible: root.controller.authenticated
+                directory: root.controller.externalAccounts
+                colors: root.colors
+                menuOpen: accountPopup.visible
+            }
             NativeButton {
                 objectName: "ownStatusAction"
                 colors: root.colors
@@ -3542,6 +3602,16 @@ component NativeMentionChip: Item {
                     accountPopup.close()
                     rightDrawer.openPersonalInfo()
                 }
+            }
+            NativeButton {
+                objectName: "accountSettingsAction"; Layout.fillWidth: true
+                colors: root.colors; text: qsTr("Settings")
+                onClicked: root.openPreferencePanel("settings")
+            }
+            NativeButton {
+                objectName: "accountAppearanceAction"; Layout.fillWidth: true
+                colors: root.colors; text: qsTr("Appearance")
+                onClicked: root.openPreferencePanel("appearance")
             }
             NativeButton {
                 objectName: "aboutAction"
@@ -4572,6 +4642,172 @@ component NativeMentionChip: Item {
         }
     }
 
+    property bool shortcutSidebarVisible: true
+    property string shortcutHoveredMessage: ""
+    property var shortcutHistory: []
+    property int shortcutHistoryIndex: -1
+    readonly property string shortcutHistoryOwner: String(root.controller.ownerKey || "")
+    onShortcutHistoryOwnerChanged: {
+        shortcutHistory = [];
+        shortcutHistoryIndex = -1;
+        restoringShortcutRoute = "";
+        shortcutSidebarVisible = true;
+        Qt.callLater(rememberShortcutRoute);
+    }
+    property string restoringShortcutRoute: ""
+    readonly property string shortcutRoute: {
+        const c = root.controller;
+        if (!c.authenticated) return "";
+        if (c.section !== "chat") return c.section;
+        if (c.inboxVisible) return "inbox";
+        if (c.mentionsVisible) return "mentions";
+        if (c.reactionsVisible) return "reactions";
+        if (c.favoritesVisible) return "favorites";
+        if (c.starredVisible) return "starred";
+        if (c.draftsVisible) return "drafts";
+        if (c.feedVisible) return "feed";
+        return ["chat", c.selectedStream, c.selectedTopic].join("/");
+    }
+    onShortcutRouteChanged: Qt.callLater(rememberShortcutRoute)
+    function rememberShortcutRoute() {
+        if (!shortcutHistoryOwner || !shortcutRoute) return;
+        if (shortcutRoute === restoringShortcutRoute) restoringShortcutRoute = "";
+        if (shortcutHistory[shortcutHistoryIndex] === shortcutRoute) return;
+        if (restoringShortcutRoute && shortcutRoute.startsWith("chat/")
+            && restoringShortcutRoute.startsWith(shortcutRoute) && shortcutRoute.endsWith("/")) return;
+        restoringShortcutRoute = "";
+        const routes = shortcutHistory.slice(0, shortcutHistoryIndex + 1).concat([shortcutRoute]).slice(-100);
+        shortcutHistory = routes;
+        shortcutHistoryIndex = routes.length - 1;
+    }
+    function visitShortcutRoute(index) {
+        const route = shortcutHistory[index];
+        shortcutHistoryIndex = index;
+        restoringShortcutRoute = route;
+        const c = root.controller;
+        if (route.startsWith("chat/")) {
+            const [, stream, topic] = route.split("/");
+            if (topic) c.openTopic(topic, stream);
+            else if (stream) c.openStreamReference(stream);
+            else c.showSection("chat");
+        } else if (route === "inbox") c.showInbox();
+        else if (route === "mentions") c.showMentions();
+        else if (route === "feed") c.showFeed();
+        else if (route === "reactions") c.showReactions();
+        else if (route === "starred") c.showStarred();
+        else if (route === "favorites") c.showFavorites();
+        else if (route === "drafts") c.showDrafts();
+        else c.showSection(route);
+    }
+    function shortcutQuoteTarget() {
+        for (const id in bodySelectionBodies) {
+            const body = bodySelectionBodies[id];
+            if (body && body.selectedText) return {id: id, text: String(body.selectedText)};
+        }
+        for (let item = root.activeFocusItem; item; item = item.parent)
+            if (item.objectName && item.objectName.startsWith("message-") && item.modelData && item.modelData.id)
+                return {id: String(item.modelData.id), text: ""};
+        return {id: shortcutHoveredMessage, text: ""};
+    }
+    function handleAppShortcut(action, activate) {
+        if (!root.controller.authenticated || !root.active) return false;
+        if (shortcutPopup.item && shortcutPopup.item.helpOnly && shortcutPopup.item.visible && action === "interface.help") {
+            if (activate) shortcutPopup.item.close();
+            return true;
+        }
+        if (root.Overlay.overlay.visible || root.controller.mediaViewer.open || callWindowOverlayItem.visible
+                || incomingCallOverlayItem.visible || (root.activeFocusItem && root.activeFocusItem.inputMethodComposing)) return false;
+        if (action.startsWith("composer.")) {
+            if (!composerText.formattingAllowed || composerMentionPopup.visible) return false;
+            if (action === "composer.editLastMessage") {
+                if (root.controller.editingMessageId || composerText.text.trim() || root.controller.busy) return false;
+                if (activate) root.controller.editLastMessage();
+            } else if (activate) {
+                const markers = {"composer.bold":"**", "composer.italic":"*", "composer.strike":"~~", "composer.code":"`"};
+                composerText.wrapFormatting(markers[action]);
+            }
+            return true;
+        }
+        if (chatNavigationHasInputFocus() && !(action === "interface.quoteMessage"
+                && (composerText.activeFocus || shortcutQuoteTarget().text || messageSelectionCount))) return false;
+        if (action === "interface.quoteMessage") {
+            if (messageSelectionCount) {
+                if (activate) root.controller.replyToSelection(messageSelectionIds);
+                return true;
+            }
+            const target = shortcutQuoteTarget();
+            if (!target.id || !root.controller.hasConversation) return false;
+            if (activate) root.controller.addReplyTab(target.id, target.text);
+        } else if (action === "navigation.back" || action === "navigation.forward") {
+            const next = shortcutHistoryIndex + (action === "navigation.back" ? -1 : 1);
+            if (next < 0 || next >= shortcutHistory.length) return false;
+            if (activate) visitShortcutRoute(next);
+        } else if (action === "navigation.folderList") {
+            if (!folderRailRows.length) return false;
+            if (activate) shortcutFolders.open();
+        } else if (activate) {
+            if (action === "navigation.messenger") root.controller.showSection("chat");
+            else if (action === "navigation.activity") root.controller.showInbox();
+            else if (action.startsWith("navigation.")) root.controller.showSection(action.slice(11));
+            else if (action === "interface.theme") root.preferences.mode = root.preferences.dark ? "light" : "dark";
+            else if (action === "interface.sidebar") shortcutSidebarVisible = !shortcutSidebarVisible;
+            else if (action === "interface.infoPanel") rightDrawer.toggleVisibility();
+            else if (action === "interface.help") shortcutPopup.sourceComponent = shortcutHelpComponent;
+        }
+        return true;
+    }
+    Loader {
+        id: shortcutPopup
+        asynchronous: true
+        onLoaded: item.open()
+        function unloadClosed() {
+            if (item && !item.visible) sourceComponent = null;
+        }
+    }
+    Component {
+        id: shortcutSettingsComponent
+        NativeHotkeysDialog {
+            objectName: "shortcutSettings"
+            parent: root.contentItem
+            registry: root.preferences.hotkeys
+            colors: root.colors
+            onClosed: Qt.callLater(shortcutPopup.unloadClosed)
+        }
+    }
+    Component {
+        id: shortcutHelpComponent
+        NativeShortcutsHelp {
+            objectName: "shortcutsHelp"
+            parent: root.contentItem
+            registry: root.preferences.hotkeys
+            colors: root.colors
+            onClosed: Qt.callLater(shortcutPopup.unloadClosed)
+        }
+    }
+    Dialog {
+        id: shortcutFolders
+        objectName: "shortcutFolderList"
+        anchors.centerIn: parent
+        width: Math.min(380, root.width - 32)
+        modal: true
+        title: qsTr("Folder list")
+        onOpened: { shortcutFolderSearch.clear(); shortcutFolderSearch.forceActiveFocus(); }
+        contentItem: ColumnLayout {
+            NativeField { id: shortcutFolderSearch; colors: root.colors; placeholderText: qsTr("Search"); Layout.fillWidth: true }
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(320, contentHeight)
+                clip: true
+                model: root.folderRailRows.filter(row => String(row.name || "").toLowerCase().includes(shortcutFolderSearch.text.toLowerCase()))
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: ListView.view.width
+                    text: modelData.name
+                    onClicked: { root.controller.selectFolder(modelData.key); shortcutFolders.close(); }
+                }
+            }
+        }
+    }
     function chatNavigationHasInputFocus() {
         for (let item = root.activeFocusItem; item; item = item.parent) {
             if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox)
@@ -4663,6 +4899,7 @@ component NativeMentionChip: Item {
         Rectangle {
             id: sidebar
             objectName: "sidebar"
+            visible: root.shortcutSidebarVisible
             Layout.preferredWidth: root.sidebarWidth
             Layout.fillHeight: true
             color: root.colors["bg-elevated"]
@@ -6245,6 +6482,18 @@ component NativeMentionChip: Item {
             Rectangle {
                 id: chatHeaderRoot
                 objectName: "conversationHeader"
+                readonly property bool infoAvailable: root.controller.authenticated && root.controller.hasConversation
+                    && !root.controller.favoritesVisible
+                readonly property string infoLabel: root.controller.isDirectConversation ? qsTr("Partner info") : qsTr("Channel info")
+                function openInformation() {
+                    if (!infoAvailable) return
+                    if (root.controller.isDirectConversation) {
+                        const peer = String(root.controller.directPeer.id || "")
+                        if (peer) rightDrawer.openWorkspaceUserProfile(peer)
+                    } else {
+                        rightDrawer.openInfo()
+                    }
+                }
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
@@ -6284,6 +6533,7 @@ component NativeMentionChip: Item {
                     elide: Text.ElideRight
                 }
                 RowLayout {
+                    id: channelHeaderTitleRow
                     visible: !root.controller.isDirectConversation && !root.encryptedConversation
                         && !root.controller.favoritesVisible
                     x: 20
@@ -6310,6 +6560,20 @@ component NativeMentionChip: Item {
                         font.pixelSize: 14
                         elide: Text.ElideRight
                     }
+                }
+                AbstractButton {
+                    id: channelHeaderInfoAction
+                    objectName: "channelHeaderInfoAction"
+                    anchors.fill: channelHeaderTitleRow
+                    visible: channelHeaderTitleRow.visible && chatHeaderRoot.infoAvailable
+                    focusPolicy: Qt.StrongFocus
+                    Accessible.name: chatHeaderRoot.infoLabel
+                    background: Rectangle {
+                        color: "transparent"; radius: 6
+                        border.width: channelHeaderInfoAction.visualFocus ? 2 : 0
+                        border.color: root.colors["accent-soft"]
+                    }
+                    onClicked: chatHeaderRoot.openInformation()
                 }
                 Text {
                     objectName: "chatHeaderCounters"
@@ -6698,19 +6962,12 @@ component NativeMentionChip: Item {
                     }
                     NativeIconButton {
                         colors: root.colors
+                        objectName: "conversationInfoAction"
                         asset: "side_panel.svg"
                         glyphSize: 20
-                        // Issue #134: on direct chats the affordance opens the
-                        // partner profile; ordinary channels keep the placeholder.
-                        enabled: String(root.controller.directPeer.id || "").length > 0
-                        help: String(root.controller.directPeer.id || "").length > 0
-                            ? qsTr("Information")
-                            : qsTr("Conversation information is not implemented yet")
-                        onClicked: {
-                            const peer = String(root.controller.directPeer.id || "")
-                            if (peer.length > 0)
-                                rightDrawer.openWorkspaceUserProfile(peer)
-                        }
+                        enabled: chatHeaderRoot.infoAvailable
+                        help: chatHeaderRoot.infoLabel
+                        onClicked: chatHeaderRoot.openInformation()
                     }
                 }
             }
@@ -7433,27 +7690,45 @@ component NativeMentionChip: Item {
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
                     displayedRoute = route;
-                    for (let i = 0; i < projection.length; ++i) {
+                    const added = projection.length - renderedMessages.count;
+                    let firstExisting = 0;
+                    if (sameRoute && added > 0 && renderedMessages.count > 0) {
+                        // A normal history page extends the front. Insert it as one
+                        // range so the view can keep the existing row delegates.
+                        let keepsSuffix = true;
+                        for (let i = 0; i < renderedMessages.count; ++i) {
+                            if (String(projection[added + i].entry.id) !== String(renderedMessages.get(i).entry.id)) {
+                                keepsSuffix = false;
+                                break;
+                            }
+                        }
+                        if (keepsSuffix) {
+                            renderedMessages.insert(0, projection.slice(0, added));
+                            firstExisting = added;
+                        }
+                    }
+                    for (let i = firstExisting; i < projection.length; ++i) {
+                        if (i >= renderedMessages.count) {
+                            renderedMessages.append(projection.slice(i));
+                            break;
+                        }
                         const model = projection[i];
                         const id = String(model.entry.id);
-                        if (i >= renderedMessages.count) {
-                            renderedMessages.append(model);
-                        } else {
-                            if (String(renderedMessages.get(i).entry.id) !== id) {
-                                let previous = -1;
-                                for (let j = i + 1; j < renderedMessages.count; ++j) {
-                                    if (String(renderedMessages.get(j).entry.id) === id) {
-                                        previous = j;
-                                        break;
-                                    }
+                        if (String(renderedMessages.get(i).entry.id) !== id) {
+                            let previous = -1;
+                            for (let j = i + 1; j < renderedMessages.count; ++j) {
+                                if (String(renderedMessages.get(j).entry.id) === id) {
+                                    previous = j;
+                                    break;
                                 }
-                                if (previous >= 0)
-                                    renderedMessages.move(previous, i, 1);
-                                else
-                                    renderedMessages.insert(i, model);
                             }
-                            renderedMessages.set(i, model);
+                            if (previous < 0) {
+                                renderedMessages.insert(i, model);
+                                continue;
+                            }
+                            renderedMessages.move(previous, i, 1);
                         }
+                        renderedMessages.set(i, model);
                     }
                     if (renderedMessages.count > projection.length)
                         renderedMessages.remove(projection.length, renderedMessages.count - projection.length);
@@ -8184,6 +8459,13 @@ component NativeMentionChip: Item {
                 }
                 component MessageContentRow: MessageBoundaryRow {
                     id: messageRow
+                    HoverHandler {
+                        onHoveredChanged: {
+                            const id = String(messageRow.modelData.id || "");
+                            if (hovered) root.shortcutHoveredMessage = id;
+                            else if (root.shortcutHoveredMessage === id) root.shortcutHoveredMessage = "";
+                        }
+                    }
                     readonly property real quickReactionsLayer: quickReactions.expanded || quickReactions.hasFocus || quickReply.visualFocus ? 3 : quickReactions.visible || quickReply.hovered ? 2 : 1
                     required property var entry
                     required property int index
@@ -8243,9 +8525,37 @@ component NativeMentionChip: Item {
                     property var spoilerState: ({})
                     readonly property var openedSpoilers: spoilerState.message === modelData.id
                         && spoilerState.body === bodyMarkdown ? spoilerState.opened : []
-                    readonly property var rendered: root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers)
-                    onBodyMarkdownChanged: spoilerState = ({})
+                    property var revealedFragments: []
+                    property int secretRenderRevision: 0
+                    readonly property var rendered: {
+                        const ordinary = root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers);
+                        if (!ordinary.hasSecrets) return ordinary;
+                        // Vault changes can leave the surrounding message Markdown identical.
+                        const revision = root.controller.secretKeyRevision + secretRenderRevision;
+                        const active = root.chatEncryption;
+                        const current = modelData;
+                        const display = root.controller.renderSecretMessage(String(current.id), openedSpoilers, revealedFragments);
+                        return display.html !== undefined ? display : ordinary;
+                    }
+                    onBodyMarkdownChanged: {
+                        spoilerState = ({});
+                        revealedFragments = [];
+                    }
                     function activateBodyLink(link, restoreFocus) {
+                        const secret = (rendered.secretControls || []).find(span => span.href === String(link));
+                        if (secret) {
+                            if (secret.action === "request") {
+                                root.controller.requestSecretMessageKey(String(modelData.id), secret.token, openedSpoilers);
+                            } else if (secret.action === "retry") {
+                                ++secretRenderRevision;
+                            } else if (secret.action === "show" || secret.action === "hide") {
+                                revealedFragments = secret.action === "hide"
+                                    ? revealedFragments.filter(token => token !== secret.token)
+                                    : revealedFragments.concat([secret.token]);
+                            }
+                            if (restoreFocus) focusDisclosure(secret.id, true);
+                            return;
+                        }
                         const target = (rendered.spoilers || []).find(span => span.href === String(link));
                         if (!target) {
                             root.openReference(link);
@@ -8254,11 +8564,14 @@ component NativeMentionChip: Item {
                         spoilerState = { message: modelData.id, body: bodyMarkdown,
                             opened: openedSpoilers.includes(target.id)
                                 ? openedSpoilers.filter(id => id !== target.id) : openedSpoilers.concat([target.id]) };
-                        if (restoreFocus) Qt.callLater(() => {
+                        if (restoreFocus) focusDisclosure(target.id, false);
+                    }
+                    function focusDisclosure(id, secret) {
+                        Qt.callLater(() => {
                             const chips = hasInlineImages ? mediaSpoilerChips : bodySpoilerChips;
                             for (let i = 0; chips && i < chips.count; ++i) {
                                 const chip = chips.itemAt(i);
-                                if (chip && chip.modelData.id === target.id) {
+                                if (chip && chip.enabled && chip.modelData.id === id && !!chip.modelData.secret === secret) {
                                     chip.forceActiveFocus();
                                     break;
                                 }
@@ -8313,10 +8626,10 @@ component NativeMentionChip: Item {
                     property var mentionTargets: locateMentionTargets()
                     property var spoilerTargets: locateSpoilers()
                     function locateSpoilers() {
-                        const spans = rendered.spoilers || [];
+                        const spans = (rendered.spoilers || []).concat(rendered.secretControls || []);
                         if (!spans.length) return [];
                         const pairs = spans.map(span => ({ urn: span.href, label: span.label,
-                            id: span.id, header: span.header, anchorStart: span.start, anchorLength: span.length }));
+                            id: span.id, header: span.header, secret: !!span.action, action: span.action, anchorStart: span.start, anchorLength: span.length }));
                         if (!hasInlineImages) return mentionRectsIn(messageBody, pairs, bodyMentionOverlay);
                         const targets = [];
                         for (let i = 0; i < imageRuns.count; ++i) {
@@ -8373,7 +8686,7 @@ component NativeMentionChip: Item {
                                 const right = Math.abs(after.y - top.y) < 0.5
                                     ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
-                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header,
+                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header, secret: pair.secret, action: pair.action,
                                     x: origin.x, y: origin.y,
                                     w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
                                 i = j + 1;
@@ -9404,13 +9717,17 @@ component NativeMentionChip: Item {
                                 // -interactions.hook.ts:97-116); centered control
                                 // labels stay non-selectable.
                                 readOnly: true
-                                selectByMouse: !messageRow.keyControl
+                                selectByMouse: !messageRow.keyControl && !messageRow.rendered.hasSecrets
+                                selectByKeyboard: !messageRow.keyControl && !messageRow.rendered.hasSecrets
                                 cursorVisible: false
                                 persistentSelection: true
                                 // Issue #218 review r2: a selection becoming
                                 // active here clears the other bubbles'
                                 // persistent selections (noteBodySelection).
-                                onSelectedTextChanged: root.noteBodySelection(messageRow.modelData.id, messageBody)
+                                onSelectedTextChanged: {
+                                    if (messageRow.rendered.hasSecrets && selectedText.length) deselect();
+                                    else root.noteBodySelection(messageRow.modelData.id, messageBody);
+                                }
                                 Component.onDestruction: root.forgetBodySelection(messageRow.modelData.id)
                                 bottomPadding: messageRow.inlineMeta ? 2 : 0
                                 height: contentHeight + topPadding + bottomPadding
@@ -9502,6 +9819,9 @@ component NativeMentionChip: Item {
                                             text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
                                             textFormat: TextEdit.RichText
                                             readOnly: true
+                                            selectByKeyboard: !messageRow.rendered.hasSecrets
+                                            selectByMouse: !messageRow.rendered.hasSecrets
+                                            onSelectedTextChanged: if (messageRow.rendered.hasSecrets && selectedText.length) deselect()
                                             cursorVisible: false
                                             wrapMode: TextEdit.Wrap
                                             font.pixelSize: 14
@@ -11445,26 +11765,6 @@ component NativeMentionChip: Item {
                                         }
                                         composerMentionPopup.close();
                                     }
-                                    Shortcut {
-                                        sequence: "Ctrl+B"; context: Qt.WindowShortcut; autoRepeat: false
-                                        enabled: composerText.formattingAllowed
-                                        onActivated: composerText.wrapFormatting("**")
-                                    }
-                                    Shortcut {
-                                        sequence: "Ctrl+I"; context: Qt.WindowShortcut; autoRepeat: false
-                                        enabled: composerText.formattingAllowed
-                                        onActivated: composerText.wrapFormatting("*")
-                                    }
-                                    Shortcut {
-                                        sequence: "Ctrl+E"; context: Qt.WindowShortcut; autoRepeat: false
-                                        enabled: composerText.formattingAllowed
-                                        onActivated: composerText.wrapFormatting("`")
-                                    }
-                                    Shortcut {
-                                        sequence: "Ctrl+Shift+X"; context: Qt.WindowShortcut; autoRepeat: false
-                                        enabled: composerText.formattingAllowed
-                                        onActivated: composerText.wrapFormatting("~~")
-                                    }
                                     Keys.onShortcutOverride: event => {
                                         // AltGraph belongs to text input, including layouts whose
                                         // platform shortcut translation offers a Latin alternative.
@@ -11565,11 +11865,6 @@ component NativeMentionChip: Item {
                                                 root.controller.send();
                                                 event.accepted = true;
                                             }
-                                        } else if (event.key === Qt.Key_Up && !(event.modifiers & Qt.ShiftModifier) && !editing
-                                                   && text.trim().length === 0 && root.composerAvailable && !root.controller.busy) {
-                                            // Up-to-edit-last, the Source composer.editLastMessage hotkey.
-                                            root.controller.editLastMessage();
-                                            event.accepted = true;
                                         }
                                     }
                                 }
@@ -13036,6 +13331,12 @@ component NativeMentionChip: Item {
     // only the selection it was submitted with (review round 1, cid
     // 4586012848): a Check that lands after the modal went away must leave a
     // newer selection alone.
+    NativeUserSearch {
+        id: userSearch
+        colors: root.colors
+        controller: root.controller
+    }
+
     NativeForwardDialog {
         id: forwardDialog
         colors: root.colors
