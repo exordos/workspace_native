@@ -22,8 +22,16 @@ function Control([string]$Name, $Type) {
     }
     $deadline = (Get-Date).AddSeconds(15)
     do {
-        $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
-            Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
+        try {
+            $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
+                Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
+        } catch [System.Management.Automation.MethodInvocationException] {
+            $app.Refresh()
+            if ($app.HasExited) { throw }
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
+            Start-Sleep -Milliseconds 100
+            continue
+        }
         # Qt WebEngine can expose the same Qt control through many fragments.
         # Coalesce only identical owning PIDs, identifiers and screen rectangles.
         if ($results.Count -gt 1 -and $results[0].Current.AutomationId) {
@@ -71,6 +79,7 @@ function Fill([string]$Name, [string]$Value) {
     }
 }
 function Press([string]$Name) {
+    if ($Mode -eq 'choose-file') { Write-Host "Pressing $Name in the signed-in application." }
     $item = Control $Name ([System.Windows.Automation.ControlType]::Button)
     $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
@@ -93,7 +102,8 @@ switch ($Mode) {
             [System.Windows.Automation.PropertyCondition]::new($type::ProcessIdProperty, $ApplicationPid))
         $deadline = (Get-Date).AddSeconds(15)
         do {
-            $dialog = $type::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $dialogFilter)
+            $dialog = $type::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $dialogFilter)
+            if (!$dialog) { $dialog = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $dialogFilter) }
             if ($dialog) { break }
             Start-Sleep -Milliseconds 100
         } while ((Get-Date) -lt $deadline)
